@@ -1,3 +1,13 @@
 <Solution>
+  <Project Path="IntegratedS3.Abstractions/IntegratedS3.Abstractions.csproj" />
+  <Project Path="IntegratedS3.Protocol/IntegratedS3.Protocol.csproj" />
+  <Project Path="IntegratedS3.Core/IntegratedS3.Core.csproj" />
+  <Project Path="IntegratedS3.EntityFramework/IntegratedS3.EntityFramework.csproj" />
+  <Project Path="IntegratedS3.AspNetCore/IntegratedS3.AspNetCore.csproj" />
+  <Project Path="IntegratedS3.Provider.Disk/IntegratedS3.Provider.Disk.csproj" />
+  <Project Path="IntegratedS3.Provider.S3/IntegratedS3.Provider.S3.csproj" />
+  <Project Path="IntegratedS3.Client/IntegratedS3.Client.csproj" />
+  <Project Path="IntegratedS3.Testing/IntegratedS3.Testing.csproj" />
+  <Project Path="IntegratedS3.Tests/IntegratedS3.Tests.csproj" />
   <Project Path="WebUi/WebUi.csproj" />
 </Solution>

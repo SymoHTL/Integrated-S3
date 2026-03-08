@@ -1,0 +1,9 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <Description>First-party .NET client for IntegratedS3 hosts.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\IntegratedS3.Protocol\IntegratedS3.Protocol.csproj" />
+  </ItemGroup>
+</Project>

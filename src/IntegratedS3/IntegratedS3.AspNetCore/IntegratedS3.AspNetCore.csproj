@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <Description>ASP.NET Core DI registration and endpoint mapping for IntegratedS3.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\IntegratedS3.Abstractions\IntegratedS3.Abstractions.csproj" />
+    <ProjectReference Include="..\IntegratedS3.Protocol\IntegratedS3.Protocol.csproj" />
+    <ProjectReference Include="..\IntegratedS3.Core\IntegratedS3.Core.csproj" />
+  </ItemGroup>
+</Project>

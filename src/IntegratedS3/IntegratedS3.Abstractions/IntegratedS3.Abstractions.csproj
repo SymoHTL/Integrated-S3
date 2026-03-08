@@ -1,0 +1,5 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <Description>Provider-agnostic storage contracts, capability descriptors, and canonical errors for IntegratedS3.</Description>
+  </PropertyGroup>
+</Project>
