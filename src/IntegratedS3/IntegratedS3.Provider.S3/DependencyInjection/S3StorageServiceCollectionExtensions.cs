@@ -16,6 +16,8 @@ public static class S3StorageServiceCollectionExtensions
         services.AddSingleton<IS3StorageClient>(_ => new AwsS3StorageClient(options));
         services.AddSingleton<IStorageBackend>(sp =>
             new S3StorageService(options, sp.GetRequiredService<IS3StorageClient>()));
+        services.AddSingleton<IStorageObjectLocationResolver>(sp =>
+            new S3StorageObjectLocationResolver(options, sp.GetRequiredService<IS3StorageClient>()));
 
         return services;
     }

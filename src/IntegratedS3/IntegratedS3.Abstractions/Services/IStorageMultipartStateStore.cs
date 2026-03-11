@@ -14,6 +14,12 @@ public interface IStorageMultipartStateStore
         string uploadId,
         CancellationToken cancellationToken = default);
 
+    IAsyncEnumerable<MultipartUploadState> ListMultipartUploadStatesAsync(
+        string providerName,
+        string bucketName,
+        string? prefix = null,
+        CancellationToken cancellationToken = default);
+
     ValueTask UpsertMultipartUploadStateAsync(
         string providerName,
         MultipartUploadState state,

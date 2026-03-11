@@ -21,6 +21,14 @@ internal static class S3ErrorTranslator
                 (StorageErrorCode.BucketNotFound,
                  $"Bucket '{bucketName}' does not exist."),
 
+            "NoSuchCORSConfiguration" =>
+                (StorageErrorCode.CorsConfigurationNotFound,
+                 $"Bucket '{bucketName}' does not have a CORS configuration."),
+
+            "NoSuchUpload" =>
+                (StorageErrorCode.MultipartConflict,
+                 $"Multipart upload for object '{objectKey}' in bucket '{bucketName}' does not exist or is no longer active."),
+
             "BucketAlreadyExists" =>
                 (StorageErrorCode.BucketAlreadyExists,
                  $"Bucket '{bucketName}' already exists (owned by another account)."),
@@ -28,6 +36,12 @@ internal static class S3ErrorTranslator
             "BucketAlreadyOwnedByYou" =>
                 (StorageErrorCode.BucketAlreadyExists,
                  $"Bucket '{bucketName}' already exists and is owned by you."),
+
+            "BadDigest" =>
+                (StorageErrorCode.InvalidChecksum,
+                 !string.IsNullOrEmpty(objectKey)
+                     ? $"The supplied checksum for object '{objectKey}' in bucket '{bucketName}' did not match the received payload."
+                     : ex.Message),
 
             "AccessDenied" =>
                 (StorageErrorCode.AccessDenied,
@@ -42,6 +56,18 @@ internal static class S3ErrorTranslator
                  !string.IsNullOrEmpty(objectKey)
                      ? $"Precondition failed for object '{objectKey}' in bucket '{bucketName}'."
                      : $"Precondition failed for bucket '{bucketName}'."),
+
+            "InvalidPart" =>
+                (StorageErrorCode.MultipartConflict,
+                 $"One or more multipart parts for object '{objectKey}' in bucket '{bucketName}' were missing or had mismatched ETags/checksums."),
+
+            "InvalidPartOrder" =>
+                (StorageErrorCode.MultipartConflict,
+                 $"Multipart parts for object '{objectKey}' in bucket '{bucketName}' were not supplied in ascending part-number order."),
+
+            "EntityTooSmall" =>
+                (StorageErrorCode.MultipartConflict,
+                 $"At least one multipart part for object '{objectKey}' in bucket '{bucketName}' was smaller than the minimum supported size."),
 
             "SlowDown" or "RequestThrottled" or "Throttling" =>
                 (StorageErrorCode.Throttled,
@@ -68,6 +94,16 @@ internal static class S3ErrorTranslator
                  !string.IsNullOrEmpty(objectKey)
                      ? $"Precondition failed for object '{objectKey}' in bucket '{bucketName}'."
                      : $"Precondition failed for bucket '{bucketName}'."),
+
+            _ when (int)ex.StatusCode == 400 && string.Equals(ex.ErrorCode, "BadDigest", StringComparison.OrdinalIgnoreCase) =>
+                (StorageErrorCode.InvalidChecksum,
+                 !string.IsNullOrEmpty(objectKey)
+                     ? $"The supplied checksum for object '{objectKey}' in bucket '{bucketName}' did not match the received payload."
+                     : ex.Message),
+
+            _ when (int)ex.StatusCode == 409 && !string.IsNullOrEmpty(objectKey) =>
+                (StorageErrorCode.MultipartConflict,
+                 $"A conflicting operation prevented the request for object '{objectKey}' in bucket '{bucketName}' from completing: {ex.Message}"),
 
             _ when (int)ex.StatusCode == 409 =>
                 (StorageErrorCode.BucketAlreadyExists,

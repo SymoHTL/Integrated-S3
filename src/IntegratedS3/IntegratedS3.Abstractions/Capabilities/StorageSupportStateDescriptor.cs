@@ -12,7 +12,11 @@ public sealed class StorageSupportStateDescriptor
 
     public StorageSupportStateOwnership Checksums { get; set; } = StorageSupportStateOwnership.NotApplicable;
 
+    public StorageSupportStateOwnership AccessControl { get; set; } = StorageSupportStateOwnership.NotApplicable;
+
     public StorageSupportStateOwnership Retention { get; set; } = StorageSupportStateOwnership.NotApplicable;
+
+    public StorageSupportStateOwnership ServerSideEncryption { get; set; } = StorageSupportStateOwnership.NotApplicable;
 
     public StorageSupportStateOwnership RedirectLocations { get; set; } = StorageSupportStateOwnership.NotApplicable;
 }

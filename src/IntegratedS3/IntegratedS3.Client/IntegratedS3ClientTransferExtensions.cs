@@ -287,31 +287,7 @@ public static class IntegratedS3ClientTransferExtensions
         var presigned = await client.PresignGetObjectAsync(
             bucketName, key, expiresInSeconds, versionId, cancellationToken);
 
-        var fileCreated = false;
-        var transferCompleted = false;
-        try
-        {
-            await using var fileStream = new FileStream(
-                filePath, FileMode.Create, FileAccess.Write, FileShare.None,
-                bufferSize: 65536, useAsync: true);
-            fileCreated = true;
-
-            using var request = presigned.CreateHttpRequestMessage();
-            using var response = await transferClient.SendAsync(
-                request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
-            response.EnsureSuccessStatusCode();
-            await response.Content.CopyToAsync(fileStream, cancellationToken);
-            transferCompleted = true;
-        }
-        finally
-        {
-            if (fileCreated && !transferCompleted)
-            {
-                // Best-effort cleanup: remove the partial/empty destination file so
-                // failures do not leave misleading files behind.
-                try { File.Delete(filePath); } catch { }
-            }
-        }
+        await DownloadPresignedToFileAsync(transferClient, presigned, filePath, cancellationToken);
     }
 
     /// <summary>
@@ -359,30 +335,58 @@ public static class IntegratedS3ClientTransferExtensions
         var presigned = await client.PresignGetObjectAsync(
             bucketName, key, expiresInSeconds, preferredAccessMode, versionId, cancellationToken);
 
-        var fileCreated = false;
-        var transferCompleted = false;
-        try
-        {
+        await DownloadPresignedToFileAsync(transferClient, presigned, filePath, cancellationToken);
+    }
+
+    private static async Task DownloadPresignedToFileAsync(
+        HttpClient transferClient,
+        StoragePresignedRequest presigned,
+        string filePath,
+        CancellationToken cancellationToken)
+    {
+        try {
             await using var fileStream = new FileStream(
                 filePath, FileMode.Create, FileAccess.Write, FileShare.None,
                 bufferSize: 65536, useAsync: true);
-            fileCreated = true;
 
             using var request = presigned.CreateHttpRequestMessage();
             using var response = await transferClient.SendAsync(
                 request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
             response.EnsureSuccessStatusCode();
             await response.Content.CopyToAsync(fileStream, cancellationToken);
-            transferCompleted = true;
         }
-        finally
-        {
-            if (fileCreated && !transferCompleted)
-            {
-                // Best-effort cleanup: remove the partial/empty destination file so
-                // failures do not leave misleading files behind.
-                try { File.Delete(filePath); } catch { }
-            }
+        catch (HttpRequestException exception) {
+            DeletePartialDownload(filePath, exception);
+            throw;
+        }
+        catch (IOException exception) {
+            DeletePartialDownload(filePath, exception);
+            throw;
+        }
+        catch (OperationCanceledException exception) {
+            DeletePartialDownload(filePath, exception);
+            throw;
+        }
+    }
+
+    private static void DeletePartialDownload(string filePath, Exception transferFailure)
+    {
+        if (!File.Exists(filePath)) {
+            return;
+        }
+
+        try {
+            File.Delete(filePath);
+        }
+        catch (IOException exception) {
+            throw new IOException(
+                $"The download failed and the partial destination file '{filePath}' could not be removed.",
+                new AggregateException(transferFailure, exception));
+        }
+        catch (UnauthorizedAccessException exception) {
+            throw new IOException(
+                $"The download failed and the partial destination file '{filePath}' could not be removed.",
+                new AggregateException(transferFailure, exception));
         }
     }
 }

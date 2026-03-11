@@ -390,6 +390,75 @@ public sealed class DiskStorageServiceTests
     }
 
     [Fact]
+    public async Task DiskStorage_BucketCors_RoundTripsAndPreservesVersioningMetadata()
+    {
+        await using var fixture = new DiskStorageFixture();
+        var storageService = fixture.Services.GetRequiredService<IStorageBackend>();
+
+        var createResult = await storageService.CreateBucketAsync(new CreateBucketRequest
+        {
+            BucketName = "bucket-cors",
+            EnableVersioning = true
+        });
+
+        Assert.True(createResult.IsSuccess);
+
+        var putCors = await storageService.PutBucketCorsAsync(new PutBucketCorsRequest
+        {
+            BucketName = "bucket-cors",
+            Rules =
+            [
+                new BucketCorsRule
+                {
+                    Id = "browser-rule",
+                    AllowedOrigins = ["https://app.example"],
+                    AllowedMethods = [BucketCorsMethod.Get, BucketCorsMethod.Put],
+                    AllowedHeaders = ["authorization", "x-amz-*"],
+                    ExposeHeaders = ["etag"],
+                    MaxAgeSeconds = 900
+                }
+            ]
+        });
+
+        Assert.True(putCors.IsSuccess);
+        var initialRule = Assert.Single(putCors.Value!.Rules);
+        Assert.Equal("browser-rule", initialRule.Id);
+
+        var suspended = await storageService.PutBucketVersioningAsync(new PutBucketVersioningRequest
+        {
+            BucketName = "bucket-cors",
+            Status = BucketVersioningStatus.Suspended
+        });
+
+        Assert.True(suspended.IsSuccess);
+
+        var getCors = await storageService.GetBucketCorsAsync("bucket-cors");
+        Assert.True(getCors.IsSuccess);
+        var storedRule = Assert.Single(getCors.Value!.Rules);
+        Assert.Equal([BucketCorsMethod.Get, BucketCorsMethod.Put], storedRule.AllowedMethods);
+        Assert.Equal(["authorization", "x-amz-*"], storedRule.AllowedHeaders);
+
+        var versioning = await storageService.GetBucketVersioningAsync("bucket-cors");
+        Assert.True(versioning.IsSuccess);
+        Assert.Equal(BucketVersioningStatus.Suspended, versioning.Value!.Status);
+
+        var deleteCors = await storageService.DeleteBucketCorsAsync(new DeleteBucketCorsRequest
+        {
+            BucketName = "bucket-cors"
+        });
+
+        Assert.True(deleteCors.IsSuccess);
+
+        var missingCors = await storageService.GetBucketCorsAsync("bucket-cors");
+        Assert.False(missingCors.IsSuccess);
+        Assert.Equal(IntegratedS3.Abstractions.Errors.StorageErrorCode.CorsConfigurationNotFound, missingCors.Error!.Code);
+
+        var preservedVersioning = await storageService.GetBucketVersioningAsync("bucket-cors");
+        Assert.True(preservedVersioning.IsSuccess);
+        Assert.Equal(BucketVersioningStatus.Suspended, preservedVersioning.Value!.Status);
+    }
+
+    [Fact]
     public async Task DiskStorage_VersionedOverwrite_PreservesHistoricalVersionAccess()
     {
         await using var fixture = new DiskStorageFixture();
@@ -1323,6 +1392,223 @@ public sealed class DiskStorageServiceTests
     }
 
     [Fact]
+    public async Task DiskStorage_MultipartUpload_ListMultipartUploads_AppliesPrefixMarkersAndPageSize()
+    {
+        await using var fixture = new DiskStorageFixture();
+        var storageService = fixture.Services.GetRequiredService<IStorageBackend>();
+        await storageService.CreateBucketAsync(new CreateBucketRequest { BucketName = "multipart-list" });
+
+        var firstUpload = await storageService.InitiateMultipartUploadAsync(new InitiateMultipartUploadRequest
+        {
+            BucketName = "multipart-list",
+            Key = "docs/alpha.txt"
+        });
+        await Task.Delay(2);
+
+        var secondUpload = await storageService.InitiateMultipartUploadAsync(new InitiateMultipartUploadRequest
+        {
+            BucketName = "multipart-list",
+            Key = "docs/alpha.txt"
+        });
+        await Task.Delay(2);
+
+        var thirdUpload = await storageService.InitiateMultipartUploadAsync(new InitiateMultipartUploadRequest
+        {
+            BucketName = "multipart-list",
+            Key = "docs/beta.txt"
+        });
+
+        await storageService.InitiateMultipartUploadAsync(new InitiateMultipartUploadRequest
+        {
+            BucketName = "multipart-list",
+            Key = "videos/clip.txt"
+        });
+
+        Assert.True(firstUpload.IsSuccess);
+        Assert.True(secondUpload.IsSuccess);
+        Assert.True(thirdUpload.IsSuccess);
+
+        var firstPage = await storageService.ListMultipartUploadsAsync(new ListMultipartUploadsRequest
+        {
+            BucketName = "multipart-list",
+            Prefix = "docs/",
+            PageSize = 2
+        }).ToArrayAsync();
+
+        Assert.Collection(
+            firstPage,
+            upload => {
+                Assert.Equal("docs/alpha.txt", upload.Key);
+                Assert.Equal(firstUpload.Value!.UploadId, upload.UploadId);
+            },
+            upload => {
+                Assert.Equal("docs/alpha.txt", upload.Key);
+                Assert.Equal(secondUpload.Value!.UploadId, upload.UploadId);
+            });
+
+        var secondPage = await storageService.ListMultipartUploadsAsync(new ListMultipartUploadsRequest
+        {
+            BucketName = "multipart-list",
+            Prefix = "docs/",
+            KeyMarker = "docs/alpha.txt",
+            UploadIdMarker = secondUpload.Value!.UploadId
+        }).ToArrayAsync();
+
+        var remainingUpload = Assert.Single(secondPage);
+        Assert.Equal("docs/beta.txt", remainingUpload.Key);
+        Assert.Equal(thirdUpload.Value!.UploadId, remainingUpload.UploadId);
+    }
+
+    [Fact]
+    public async Task DiskStorage_MultipartUpload_ListMultipartUploads_ReturnsEmptySequenceWhenBucketHasNoUploads()
+    {
+        await using var fixture = new DiskStorageFixture();
+        var storageService = fixture.Services.GetRequiredService<IStorageBackend>();
+        await storageService.CreateBucketAsync(new CreateBucketRequest { BucketName = "multipart-empty" });
+
+        var uploads = await storageService.ListMultipartUploadsAsync(new ListMultipartUploadsRequest
+        {
+            BucketName = "multipart-empty"
+        }).ToArrayAsync();
+
+        Assert.Empty(uploads);
+    }
+
+    [Fact]
+    public async Task DiskStorage_MultipartUpload_ListMultipartUploads_ExcludesCompletedAndAbortedUploads()
+    {
+        await using var fixture = new DiskStorageFixture();
+        var storageService = fixture.Services.GetRequiredService<IStorageBackend>();
+        await storageService.CreateBucketAsync(new CreateBucketRequest { BucketName = "multipart-filtered" });
+
+        var pendingUpload = await storageService.InitiateMultipartUploadAsync(new InitiateMultipartUploadRequest
+        {
+            BucketName = "multipart-filtered",
+            Key = "docs/pending.txt"
+        });
+        var completedUpload = await storageService.InitiateMultipartUploadAsync(new InitiateMultipartUploadRequest
+        {
+            BucketName = "multipart-filtered",
+            Key = "docs/completed.txt"
+        });
+        var abortedUpload = await storageService.InitiateMultipartUploadAsync(new InitiateMultipartUploadRequest
+        {
+            BucketName = "multipart-filtered",
+            Key = "docs/aborted.txt"
+        });
+
+        Assert.True(pendingUpload.IsSuccess);
+        Assert.True(completedUpload.IsSuccess);
+        Assert.True(abortedUpload.IsSuccess);
+
+        await using var completedPartStream = new MemoryStream(Encoding.UTF8.GetBytes("complete"));
+        var completedPart = await storageService.UploadMultipartPartAsync(new UploadMultipartPartRequest
+        {
+            BucketName = "multipart-filtered",
+            Key = "docs/completed.txt",
+            UploadId = completedUpload.Value!.UploadId,
+            PartNumber = 1,
+            Content = completedPartStream
+        });
+
+        await using var abortedPartStream = new MemoryStream(Encoding.UTF8.GetBytes("abort"));
+        var abortedPart = await storageService.UploadMultipartPartAsync(new UploadMultipartPartRequest
+        {
+            BucketName = "multipart-filtered",
+            Key = "docs/aborted.txt",
+            UploadId = abortedUpload.Value!.UploadId,
+            PartNumber = 1,
+            Content = abortedPartStream
+        });
+
+        Assert.True(completedPart.IsSuccess);
+        Assert.True(abortedPart.IsSuccess);
+
+        var completeResult = await storageService.CompleteMultipartUploadAsync(new CompleteMultipartUploadRequest
+        {
+            BucketName = "multipart-filtered",
+            Key = "docs/completed.txt",
+            UploadId = completedUpload.Value.UploadId,
+            Parts = [completedPart.Value!]
+        });
+        Assert.True(completeResult.IsSuccess);
+
+        var abortResult = await storageService.AbortMultipartUploadAsync(new AbortMultipartUploadRequest
+        {
+            BucketName = "multipart-filtered",
+            Key = "docs/aborted.txt",
+            UploadId = abortedUpload.Value.UploadId
+        });
+        Assert.True(abortResult.IsSuccess);
+
+        var uploads = await storageService.ListMultipartUploadsAsync(new ListMultipartUploadsRequest
+        {
+            BucketName = "multipart-filtered"
+        }).ToArrayAsync();
+
+        var remainingUpload = Assert.Single(uploads);
+        Assert.Equal("docs/pending.txt", remainingUpload.Key);
+        Assert.Equal(pendingUpload.Value!.UploadId, remainingUpload.UploadId);
+    }
+
+    [Fact]
+    public async Task DiskStorage_MultipartUpload_ListMultipartUploads_UsesPlatformStateStoreWithoutSidecars()
+    {
+        await using var fixture = new DiskStorageFixture(services => {
+            services.AddSingleton<InMemoryMultipartStateStore>();
+            services.AddSingleton<IStorageMultipartStateStore>(static serviceProvider => serviceProvider.GetRequiredService<InMemoryMultipartStateStore>());
+        });
+
+        var storageService = fixture.Services.GetRequiredService<IStorageBackend>();
+        var multipartStateStore = fixture.Services.GetRequiredService<InMemoryMultipartStateStore>();
+        await storageService.CreateBucketAsync(new CreateBucketRequest { BucketName = "multipart-platform-list" });
+
+        var baseInitiatedAtUtc = DateTimeOffset.UtcNow;
+        await multipartStateStore.UpsertMultipartUploadStateAsync("test-disk", new MultipartUploadState
+        {
+            BucketName = "multipart-platform-list",
+            Key = "docs/alpha.txt",
+            UploadId = "upload-002",
+            InitiatedAtUtc = baseInitiatedAtUtc.AddSeconds(1)
+        });
+        await multipartStateStore.UpsertMultipartUploadStateAsync("test-disk", new MultipartUploadState
+        {
+            BucketName = "multipart-platform-list",
+            Key = "docs/alpha.txt",
+            UploadId = "upload-001",
+            InitiatedAtUtc = baseInitiatedAtUtc
+        });
+        await multipartStateStore.UpsertMultipartUploadStateAsync("test-disk", new MultipartUploadState
+        {
+            BucketName = "multipart-platform-list",
+            Key = "docs/nested/beta.txt",
+            UploadId = "upload-003",
+            InitiatedAtUtc = baseInitiatedAtUtc.AddSeconds(2)
+        });
+
+        var uploads = await storageService.ListMultipartUploadsAsync(new ListMultipartUploadsRequest
+        {
+            BucketName = "multipart-platform-list",
+            Prefix = "docs/"
+        }).ToArrayAsync();
+
+        Assert.Collection(
+            uploads,
+            upload => {
+                Assert.Equal("docs/alpha.txt", upload.Key);
+                Assert.Equal("upload-001", upload.UploadId);
+            },
+            upload => {
+                Assert.Equal("docs/alpha.txt", upload.Key);
+                Assert.Equal("upload-002", upload.UploadId);
+            },
+            upload => {
+                Assert.Equal("docs/nested/beta.txt", upload.Key);
+                Assert.Equal("upload-003", upload.UploadId);
+            });
+    }
+
+    [Fact]
     public async Task DiskStorage_UsesRegisteredPlatformObjectStateStoreForMetadataAndTags()
     {
         await using var fixture = new DiskStorageFixture(services => {
@@ -1376,6 +1662,16 @@ public sealed class DiskStorageServiceTests
         Assert.Equal(IntegratedS3.Abstractions.Capabilities.StorageSupportStateOwnership.PlatformManaged, supportState.ObjectMetadata);
         Assert.Equal(IntegratedS3.Abstractions.Capabilities.StorageSupportStateOwnership.PlatformManaged, supportState.ObjectTags);
         Assert.Equal(IntegratedS3.Abstractions.Capabilities.StorageSupportStateOwnership.PlatformManaged, supportState.Checksums);
+        Assert.Equal(IntegratedS3.Abstractions.Capabilities.StorageSupportStateOwnership.NotApplicable, supportState.AccessControl);
+        Assert.Equal(IntegratedS3.Abstractions.Capabilities.StorageSupportStateOwnership.NotApplicable, supportState.Retention);
+        Assert.Equal(IntegratedS3.Abstractions.Capabilities.StorageSupportStateOwnership.NotApplicable, supportState.ServerSideEncryption);
+
+        var providerMode = await storageService.GetProviderModeAsync();
+        Assert.Equal(IntegratedS3.Abstractions.Models.StorageProviderMode.Hybrid, providerMode);
+
+        var objectLocation = await storageService.GetObjectLocationDescriptorAsync();
+        Assert.Equal(IntegratedS3.Abstractions.Models.StorageObjectAccessMode.ProxyStream, objectLocation.DefaultAccessMode);
+        Assert.Equal([IntegratedS3.Abstractions.Models.StorageObjectAccessMode.ProxyStream], objectLocation.SupportedAccessModes);
 
         var sidecarPath = Path.Combine(fixture.RootPath, "external-state", "docs", "external.txt.integrateds3.json");
         Assert.False(File.Exists(sidecarPath));
@@ -1770,8 +2066,13 @@ public sealed class DiskStorageServiceTests
         Assert.Equal("text/plain", uploadState!.ContentType);
         Assert.Equal("external-multipart", uploadState.Metadata!["source"]);
 
-        var uploadStatePath = Path.Combine(fixture.RootPath, ".integrateds3-multipart", "multipart-external", uploadId, "upload.json");
-        Assert.False(File.Exists(uploadStatePath));
+        var listedUploads = await storageService.ListMultipartUploadsAsync(new ListMultipartUploadsRequest
+        {
+            BucketName = "multipart-external"
+        }).ToArrayAsync();
+        var listedUpload = Assert.Single(listedUploads);
+        Assert.Equal(uploadId, listedUpload.UploadId);
+        Assert.Equal("docs/assembled.txt", listedUpload.Key);
 
         await using var part1Stream = new MemoryStream(Encoding.UTF8.GetBytes("hello "));
         var part1 = await storageService.UploadMultipartPartAsync(new UploadMultipartPartRequest
@@ -1946,6 +2247,25 @@ public sealed class DiskStorageServiceTests
         {
             cancellationToken.ThrowIfCancellationRequested();
             return ValueTask.FromResult(_states.TryGetValue((providerName, bucketName, key, uploadId), out var value) ? value : null);
+        }
+
+        public async IAsyncEnumerable<MultipartUploadState> ListMultipartUploadStatesAsync(
+            string providerName,
+            string bucketName,
+            string? prefix = null,
+            [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            foreach (var entry in _states
+                         .Where(existing => string.Equals(existing.Key.ProviderName, providerName, StringComparison.Ordinal)
+                             && string.Equals(existing.Key.BucketName, bucketName, StringComparison.Ordinal)
+                             && (string.IsNullOrWhiteSpace(prefix) || existing.Key.Key.StartsWith(prefix, StringComparison.Ordinal)))
+                         .OrderBy(existing => existing.Value.Key, StringComparer.Ordinal)
+                         .ThenBy(existing => existing.Value.InitiatedAtUtc)
+                         .ThenBy(existing => existing.Value.UploadId, StringComparer.Ordinal)) {
+                cancellationToken.ThrowIfCancellationRequested();
+                yield return entry.Value;
+                await Task.Yield();
+            }
         }
 
         public ValueTask UpsertMultipartUploadStateAsync(string providerName, MultipartUploadState state, CancellationToken cancellationToken = default)

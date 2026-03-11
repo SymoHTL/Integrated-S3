@@ -28,7 +28,34 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
     public ValueTask<StorageSupportStateDescriptor> GetSupportStateDescriptorAsync(CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        return ValueTask.FromResult(new StorageSupportStateDescriptor());
+        return ValueTask.FromResult(new StorageSupportStateDescriptor
+        {
+            ObjectMetadata = StorageSupportStateOwnership.Delegated,
+            ObjectTags = StorageSupportStateOwnership.Delegated,
+            MultipartState = StorageSupportStateOwnership.Delegated,
+            Versioning = StorageSupportStateOwnership.Delegated,
+            Checksums = StorageSupportStateOwnership.Delegated,
+            AccessControl = StorageSupportStateOwnership.Delegated,
+            Retention = StorageSupportStateOwnership.Delegated,
+            ServerSideEncryption = StorageSupportStateOwnership.Delegated,
+            RedirectLocations = StorageSupportStateOwnership.Delegated
+        });
+    }
+
+    public ValueTask<StorageProviderMode> GetProviderModeAsync(CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        return ValueTask.FromResult(StorageProviderMode.Delegated);
+    }
+
+    public ValueTask<StorageObjectLocationDescriptor> GetObjectLocationDescriptorAsync(CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        return ValueTask.FromResult(new StorageObjectLocationDescriptor
+        {
+            DefaultAccessMode = StorageObjectAccessMode.Delegated,
+            SupportedAccessModes = [StorageObjectAccessMode.Delegated, StorageObjectAccessMode.ProxyStream]
+        });
     }
 
     // -------------------------------------------------------------------------
@@ -106,6 +133,53 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
         catch (AmazonS3Exception ex)
         {
             return StorageResult<BucketVersioningInfo>.Failure(S3ErrorTranslator.Translate(ex, Name, request.BucketName));
+        }
+    }
+
+    public async ValueTask<StorageResult<BucketCorsConfiguration>> GetBucketCorsAsync(string bucketName, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var entry = await _client.GetBucketCorsAsync(bucketName, cancellationToken).ConfigureAwait(false);
+            if (entry is null)
+            {
+                return StorageResult<BucketCorsConfiguration>.Failure(CorsConfigurationNotFound(bucketName));
+            }
+
+            return StorageResult<BucketCorsConfiguration>.Success(ToBucketCorsConfiguration(bucketName, entry));
+        }
+        catch (AmazonS3Exception ex)
+        {
+            return StorageResult<BucketCorsConfiguration>.Failure(S3ErrorTranslator.Translate(ex, Name, bucketName));
+        }
+    }
+
+    public async ValueTask<StorageResult<BucketCorsConfiguration>> PutBucketCorsAsync(PutBucketCorsRequest request, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var entry = await _client.SetBucketCorsAsync(
+                request.BucketName,
+                request.Rules.Select(ToS3CorsRule).ToArray(),
+                cancellationToken).ConfigureAwait(false);
+            return StorageResult<BucketCorsConfiguration>.Success(ToBucketCorsConfiguration(request.BucketName, entry));
+        }
+        catch (AmazonS3Exception ex)
+        {
+            return StorageResult<BucketCorsConfiguration>.Failure(S3ErrorTranslator.Translate(ex, Name, request.BucketName));
+        }
+    }
+
+    public async ValueTask<StorageResult> DeleteBucketCorsAsync(DeleteBucketCorsRequest request, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            await _client.DeleteBucketCorsAsync(request.BucketName, cancellationToken).ConfigureAwait(false);
+            return StorageResult.Success();
+        }
+        catch (AmazonS3Exception ex)
+        {
+            return StorageResult.Failure(S3ErrorTranslator.Translate(ex, Name, request.BucketName));
         }
     }
 
@@ -253,6 +327,56 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
         while (keyMarker is not null || versionIdMarker is not null);
     }
 
+    public async IAsyncEnumerable<MultipartUploadInfo> ListMultipartUploadsAsync(ListMultipartUploadsRequest request, [EnumeratorCancellation] CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        if (request.PageSize is <= 0)
+            throw new ArgumentException("Page size must be greater than zero.", nameof(request));
+
+        string? keyMarker = request.KeyMarker;
+        string? uploadIdMarker = request.UploadIdMarker;
+        var remaining = request.PageSize;
+
+        do
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            S3MultipartUploadListPage page;
+            try
+            {
+                page = await _client.ListMultipartUploadsAsync(
+                    request.BucketName,
+                    request.Prefix,
+                    keyMarker,
+                    uploadIdMarker,
+                    remaining,
+                    cancellationToken).ConfigureAwait(false);
+            }
+            catch (AmazonS3Exception ex)
+            {
+                throw new InvalidOperationException(
+                    S3ErrorTranslator.Translate(ex, Name, request.BucketName).Message, ex);
+            }
+
+            foreach (var entry in page.Entries)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                yield return entry;
+
+                if (remaining.HasValue)
+                {
+                    remaining--;
+                    if (remaining <= 0)
+                        yield break;
+                }
+            }
+
+            keyMarker = page.NextKeyMarker;
+            uploadIdMarker = page.NextUploadIdMarker;
+        }
+        while (keyMarker is not null || uploadIdMarker is not null);
+    }
+
     // -------------------------------------------------------------------------
     // Object CRUD
     // -------------------------------------------------------------------------
@@ -338,6 +462,7 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
                 request.ContentLength,
                 request.ContentType,
                 request.Metadata,
+                request.Checksums,
                 cancellationToken).ConfigureAwait(false);
 
             return StorageResult<ObjectInfo>.Success(EntryToObjectInfo(request.BucketName, entry));
@@ -430,23 +555,135 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
     }
 
     // -------------------------------------------------------------------------
-    // Unsupported operations (multipart + copy)
+    // Copy + multipart operations
     // -------------------------------------------------------------------------
 
-    public ValueTask<StorageResult<ObjectInfo>> CopyObjectAsync(CopyObjectRequest request, CancellationToken cancellationToken = default)
-        => ValueTask.FromResult(StorageResult<ObjectInfo>.Failure(StorageError.Unsupported("Copy operations are not yet enabled for the S3 provider.", request.SourceBucketName, request.SourceKey)));
+    public async ValueTask<StorageResult<ObjectInfo>> CopyObjectAsync(CopyObjectRequest request, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
 
-    public ValueTask<StorageResult<MultipartUploadInfo>> InitiateMultipartUploadAsync(InitiateMultipartUploadRequest request, CancellationToken cancellationToken = default)
-        => ValueTask.FromResult(StorageResult<MultipartUploadInfo>.Failure(StorageError.Unsupported("Multipart upload operations are not yet enabled for the S3 provider.", request.BucketName, request.Key)));
+        try
+        {
+            var copiedEntry = await _client.CopyObjectAsync(
+                request.SourceBucketName,
+                request.SourceKey,
+                request.DestinationBucketName,
+                request.DestinationKey,
+                request.SourceVersionId,
+                request.SourceIfMatchETag,
+                request.SourceIfNoneMatchETag,
+                request.SourceIfModifiedSinceUtc,
+                request.SourceIfUnmodifiedSinceUtc,
+                request.OverwriteIfExists,
+                cancellationToken).ConfigureAwait(false);
 
-    public ValueTask<StorageResult<MultipartUploadPart>> UploadMultipartPartAsync(UploadMultipartPartRequest request, CancellationToken cancellationToken = default)
-        => ValueTask.FromResult(StorageResult<MultipartUploadPart>.Failure(StorageError.Unsupported("Multipart upload operations are not yet enabled for the S3 provider.", request.BucketName, request.Key)));
+            var enrichedEntry = await EnrichObjectEntryAsync(
+                request.DestinationBucketName,
+                request.DestinationKey,
+                copiedEntry,
+                cancellationToken).ConfigureAwait(false);
 
-    public ValueTask<StorageResult<ObjectInfo>> CompleteMultipartUploadAsync(CompleteMultipartUploadRequest request, CancellationToken cancellationToken = default)
-        => ValueTask.FromResult(StorageResult<ObjectInfo>.Failure(StorageError.Unsupported("Multipart upload operations are not yet enabled for the S3 provider.", request.BucketName, request.Key)));
+            return StorageResult<ObjectInfo>.Success(EntryToObjectInfo(request.DestinationBucketName, enrichedEntry));
+        }
+        catch (AmazonS3Exception ex)
+        {
+            return StorageResult<ObjectInfo>.Failure(TranslateCopyObjectError(ex, request));
+        }
+    }
 
-    public ValueTask<StorageResult> AbortMultipartUploadAsync(AbortMultipartUploadRequest request, CancellationToken cancellationToken = default)
-        => ValueTask.FromResult(StorageResult.Failure(StorageError.Unsupported("Multipart upload operations are not yet enabled for the S3 provider.", request.BucketName, request.Key)));
+    public async ValueTask<StorageResult<MultipartUploadInfo>> InitiateMultipartUploadAsync(InitiateMultipartUploadRequest request, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+
+        try
+        {
+            var upload = await _client.InitiateMultipartUploadAsync(
+                request.BucketName,
+                request.Key,
+                request.ContentType,
+                request.Metadata,
+                request.ChecksumAlgorithm,
+                cancellationToken).ConfigureAwait(false);
+
+            return StorageResult<MultipartUploadInfo>.Success(upload);
+        }
+        catch (AmazonS3Exception ex)
+        {
+            return StorageResult<MultipartUploadInfo>.Failure(S3ErrorTranslator.Translate(ex, Name, request.BucketName, request.Key));
+        }
+    }
+
+    public async ValueTask<StorageResult<MultipartUploadPart>> UploadMultipartPartAsync(UploadMultipartPartRequest request, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+
+        try
+        {
+            var part = await _client.UploadMultipartPartAsync(
+                request.BucketName,
+                request.Key,
+                request.UploadId,
+                request.PartNumber,
+                request.Content,
+                request.ContentLength,
+                request.ChecksumAlgorithm,
+                request.Checksums,
+                cancellationToken).ConfigureAwait(false);
+
+            return StorageResult<MultipartUploadPart>.Success(part);
+        }
+        catch (AmazonS3Exception ex)
+        {
+            return StorageResult<MultipartUploadPart>.Failure(S3ErrorTranslator.Translate(ex, Name, request.BucketName, request.Key));
+        }
+    }
+
+    public async ValueTask<StorageResult<ObjectInfo>> CompleteMultipartUploadAsync(CompleteMultipartUploadRequest request, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+
+        try
+        {
+            var completedEntry = await _client.CompleteMultipartUploadAsync(
+                request.BucketName,
+                request.Key,
+                request.UploadId,
+                request.Parts,
+                cancellationToken).ConfigureAwait(false);
+
+            var enrichedEntry = await EnrichObjectEntryAsync(
+                request.BucketName,
+                request.Key,
+                completedEntry,
+                cancellationToken).ConfigureAwait(false);
+
+            return StorageResult<ObjectInfo>.Success(EntryToObjectInfo(request.BucketName, enrichedEntry));
+        }
+        catch (AmazonS3Exception ex)
+        {
+            return StorageResult<ObjectInfo>.Failure(S3ErrorTranslator.Translate(ex, Name, request.BucketName, request.Key));
+        }
+    }
+
+    public async ValueTask<StorageResult> AbortMultipartUploadAsync(AbortMultipartUploadRequest request, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+
+        try
+        {
+            await _client.AbortMultipartUploadAsync(
+                request.BucketName,
+                request.Key,
+                request.UploadId,
+                cancellationToken).ConfigureAwait(false);
+
+            return StorageResult.Success();
+        }
+        catch (AmazonS3Exception ex)
+        {
+            return StorageResult.Failure(S3ErrorTranslator.Translate(ex, Name, request.BucketName, request.Key));
+        }
+    }
 
     // -------------------------------------------------------------------------
     // Helpers
@@ -463,8 +700,63 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
         ContentType = entry.ContentType,
         ETag = entry.ETag,
         LastModifiedUtc = entry.LastModifiedUtc,
-        Metadata = entry.Metadata
+        Metadata = entry.Metadata,
+        Checksums = entry.Checksums
     };
+
+    private async Task<S3ObjectEntry> EnrichObjectEntryAsync(
+        string bucketName,
+        string key,
+        S3ObjectEntry entry,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var headEntry = await _client.HeadObjectAsync(bucketName, key, entry.VersionId, cancellationToken).ConfigureAwait(false);
+            return headEntry is null ? entry : MergeObjectEntries(headEntry, entry);
+        }
+        catch (AmazonS3Exception)
+        {
+            return entry;
+        }
+    }
+
+    private StorageError TranslateCopyObjectError(AmazonS3Exception exception, CopyObjectRequest request)
+    {
+        if (string.Equals(exception.ErrorCode, "NoSuchKey", StringComparison.OrdinalIgnoreCase))
+        {
+            return S3ErrorTranslator.Translate(exception, Name, request.SourceBucketName, request.SourceKey);
+        }
+
+        if (string.Equals(exception.ErrorCode, "PreconditionFailed", StringComparison.OrdinalIgnoreCase)
+            || (int)exception.StatusCode == 412)
+        {
+            var isDestinationOverwriteConflict = !request.OverwriteIfExists
+                && string.IsNullOrWhiteSpace(request.SourceIfMatchETag)
+                && string.IsNullOrWhiteSpace(request.SourceIfNoneMatchETag)
+                && !request.SourceIfModifiedSinceUtc.HasValue
+                && !request.SourceIfUnmodifiedSinceUtc.HasValue;
+
+            return isDestinationOverwriteConflict
+                ? S3ErrorTranslator.Translate(exception, Name, request.DestinationBucketName, request.DestinationKey)
+                : S3ErrorTranslator.Translate(exception, Name, request.SourceBucketName, request.SourceKey);
+        }
+
+        return S3ErrorTranslator.Translate(exception, Name, request.DestinationBucketName, request.DestinationKey);
+    }
+
+    private static S3ObjectEntry MergeObjectEntries(S3ObjectEntry preferred, S3ObjectEntry fallback)
+    {
+        return preferred with
+        {
+            ContentType = preferred.ContentType ?? fallback.ContentType,
+            ETag = preferred.ETag ?? fallback.ETag,
+            LastModifiedUtc = preferred.LastModifiedUtc == default ? fallback.LastModifiedUtc : preferred.LastModifiedUtc,
+            Metadata = preferred.Metadata ?? fallback.Metadata,
+            VersionId = preferred.VersionId ?? fallback.VersionId,
+            Checksums = preferred.Checksums ?? fallback.Checksums
+        };
+    }
 
     private StorageError ObjectNotFound(string bucketName, string key, string? versionId) => new()
     {
@@ -477,6 +769,48 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
         ProviderName = Name,
         SuggestedHttpStatusCode = 404
     };
+
+    private StorageError CorsConfigurationNotFound(string bucketName) => new()
+    {
+        Code = StorageErrorCode.CorsConfigurationNotFound,
+        Message = $"Bucket '{bucketName}' does not have a CORS configuration.",
+        BucketName = bucketName,
+        ProviderName = Name,
+        SuggestedHttpStatusCode = 404
+    };
+
+    private static BucketCorsConfiguration ToBucketCorsConfiguration(string bucketName, S3CorsConfigurationEntry entry)
+    {
+        return new BucketCorsConfiguration
+        {
+            BucketName = bucketName,
+            Rules = entry.Rules.Select(ToBucketCorsRule).ToArray()
+        };
+    }
+
+    private static BucketCorsRule ToBucketCorsRule(S3CorsRuleEntry entry)
+    {
+        return new BucketCorsRule
+        {
+            Id = entry.Id,
+            AllowedOrigins = entry.AllowedOrigins,
+            AllowedMethods = entry.AllowedMethods,
+            AllowedHeaders = entry.AllowedHeaders,
+            ExposeHeaders = entry.ExposeHeaders,
+            MaxAgeSeconds = entry.MaxAgeSeconds
+        };
+    }
+
+    private static S3CorsRuleEntry ToS3CorsRule(BucketCorsRule rule)
+    {
+        return new S3CorsRuleEntry(
+            rule.Id,
+            rule.AllowedOrigins.Where(static origin => !string.IsNullOrWhiteSpace(origin)).Select(static origin => origin.Trim()).ToArray(),
+            rule.AllowedMethods.ToArray(),
+            rule.AllowedHeaders.Where(static header => !string.IsNullOrWhiteSpace(header)).Select(static header => header.Trim()).ToArray(),
+            rule.ExposeHeaders.Where(static header => !string.IsNullOrWhiteSpace(header)).Select(static header => header.Trim()).ToArray(),
+            rule.MaxAgeSeconds);
+    }
 
     /// <summary>
     /// Evaluates precondition headers against the resolved object metadata.

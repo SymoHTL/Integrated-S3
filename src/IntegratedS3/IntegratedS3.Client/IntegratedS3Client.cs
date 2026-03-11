@@ -37,20 +37,13 @@ public sealed class IntegratedS3Client(HttpClient httpClient, string routePrefix
         HttpResponseMessage response,
         CancellationToken cancellationToken)
     {
-        if (response.IsSuccessStatusCode)
-        {
+        if (response.IsSuccessStatusCode) {
             return;
         }
 
-        string? body = null;
-        try
-        {
-            body = await response.Content.ReadAsStringAsync(cancellationToken);
-        }
-        catch
-        {
-            // Ignore read failures — we still want to surface the status code.
-        }
+        var body = response.Content is null
+            ? null
+            : await response.Content.ReadAsStringAsync(cancellationToken);
 
         var statusCode = (int)response.StatusCode;
         var message = string.IsNullOrWhiteSpace(body)

@@ -114,6 +114,49 @@ public sealed class IntegratedS3CoreOrchestrationTests
     }
 
     [Fact]
+    public async Task EntityFrameworkRegistration_ListsPlatformManagedMultipartStateStoreEntriesInStableOrder()
+    {
+        await using var fixture = new CoreStorageFixture();
+        var multipartStateStore = fixture.Services.GetRequiredService<IStorageMultipartStateStore>();
+        var baseInitiatedAtUtc = DateTimeOffset.UtcNow;
+
+        await multipartStateStore.UpsertMultipartUploadStateAsync("catalog-disk", new MultipartUploadState
+        {
+            BucketName = "catalog-bucket",
+            Key = "docs/alpha.txt",
+            UploadId = "upload-002",
+            InitiatedAtUtc = baseInitiatedAtUtc.AddSeconds(1)
+        });
+        await multipartStateStore.UpsertMultipartUploadStateAsync("catalog-disk", new MultipartUploadState
+        {
+            BucketName = "catalog-bucket",
+            Key = "docs/alpha.txt",
+            UploadId = "upload-001",
+            InitiatedAtUtc = baseInitiatedAtUtc
+        });
+        await multipartStateStore.UpsertMultipartUploadStateAsync("catalog-disk", new MultipartUploadState
+        {
+            BucketName = "catalog-bucket",
+            Key = "videos/clip.txt",
+            UploadId = "upload-999",
+            InitiatedAtUtc = baseInitiatedAtUtc.AddSeconds(2)
+        });
+
+        var uploads = await multipartStateStore.ListMultipartUploadStatesAsync("catalog-disk", "catalog-bucket", prefix: "docs/").ToArrayAsync();
+
+        Assert.Collection(
+            uploads,
+            upload => {
+                Assert.Equal("docs/alpha.txt", upload.Key);
+                Assert.Equal("upload-001", upload.UploadId);
+            },
+            upload => {
+                Assert.Equal("docs/alpha.txt", upload.Key);
+                Assert.Equal("upload-002", upload.UploadId);
+            });
+    }
+
+    [Fact]
     public async Task OrchestratedStorageService_CopyObject_UpdatesCatalog()
     {
         await using var fixture = new CoreStorageFixture();
@@ -475,6 +518,757 @@ public sealed class IntegratedS3CoreOrchestrationTests
     }
 
     [Fact]
+    public async Task OrchestratedStorageService_PreferPrimary_FailsOverWhenPrimaryReadReturnsThrottled()
+    {
+        var primaryBackend = new InMemoryStorageBackend("primary-memory", isPrimary: true)
+        {
+            GetObjectFailureCode = StorageErrorCode.Throttled
+        };
+        primaryBackend.AddObject("read-bucket", "docs/read.txt", "primary payload");
+
+        var replicaBackend = new InMemoryStorageBackend("replica-memory");
+        replicaBackend.AddObject("read-bucket", "docs/read.txt", "replica payload");
+
+        await using var fixture = new CoreStorageFixture(overrideCatalogStore: true, addDefaultDiskStorage: false, configureServices: services => {
+            services.Configure<IntegratedS3CoreOptions>(options => {
+                options.ReadRoutingMode = StorageReadRoutingMode.PreferPrimary;
+            });
+            services.AddSingleton<IStorageBackend>(primaryBackend);
+            services.AddSingleton<IStorageBackend>(replicaBackend);
+        });
+
+        var storageService = fixture.Services.GetRequiredService<IStorageService>();
+        var getObject = await storageService.GetObjectAsync(new GetObjectRequest
+        {
+            BucketName = "read-bucket",
+            Key = "docs/read.txt"
+        });
+
+        Assert.True(getObject.IsSuccess);
+        await using var response = getObject.Value!;
+        Assert.Equal("replica payload", await ReadContentAsStringAsync(response.Content));
+        Assert.Equal(1, primaryBackend.GetObjectCallCount);
+        Assert.Equal(1, replicaBackend.GetObjectCallCount);
+    }
+
+    [Fact]
+    public async Task OrchestratedStorageService_PreferPrimary_DoesNotFailOverWhenPrimaryReturnsObjectNotFound()
+    {
+        var primaryBackend = new InMemoryStorageBackend("primary-memory", isPrimary: true);
+
+        var replicaBackend = new InMemoryStorageBackend("replica-memory");
+        replicaBackend.AddObject("read-bucket", "docs/read.txt", "replica payload");
+
+        await using var fixture = new CoreStorageFixture(overrideCatalogStore: true, addDefaultDiskStorage: false, configureServices: services => {
+            services.Configure<IntegratedS3CoreOptions>(options => {
+                options.ReadRoutingMode = StorageReadRoutingMode.PreferPrimary;
+            });
+            services.AddSingleton<IStorageBackend>(primaryBackend);
+            services.AddSingleton<IStorageBackend>(replicaBackend);
+        });
+
+        var storageService = fixture.Services.GetRequiredService<IStorageService>();
+        var getObject = await storageService.GetObjectAsync(new GetObjectRequest
+        {
+            BucketName = "read-bucket",
+            Key = "docs/read.txt"
+        });
+
+        Assert.False(getObject.IsSuccess);
+        Assert.Equal(StorageErrorCode.ObjectNotFound, getObject.Error!.Code);
+        Assert.Equal(primaryBackend.Name, getObject.Error.ProviderName);
+        Assert.Equal(1, primaryBackend.GetObjectCallCount);
+        Assert.Equal(0, replicaBackend.GetObjectCallCount);
+    }
+
+    [Fact]
+    public async Task OrchestratedStorageService_PreferPrimary_RetriesPrimaryAfterUnhealthySnapshotExpires()
+    {
+        var timeProvider = new ManualTimeProvider(new DateTimeOffset(2024, 1, 1, 0, 0, 0, TimeSpan.Zero));
+        var primaryBackend = new InMemoryStorageBackend("primary-memory", isPrimary: true)
+        {
+            GetObjectFailureCode = StorageErrorCode.ProviderUnavailable
+        };
+        primaryBackend.AddObject("read-bucket", "docs/read.txt", "primary payload");
+
+        var replicaBackend = new InMemoryStorageBackend("replica-memory");
+        replicaBackend.AddObject("read-bucket", "docs/read.txt", "replica payload");
+
+        await using var fixture = new CoreStorageFixture(overrideCatalogStore: true, addDefaultDiskStorage: false, configureServices: services => {
+            services.Configure<IntegratedS3CoreOptions>(options => {
+                options.ReadRoutingMode = StorageReadRoutingMode.PreferPrimary;
+                options.BackendHealth.UnhealthySnapshotTtl = TimeSpan.FromMinutes(5);
+            });
+            services.AddSingleton<TimeProvider>(timeProvider);
+            services.AddSingleton<IStorageBackend>(primaryBackend);
+            services.AddSingleton<IStorageBackend>(replicaBackend);
+        });
+
+        var storageService = fixture.Services.GetRequiredService<IStorageService>();
+        var firstRead = await storageService.GetObjectAsync(new GetObjectRequest
+        {
+            BucketName = "read-bucket",
+            Key = "docs/read.txt"
+        });
+
+        Assert.True(firstRead.IsSuccess);
+        await using (var response = firstRead.Value!) {
+            Assert.Equal("replica payload", await ReadContentAsStringAsync(response.Content));
+        }
+
+        primaryBackend.GetObjectFailureCode = null;
+        timeProvider.Advance(TimeSpan.FromMinutes(5) + TimeSpan.FromMilliseconds(1));
+
+        var secondRead = await storageService.GetObjectAsync(new GetObjectRequest
+        {
+            BucketName = "read-bucket",
+            Key = "docs/read.txt"
+        });
+
+        Assert.True(secondRead.IsSuccess);
+        await using (var response = secondRead.Value!) {
+            Assert.Equal("primary payload", await ReadContentAsStringAsync(response.Content));
+        }
+
+        Assert.Equal(2, primaryBackend.GetObjectCallCount);
+        Assert.Equal(1, replicaBackend.GetObjectCallCount);
+    }
+
+    [Fact]
+    public async Task OrchestratedStorageService_ActiveProbes_TreatProbeTimeoutsAsUnhealthy()
+    {
+        var primaryBackend = new InMemoryStorageBackend("primary-memory", isPrimary: true);
+        primaryBackend.AddObject("read-bucket", "docs/read.txt", "primary payload");
+
+        var replicaBackend = new InMemoryStorageBackend("replica-memory");
+        replicaBackend.AddObject("read-bucket", "docs/read.txt", "replica payload");
+
+        var healthProbe = new DelegatingStorageBackendHealthProbe(new Dictionary<string, Func<CancellationToken, ValueTask<StorageBackendHealthStatus>>>(StringComparer.Ordinal)
+        {
+            [primaryBackend.Name] = async cancellationToken => {
+                await Task.Delay(TimeSpan.FromSeconds(5), cancellationToken);
+                return StorageBackendHealthStatus.Healthy;
+            },
+            [replicaBackend.Name] = static _ => ValueTask.FromResult(StorageBackendHealthStatus.Healthy)
+        });
+
+        await using var fixture = new CoreStorageFixture(overrideCatalogStore: true, addDefaultDiskStorage: false, configureServices: services => {
+            services.Configure<IntegratedS3CoreOptions>(options => {
+                options.ReadRoutingMode = StorageReadRoutingMode.PreferPrimary;
+                options.BackendHealth.EnableActiveProbing = true;
+                options.BackendHealth.HealthySnapshotTtl = TimeSpan.Zero;
+                options.BackendHealth.UnhealthySnapshotTtl = TimeSpan.Zero;
+                options.BackendHealth.ProbeTimeout = TimeSpan.FromMilliseconds(50);
+            });
+            services.AddSingleton<IStorageBackend>(primaryBackend);
+            services.AddSingleton<IStorageBackend>(replicaBackend);
+            services.AddSingleton<IStorageBackendHealthProbe>(healthProbe);
+        });
+
+        var storageService = fixture.Services.GetRequiredService<IStorageService>();
+        var getObject = await storageService.GetObjectAsync(new GetObjectRequest
+        {
+            BucketName = "read-bucket",
+            Key = "docs/read.txt"
+        });
+
+        Assert.True(getObject.IsSuccess);
+        await using var response = getObject.Value!;
+        Assert.Equal("replica payload", await ReadContentAsStringAsync(response.Content));
+        Assert.Equal(0, primaryBackend.GetObjectCallCount);
+        Assert.Equal(1, replicaBackend.GetObjectCallCount);
+    }
+
+    [Fact]
+    public async Task OrchestratedStorageService_WriteToPrimaryAsyncReplicas_RecordsPendingReplicaWorkUntilExplicitDispatch()
+    {
+        var primaryBackend = new InMemoryStorageBackend("primary-memory", isPrimary: true);
+        var replicaBackend = new InMemoryStorageBackend("replica-memory");
+
+        await using var fixture = new CoreStorageFixture(overrideCatalogStore: true, addDefaultDiskStorage: false, configureServices: services => {
+            services.Configure<IntegratedS3CoreOptions>(options => {
+                options.ConsistencyMode = StorageConsistencyMode.WriteToPrimaryAsyncReplicas;
+            });
+            services.AddSingleton<IStorageBackend>(primaryBackend);
+            services.AddSingleton<IStorageBackend>(replicaBackend);
+            services.AddSingleton<RecordingReplicaRepairDispatcher>();
+            services.AddSingleton<IStorageReplicaRepairDispatcher>(static serviceProvider => serviceProvider.GetRequiredService<RecordingReplicaRepairDispatcher>());
+        });
+
+        var storageService = fixture.Services.GetRequiredService<IStorageService>();
+        var repairBacklog = fixture.Services.GetRequiredService<IStorageReplicaRepairBacklog>();
+        var repairDispatcher = fixture.Services.GetRequiredService<RecordingReplicaRepairDispatcher>();
+        var catalogStore = Assert.IsType<FakeCatalogStore>(fixture.Services.GetRequiredService<IStorageCatalogStore>());
+
+        await using var uploadStream = new MemoryStream(Encoding.UTF8.GetBytes("async payload"));
+        var putResult = await storageService.PutObjectAsync(new PutObjectRequest
+        {
+            BucketName = "async-bucket",
+            Key = "docs/async.txt",
+            Content = uploadStream,
+            ContentType = "text/plain"
+        });
+
+        Assert.True(putResult.IsSuccess);
+        Assert.Equal(1, primaryBackend.PutObjectCallCount);
+        Assert.Equal(0, replicaBackend.PutObjectCallCount);
+        Assert.True((await primaryBackend.HeadObjectAsync(new HeadObjectRequest
+        {
+            BucketName = "async-bucket",
+            Key = "docs/async.txt"
+        })).IsSuccess);
+        Assert.Equal(StorageErrorCode.ObjectNotFound, (await replicaBackend.HeadObjectAsync(new HeadObjectRequest
+        {
+            BucketName = "async-bucket",
+            Key = "docs/async.txt"
+        })).Error!.Code);
+
+        var outstandingRepair = Assert.Single(await repairBacklog.ListOutstandingAsync());
+        Assert.Equal(StorageReplicaRepairOrigin.AsyncReplication, outstandingRepair.Origin);
+        Assert.Equal(StorageReplicaRepairStatus.Pending, outstandingRepair.Status);
+        Assert.Equal(StorageOperationType.PutObject, outstandingRepair.Operation);
+        Assert.Equal(primaryBackend.Name, outstandingRepair.PrimaryBackendName);
+        Assert.Equal(replicaBackend.Name, outstandingRepair.ReplicaBackendName);
+        Assert.Equal("async-bucket", outstandingRepair.BucketName);
+        Assert.Equal("docs/async.txt", outstandingRepair.ObjectKey);
+
+        var catalogProvidersBeforeDispatch = catalogStore.Objects
+            .Where(entry => entry.BucketName == "async-bucket" && entry.Key == "docs/async.txt")
+            .Select(entry => entry.ProviderName)
+            .OrderBy(static providerName => providerName, StringComparer.Ordinal)
+            .ToArray();
+        Assert.Equal([primaryBackend.Name], catalogProvidersBeforeDispatch);
+
+        var recordedDispatch = Assert.Single(repairDispatcher.Dispatches);
+        Assert.Equal(outstandingRepair.Id, recordedDispatch.Entry.Id);
+
+        var dispatchError = await recordedDispatch.ExecuteAsync();
+        Assert.Null(dispatchError);
+
+        Assert.Equal(1, replicaBackend.PutObjectCallCount);
+        Assert.True((await replicaBackend.HeadObjectAsync(new HeadObjectRequest
+        {
+            BucketName = "async-bucket",
+            Key = "docs/async.txt"
+        })).IsSuccess);
+        Assert.Empty(await repairBacklog.ListOutstandingAsync());
+
+        var catalogProvidersAfterDispatch = catalogStore.Objects
+            .Where(entry => entry.BucketName == "async-bucket" && entry.Key == "docs/async.txt")
+            .Select(entry => entry.ProviderName)
+            .OrderBy(static providerName => providerName, StringComparer.Ordinal)
+            .ToArray();
+        Assert.Equal([primaryBackend.Name, replicaBackend.Name], catalogProvidersAfterDispatch);
+    }
+
+    [Fact]
+    public async Task OrchestratedStorageService_WriteToPrimaryAsyncReplicas_ContinuesTrackingHealthyReplicas_WhenAnotherDispatchCannotBeRecorded()
+    {
+        var primaryBackend = new InMemoryStorageBackend("primary-memory", isPrimary: true);
+        var brokenReplicaBackend = new InMemoryStorageBackend("broken-replica");
+        var healthyReplicaBackend = new InMemoryStorageBackend("healthy-replica");
+
+        await using var fixture = new CoreStorageFixture(overrideCatalogStore: true, addDefaultDiskStorage: false, configureServices: services => {
+            services.Configure<IntegratedS3CoreOptions>(options => {
+                options.ConsistencyMode = StorageConsistencyMode.WriteToPrimaryAsyncReplicas;
+            });
+            services.AddSingleton<IStorageBackend>(primaryBackend);
+            services.AddSingleton<IStorageBackend>(brokenReplicaBackend);
+            services.AddSingleton<IStorageBackend>(healthyReplicaBackend);
+            services.AddSingleton<SelectiveThrowingReplicaRepairDispatcher>(serviceProvider =>
+                new SelectiveThrowingReplicaRepairDispatcher(
+                    serviceProvider.GetRequiredService<IStorageReplicaRepairBacklog>(),
+                    [brokenReplicaBackend.Name]));
+            services.AddSingleton<IStorageReplicaRepairDispatcher>(static serviceProvider => serviceProvider.GetRequiredService<SelectiveThrowingReplicaRepairDispatcher>());
+        });
+
+        var storageService = fixture.Services.GetRequiredService<IStorageService>();
+        var repairBacklog = fixture.Services.GetRequiredService<IStorageReplicaRepairBacklog>();
+        var repairDispatcher = fixture.Services.GetRequiredService<SelectiveThrowingReplicaRepairDispatcher>();
+
+        await using var uploadStream = new MemoryStream(Encoding.UTF8.GetBytes("multi-provider payload"));
+        var putResult = await storageService.PutObjectAsync(new PutObjectRequest
+        {
+            BucketName = "async-bucket",
+            Key = "docs/multi-provider.txt",
+            Content = uploadStream,
+            ContentType = "text/plain"
+        });
+
+        Assert.False(putResult.IsSuccess);
+        Assert.Equal(StorageErrorCode.ProviderUnavailable, putResult.Error!.Code);
+        Assert.Equal(brokenReplicaBackend.Name, putResult.Error.ProviderName);
+        Assert.Contains("could not be recorded", putResult.Error.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.True((await primaryBackend.HeadObjectAsync(new HeadObjectRequest
+        {
+            BucketName = "async-bucket",
+            Key = "docs/multi-provider.txt"
+        })).IsSuccess);
+
+        Assert.Equal([brokenReplicaBackend.Name, healthyReplicaBackend.Name], repairDispatcher.AttemptedReplicaNames);
+
+        var recordedReplica = Assert.Single(repairDispatcher.RecordedEntries);
+        Assert.Equal(healthyReplicaBackend.Name, recordedReplica.ReplicaBackendName);
+
+        var outstandingRepair = Assert.Single(await repairBacklog.ListOutstandingAsync());
+        Assert.Equal(recordedReplica.Id, outstandingRepair.Id);
+        Assert.Equal(healthyReplicaBackend.Name, outstandingRepair.ReplicaBackendName);
+        Assert.Equal(StorageReplicaRepairStatus.Pending, outstandingRepair.Status);
+        Assert.Equal(StorageReplicaRepairOrigin.AsyncReplication, outstandingRepair.Origin);
+    }
+
+    [Fact]
+    public async Task OrchestratedStorageService_WriteToPrimaryAsyncReplicas_ReplayCanAdvanceCurrentReplicaWhileSiblingRepairFails()
+    {
+        var primaryBackend = new InMemoryStorageBackend("primary-memory", isPrimary: true);
+        var healthyReplicaBackend = new InMemoryStorageBackend("healthy-replica");
+
+        await using var fixture = new CoreStorageFixture(overrideCatalogStore: true, addDefaultDiskStorage: false, configureServices: services => {
+            services.Configure<IntegratedS3CoreOptions>(options => {
+                options.ConsistencyMode = StorageConsistencyMode.WriteToPrimaryAsyncReplicas;
+                options.ReadRoutingMode = StorageReadRoutingMode.PreferHealthyReplica;
+            });
+            services.AddSingleton<IStorageBackend>(primaryBackend);
+            services.AddSingleton<IStorageBackend, FailingReplicaStorageBackend>();
+            services.AddSingleton<IStorageBackend>(healthyReplicaBackend);
+            services.AddSingleton<RecordingReplicaRepairDispatcher>();
+            services.AddSingleton<IStorageReplicaRepairDispatcher>(static serviceProvider => serviceProvider.GetRequiredService<RecordingReplicaRepairDispatcher>());
+        });
+
+        var storageService = fixture.Services.GetRequiredService<IStorageService>();
+        var repairBacklog = fixture.Services.GetRequiredService<IStorageReplicaRepairBacklog>();
+        var repairDispatcher = fixture.Services.GetRequiredService<RecordingReplicaRepairDispatcher>();
+        var catalogStore = Assert.IsType<FakeCatalogStore>(fixture.Services.GetRequiredService<IStorageCatalogStore>());
+
+        await using var uploadStream = new MemoryStream(Encoding.UTF8.GetBytes("repairable payload"));
+        var putResult = await storageService.PutObjectAsync(new PutObjectRequest
+        {
+            BucketName = "repair-bucket",
+            Key = "docs/replay.txt",
+            Content = uploadStream,
+            ContentType = "text/plain"
+        });
+
+        Assert.True(putResult.IsSuccess);
+        Assert.Equal(2, repairDispatcher.Dispatches.Count);
+        Assert.Equal(2, (await repairBacklog.ListOutstandingAsync()).Count);
+
+        var healthyDispatch = Assert.Single(repairDispatcher.Dispatches, dispatch => dispatch.Entry.ReplicaBackendName == healthyReplicaBackend.Name);
+        var failingDispatch = Assert.Single(repairDispatcher.Dispatches, dispatch => dispatch.Entry.ReplicaBackendName == "failing-replica");
+
+        var failingError = await failingDispatch.ExecuteAsync();
+        Assert.NotNull(failingError);
+        Assert.Equal(StorageErrorCode.ProviderUnavailable, failingError!.Code);
+
+        var healthyError = await healthyDispatch.ExecuteAsync();
+        Assert.Null(healthyError);
+
+        Assert.True((await healthyReplicaBackend.HeadObjectAsync(new HeadObjectRequest
+        {
+            BucketName = "repair-bucket",
+            Key = "docs/replay.txt"
+        })).IsSuccess);
+
+        var remainingRepair = Assert.Single(await repairBacklog.ListOutstandingAsync());
+        Assert.Equal("failing-replica", remainingRepair.ReplicaBackendName);
+        Assert.Equal(StorageReplicaRepairStatus.Failed, remainingRepair.Status);
+        Assert.Equal(StorageReplicaRepairOrigin.AsyncReplication, remainingRepair.Origin);
+        Assert.Equal(StorageOperationType.PutObject, remainingRepair.Operation);
+        Assert.Equal(1, remainingRepair.AttemptCount);
+        Assert.Equal(StorageErrorCode.ProviderUnavailable, remainingRepair.LastErrorCode);
+
+        var catalogProviders = catalogStore.Objects
+            .Where(entry => entry.BucketName == "repair-bucket" && entry.Key == "docs/replay.txt")
+            .Select(entry => entry.ProviderName)
+            .OrderBy(static providerName => providerName, StringComparer.Ordinal)
+            .ToArray();
+        Assert.Equal([healthyReplicaBackend.Name, primaryBackend.Name], catalogProviders);
+
+        var primaryReadCountBeforeRead = primaryBackend.GetObjectCallCount;
+        var healthyReplicaReadCountBeforeRead = healthyReplicaBackend.GetObjectCallCount;
+
+        var getObject = await storageService.GetObjectAsync(new GetObjectRequest
+        {
+            BucketName = "repair-bucket",
+            Key = "docs/replay.txt"
+        });
+
+        Assert.True(getObject.IsSuccess);
+        await using var response = getObject.Value!;
+        Assert.Equal("repairable payload", await ReadContentAsStringAsync(response.Content));
+        Assert.Equal(primaryReadCountBeforeRead, primaryBackend.GetObjectCallCount);
+        Assert.Equal(healthyReplicaReadCountBeforeRead + 1, healthyReplicaBackend.GetObjectCallCount);
+    }
+
+    [Fact]
+    public async Task OrchestratedStorageService_WriteToPrimaryAsyncReplicas_QueuesNewReplicaWorkOnlyForBackendsThatRemainStale()
+    {
+        var primaryBackend = new InMemoryStorageBackend("primary-memory", isPrimary: true);
+        var laggingReplicaBackend = new InMemoryStorageBackend("lagging-replica");
+        var currentReplicaBackend = new InMemoryStorageBackend("current-replica");
+
+        await using var fixture = new CoreStorageFixture(overrideCatalogStore: true, addDefaultDiskStorage: false, configureServices: services => {
+            services.Configure<IntegratedS3CoreOptions>(options => {
+                options.ConsistencyMode = StorageConsistencyMode.WriteToPrimaryAsyncReplicas;
+            });
+            services.AddSingleton<IStorageBackend>(primaryBackend);
+            services.AddSingleton<IStorageBackend>(laggingReplicaBackend);
+            services.AddSingleton<IStorageBackend>(currentReplicaBackend);
+            services.AddSingleton<RecordingReplicaRepairDispatcher>();
+            services.AddSingleton<IStorageReplicaRepairDispatcher>(static serviceProvider => serviceProvider.GetRequiredService<RecordingReplicaRepairDispatcher>());
+        });
+
+        var storageService = fixture.Services.GetRequiredService<IStorageService>();
+        var repairBacklog = fixture.Services.GetRequiredService<IStorageReplicaRepairBacklog>();
+        var repairDispatcher = fixture.Services.GetRequiredService<RecordingReplicaRepairDispatcher>();
+
+        await using (var firstUploadStream = new MemoryStream(Encoding.UTF8.GetBytes("first payload"))) {
+            var firstPutResult = await storageService.PutObjectAsync(new PutObjectRequest
+            {
+                BucketName = "async-bucket",
+                Key = "docs/first.txt",
+                Content = firstUploadStream,
+                ContentType = "text/plain"
+            });
+
+            Assert.True(firstPutResult.IsSuccess);
+        }
+
+        Assert.Equal(2, repairDispatcher.Dispatches.Count);
+
+        var currentReplicaFirstDispatch = Assert.Single(repairDispatcher.Dispatches, dispatch =>
+            dispatch.Entry.ReplicaBackendName == currentReplicaBackend.Name
+            && string.Equals(dispatch.Entry.ObjectKey, "docs/first.txt", StringComparison.Ordinal));
+        Assert.Null(await currentReplicaFirstDispatch.ExecuteAsync());
+
+        var remainingAfterFirstReplay = Assert.Single(await repairBacklog.ListOutstandingAsync());
+        Assert.Equal(laggingReplicaBackend.Name, remainingAfterFirstReplay.ReplicaBackendName);
+        Assert.Equal("docs/first.txt", remainingAfterFirstReplay.ObjectKey);
+
+        await using (var secondUploadStream = new MemoryStream(Encoding.UTF8.GetBytes("second payload"))) {
+            var secondPutResult = await storageService.PutObjectAsync(new PutObjectRequest
+            {
+                BucketName = "async-bucket",
+                Key = "docs/second.txt",
+                Content = secondUploadStream,
+                ContentType = "text/plain"
+            });
+
+            Assert.True(secondPutResult.IsSuccess);
+        }
+
+        var laggingReplicaDispatches = repairDispatcher.Dispatches
+            .Where(dispatch => dispatch.Entry.ReplicaBackendName == laggingReplicaBackend.Name)
+            .ToArray();
+        Assert.Single(laggingReplicaDispatches);
+        Assert.Equal("docs/first.txt", laggingReplicaDispatches[0].Entry.ObjectKey);
+
+        var currentReplicaDispatches = repairDispatcher.Dispatches
+            .Where(dispatch => dispatch.Entry.ReplicaBackendName == currentReplicaBackend.Name)
+            .ToArray();
+        Assert.Equal(2, currentReplicaDispatches.Length);
+
+        var outstandingRepairs = await repairBacklog.ListOutstandingAsync();
+        var laggingReplicaRepairs = outstandingRepairs
+            .Where(entry => entry.ReplicaBackendName == laggingReplicaBackend.Name)
+            .OrderBy(entry => entry.ObjectKey, StringComparer.Ordinal)
+            .ToArray();
+        Assert.Collection(
+            laggingReplicaRepairs,
+            entry => {
+                Assert.Equal("docs/first.txt", entry.ObjectKey);
+                Assert.Equal(StorageReplicaRepairStatus.Pending, entry.Status);
+            },
+            entry => {
+                Assert.Equal("docs/second.txt", entry.ObjectKey);
+                Assert.Equal(StorageReplicaRepairStatus.Pending, entry.Status);
+            });
+
+        var currentReplicaOutstandingRepair = Assert.Single(outstandingRepairs, entry => entry.ReplicaBackendName == currentReplicaBackend.Name);
+        Assert.Equal("docs/second.txt", currentReplicaOutstandingRepair.ObjectKey);
+        Assert.Equal(StorageReplicaRepairStatus.Pending, currentReplicaOutstandingRepair.Status);
+
+        Assert.True((await currentReplicaBackend.HeadObjectAsync(new HeadObjectRequest
+        {
+            BucketName = "async-bucket",
+            Key = "docs/first.txt"
+        })).IsSuccess);
+        Assert.Equal(StorageErrorCode.ObjectNotFound, (await laggingReplicaBackend.HeadObjectAsync(new HeadObjectRequest
+        {
+            BucketName = "async-bucket",
+            Key = "docs/first.txt"
+        })).Error!.Code);
+        Assert.Equal(StorageErrorCode.ObjectNotFound, (await currentReplicaBackend.HeadObjectAsync(new HeadObjectRequest
+        {
+            BucketName = "async-bucket",
+            Key = "docs/second.txt"
+        })).Error!.Code);
+
+        var currentReplicaSecondDispatch = Assert.Single(currentReplicaDispatches, dispatch => string.Equals(dispatch.Entry.ObjectKey, "docs/second.txt", StringComparison.Ordinal));
+        Assert.Null(await currentReplicaSecondDispatch.ExecuteAsync());
+
+        Assert.True((await currentReplicaBackend.HeadObjectAsync(new HeadObjectRequest
+        {
+            BucketName = "async-bucket",
+            Key = "docs/second.txt"
+        })).IsSuccess);
+        Assert.Equal(StorageErrorCode.ObjectNotFound, (await laggingReplicaBackend.HeadObjectAsync(new HeadObjectRequest
+        {
+            BucketName = "async-bucket",
+            Key = "docs/second.txt"
+        })).Error!.Code);
+    }
+
+    [Fact]
+    public async Task OrchestratedStorageService_WriteThroughAll_FailsBeforeMutatingPrimary_WhenReplicaIsKnownUnhealthy()
+    {
+        var primaryBackend = new InMemoryStorageBackend("primary-memory", isPrimary: true);
+        var replicaBackend = new InMemoryStorageBackend("replica-memory");
+
+        await using var fixture = new CoreStorageFixture(overrideCatalogStore: true, addDefaultDiskStorage: false, configureServices: services => {
+            services.Configure<IntegratedS3CoreOptions>(options => {
+                options.ConsistencyMode = StorageConsistencyMode.WriteThroughAll;
+            });
+            services.AddSingleton<IStorageBackend>(primaryBackend);
+            services.AddSingleton<IStorageBackend>(replicaBackend);
+            services.AddSingleton<IStorageBackendHealthEvaluator>(new ConfigurableStorageBackendHealthEvaluator(new Dictionary<string, StorageBackendHealthStatus>(StringComparer.Ordinal)
+            {
+                [primaryBackend.Name] = StorageBackendHealthStatus.Healthy,
+                [replicaBackend.Name] = StorageBackendHealthStatus.Unhealthy
+            }));
+        });
+
+        var storageService = fixture.Services.GetRequiredService<IStorageService>();
+        var repairBacklog = fixture.Services.GetRequiredService<IStorageReplicaRepairBacklog>();
+
+        await using var uploadStream = new MemoryStream(Encoding.UTF8.GetBytes("blocked payload"));
+        var putResult = await storageService.PutObjectAsync(new PutObjectRequest
+        {
+            BucketName = "strict-bucket",
+            Key = "docs/blocked.txt",
+            Content = uploadStream,
+            ContentType = "text/plain"
+        });
+
+        Assert.False(putResult.IsSuccess);
+        Assert.Equal(StorageErrorCode.ProviderUnavailable, putResult.Error!.Code);
+        Assert.Equal(replicaBackend.Name, putResult.Error.ProviderName);
+        Assert.Contains("unhealthy", putResult.Error.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(0, primaryBackend.PutObjectCallCount);
+        Assert.Equal(0, replicaBackend.PutObjectCallCount);
+        Assert.Equal(StorageErrorCode.BucketNotFound, (await primaryBackend.HeadBucketAsync("strict-bucket")).Error!.Code);
+        Assert.Empty(await repairBacklog.ListOutstandingAsync());
+    }
+
+    [Theory]
+    [InlineData(false, "primary payload", 1, 0)]
+    [InlineData(true, "replica payload", 0, 1)]
+    public async Task OrchestratedStorageService_PreferHealthyReplica_HonorsOutstandingRepairReadPolicy(
+        bool allowReadsFromReplicasWithOutstandingRepairs,
+        string expectedPayload,
+        int expectedPrimaryReadCount,
+        int expectedReplicaReadCount)
+    {
+        var primaryBackend = new InMemoryStorageBackend("primary-memory", isPrimary: true);
+        primaryBackend.AddObject("read-bucket", "docs/read.txt", "primary payload");
+
+        var replicaBackend = new InMemoryStorageBackend("replica-memory");
+        replicaBackend.AddObject("read-bucket", "docs/read.txt", "replica payload");
+
+        await using var fixture = new CoreStorageFixture(overrideCatalogStore: true, addDefaultDiskStorage: false, configureServices: services => {
+            services.Configure<IntegratedS3CoreOptions>(options => {
+                options.ReadRoutingMode = StorageReadRoutingMode.PreferHealthyReplica;
+                options.Replication.AllowReadsFromReplicasWithOutstandingRepairs = allowReadsFromReplicasWithOutstandingRepairs;
+            });
+            services.AddSingleton<IStorageBackend>(primaryBackend);
+            services.AddSingleton<IStorageBackend>(replicaBackend);
+        });
+
+        var storageService = fixture.Services.GetRequiredService<IStorageService>();
+        var repairBacklog = fixture.Services.GetRequiredService<IStorageReplicaRepairBacklog>();
+        await repairBacklog.AddAsync(CreateRepairEntry(
+            StorageReplicaRepairOrigin.AsyncReplication,
+            StorageReplicaRepairStatus.Pending,
+            StorageOperationType.PutObject,
+            primaryBackend.Name,
+            replicaBackend.Name,
+            "read-bucket",
+            "docs/read.txt"));
+
+        var getObject = await storageService.GetObjectAsync(new GetObjectRequest
+        {
+            BucketName = "read-bucket",
+            Key = "docs/read.txt"
+        });
+
+        Assert.True(getObject.IsSuccess);
+        await using var response = getObject.Value!;
+        Assert.Equal(expectedPayload, await ReadContentAsStringAsync(response.Content));
+        Assert.Equal(expectedPrimaryReadCount, primaryBackend.GetObjectCallCount);
+        Assert.Equal(expectedReplicaReadCount, replicaBackend.GetObjectCallCount);
+        Assert.True(await repairBacklog.HasOutstandingRepairsAsync(replicaBackend.Name));
+    }
+
+    [Fact]
+    public async Task OrchestratedStorageService_WriteThroughAll_RecordsPartialWriteFailuresInReplicaBacklog()
+    {
+        var primaryBackend = new InMemoryStorageBackend("primary-memory", isPrimary: true);
+        var successfulReplicaBackend = new InMemoryStorageBackend("replica-memory");
+        var trailingReplicaBackend = new InMemoryStorageBackend("trailing-replica");
+
+        await using var fixture = new CoreStorageFixture(overrideCatalogStore: true, addDefaultDiskStorage: false, configureServices: services => {
+            services.Configure<IntegratedS3CoreOptions>(options => {
+                options.ConsistencyMode = StorageConsistencyMode.WriteThroughAll;
+            });
+            services.AddSingleton<IStorageBackend>(primaryBackend);
+            services.AddSingleton<IStorageBackend>(successfulReplicaBackend);
+            services.AddSingleton<IStorageBackend, FailingReplicaStorageBackend>();
+            services.AddSingleton<IStorageBackend>(trailingReplicaBackend);
+        });
+
+        var storageService = fixture.Services.GetRequiredService<IStorageService>();
+        var repairBacklog = fixture.Services.GetRequiredService<IStorageReplicaRepairBacklog>();
+
+        Assert.True((await storageService.CreateBucketAsync(new CreateBucketRequest
+        {
+            BucketName = "partial-bucket"
+        })).IsSuccess);
+
+        await using var uploadStream = new MemoryStream(Encoding.UTF8.GetBytes("partial payload"));
+        var putResult = await storageService.PutObjectAsync(new PutObjectRequest
+        {
+            BucketName = "partial-bucket",
+            Key = "docs/partial.txt",
+            Content = uploadStream,
+            ContentType = "text/plain"
+        });
+
+        Assert.False(putResult.IsSuccess);
+        Assert.Equal(StorageErrorCode.ProviderUnavailable, putResult.Error!.Code);
+        Assert.Equal("failing-replica", putResult.Error.ProviderName);
+        Assert.True((await primaryBackend.HeadObjectAsync(new HeadObjectRequest
+        {
+            BucketName = "partial-bucket",
+            Key = "docs/partial.txt"
+        })).IsSuccess);
+        Assert.True((await successfulReplicaBackend.HeadObjectAsync(new HeadObjectRequest
+        {
+            BucketName = "partial-bucket",
+            Key = "docs/partial.txt"
+        })).IsSuccess);
+        Assert.Equal(StorageErrorCode.ObjectNotFound, (await trailingReplicaBackend.HeadObjectAsync(new HeadObjectRequest
+        {
+            BucketName = "partial-bucket",
+            Key = "docs/partial.txt"
+        })).Error!.Code);
+
+        var outstandingRepairs = (await repairBacklog.ListOutstandingAsync())
+            .ToDictionary(entry => entry.ReplicaBackendName, StringComparer.Ordinal);
+        Assert.Equal(2, outstandingRepairs.Count);
+        Assert.DoesNotContain(successfulReplicaBackend.Name, outstandingRepairs.Keys);
+
+        Assert.Contains("failing-replica", outstandingRepairs.Keys);
+        var failedReplicaRepair = outstandingRepairs["failing-replica"];
+        Assert.Equal(StorageReplicaRepairOrigin.PartialWriteFailure, failedReplicaRepair.Origin);
+        Assert.Equal(StorageReplicaRepairStatus.Failed, failedReplicaRepair.Status);
+        Assert.Equal(StorageOperationType.PutObject, failedReplicaRepair.Operation);
+        Assert.Equal(1, failedReplicaRepair.AttemptCount);
+        Assert.Equal(StorageErrorCode.ProviderUnavailable, failedReplicaRepair.LastErrorCode);
+        Assert.NotNull(failedReplicaRepair.LastErrorMessage);
+        Assert.Contains("Replica write failed.", failedReplicaRepair.LastErrorMessage!, StringComparison.Ordinal);
+
+        Assert.Contains(trailingReplicaBackend.Name, outstandingRepairs.Keys);
+        var pendingReplicaRepair = outstandingRepairs[trailingReplicaBackend.Name];
+        Assert.Equal(StorageReplicaRepairOrigin.PartialWriteFailure, pendingReplicaRepair.Origin);
+        Assert.Equal(StorageReplicaRepairStatus.Pending, pendingReplicaRepair.Status);
+        Assert.Equal(StorageOperationType.PutObject, pendingReplicaRepair.Operation);
+        Assert.Equal(0, pendingReplicaRepair.AttemptCount);
+        Assert.Null(pendingReplicaRepair.LastErrorCode);
+        Assert.Null(pendingReplicaRepair.LastErrorMessage);
+    }
+
+    [Fact]
+    public async Task OrchestratedStorageService_FailedReplicaRepairs_RemainVisibleAndInfluenceReadsAndWrites()
+    {
+        var primaryBackend = new InMemoryStorageBackend("primary-memory", isPrimary: true);
+        primaryBackend.AddObject("repair-bucket", "docs/read.txt", "primary payload");
+
+        var replicaBackend = new InMemoryStorageBackend("replica-memory");
+        replicaBackend.AddObject("repair-bucket", "docs/read.txt", "replica payload");
+
+        await using var fixture = new CoreStorageFixture(overrideCatalogStore: true, addDefaultDiskStorage: false, configureServices: services => {
+            services.Configure<IntegratedS3CoreOptions>(options => {
+                options.ConsistencyMode = StorageConsistencyMode.WriteThroughAll;
+                options.ReadRoutingMode = StorageReadRoutingMode.PreferHealthyReplica;
+            });
+            services.AddSingleton<IStorageBackend>(primaryBackend);
+            services.AddSingleton<IStorageBackend>(replicaBackend);
+        });
+
+        var storageService = fixture.Services.GetRequiredService<IStorageService>();
+        var repairBacklog = fixture.Services.GetRequiredService<IStorageReplicaRepairBacklog>();
+        var failedRepair = CreateRepairEntry(
+            StorageReplicaRepairOrigin.PartialWriteFailure,
+            StorageReplicaRepairStatus.Failed,
+            StorageOperationType.PutObject,
+            primaryBackend.Name,
+            replicaBackend.Name,
+            "repair-bucket",
+            "docs/read.txt",
+            attemptCount: 1,
+            lastError: new StorageError
+            {
+                Code = StorageErrorCode.ProviderUnavailable,
+                Message = "Replica write failed.",
+                BucketName = "repair-bucket",
+                ObjectKey = "docs/read.txt",
+                ProviderName = replicaBackend.Name,
+                SuggestedHttpStatusCode = 503
+            });
+        await repairBacklog.AddAsync(failedRepair);
+
+        var seededRepair = Assert.Single(await repairBacklog.ListOutstandingAsync(replicaBackend.Name));
+        Assert.Equal(failedRepair.Id, seededRepair.Id);
+        Assert.Equal(StorageReplicaRepairStatus.Failed, seededRepair.Status);
+
+        var getObject = await storageService.GetObjectAsync(new GetObjectRequest
+        {
+            BucketName = "repair-bucket",
+            Key = "docs/read.txt"
+        });
+
+        Assert.True(getObject.IsSuccess);
+        await using (var response = getObject.Value!) {
+            Assert.Equal("primary payload", await ReadContentAsStringAsync(response.Content));
+        }
+        Assert.Equal(1, primaryBackend.GetObjectCallCount);
+        Assert.Equal(0, replicaBackend.GetObjectCallCount);
+
+        await using var uploadStream = new MemoryStream(Encoding.UTF8.GetBytes("blocked payload"));
+        var putResult = await storageService.PutObjectAsync(new PutObjectRequest
+        {
+            BucketName = "repair-bucket",
+            Key = "docs/blocked.txt",
+            Content = uploadStream,
+            ContentType = "text/plain"
+        });
+
+        Assert.False(putResult.IsSuccess);
+        Assert.Equal(StorageErrorCode.PreconditionFailed, putResult.Error!.Code);
+        Assert.Equal(replicaBackend.Name, putResult.Error.ProviderName);
+        Assert.Contains("incomplete failed repair attempts", putResult.Error.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(0, primaryBackend.PutObjectCallCount);
+        Assert.Equal(0, replicaBackend.PutObjectCallCount);
+
+        var remainingRepair = Assert.Single(await repairBacklog.ListOutstandingAsync(replicaBackend.Name));
+        Assert.Equal(failedRepair.Id, remainingRepair.Id);
+        Assert.Equal(StorageReplicaRepairStatus.Failed, remainingRepair.Status);
+        Assert.Equal(1, remainingRepair.AttemptCount);
+        Assert.Equal(StorageErrorCode.ProviderUnavailable, remainingRepair.LastErrorCode);
+        Assert.Equal("Replica write failed.", remainingRepair.LastErrorMessage);
+    }
+
+    [Fact]
     public async Task OrchestratedStorageService_WriteThroughAll_ReplicatesBucketsAndObjects()
     {
         await using var fixture = new CoreStorageFixture(configureServices: services => {
@@ -699,6 +1493,120 @@ public sealed class IntegratedS3CoreOrchestrationTests
     }
 
     [Fact]
+    public async Task OrchestratedStorageService_WriteThroughAll_PersistsEarlierReplicaWritesWhenLaterReplicaFails()
+    {
+        var primaryBackend = new InMemoryStorageBackend("primary-memory", isPrimary: true);
+        var replicaBackend = new InMemoryStorageBackend("replica-memory");
+
+        await using var fixture = new CoreStorageFixture(overrideCatalogStore: true, addDefaultDiskStorage: false, configureServices: services => {
+            services.Configure<IntegratedS3CoreOptions>(options => {
+                options.ConsistencyMode = StorageConsistencyMode.WriteThroughAll;
+            });
+            services.AddSingleton<IStorageBackend>(primaryBackend);
+            services.AddSingleton<IStorageBackend>(replicaBackend);
+            services.AddSingleton<IStorageBackend, FailingReplicaStorageBackend>();
+        });
+
+        var storageService = fixture.Services.GetRequiredService<IStorageService>();
+        var catalogStore = Assert.IsType<FakeCatalogStore>(fixture.Services.GetRequiredService<IStorageCatalogStore>());
+
+        Assert.True((await storageService.CreateBucketAsync(new CreateBucketRequest
+        {
+            BucketName = "partial-bucket"
+        })).IsSuccess);
+
+        await using var uploadStream = new MemoryStream(Encoding.UTF8.GetBytes("partial payload"));
+        var putResult = await storageService.PutObjectAsync(new PutObjectRequest
+        {
+            BucketName = "partial-bucket",
+            Key = "docs/partial.txt",
+            Content = uploadStream,
+            ContentType = "text/plain"
+        });
+
+        Assert.False(putResult.IsSuccess);
+        Assert.Equal(StorageErrorCode.ProviderUnavailable, putResult.Error!.Code);
+        Assert.Equal("failing-replica", putResult.Error.ProviderName);
+
+        Assert.True((await primaryBackend.HeadObjectAsync(new HeadObjectRequest
+        {
+            BucketName = "partial-bucket",
+            Key = "docs/partial.txt"
+        })).IsSuccess);
+
+        Assert.True((await replicaBackend.HeadObjectAsync(new HeadObjectRequest
+        {
+            BucketName = "partial-bucket",
+            Key = "docs/partial.txt"
+        })).IsSuccess);
+
+        var catalogProviderNames = catalogStore.Objects
+            .Where(entry => entry.BucketName == "partial-bucket" && entry.Key == "docs/partial.txt")
+            .Select(entry => entry.ProviderName)
+            .OrderBy(static providerName => providerName, StringComparer.Ordinal)
+            .ToArray();
+
+        Assert.Equal(new[] { "primary-memory", "replica-memory" }, catalogProviderNames);
+    }
+
+    [Fact]
+    public async Task OrchestratedStorageService_WriteThroughAll_ReplicatesBucketCorsConfiguration()
+    {
+        var primaryBackend = new InMemoryStorageBackend("primary-memory", isPrimary: true);
+        var replicaBackend = new InMemoryStorageBackend("replica-memory");
+
+        await using var fixture = new CoreStorageFixture(overrideCatalogStore: true, addDefaultDiskStorage: false, configureServices: services => {
+            services.Configure<IntegratedS3CoreOptions>(options => {
+                options.ConsistencyMode = StorageConsistencyMode.WriteThroughAll;
+            });
+            services.AddSingleton<IStorageBackend>(primaryBackend);
+            services.AddSingleton<IStorageBackend>(replicaBackend);
+        });
+
+        var storageService = fixture.Services.GetRequiredService<IStorageService>();
+
+        Assert.True((await storageService.CreateBucketAsync(new CreateBucketRequest
+        {
+            BucketName = "cors-bucket"
+        })).IsSuccess);
+
+        var putCors = await storageService.PutBucketCorsAsync(new PutBucketCorsRequest
+        {
+            BucketName = "cors-bucket",
+            Rules =
+            [
+                new BucketCorsRule
+                {
+                    AllowedOrigins = ["https://app.example"],
+                    AllowedMethods = [BucketCorsMethod.Get, BucketCorsMethod.Put],
+                    AllowedHeaders = ["authorization"],
+                    ExposeHeaders = ["etag"],
+                    MaxAgeSeconds = 120
+                }
+            ]
+        });
+
+        Assert.True(putCors.IsSuccess);
+
+        var primaryCors = await primaryBackend.GetBucketCorsAsync("cors-bucket");
+        var replicaCors = await replicaBackend.GetBucketCorsAsync("cors-bucket");
+
+        Assert.True(primaryCors.IsSuccess);
+        Assert.True(replicaCors.IsSuccess);
+        Assert.Equal([BucketCorsMethod.Get, BucketCorsMethod.Put], Assert.Single(primaryCors.Value!.Rules).AllowedMethods);
+        Assert.Equal([BucketCorsMethod.Get, BucketCorsMethod.Put], Assert.Single(replicaCors.Value!.Rules).AllowedMethods);
+
+        var deleteCors = await storageService.DeleteBucketCorsAsync(new DeleteBucketCorsRequest
+        {
+            BucketName = "cors-bucket"
+        });
+
+        Assert.True(deleteCors.IsSuccess);
+        Assert.Equal(StorageErrorCode.CorsConfigurationNotFound, (await primaryBackend.GetBucketCorsAsync("cors-bucket")).Error!.Code);
+        Assert.Equal(StorageErrorCode.CorsConfigurationNotFound, (await replicaBackend.GetBucketCorsAsync("cors-bucket")).Error!.Code);
+    }
+
+    [Fact]
     public async Task OrchestratedStorageService_WriteThroughAll_RejectsMultipartUploads()
     {
         await using var fixture = new CoreStorageFixture(configureServices: services => {
@@ -820,6 +1728,38 @@ public sealed class IntegratedS3CoreOrchestrationTests
         return await reader.ReadToEndAsync();
     }
 
+    private static StorageReplicaRepairEntry CreateRepairEntry(
+        StorageReplicaRepairOrigin origin,
+        StorageReplicaRepairStatus status,
+        StorageOperationType operation,
+        string primaryBackendName,
+        string replicaBackendName,
+        string bucketName,
+        string? objectKey,
+        string? versionId = null,
+        int attemptCount = 0,
+        StorageError? lastError = null)
+    {
+        var now = DateTimeOffset.UtcNow;
+        return new StorageReplicaRepairEntry
+        {
+            Id = Guid.NewGuid().ToString("N"),
+            Origin = origin,
+            Status = status,
+            Operation = operation,
+            PrimaryBackendName = primaryBackendName,
+            ReplicaBackendName = replicaBackendName,
+            BucketName = bucketName,
+            ObjectKey = objectKey,
+            VersionId = versionId,
+            CreatedAtUtc = now,
+            UpdatedAtUtc = now,
+            AttemptCount = attemptCount,
+            LastErrorCode = lastError?.Code,
+            LastErrorMessage = lastError?.Message
+        };
+    }
+
     private sealed class ScopeBasedIntegratedS3AuthorizationService : IIntegratedS3AuthorizationService
     {
         public ValueTask<StorageResult> AuthorizeAsync(ClaimsPrincipal principal, StorageAuthorizationRequest request, CancellationToken cancellationToken = default)
@@ -832,8 +1772,11 @@ public sealed class IntegratedS3CoreOrchestrationTests
                 StorageOperationType.HeadBucket => "storage.read",
                 StorageOperationType.ListObjects => "storage.read",
                 StorageOperationType.GetObject => "storage.read",
+                StorageOperationType.PresignGetObject => "storage.read",
+                StorageOperationType.GetBucketCors => "storage.read",
                 StorageOperationType.GetObjectTags => "storage.read",
                 StorageOperationType.HeadObject => "storage.read",
+                StorageOperationType.PresignPutObject => "storage.write",
                 _ => "storage.write"
             };
 
@@ -881,6 +1824,120 @@ public sealed class IntegratedS3CoreOrchestrationTests
         }
     }
 
+    private sealed class DelegatingStorageBackendHealthProbe(IReadOnlyDictionary<string, Func<CancellationToken, ValueTask<StorageBackendHealthStatus>>> handlers) : IStorageBackendHealthProbe
+    {
+        private readonly IReadOnlyDictionary<string, Func<CancellationToken, ValueTask<StorageBackendHealthStatus>>> _handlers = handlers;
+
+        public ValueTask<StorageBackendHealthStatus> ProbeAsync(IStorageBackend backend, CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return _handlers.TryGetValue(backend.Name, out var handler)
+                ? handler(cancellationToken)
+                : ValueTask.FromResult(StorageBackendHealthStatus.Unknown);
+        }
+    }
+
+    private sealed class ManualTimeProvider(DateTimeOffset utcNow) : TimeProvider
+    {
+        private DateTimeOffset _utcNow = utcNow;
+
+        public override DateTimeOffset GetUtcNow() => _utcNow;
+
+        public void Advance(TimeSpan duration)
+        {
+            _utcNow = _utcNow.Add(duration);
+        }
+    }
+
+    private sealed class RecordingReplicaRepairDispatcher(IStorageReplicaRepairBacklog repairBacklog) : IStorageReplicaRepairDispatcher
+    {
+        public List<RecordedDispatch> Dispatches { get; } = [];
+
+        public async ValueTask DispatchAsync(
+            StorageReplicaRepairEntry entry,
+            Func<CancellationToken, ValueTask<StorageError?>> repairOperation,
+            CancellationToken cancellationToken = default)
+        {
+            await repairBacklog.AddAsync(entry, cancellationToken);
+            Dispatches.Add(new RecordedDispatch(entry, repairOperation, repairBacklog));
+        }
+
+        public sealed class RecordedDispatch(
+            StorageReplicaRepairEntry entry,
+            Func<CancellationToken, ValueTask<StorageError?>> repairOperation,
+            IStorageReplicaRepairBacklog repairBacklog)
+        {
+            public StorageReplicaRepairEntry Entry { get; } = entry;
+
+            public bool WasExecuted { get; private set; }
+
+            public async ValueTask<StorageError?> ExecuteAsync(CancellationToken cancellationToken = default)
+            {
+                if (WasExecuted) {
+                    throw new InvalidOperationException("Recorded replica repair dispatch has already been executed.");
+                }
+
+                WasExecuted = true;
+                await repairBacklog.MarkInProgressAsync(Entry.Id, cancellationToken);
+
+                StorageError? error;
+                try {
+                    error = await repairOperation(cancellationToken);
+                }
+                catch (Exception ex) {
+                    error = new StorageError
+                    {
+                        Code = StorageErrorCode.ProviderUnavailable,
+                        Message = $"Recorded replica repair dispatch failed during test execution: {ex.Message}",
+                        BucketName = Entry.BucketName,
+                        ObjectKey = Entry.ObjectKey,
+                        VersionId = Entry.VersionId,
+                        ProviderName = Entry.ReplicaBackendName,
+                        SuggestedHttpStatusCode = 503
+                    };
+                }
+
+                if (error is null) {
+                    await repairBacklog.MarkCompletedAsync(Entry.Id, cancellationToken);
+                }
+                else {
+                    await repairBacklog.MarkFailedAsync(Entry.Id, error, cancellationToken);
+                }
+
+                return error;
+            }
+        }
+    }
+
+    private sealed class SelectiveThrowingReplicaRepairDispatcher(
+        IStorageReplicaRepairBacklog repairBacklog,
+        IReadOnlyCollection<string> replicaNamesThatThrow) : IStorageReplicaRepairDispatcher
+    {
+        private readonly HashSet<string> _replicaNamesThatThrow = new(replicaNamesThatThrow, StringComparer.Ordinal);
+
+        public List<string> AttemptedReplicaNames { get; } = [];
+
+        public List<StorageReplicaRepairEntry> RecordedEntries { get; } = [];
+
+        public async ValueTask DispatchAsync(
+            StorageReplicaRepairEntry entry,
+            Func<CancellationToken, ValueTask<StorageError?>> repairOperation,
+            CancellationToken cancellationToken = default)
+        {
+            ArgumentNullException.ThrowIfNull(entry);
+            ArgumentNullException.ThrowIfNull(repairOperation);
+            cancellationToken.ThrowIfCancellationRequested();
+
+            AttemptedReplicaNames.Add(entry.ReplicaBackendName);
+            if (_replicaNamesThatThrow.Contains(entry.ReplicaBackendName)) {
+                throw new InvalidOperationException($"Simulated async replica repair tracking failure for provider '{entry.ReplicaBackendName}'.");
+            }
+
+            await repairBacklog.AddAsync(entry, cancellationToken);
+            RecordedEntries.Add(entry);
+        }
+    }
+
     private sealed class FailingReplicaStorageBackend : IStorageBackend
     {
         public string Name => "failing-replica";
@@ -906,6 +1963,18 @@ public sealed class IntegratedS3CoreOrchestrationTests
         {
             cancellationToken.ThrowIfCancellationRequested();
             return ValueTask.FromResult(new IntegratedS3.Abstractions.Capabilities.StorageSupportStateDescriptor());
+        }
+
+        public ValueTask<IntegratedS3.Abstractions.Models.StorageProviderMode> GetProviderModeAsync(CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return ValueTask.FromResult(IntegratedS3.Abstractions.Models.StorageProviderMode.Managed);
+        }
+
+        public ValueTask<IntegratedS3.Abstractions.Models.StorageObjectLocationDescriptor> GetObjectLocationDescriptorAsync(CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return ValueTask.FromResult(new IntegratedS3.Abstractions.Models.StorageObjectLocationDescriptor());
         }
 
         public async IAsyncEnumerable<BucketInfo> ListBucketsAsync([System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
@@ -964,6 +2033,45 @@ public sealed class IntegratedS3CoreOrchestrationTests
             {
                 Code = StorageErrorCode.ProviderUnavailable,
                 Message = "Replica bucket versioning write failed.",
+                BucketName = request.BucketName,
+                ProviderName = Name,
+                SuggestedHttpStatusCode = 503
+            }));
+        }
+
+        public ValueTask<StorageResult<BucketCorsConfiguration>> GetBucketCorsAsync(string bucketName, CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return ValueTask.FromResult(StorageResult<BucketCorsConfiguration>.Failure(new StorageError
+            {
+                Code = StorageErrorCode.BucketNotFound,
+                Message = $"Bucket '{bucketName}' was not found.",
+                BucketName = bucketName,
+                ProviderName = Name,
+                SuggestedHttpStatusCode = 404
+            }));
+        }
+
+        public ValueTask<StorageResult<BucketCorsConfiguration>> PutBucketCorsAsync(PutBucketCorsRequest request, CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return ValueTask.FromResult(StorageResult<BucketCorsConfiguration>.Failure(new StorageError
+            {
+                Code = StorageErrorCode.ProviderUnavailable,
+                Message = "Replica bucket CORS write failed.",
+                BucketName = request.BucketName,
+                ProviderName = Name,
+                SuggestedHttpStatusCode = 503
+            }));
+        }
+
+        public ValueTask<StorageResult> DeleteBucketCorsAsync(DeleteBucketCorsRequest request, CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return ValueTask.FromResult(StorageResult.Failure(new StorageError
+            {
+                Code = StorageErrorCode.ProviderUnavailable,
+                Message = "Replica bucket CORS delete failed.",
                 BucketName = request.BucketName,
                 ProviderName = Name,
                 SuggestedHttpStatusCode = 503
@@ -1119,6 +2227,7 @@ public sealed class IntegratedS3CoreOrchestrationTests
     private sealed class InMemoryStorageBackend(string name, bool isPrimary = false) : IStorageBackend
     {
         private readonly Dictionary<string, BucketInfo> _buckets = new(StringComparer.Ordinal);
+        private readonly Dictionary<string, BucketCorsConfiguration> _bucketCorsConfigurations = new(StringComparer.Ordinal);
         private readonly Dictionary<(string BucketName, string Key), StoredObject> _objects = new();
 
         public string Name => name;
@@ -1131,7 +2240,11 @@ public sealed class IntegratedS3CoreOrchestrationTests
 
         public int GetObjectCallCount { get; private set; }
 
+        public int PutObjectCallCount { get; private set; }
+
         public bool FailGetObjectWithProviderUnavailable { get; set; }
+
+        public StorageErrorCode? GetObjectFailureCode { get; set; }
 
         public void AddObject(string bucketName, string key, string content, string contentType = "text/plain", IReadOnlyDictionary<string, string>? metadata = null)
         {
@@ -1183,6 +2296,18 @@ public sealed class IntegratedS3CoreOrchestrationTests
         {
             cancellationToken.ThrowIfCancellationRequested();
             return ValueTask.FromResult(new IntegratedS3.Abstractions.Capabilities.StorageSupportStateDescriptor());
+        }
+
+        public ValueTask<IntegratedS3.Abstractions.Models.StorageProviderMode> GetProviderModeAsync(CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return ValueTask.FromResult(IntegratedS3.Abstractions.Models.StorageProviderMode.Managed);
+        }
+
+        public ValueTask<IntegratedS3.Abstractions.Models.StorageObjectLocationDescriptor> GetObjectLocationDescriptorAsync(CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return ValueTask.FromResult(new IntegratedS3.Abstractions.Models.StorageObjectLocationDescriptor());
         }
 
         public async IAsyncEnumerable<BucketInfo> ListBucketsAsync([System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
@@ -1286,6 +2411,77 @@ public sealed class IntegratedS3CoreOrchestrationTests
             }));
         }
 
+        public ValueTask<StorageResult<BucketCorsConfiguration>> GetBucketCorsAsync(string bucketName, CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            if (!_buckets.ContainsKey(bucketName)) {
+                return ValueTask.FromResult(StorageResult<BucketCorsConfiguration>.Failure(new StorageError
+                {
+                    Code = StorageErrorCode.BucketNotFound,
+                    Message = $"Bucket '{bucketName}' was not found.",
+                    BucketName = bucketName,
+                    ProviderName = Name,
+                    SuggestedHttpStatusCode = 404
+                }));
+            }
+
+            return ValueTask.FromResult(_bucketCorsConfigurations.TryGetValue(bucketName, out var configuration)
+                ? StorageResult<BucketCorsConfiguration>.Success(CloneBucketCorsConfiguration(configuration))
+                : StorageResult<BucketCorsConfiguration>.Failure(new StorageError
+                {
+                    Code = StorageErrorCode.CorsConfigurationNotFound,
+                    Message = $"Bucket '{bucketName}' does not have a CORS configuration.",
+                    BucketName = bucketName,
+                    ProviderName = Name,
+                    SuggestedHttpStatusCode = 404
+                }));
+        }
+
+        public ValueTask<StorageResult<BucketCorsConfiguration>> PutBucketCorsAsync(PutBucketCorsRequest request, CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            if (!_buckets.ContainsKey(request.BucketName)) {
+                return ValueTask.FromResult(StorageResult<BucketCorsConfiguration>.Failure(new StorageError
+                {
+                    Code = StorageErrorCode.BucketNotFound,
+                    Message = $"Bucket '{request.BucketName}' was not found.",
+                    BucketName = request.BucketName,
+                    ProviderName = Name,
+                    SuggestedHttpStatusCode = 404
+                }));
+            }
+
+            var configuration = new BucketCorsConfiguration
+            {
+                BucketName = request.BucketName,
+                Rules = request.Rules.Select(CloneBucketCorsRule).ToArray()
+            };
+
+            _bucketCorsConfigurations[request.BucketName] = configuration;
+            return ValueTask.FromResult(StorageResult<BucketCorsConfiguration>.Success(CloneBucketCorsConfiguration(configuration)));
+        }
+
+        public ValueTask<StorageResult> DeleteBucketCorsAsync(DeleteBucketCorsRequest request, CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            if (!_buckets.ContainsKey(request.BucketName)) {
+                return ValueTask.FromResult(StorageResult.Failure(new StorageError
+                {
+                    Code = StorageErrorCode.BucketNotFound,
+                    Message = $"Bucket '{request.BucketName}' was not found.",
+                    BucketName = request.BucketName,
+                    ProviderName = Name,
+                    SuggestedHttpStatusCode = 404
+                }));
+            }
+
+            _bucketCorsConfigurations.Remove(request.BucketName);
+            return ValueTask.FromResult(StorageResult.Success());
+        }
+
         public ValueTask<StorageResult> DeleteBucketAsync(DeleteBucketRequest request, CancellationToken cancellationToken = default)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -1304,6 +2500,8 @@ public sealed class IntegratedS3CoreOrchestrationTests
             foreach (var key in _objects.Keys.Where(entry => string.Equals(entry.BucketName, request.BucketName, StringComparison.Ordinal)).ToArray()) {
                 _objects.Remove(key);
             }
+
+            _bucketCorsConfigurations.Remove(request.BucketName);
 
             return ValueTask.FromResult(StorageResult.Success());
         }
@@ -1331,16 +2529,13 @@ public sealed class IntegratedS3CoreOrchestrationTests
             cancellationToken.ThrowIfCancellationRequested();
             GetObjectCallCount++;
 
-            if (FailGetObjectWithProviderUnavailable) {
-                return ValueTask.FromResult(StorageResult<GetObjectResponse>.Failure(new StorageError
-                {
-                    Code = StorageErrorCode.ProviderUnavailable,
-                    Message = "Simulated provider outage.",
-                    BucketName = request.BucketName,
-                    ObjectKey = request.Key,
-                    ProviderName = Name,
-                    SuggestedHttpStatusCode = 503
-                }));
+            var simulatedFailureCode = GetObjectFailureCode;
+            if (simulatedFailureCode is null && FailGetObjectWithProviderUnavailable) {
+                simulatedFailureCode = StorageErrorCode.ProviderUnavailable;
+            }
+
+            if (simulatedFailureCode is { } errorCode) {
+                return ValueTask.FromResult(StorageResult<GetObjectResponse>.Failure(CreateGetObjectFailure(request, errorCode)));
             }
 
             if (!_objects.TryGetValue((request.BucketName, request.Key), out var storedObject)) {
@@ -1368,6 +2563,30 @@ public sealed class IntegratedS3CoreOrchestrationTests
                 Content = new MemoryStream(storedObject.Content, writable: false),
                 TotalContentLength = storedObject.Info.ContentLength
             }));
+        }
+
+        private StorageError CreateGetObjectFailure(GetObjectRequest request, StorageErrorCode errorCode)
+        {
+            var (message, suggestedHttpStatusCode) = errorCode switch
+            {
+                StorageErrorCode.Throttled => ("Simulated throttled read.", 429),
+                StorageErrorCode.ProviderUnavailable => ("Simulated provider outage.", 503),
+                StorageErrorCode.ObjectNotFound => ($"Object '{request.Key}' was not found in bucket '{request.BucketName}'.", 404),
+                StorageErrorCode.AccessDenied => ("Simulated access denied.", 403),
+                StorageErrorCode.UnsupportedCapability => ("Simulated unsupported capability.", 400),
+                StorageErrorCode.QuotaExceeded => ("Simulated quota exceeded.", 507),
+                _ => ($"Simulated {errorCode} failure.", 500)
+            };
+
+            return new StorageError
+            {
+                Code = errorCode,
+                Message = message,
+                BucketName = request.BucketName,
+                ObjectKey = request.Key,
+                ProviderName = Name,
+                SuggestedHttpStatusCode = suggestedHttpStatusCode
+            };
         }
 
         public ValueTask<StorageResult<ObjectTagSet>> GetObjectTagsAsync(GetObjectTagsRequest request, CancellationToken cancellationToken = default)
@@ -1421,6 +2640,7 @@ public sealed class IntegratedS3CoreOrchestrationTests
         public async ValueTask<StorageResult<ObjectInfo>> PutObjectAsync(PutObjectRequest request, CancellationToken cancellationToken = default)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            PutObjectCallCount++;
 
             using var buffer = new MemoryStream();
             await request.Content.CopyToAsync(buffer, cancellationToken);
@@ -1602,6 +2822,28 @@ public sealed class IntegratedS3CoreOrchestrationTests
                 Key = request.Key,
                 VersionId = storedObject.Info.VersionId
             }));
+        }
+
+        private static BucketCorsConfiguration CloneBucketCorsConfiguration(BucketCorsConfiguration configuration)
+        {
+            return new BucketCorsConfiguration
+            {
+                BucketName = configuration.BucketName,
+                Rules = configuration.Rules.Select(CloneBucketCorsRule).ToArray()
+            };
+        }
+
+        private static BucketCorsRule CloneBucketCorsRule(BucketCorsRule rule)
+        {
+            return new BucketCorsRule
+            {
+                Id = rule.Id,
+                AllowedOrigins = rule.AllowedOrigins.ToArray(),
+                AllowedMethods = rule.AllowedMethods.ToArray(),
+                AllowedHeaders = rule.AllowedHeaders.ToArray(),
+                ExposeHeaders = rule.ExposeHeaders.ToArray(),
+                MaxAgeSeconds = rule.MaxAgeSeconds
+            };
         }
 
         private sealed class StoredObject

@@ -23,14 +23,19 @@ public static class IntegratedS3CoreServiceCollectionExtensions
             .Configure(configure);
 
         services.TryAddSingleton<IStorageCatalogStore, NullStorageCatalogStore>();
+        services.TryAddSingleton<IStorageObjectLocationResolver, NullStorageObjectLocationResolver>();
         services.TryAddSingleton<IIntegratedS3AuthorizationService, AllowAllIntegratedS3AuthorizationService>();
         services.TryAddSingleton<IIntegratedS3RequestContextAccessor, AsyncLocalIntegratedS3RequestContextAccessor>();
+        services.TryAddSingleton<IStoragePresignStrategy, UnsupportedStoragePresignStrategy>();
         services.TryAddSingleton<IStorageBackendHealthEvaluator, DefaultStorageBackendHealthEvaluator>();
         services.TryAddSingleton<IStorageBackendHealthProbe, DefaultStorageBackendHealthProbe>();
+        services.TryAddSingleton<IStorageReplicaRepairBacklog, InMemoryStorageReplicaRepairBacklog>();
+        services.TryAddSingleton<IStorageReplicaRepairDispatcher, InProcessStorageReplicaRepairDispatcher>();
         services.TryAddSingleton(TimeProvider.System);
         services.TryAddSingleton<StorageBackendHealthMonitor>();
         services.TryAddSingleton<OrchestratedStorageService>();
         services.TryAddSingleton<IStorageService, AuthorizingStorageService>();
+        services.TryAddSingleton<IStoragePresignService, AuthorizingStoragePresignService>();
 
         return services;
     }

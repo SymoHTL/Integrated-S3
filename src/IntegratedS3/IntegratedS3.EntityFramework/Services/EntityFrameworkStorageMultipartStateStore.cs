@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using System.Text.Json;
 using IntegratedS3.Abstractions.Capabilities;
 using IntegratedS3.Abstractions.Models;
@@ -46,18 +47,36 @@ internal sealed class EntityFrameworkStorageMultipartStateStore<TDbContext>(
             return null;
         }
 
-        return new MultipartUploadState
-        {
-            BucketName = record.BucketName,
-            Key = record.Key,
-            UploadId = record.UploadId,
-            InitiatedAtUtc = record.InitiatedAtUtc,
-            ContentType = record.ContentType,
-            ChecksumAlgorithm = record.ChecksumAlgorithm,
-            Metadata = string.IsNullOrWhiteSpace(record.MetadataJson)
-                ? null
-                : JsonSerializer.Deserialize<Dictionary<string, string>>(record.MetadataJson)
-        };
+        return ToMultipartUploadState(record);
+    }
+
+    public async IAsyncEnumerable<MultipartUploadState> ListMultipartUploadStatesAsync(
+        string providerName,
+        string bucketName,
+        string? prefix = null,
+        [EnumeratorCancellation] CancellationToken cancellationToken = default)
+    {
+        await EnsureInitializedAsync(cancellationToken);
+
+        await using var scope = serviceProvider.CreateAsyncScope();
+        var dbContext = scope.ServiceProvider.GetRequiredService<TDbContext>();
+        ValidateModel(dbContext);
+
+        var records = await dbContext.Set<MultipartUploadCatalogRecord>()
+            .AsNoTracking()
+            .Where(existing =>
+                existing.ProviderName == providerName
+                && existing.BucketName == bucketName)
+            .ToListAsync(cancellationToken);
+
+        foreach (var record in records
+                     .Where(existing => string.IsNullOrWhiteSpace(prefix) || existing.Key.StartsWith(prefix, StringComparison.Ordinal))
+                     .OrderBy(existing => existing.Key, StringComparer.Ordinal)
+                     .ThenBy(existing => existing.InitiatedAtUtc)
+                     .ThenBy(existing => existing.UploadId, StringComparer.Ordinal)) {
+            cancellationToken.ThrowIfCancellationRequested();
+            yield return ToMultipartUploadState(record);
+        }
     }
 
     public async ValueTask UpsertMultipartUploadStateAsync(
@@ -153,5 +172,21 @@ internal sealed class EntityFrameworkStorageMultipartStateStore<TDbContext>(
         throw new InvalidOperationException(
             $"The DbContext '{typeof(TDbContext).FullName}' is not configured for the IntegratedS3 multipart catalog. " +
             $"Call modelBuilder.MapIntegratedS3Catalog() from OnModelCreating before registering AddEntityFrameworkStorageCatalog<{typeof(TDbContext).Name}>().");
+    }
+
+    private static MultipartUploadState ToMultipartUploadState(MultipartUploadCatalogRecord record)
+    {
+        return new MultipartUploadState
+        {
+            BucketName = record.BucketName,
+            Key = record.Key,
+            UploadId = record.UploadId,
+            InitiatedAtUtc = record.InitiatedAtUtc,
+            ContentType = record.ContentType,
+            ChecksumAlgorithm = record.ChecksumAlgorithm,
+            Metadata = string.IsNullOrWhiteSpace(record.MetadataJson)
+                ? null
+                : JsonSerializer.Deserialize<Dictionary<string, string>>(record.MetadataJson)
+        };
     }
 }

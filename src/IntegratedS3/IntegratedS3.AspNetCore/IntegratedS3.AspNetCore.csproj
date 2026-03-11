@@ -12,4 +12,8 @@
     <ProjectReference Include="..\IntegratedS3.Protocol\IntegratedS3.Protocol.csproj" />
     <ProjectReference Include="..\IntegratedS3.Core\IntegratedS3.Core.csproj" />
   </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="IntegratedS3.Tests" />
+  </ItemGroup>
 </Project>

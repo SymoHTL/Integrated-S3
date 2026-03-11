@@ -28,6 +28,54 @@ public static class S3XmlResponseWriter
         return builder.ToString();
     }
 
+    public static string WriteCorsConfiguration(S3CorsConfiguration response)
+    {
+        ArgumentNullException.ThrowIfNull(response);
+
+        var builder = new StringBuilder();
+        using var stringWriter = new StringWriter(builder, CultureInfo.InvariantCulture);
+        using var xmlWriter = XmlWriter.Create(stringWriter, CreateSettings());
+
+        xmlWriter.WriteStartDocument();
+        xmlWriter.WriteStartElement("CORSConfiguration");
+
+        foreach (var rule in response.Rules) {
+            xmlWriter.WriteStartElement("CORSRule");
+
+            if (!string.IsNullOrWhiteSpace(rule.Id)) {
+                xmlWriter.WriteElementString("ID", rule.Id);
+            }
+
+            foreach (var allowedOrigin in rule.AllowedOrigins) {
+                xmlWriter.WriteElementString("AllowedOrigin", allowedOrigin);
+            }
+
+            foreach (var allowedMethod in rule.AllowedMethods) {
+                xmlWriter.WriteElementString("AllowedMethod", allowedMethod);
+            }
+
+            foreach (var allowedHeader in rule.AllowedHeaders) {
+                xmlWriter.WriteElementString("AllowedHeader", allowedHeader);
+            }
+
+            if (rule.MaxAgeSeconds is { } maxAgeSeconds) {
+                xmlWriter.WriteElementString("MaxAgeSeconds", maxAgeSeconds.ToString(CultureInfo.InvariantCulture));
+            }
+
+            foreach (var exposeHeader in rule.ExposeHeaders) {
+                xmlWriter.WriteElementString("ExposeHeader", exposeHeader);
+            }
+
+            xmlWriter.WriteEndElement();
+        }
+
+        xmlWriter.WriteEndElement();
+        xmlWriter.WriteEndDocument();
+        xmlWriter.Flush();
+
+        return builder.ToString();
+    }
+
     public static string WriteError(S3ErrorResponse response)
     {
         ArgumentNullException.ThrowIfNull(response);
@@ -278,6 +326,63 @@ public static class S3XmlResponseWriter
                 xmlWriter.WriteElementString("StorageClass", version.StorageClass);
             }
 
+            xmlWriter.WriteEndElement();
+        }
+
+        foreach (var commonPrefix in response.CommonPrefixes) {
+            xmlWriter.WriteStartElement("CommonPrefixes");
+            xmlWriter.WriteElementString("Prefix", commonPrefix.Prefix);
+            xmlWriter.WriteEndElement();
+        }
+
+        xmlWriter.WriteEndElement();
+        xmlWriter.WriteEndDocument();
+        xmlWriter.Flush();
+
+        return builder.ToString();
+    }
+
+    public static string WriteListMultipartUploadsResult(S3ListMultipartUploadsResult response)
+    {
+        ArgumentNullException.ThrowIfNull(response);
+
+        var builder = new StringBuilder();
+        using var stringWriter = new StringWriter(builder, CultureInfo.InvariantCulture);
+        using var xmlWriter = XmlWriter.Create(stringWriter, CreateSettings());
+
+        xmlWriter.WriteStartDocument();
+        xmlWriter.WriteStartElement("ListMultipartUploadsResult");
+        xmlWriter.WriteElementString("Bucket", response.Bucket);
+        xmlWriter.WriteElementString("KeyMarker", response.KeyMarker ?? string.Empty);
+        xmlWriter.WriteElementString("UploadIdMarker", response.UploadIdMarker ?? string.Empty);
+        xmlWriter.WriteElementString("Prefix", response.Prefix ?? string.Empty);
+
+        if (!string.IsNullOrWhiteSpace(response.Delimiter)) {
+            xmlWriter.WriteElementString("Delimiter", response.Delimiter);
+        }
+
+        if (!string.IsNullOrWhiteSpace(response.NextKeyMarker)) {
+            xmlWriter.WriteElementString("NextKeyMarker", response.NextKeyMarker);
+        }
+
+        if (!string.IsNullOrWhiteSpace(response.NextUploadIdMarker)) {
+            xmlWriter.WriteElementString("NextUploadIdMarker", response.NextUploadIdMarker);
+        }
+
+        xmlWriter.WriteElementString("MaxUploads", response.MaxUploads.ToString(CultureInfo.InvariantCulture));
+        xmlWriter.WriteElementString("IsTruncated", response.IsTruncated ? "true" : "false");
+
+        foreach (var upload in response.Uploads) {
+            xmlWriter.WriteStartElement("Upload");
+            xmlWriter.WriteElementString("Key", upload.Key);
+            xmlWriter.WriteElementString("UploadId", upload.UploadId);
+            xmlWriter.WriteElementString("Initiated", FormatTimestamp(upload.InitiatedAtUtc));
+
+            if (!string.IsNullOrWhiteSpace(upload.ChecksumAlgorithm)) {
+                xmlWriter.WriteElementString("ChecksumAlgorithm", upload.ChecksumAlgorithm);
+            }
+
+            xmlWriter.WriteElementString("StorageClass", upload.StorageClass);
             xmlWriter.WriteEndElement();
         }
 

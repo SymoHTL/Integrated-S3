@@ -14,6 +14,14 @@ internal interface IS3StorageClient : IDisposable
     Task<S3VersioningEntry> GetBucketVersioningAsync(string bucketName, CancellationToken cancellationToken = default);
     Task<S3VersioningEntry> SetBucketVersioningAsync(string bucketName, BucketVersioningStatus status, CancellationToken cancellationToken = default);
 
+    // Bucket CORS
+    Task<S3CorsConfigurationEntry?> GetBucketCorsAsync(string bucketName, CancellationToken cancellationToken = default)
+        => Task.FromException<S3CorsConfigurationEntry?>(new NotSupportedException("Bucket CORS is not implemented by this S3 storage client."));
+    Task<S3CorsConfigurationEntry> SetBucketCorsAsync(string bucketName, IReadOnlyList<S3CorsRuleEntry> rules, CancellationToken cancellationToken = default)
+        => Task.FromException<S3CorsConfigurationEntry>(new NotSupportedException("Bucket CORS is not implemented by this S3 storage client."));
+    Task DeleteBucketCorsAsync(string bucketName, CancellationToken cancellationToken = default)
+        => Task.FromException(new NotSupportedException("Bucket CORS is not implemented by this S3 storage client."));
+
     // Object listing
     Task<S3ObjectListPage> ListObjectsAsync(
         string bucketName,
@@ -38,6 +46,13 @@ internal interface IS3StorageClient : IDisposable
         string? versionId,
         CancellationToken cancellationToken = default);
 
+    Task<Uri> CreatePresignedGetObjectUrlAsync(
+        string bucketName,
+        string key,
+        string? versionId,
+        DateTimeOffset expiresAtUtc,
+        CancellationToken cancellationToken = default);
+
     Task<S3GetObjectResult> GetObjectAsync(
         string bucketName,
         string key,
@@ -56,12 +71,67 @@ internal interface IS3StorageClient : IDisposable
         long? contentLength,
         string? contentType,
         IReadOnlyDictionary<string, string>? metadata,
+        IReadOnlyDictionary<string, string>? checksums,
         CancellationToken cancellationToken = default);
 
     Task<S3DeleteObjectResult> DeleteObjectAsync(
         string bucketName,
         string key,
         string? versionId,
+        CancellationToken cancellationToken = default);
+
+    // Copy + multipart
+    Task<S3ObjectEntry> CopyObjectAsync(
+        string sourceBucketName,
+        string sourceKey,
+        string destinationBucketName,
+        string destinationKey,
+        string? sourceVersionId,
+        string? sourceIfMatchETag,
+        string? sourceIfNoneMatchETag,
+        DateTimeOffset? sourceIfModifiedSinceUtc,
+        DateTimeOffset? sourceIfUnmodifiedSinceUtc,
+        bool overwriteIfExists,
+        CancellationToken cancellationToken = default);
+
+    Task<MultipartUploadInfo> InitiateMultipartUploadAsync(
+        string bucketName,
+        string key,
+        string? contentType,
+        IReadOnlyDictionary<string, string>? metadata,
+        string? checksumAlgorithm,
+        CancellationToken cancellationToken = default);
+
+    Task<MultipartUploadPart> UploadMultipartPartAsync(
+        string bucketName,
+        string key,
+        string uploadId,
+        int partNumber,
+        Stream content,
+        long? contentLength,
+        string? checksumAlgorithm,
+        IReadOnlyDictionary<string, string>? checksums,
+        CancellationToken cancellationToken = default);
+
+    Task<S3ObjectEntry> CompleteMultipartUploadAsync(
+        string bucketName,
+        string key,
+        string uploadId,
+        IReadOnlyList<MultipartUploadPart> parts,
+        CancellationToken cancellationToken = default);
+
+    Task AbortMultipartUploadAsync(
+        string bucketName,
+        string key,
+        string uploadId,
+        CancellationToken cancellationToken = default);
+
+    Task<S3MultipartUploadListPage> ListMultipartUploadsAsync(
+        string bucketName,
+        string? prefix,
+        string? keyMarker,
+        string? uploadIdMarker,
+        int? maxUploads,
         CancellationToken cancellationToken = default);
 
     // Object tags

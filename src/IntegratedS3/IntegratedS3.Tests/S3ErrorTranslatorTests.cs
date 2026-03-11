@@ -66,4 +66,35 @@ public sealed class S3ErrorTranslatorTests
         Assert.Equal(StorageErrorCode.BucketNotFound, error.Code);
         Assert.Contains("missing-bucket", error.Message);
     }
+
+    [Fact]
+    public void NoSuchUpload_MapsTo_MultipartConflict()
+    {
+        var ex = MakeException("NoSuchUpload", HttpStatusCode.NotFound);
+
+        var error = S3ErrorTranslator.Translate(ex, "test-provider", "my-bucket", "my-object.txt");
+
+        Assert.Equal(StorageErrorCode.MultipartConflict, error.Code);
+        Assert.Contains("my-object.txt", error.Message);
+    }
+
+    [Fact]
+    public void InvalidPart_MapsTo_MultipartConflict()
+    {
+        var ex = MakeException("InvalidPart", HttpStatusCode.BadRequest);
+
+        var error = S3ErrorTranslator.Translate(ex, "test-provider", "my-bucket", "my-object.txt");
+
+        Assert.Equal(StorageErrorCode.MultipartConflict, error.Code);
+    }
+
+    [Fact]
+    public void BadDigest_MapsTo_InvalidChecksum()
+    {
+        var ex = MakeException("BadDigest", HttpStatusCode.BadRequest);
+
+        var error = S3ErrorTranslator.Translate(ex, "test-provider", "my-bucket", "my-object.txt");
+
+        Assert.Equal(StorageErrorCode.InvalidChecksum, error.Code);
+    }
 }

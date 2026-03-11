@@ -52,7 +52,9 @@ internal sealed class ConfiguredStorageDescriptorProvider(
                 Kind = backend.Kind,
                 IsPrimary = backend.IsPrimary,
                 Description = backend.Description,
+                Mode = await backend.GetProviderModeAsync(cancellationToken),
                 Capabilities = CloneCapabilities(await backend.GetCapabilitiesAsync(cancellationToken)),
+                ObjectLocation = CloneObjectLocation(await backend.GetObjectLocationDescriptorAsync(cancellationToken)),
                 SupportState = CloneSupportState(await backend.GetSupportStateDescriptorAsync(cancellationToken))
             };
         }
@@ -74,8 +76,30 @@ internal sealed class ConfiguredStorageDescriptorProvider(
             Kind = provider.Kind,
             IsPrimary = provider.IsPrimary,
             Description = provider.Description,
+            Mode = provider.Mode,
             Capabilities = CloneCapabilities(provider.Capabilities),
+            ObjectLocation = CloneObjectLocation(provider.ObjectLocation),
             SupportState = CloneSupportState(provider.SupportState)
+        };
+    }
+
+    private static StorageObjectLocationDescriptor CloneObjectLocation(StorageObjectLocationDescriptor objectLocation)
+    {
+        ArgumentNullException.ThrowIfNull(objectLocation);
+
+        List<StorageObjectAccessMode> supportedAccessModes = objectLocation.SupportedAccessModes.Count == 0
+            ? [objectLocation.DefaultAccessMode]
+            : [.. objectLocation.SupportedAccessModes];
+        if (!supportedAccessModes.Contains(objectLocation.DefaultAccessMode)) {
+            supportedAccessModes.Insert(0, objectLocation.DefaultAccessMode);
+        }
+
+        return new StorageObjectLocationDescriptor
+        {
+            DefaultAccessMode = objectLocation.DefaultAccessMode,
+            SupportedAccessModes = supportedAccessModes
+                .Distinct()
+                .ToList()
         };
     }
 
@@ -88,7 +112,9 @@ internal sealed class ConfiguredStorageDescriptorProvider(
             MultipartState = supportState.MultipartState,
             Versioning = supportState.Versioning,
             Checksums = supportState.Checksums,
+            AccessControl = supportState.AccessControl,
             Retention = supportState.Retention,
+            ServerSideEncryption = supportState.ServerSideEncryption,
             RedirectLocations = supportState.RedirectLocations
         };
     }

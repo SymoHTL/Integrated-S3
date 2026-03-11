@@ -1,3 +1,4 @@
+using IntegratedS3.AspNetCore;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Hosting.Server;
@@ -23,28 +24,28 @@ public sealed class WebUiApplicationFactory : IAsyncDisposable
             return _application.GetTestClient();
         }
 
-        _application = await CreateApplicationAsync(_rootPath, configureBuilder: null, useTestServer: true);
+        _application = await CreateApplicationAsync(_rootPath, configureBuilder: null, configureIntegratedS3Endpoints: null, useTestServer: true);
 
         return _application.GetTestClient();
     }
 
-    public async Task<IsolatedWebUiClient> CreateIsolatedClientAsync(Action<WebApplicationBuilder> configureBuilder)
+    public async Task<IsolatedWebUiClient> CreateIsolatedClientAsync(
+        Action<WebApplicationBuilder>? configureBuilder = null,
+        Action<IntegratedS3EndpointOptions>? configureIntegratedS3Endpoints = null)
     {
-        ArgumentNullException.ThrowIfNull(configureBuilder);
-
         var rootPath = Path.Combine(Path.GetTempPath(), "IntegratedS3.WebUi.Tests", Guid.NewGuid().ToString("N"));
-        var application = await CreateApplicationAsync(rootPath, configureBuilder, useTestServer: true);
+        var application = await CreateApplicationAsync(rootPath, configureBuilder, configureIntegratedS3Endpoints, useTestServer: true);
         var client = new IsolatedWebUiClient(application, rootPath, application.GetTestClient(), application.GetTestClient().BaseAddress);
         _isolatedClients.Add(client);
         return client;
     }
 
-    public async Task<IsolatedWebUiClient> CreateLoopbackIsolatedClientAsync(Action<WebApplicationBuilder> configureBuilder)
+    public async Task<IsolatedWebUiClient> CreateLoopbackIsolatedClientAsync(
+        Action<WebApplicationBuilder>? configureBuilder = null,
+        Action<IntegratedS3EndpointOptions>? configureIntegratedS3Endpoints = null)
     {
-        ArgumentNullException.ThrowIfNull(configureBuilder);
-
         var rootPath = Path.Combine(Path.GetTempPath(), "IntegratedS3.WebUi.Tests", Guid.NewGuid().ToString("N"));
-        var application = await CreateApplicationAsync(rootPath, configureBuilder, useTestServer: false);
+        var application = await CreateApplicationAsync(rootPath, configureBuilder, configureIntegratedS3Endpoints, useTestServer: false);
         var address = application.Urls.SingleOrDefault();
         if (string.IsNullOrWhiteSpace(address)) {
             address = application.Services.GetRequiredService<IServer>().Features.Get<IServerAddressesFeature>()?.Addresses.SingleOrDefault();
@@ -84,7 +85,11 @@ public sealed class WebUiApplicationFactory : IAsyncDisposable
         }
     }
 
-    private static async Task<WebApplication> CreateApplicationAsync(string rootPath, Action<WebApplicationBuilder>? configureBuilder, bool useTestServer)
+    private static async Task<WebApplication> CreateApplicationAsync(
+        string rootPath,
+        Action<WebApplicationBuilder>? configureBuilder,
+        Action<IntegratedS3EndpointOptions>? configureIntegratedS3Endpoints,
+        bool useTestServer)
     {
         Directory.CreateDirectory(rootPath);
 
@@ -114,7 +119,7 @@ public sealed class WebUiApplicationFactory : IAsyncDisposable
         configureBuilder?.Invoke(builder);
 
         var application = builder.Build();
-        WebUiApplication.ConfigurePipeline(application);
+        WebUiApplication.ConfigurePipeline(application, configureIntegratedS3Endpoints);
         await application.StartAsync();
         return application;
     }
@@ -126,6 +131,13 @@ public sealed class WebUiApplicationFactory : IAsyncDisposable
         public HttpClient Client { get; } = client;
 
         public Uri? BaseAddress { get; } = baseAddress;
+
+        /// <summary>
+        /// Creates an additional <see cref="HttpClient"/> backed by the same in-process test server.
+        /// Useful when a test needs two independent clients (e.g. one with auth for presigning
+        /// and one without auth for the actual object transfer).
+        /// </summary>
+        public HttpClient CreateAdditionalClient() => application.GetTestClient();
 
         public async ValueTask DisposeAsync()
         {

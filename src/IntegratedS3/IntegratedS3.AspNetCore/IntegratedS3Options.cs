@@ -21,6 +21,10 @@ public sealed class IntegratedS3Options
 
     public List<IntegratedS3AccessKeyCredential> AccessKeyCredentials { get; set; } = [];
 
+    public string? PresignAccessKeyId { get; set; }
+
+    public string? PresignPublicBaseUrl { get; set; }
+
     public bool EnableVirtualHostedStyleAddressing { get; set; }
 
     public List<string> VirtualHostedStyleHostSuffixes { get; set; } = [];

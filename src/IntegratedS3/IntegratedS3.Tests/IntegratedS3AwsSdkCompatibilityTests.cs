@@ -471,6 +471,83 @@ public sealed class IntegratedS3AwsSdkCompatibilityTests : IClassFixture<WebUiAp
     }
 
     [Fact]
+    public async Task AmazonS3Client_GetObjectAndMetadata_WithVersionId_ReadHistoricalVersions()
+    {
+        const string accessKeyId = "aws-sdk-version-read-access";
+        const string secretAccessKey = "aws-sdk-version-read-secret";
+
+        await using var isolatedClient = await CreateAuthenticatedLoopbackClientAsync(accessKeyId, secretAccessKey);
+        using var s3Client = CreateS3Client(isolatedClient.BaseAddress!, accessKeyId, secretAccessKey);
+
+        const string bucketName = "aws-sdk-version-read-bucket";
+        const string objectKey = "docs/versioned-read.txt";
+
+        Assert.Equal(HttpStatusCode.OK, (await s3Client.PutBucketAsync(new PutBucketRequest
+        {
+            BucketName = bucketName
+        })).HttpStatusCode);
+
+        Assert.Equal(HttpStatusCode.OK, (await s3Client.PutBucketVersioningAsync(new PutBucketVersioningRequest
+        {
+            BucketName = bucketName,
+            VersioningConfig = new S3BucketVersioningConfig
+            {
+                Status = VersionStatus.Enabled
+            }
+        })).HttpStatusCode);
+
+        var v1Put = await s3Client.PutObjectAsync(new PutObjectRequest
+        {
+            BucketName = bucketName,
+            Key = objectKey,
+            ContentBody = "historical version",
+            ContentType = "text/plain",
+            UseChunkEncoding = false
+        });
+        var v1VersionId = Assert.IsType<string>(v1Put.VersionId);
+
+        var v2Put = await s3Client.PutObjectAsync(new PutObjectRequest
+        {
+            BucketName = bucketName,
+            Key = objectKey,
+            ContentBody = "current version",
+            ContentType = "text/plain",
+            UseChunkEncoding = false
+        });
+        Assert.NotEqual(v1VersionId, v2Put.VersionId);
+
+        var historicalMetadataResponse = await s3Client.GetObjectMetadataAsync(new GetObjectMetadataRequest
+        {
+            BucketName = bucketName,
+            Key = objectKey,
+            VersionId = v1VersionId
+        });
+        Assert.Equal(HttpStatusCode.OK, historicalMetadataResponse.HttpStatusCode);
+        Assert.Equal(v1Put.ETag, historicalMetadataResponse.ETag);
+
+        var historicalGetResponse = await s3Client.GetObjectAsync(new GetObjectRequest
+        {
+            BucketName = bucketName,
+            Key = objectKey,
+            VersionId = v1VersionId
+        });
+        Assert.Equal(HttpStatusCode.OK, historicalGetResponse.HttpStatusCode);
+        using (var historicalReader = new StreamReader(historicalGetResponse.ResponseStream)) {
+            Assert.Equal("historical version", await historicalReader.ReadToEndAsync());
+        }
+
+        var currentGetResponse = await s3Client.GetObjectAsync(new GetObjectRequest
+        {
+            BucketName = bucketName,
+            Key = objectKey
+        });
+        Assert.Equal(HttpStatusCode.OK, currentGetResponse.HttpStatusCode);
+        using (var currentReader = new StreamReader(currentGetResponse.ResponseStream)) {
+            Assert.Equal("current version", await currentReader.ReadToEndAsync());
+        }
+    }
+
+    [Fact]
     public async Task AmazonS3Client_ListBuckets_WorksAgainstIntegratedS3()
     {
         const string accessKeyId = "aws-sdk-root-access";
@@ -782,6 +859,75 @@ public sealed class IntegratedS3AwsSdkCompatibilityTests : IClassFixture<WebUiAp
         Assert.Equal(HttpStatusCode.OK, getObjectResponse.HttpStatusCode);
         using var reader = new StreamReader(getObjectResponse.ResponseStream);
         Assert.Equal("hello world", await reader.ReadToEndAsync());
+    }
+
+    [Fact]
+    public async Task AmazonS3Client_ListMultipartUploads_RespectsMarkersAndCommonPrefixes()
+    {
+        const string accessKeyId = "aws-sdk-multipart-list-access";
+        const string secretAccessKey = "aws-sdk-multipart-list-secret";
+
+        await using var isolatedClient = await CreateAuthenticatedLoopbackClientAsync(accessKeyId, secretAccessKey);
+        using var s3Client = CreateS3Client(isolatedClient.BaseAddress!, accessKeyId, secretAccessKey);
+
+        const string bucketName = "aws-sdk-multipart-list-bucket";
+
+        Assert.Equal(HttpStatusCode.OK, (await s3Client.PutBucketAsync(new PutBucketRequest
+        {
+            BucketName = bucketName
+        })).HttpStatusCode);
+
+        async Task<string> InitiateAsync(string key)
+        {
+            var initiateResponse = await s3Client.InitiateMultipartUploadAsync(new InitiateMultipartUploadRequest
+            {
+                BucketName = bucketName,
+                Key = key,
+                ContentType = "text/plain"
+            });
+
+            Assert.Equal(HttpStatusCode.OK, initiateResponse.HttpStatusCode);
+            return initiateResponse.UploadId;
+        }
+
+        var firstUploadId = await InitiateAsync("docs/alpha.txt");
+        await Task.Delay(2);
+        var secondUploadId = await InitiateAsync("docs/alpha.txt");
+        await Task.Delay(2);
+        await InitiateAsync("docs/nested/beta.txt");
+
+        var firstPage = await s3Client.ListMultipartUploadsAsync(new ListMultipartUploadsRequest
+        {
+            BucketName = bucketName,
+            Prefix = "docs/",
+            Delimiter = "/",
+            MaxUploads = 2
+        });
+
+        Assert.Equal(HttpStatusCode.OK, firstPage.HttpStatusCode);
+        Assert.True(firstPage.IsTruncated);
+        Assert.Equal("docs/alpha.txt", firstPage.NextKeyMarker);
+        Assert.Equal(secondUploadId, firstPage.NextUploadIdMarker);
+        Assert.Equal(2, firstPage.MultipartUploads.Count);
+        Assert.Equal("docs/alpha.txt", firstPage.MultipartUploads[0].Key);
+        Assert.Equal(firstUploadId, firstPage.MultipartUploads[0].UploadId);
+        Assert.Equal("docs/alpha.txt", firstPage.MultipartUploads[1].Key);
+        Assert.Equal(secondUploadId, firstPage.MultipartUploads[1].UploadId);
+        Assert.True(firstPage.CommonPrefixes is null || firstPage.CommonPrefixes.Count == 0);
+
+        var secondPage = await s3Client.ListMultipartUploadsAsync(new ListMultipartUploadsRequest
+        {
+            BucketName = bucketName,
+            Prefix = "docs/",
+            Delimiter = "/",
+            KeyMarker = "docs/alpha.txt",
+            UploadIdMarker = secondUploadId
+        });
+
+        Assert.Equal(HttpStatusCode.OK, secondPage.HttpStatusCode);
+        Assert.False(secondPage.IsTruncated);
+        Assert.True(secondPage.MultipartUploads is null || secondPage.MultipartUploads.Count == 0);
+        Assert.Equal("docs/nested/", Assert.Single(secondPage.CommonPrefixes ?? []));
     }
 
     [Fact]
@@ -1665,6 +1811,7 @@ public sealed class IntegratedS3AwsSdkCompatibilityTests : IClassFixture<WebUiAp
                 Core.Models.StorageOperationType.HeadBucket => "storage.read",
                 Core.Models.StorageOperationType.ListObjects => "storage.read",
                 Core.Models.StorageOperationType.GetObject => "storage.read",
+                Core.Models.StorageOperationType.GetBucketCors => "storage.read",
                 Core.Models.StorageOperationType.GetObjectTags => "storage.read",
                 Core.Models.StorageOperationType.HeadObject => "storage.read",
                 _ => "storage.write"

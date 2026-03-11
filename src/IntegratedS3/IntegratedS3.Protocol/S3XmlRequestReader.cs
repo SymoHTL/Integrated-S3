@@ -34,6 +34,45 @@ public static class S3XmlRequestReader
         }
     }
 
+    public static async Task<S3CorsConfiguration> ReadCorsConfigurationAsync(Stream content, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(content);
+
+        using var reader = new StreamReader(content, leaveOpen: true);
+        var xml = await reader.ReadToEndAsync(cancellationToken);
+        if (string.IsNullOrWhiteSpace(xml)) {
+            throw new FormatException("The bucket CORS request body is required.");
+        }
+
+        try {
+            var document = XDocument.Parse(xml, LoadOptions.None);
+            var root = document.Root;
+            if (root is null || !string.Equals(root.Name.LocalName, "CORSConfiguration", StringComparison.Ordinal)) {
+                throw new FormatException("The bucket CORS request body must contain a root 'CORSConfiguration' element.");
+            }
+
+            var rules = root.Elements()
+                .Where(static element => string.Equals(element.Name.LocalName, "CORSRule", StringComparison.Ordinal))
+                .Select(ParseCorsRule)
+                .ToArray();
+
+            if (rules.Length == 0) {
+                throw new FormatException("The bucket CORS request body must contain at least one 'CORSRule' element.");
+            }
+
+            return new S3CorsConfiguration
+            {
+                Rules = rules
+            };
+        }
+        catch (FormatException) {
+            throw;
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException) {
+            throw new FormatException("The bucket CORS request body is not valid XML.", exception);
+        }
+    }
+
     public static async Task<S3CompleteMultipartUploadRequest> ReadCompleteMultipartUploadRequestAsync(Stream content, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(content);
@@ -207,5 +246,55 @@ public static class S3XmlRequestReader
                 ?? throw new FormatException("Each multipart part entry must contain an 'ETag' element."),
             Checksums = checksums.Count == 0 ? null : checksums
         };
+    }
+
+    private static S3CorsRule ParseCorsRule(XElement element)
+    {
+        ArgumentNullException.ThrowIfNull(element);
+
+        var allowedOrigins = ReadRequiredCorsValues(element, "AllowedOrigin", "Each CORS rule must contain at least one 'AllowedOrigin' element.");
+        var allowedMethods = ReadRequiredCorsValues(element, "AllowedMethod", "Each CORS rule must contain at least one 'AllowedMethod' element.");
+        var allowedHeaders = ReadOptionalCorsValues(element, "AllowedHeader");
+        var exposeHeaders = ReadOptionalCorsValues(element, "ExposeHeader");
+        var id = element.Elements().FirstOrDefault(static child => string.Equals(child.Name.LocalName, "ID", StringComparison.Ordinal))?.Value?.Trim();
+
+        int? maxAgeSeconds = null;
+        var maxAgeValue = element.Elements().FirstOrDefault(static child => string.Equals(child.Name.LocalName, "MaxAgeSeconds", StringComparison.Ordinal))?.Value;
+        if (!string.IsNullOrWhiteSpace(maxAgeValue)) {
+            if (!int.TryParse(maxAgeValue, out var parsedMaxAgeSeconds) || parsedMaxAgeSeconds < 0) {
+                throw new FormatException("Each CORS rule 'MaxAgeSeconds' value must be a non-negative integer.");
+            }
+
+            maxAgeSeconds = parsedMaxAgeSeconds;
+        }
+
+        return new S3CorsRule
+        {
+            Id = string.IsNullOrWhiteSpace(id) ? null : id,
+            AllowedOrigins = allowedOrigins,
+            AllowedMethods = allowedMethods,
+            AllowedHeaders = allowedHeaders,
+            ExposeHeaders = exposeHeaders,
+            MaxAgeSeconds = maxAgeSeconds
+        };
+    }
+
+    private static string[] ReadRequiredCorsValues(XElement element, string elementName, string errorMessage)
+    {
+        var values = ReadOptionalCorsValues(element, elementName);
+        if (values.Length == 0) {
+            throw new FormatException(errorMessage);
+        }
+
+        return values;
+    }
+
+    private static string[] ReadOptionalCorsValues(XElement element, string elementName)
+    {
+        return element.Elements()
+            .Where(child => string.Equals(child.Name.LocalName, elementName, StringComparison.Ordinal))
+            .Select(static child => child.Value.Trim())
+            .Where(static value => !string.IsNullOrWhiteSpace(value))
+            .ToArray();
     }
 }

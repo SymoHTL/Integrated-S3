@@ -13,7 +13,11 @@ public sealed class StorageProviderDocument
 
     public string? Description { get; init; }
 
+    public StorageProviderMode Mode { get; init; }
+
     public StorageCapabilities Capabilities { get; init; } = new();
+
+    public StorageObjectLocationDescriptor ObjectLocation { get; init; } = new();
 
     public StorageSupportStateDescriptor SupportState { get; init; } = new();
 
@@ -27,7 +31,15 @@ public sealed class StorageProviderDocument
             Kind = descriptor.Kind,
             IsPrimary = descriptor.IsPrimary,
             Description = descriptor.Description,
+            Mode = descriptor.Mode,
             Capabilities = descriptor.Capabilities,
+            ObjectLocation = new StorageObjectLocationDescriptor
+            {
+                DefaultAccessMode = descriptor.ObjectLocation.DefaultAccessMode,
+                SupportedAccessModes = descriptor.ObjectLocation.SupportedAccessModes.Count == 0
+                    ? [descriptor.ObjectLocation.DefaultAccessMode]
+                    : [.. descriptor.ObjectLocation.SupportedAccessModes]
+            },
             SupportState = descriptor.SupportState
         };
     }

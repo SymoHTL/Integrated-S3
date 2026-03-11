@@ -12,7 +12,11 @@ public sealed class StorageProviderDescriptor
 
     public string? Description { get; set; }
 
+    public StorageProviderMode Mode { get; set; } = StorageProviderMode.Managed;
+
     public StorageCapabilities Capabilities { get; set; } = new();
+
+    public StorageObjectLocationDescriptor ObjectLocation { get; set; } = new();
 
     public StorageSupportStateDescriptor SupportState { get; set; } = new();
 }

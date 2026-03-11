@@ -4,6 +4,7 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <ProjectReference Include="..\IntegratedS3.Core\IntegratedS3.Core.csproj" />
     <ProjectReference Include="..\IntegratedS3.Protocol\IntegratedS3.Protocol.csproj" />
   </ItemGroup>
 </Project>

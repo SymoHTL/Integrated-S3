@@ -13,4 +13,5 @@ internal sealed record S3ObjectEntry(
     IReadOnlyDictionary<string, string>? Metadata,
     string? VersionId,
     bool IsLatest = true,
-    bool IsDeleteMarker = false);
+    bool IsDeleteMarker = false,
+    IReadOnlyDictionary<string, string>? Checksums = null);

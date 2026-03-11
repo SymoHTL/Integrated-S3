@@ -6,5 +6,7 @@ public sealed class IntegratedS3CoreOptions
 
 	public StorageReadRoutingMode ReadRoutingMode { get; set; } = StorageReadRoutingMode.PrimaryOnly;
 
+	public StorageReplicationOptions Replication { get; set; } = new();
+
 	public StorageBackendHealthOptions BackendHealth { get; set; } = new();
 }
