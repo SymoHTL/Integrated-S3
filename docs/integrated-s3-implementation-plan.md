@@ -6,8 +6,23 @@ Build a modular, AOT-conscious ASP.NET storage platform that exposes an S3-compa
 
 The repository has already moved beyond initial scaffolding and now contains a working vertical slice.
 
-### Implemented so far
+### Implemented snapshot (refresh intentionally, not every feature PR)
 
+- `IntegratedS3.Provider.S3` object-operations foundation slice with:
+  - `ListBucketsAsync`, `CreateBucketAsync`, `HeadBucketAsync`, `DeleteBucketAsync` implemented via native AWS SDK
+  - `ListObjectsAsync` with auto-pagination via continuation tokens and per-page `PageSize` control
+  - `ListObjectVersionsAsync` using SDK `ListVersionsAsync`; delete markers and historical versions exposed via `IsDeleteMarker`/`IsLatest` on `ObjectInfo`
+  - `HeadObjectAsync` via `GetObjectMetadataAsync`, returns `ObjectNotFound` for 404
+  - `GetObjectAsync` with byte-range, If-Match/If-None-Match/If-Modified-Since/If-Unmodified-Since conditionals; 304 translated to `IsNotModified = true`; 412 translated to `PreconditionFailed`
+  - `PutObjectAsync` streaming upload with content-type and custom metadata headers
+  - `DeleteObjectAsync` returning delete-marker status and version ID
+  - `GetObjectTagsAsync`, `PutObjectTagsAsync`, `DeleteObjectTagsAsync` via AWS tagging API
+  - `GetBucketVersioningAsync` and `PutBucketVersioningAsync` via native SDK versioning API
+  - `S3ErrorTranslator` extended with `PreconditionFailed` (412) and per-error-code object key context
+  - `S3StorageCapabilities` updated: `ObjectCrud`, `ObjectMetadata`, `ListObjects`, `Pagination`, `RangeRequests`, `ConditionalRequests`, `ObjectTags`, `Versioning` all `Native`; multipart/copy remain `Unsupported`
+  - `IS3StorageClient` and `AwsS3StorageClient` extended with all new object + versioning operations using SDK v4 API surface
+  - Internal model records added: `S3ObjectEntry`, `S3ObjectListPage`, `S3ObjectVersionListPage`, `S3GetObjectResult`, `S3DeleteObjectResult`, `S3VersioningEntry`
+  - `FakeS3Client` in tests extended; unit tests now cover capabilities, paged listing, CRUD, tags, versioning, 304/412 flows, and get-object disposal behavior
 - modular project structure under `src/IntegratedS3/`
 - initial abstractions package with:
   - canonical error/result model
@@ -108,6 +123,37 @@ That keeps Core from owning an internal application database model or forcing a 
 Another important architectural decision now in place is that service/provider descriptors and reported capabilities should come from registered backends/Core rather than from sample-host manual composition. `IntegratedS3Options` still provides fallback metadata for bootstrap-only scenarios, but the default runtime path now reflects actual backend registrations.
 
 Another important architectural decision now in place is that authorization is separated from orchestration. `IStorageService` resolves to an authorizing decorator that wraps `OrchestratedStorageService`, which keeps bucket/key/version-aware authorization in Core without repeating authorization logic inside the orchestration implementation itself.
+
+## Parallel Collaboration Layout
+
+This plan now distinguishes between stable reference material and the active execution board so multiple contributors can work in parallel without constantly touching the same hot paragraphs.
+
+### Reference-first sections
+
+Treat these sections as architecture/snapshot material and refresh them intentionally instead of in every feature PR:
+
+- `Implemented snapshot`
+- `Goals`
+- `Architecture Summary`
+- `Phase 0` through `Phase 11`
+- `Relevant Repository Files`
+- `Verification Checklist`
+- `Key Decisions`
+
+### Active execution sections
+
+Use these sections for day-to-day planning updates:
+
+- `Current capability matrix snapshot` for cross-track status changes
+- `Remaining Implementation Work by Parallel Track` for open work and dependencies
+- `Recommended Next Execution Slices` and `Suggested First Parallel Batch` when priorities shift
+
+### Update rules for low-conflict planning
+
+1. Treat the `Implemented snapshot` and milestone prose as periodic rollups, not as per-PR checklists.
+2. Put open work only in the owning track subsection under `Remaining Implementation Work by Parallel Track` instead of duplicating backlog items across phases, milestones, and next-step notes.
+3. When a capability changes, update one matrix row and one owning track subsection rather than editing multiple narrative summaries.
+4. If work spans tracks, record the dependency in the owning track subsection instead of rewriting another track's status bullets.
 
 ## Goals
 
@@ -487,7 +533,7 @@ The project now has enough implemented surface area that the capability slices c
 | object lock / retention / legal hold | not started | unsupported | not implemented | no | needs both abstractions and provider persistence shape |
 | server-side encryption variants | not started | unsupported | not implemented | no | should remain capability-driven rather than implied |
 
-This matrix should now be treated as the authoritative status view for the current vertical slice and updated alongside each meaningful feature increment.
+This matrix should now be treated as the authoritative cross-track capability summary for the current vertical slice. Day-to-day backlog movement should live in `Remaining Implementation Work by Parallel Track` so contributors can update one matrix row and one owning subsection instead of editing repeated status prose across the document.
 
 ## Phase 3 — Multi-Backend Orchestration and Backup Support
 
@@ -791,6 +837,14 @@ Build `IntegratedS3.Provider.S3` next:
 - support presign generation
 - preserve metadata/version/checksum semantics as much as possible
 
+Status: **object/list/versioning foundation slice is implemented**
+
+- `S3StorageService` implements bucket CRUD plus object CRUD, object/version listing, object tagging, and bucket versioning through the native AWS SDK
+- `IS3StorageClient` / `AwsS3StorageClient` bridge the AWS SDK v4 surface for range, conditional, tagging, and version-aware object flows
+- canonical error translation, DI registration, and options are in place
+- `S3StorageCapabilities` now declare bucket/object/list/range/conditional/tag/versioning support as `Native`; copy, multipart, presign, checksums, and advanced features remain the next steps
+- copy-object, multipart upload, first-party presign generation, checksums, and broader parity/conformance coverage are still open
+
 ### 3. Future providers later
 
 Potential future providers:
@@ -964,7 +1018,16 @@ Status: **in progress / partially complete**
 
 - ClaimsPrincipal authz integration is implemented through `IIntegratedS3AuthorizationService`, an ambient request context accessor, ASP.NET request-context flow, and an authorizing `IStorageService` decorator
 - SigV4 authorization-header and presigned-query request validation are implemented on the ASP.NET surface for compatibility scenarios, even though first-party presign generation is still not exposed as an application-facing feature yet
-- native S3 provider implementation is still not started
+- native S3 provider — **object/list/versioning foundation slice is now implemented**:
+  - `S3StorageService` implements `ListBucketsAsync`, `CreateBucketAsync`, `HeadBucketAsync`, and `DeleteBucketAsync` via the native AWS SDK
+  - `S3StorageService` now also implements `ListObjectsAsync`, `ListObjectVersionsAsync`, `HeadObjectAsync`, `GetObjectAsync`, `PutObjectAsync`, `DeleteObjectAsync`, `GetObjectTagsAsync`, `PutObjectTagsAsync`, `DeleteObjectTagsAsync`, `GetBucketVersioningAsync`, and `PutBucketVersioningAsync`
+  - `IS3StorageClient` / `AwsS3StorageClient` now bridge the AWS SDK v4 surface for object CRUD, paged listings, conditional GETs, range requests, tagging, and versioning
+  - `S3ErrorTranslator` maps `AmazonS3Exception` to canonical `StorageErrorCode` values (`BucketNotFound`, `BucketAlreadyExists`, `AccessDenied`, `PreconditionFailed`, `Throttled`, `ProviderUnavailable`) with provider name and bucket/object context preserved
+  - `CreateBucketAsync` still rejects `EnableVersioning = true` during bucket creation; versioning is enabled afterward through `PutBucketVersioningAsync`
+  - `S3StorageCapabilities` now report `BucketOperations`, `ObjectCrud`, `ObjectMetadata`, `ListObjects`, `Pagination`, `RangeRequests`, `ConditionalRequests`, `ObjectTags`, and `Versioning` as `Native`; multipart, copy, presign, checksums, and advanced features remain `Unsupported`
+  - DI registration and options wiring are in place for the S3 provider
+  - automated xUnit coverage for the S3 provider foundation slice is in place (`S3StorageServiceTests`): capabilities snapshot, support state descriptor, bucket operations, paged listings, object CRUD, tags, versioning, 304/412 flows, disposal behavior, and DI bootstrap
+- multipart upload, copy-object, first-party presign generation, checksums, and broader S3 integration/conformance coverage are still pending
 - first-party presign generation flow is still not started
 - initial client package support beyond scaffolding is still not started
 
@@ -1036,6 +1099,114 @@ Status: **not started**
 - end-to-end sample polish
 
 Status: **not started**
+
+## Remaining Implementation Work by Parallel Track
+
+This section is the execution board for the remaining implementation backlog. Assign one contributor or PR stream per track and keep status updates confined to that track subsection plus any affected capability-matrix row above.
+
+### Ready-now track selection
+
+- Tracks A, B, D, E, and H can move immediately with today's abstractions and package boundaries.
+- Track C can start on API design immediately, but its final surface should settle after Track B finishes the native S3 copy/multipart/presign slice.
+- Track F can start on orchestration semantics and hosted-service scaffolding now, with end-to-end repair behavior benefiting from richer multi-provider parity.
+- Track G should start after Track A settles the remaining retention/support-state abstraction questions.
+
+### Track A — Architecture follow-through and provider modes
+
+- Packages: `IntegratedS3.Abstractions`, `IntegratedS3.Core`, `IntegratedS3.EntityFramework`, `docs/`
+- Ready: now
+- Depends on: none
+- Remaining scope:
+  - add redirect/location resolver support for delegated or passthrough object-location scenarios
+  - decide whether the current `native | emulated | unsupported` capability model needs extra semantics such as delegated, externalized, or proxied for future providers
+  - formalize managed, delegating, passthrough, and hybrid provider modes so future providers do not inherit disk-specific assumptions
+  - evaluate whether the remaining split support services should stay bundled inside `IStorageObjectStateStore` or be extracted into dedicated tag/checksum/location abstractions
+  - carry the chosen model into provider descriptors, DI composition, and this plan so future providers can plug in cleanly
+
+### Track B — Native S3 provider completion
+
+- Packages: `IntegratedS3.Provider.S3`, `IntegratedS3.Abstractions`, `IntegratedS3.Tests`
+- Ready: now
+- Depends on: none for copy/multipart basics; coordinate with Track A only if new support abstractions are introduced
+- Remaining scope:
+  - implement `CopyObjectAsync` and expose `CopyOperations = Native`
+  - implement the multipart upload lifecycle (`InitiateMultipartUploadAsync`, `UploadMultipartPartAsync`, `CompleteMultipartUploadAsync`, `AbortMultipartUploadAsync`)
+  - add S3-provider checksum support where the provider can surface it cleanly
+  - harden native S3 behavior against a local S3-compatible endpoint and extend provider-specific parity coverage
+  - keep public contracts provider-agnostic while surfacing the new provider capability state accurately
+
+### Track C — First-party presign and client surface
+
+- Packages: `IntegratedS3.Client`, `IntegratedS3.AspNetCore`, `IntegratedS3.Protocol`, `IntegratedS3.Core`
+- Ready: API design now, full implementation after Track B stabilizes the native object-copy/multipart surface
+- Depends on: Track B for final provider-backed presign semantics
+- Remaining scope:
+  - expose first-party presign generation as an application-facing capability instead of validation-only protocol support
+  - implement the currently scaffolded `IntegratedS3.Client` package beyond the empty project shell
+  - add typed client calls, auth token forwarding, streaming upload/download helpers, and presign helpers
+  - support the preferred browser/WASM presign-hybrid flow without forcing proxy-only transfers
+  - document how direct-storage and proxy flows map onto `ClaimsPrincipal` authorization
+
+### Track D — ASP.NET endpoint ergonomics and authorization surface
+
+- Packages: `IntegratedS3.AspNetCore`, `WebUi`, `IntegratedS3.Tests`
+- Ready: now
+- Depends on: none for endpoint-grouping work; coordinate with Track C if presign endpoints/options are added
+- Remaining scope:
+  - round out the DI/configuration surface with any still-missing overloads for configuration binding, inline configuration, named providers, manual provider registration, and advanced overrides
+  - add feature-group toggles for service, bucket, object, multipart, and admin endpoint groups
+  - make route-group-level authorization and policy wiring first-class instead of leaving it as optional coarse endpoint setup
+  - keep the host story aligned across `AddIntegratedS3(...)`, `MapIntegratedS3Endpoints(...)`, and the sample host composition helpers
+  - preserve `CreateSlimBuilder(...)`, Minimal API, trimming, and AOT friendliness while expanding configurability
+
+### Track E — S3 protocol fidelity and edge-case hardening
+
+- Packages: `IntegratedS3.AspNetCore`, `IntegratedS3.Protocol`, `IntegratedS3.Provider.Disk`, `IntegratedS3.Tests`
+- Ready: now
+- Depends on: coordinate with Tracks B and C as new copy/multipart/presign features land
+- Remaining scope:
+  - add multipart listing/discovery semantics beyond initiate/upload-part/complete/abort
+  - close additional bucket/object subresource and subresource-combination gaps on the S3-compatible HTTP surface
+  - harden conditional precedence, checksum/header behavior, and canonical-request edge cases
+  - continue versioning/tagging/delete-marker parity work for the remaining advanced edge cases
+  - keep `aws-chunked`, presigned-query, and virtual-hosted-style compatibility tightening against real client behavior
+
+### Track F — Multi-backend async replication, health, and reconciliation
+
+- Packages: `IntegratedS3.Core`, `IntegratedS3.Provider.*`, `IntegratedS3.AspNetCore`, `IntegratedS3.Tests`
+- Ready: orchestration semantics now; richer repair/testing once Tracks B and H add more parity coverage
+- Depends on: benefits from Track B for stronger second-provider scenarios
+- Remaining scope:
+  - implement `WriteToPrimaryAsyncReplicas` and any remaining replica-write orchestration modes
+  - add reconciliation and divergence-repair semantics for content, metadata, and version drift
+  - add background services such as mirror replay, orphan detection, checksum verification, multipart cleanup, index compaction, and expired-artifact cleanup
+  - expose health visibility and any required health/admin endpoints without coupling providers to a fixed hosting model
+  - specify and then automate failure semantics for stale replicas, unhealthy providers, and incomplete repair attempts
+
+### Track G — Advanced S3 feature slices
+
+- Packages: `IntegratedS3.Abstractions`, `IntegratedS3.Core`, `IntegratedS3.AspNetCore`, `IntegratedS3.Provider.Disk`, `IntegratedS3.Provider.S3`, `IntegratedS3.Tests`
+- Ready: after Track A settles the remaining retention/support-state design questions
+- Depends on: Track A first; coordinate with Track F if cross-backend behavior matters
+- Remaining scope:
+  - ACL/policy-compatible behavior where it makes sense alongside the existing `ClaimsPrincipal` authorization model
+  - CORS support on the S3-compatible HTTP surface
+  - object lock, retention, and legal-hold abstractions plus provider persistence shape
+  - server-side-encryption-related descriptors and behavior without leaking provider SDK details into shared contracts
+
+### Track H — Hardening, conformance, performance, samples, and release polish
+
+- Packages: `IntegratedS3.Tests`, `IntegratedS3.Testing`, `WebUi`, `docs/`
+- Ready: now
+- Depends on: can scaffold immediately; full coverage expands as Tracks B through G land
+- Remaining scope:
+  - add broader S3 conformance coverage, including the remaining protocol edge cases and client-compatibility scenarios
+  - deepen fault-injection coverage for mirrored writes, async replicas, reconciliation, and unhealthy-provider routing
+  - add structured logs, metrics, traces, correlation IDs, provider tags, auth-failure visibility, mirror-lag visibility, and reconciliation-backlog visibility
+  - benchmark the hot paths called out in this plan and track throughput, latency, allocation, and provider-breakdown baselines
+  - automate trimming/AOT publish verification and benchmark baselines
+  - add the planned MVC/Razor and Blazor WebAssembly sample consumers
+  - finish package polish items such as XML docs, onboarding docs, versioned protocol compatibility guidance, and any analyzers/diagnostics worth shipping
 
 ## Relevant Repository Files
 
@@ -1143,31 +1314,31 @@ Status: **not started**
 - **Provider implementation order:** disk first, native S3 second
 - **Current `WebUi` role:** sample/reference host, not final architecture container
 
-## Recommended Next Execution Slice
+## Recommended Next Execution Slices
 
-The disk provider, object-state-store architecture, and first dynamic backend-health slice are now substantially complete. The most pragmatic next step is to begin the native S3 provider and use it to validate the current abstractions against a second real backend.
+The best immediate parallel execution batch is no longer a single serial step. The highest-value ready-now slices are the native S3 provider completion track, the protocol-fidelity hardening track, the ASP.NET ergonomics track, and the hardening/conformance track.
 
-Why this should come next:
+Why these should come next:
 
-- `IStorageObjectStateStore` and `IStorageMultipartStateStore` are implemented and the disk provider uses them, so the auxiliary-state architecture is settled and future providers can build on it cleanly
-- the current supported surface now includes SHA-256/SHA1/CRC32/CRC32C checksum coverage plus dynamic backend-health snapshots and optional active probes, so the next architectural risk is validating the abstractions against a second backend rather than deepening the same disk-only slice further
-- the native S3 provider (`IntegratedS3.Provider.S3`) is the next major unstarted milestone; starting it now validates that provider contracts generalize cleanly beyond the disk backend and unlocks the delegated/passthrough and presigned URL generation scenarios
-- once a second provider exists, presign generation, reconciliation semantics, and advanced multi-backend subresources become practical to specify and harden
+- they touch different primary packages (`IntegratedS3.Provider.S3`, `IntegratedS3.AspNetCore`, `IntegratedS3.Protocol`, `IntegratedS3.Tests`) so multiple contributors can move without colliding constantly
+- finishing copy/multipart/checksum parity on the S3 provider unlocks cleaner first-party presign and client design
+- protocol-fidelity hardening and conformance work can proceed in parallel with provider completion and will immediately validate the new surface area
+- endpoint-toggle and route-group authorization work is mostly isolated to the ASP.NET integration layer and does not need to wait for the deeper backlog
 
-Recommended implementation sequence:
+Recommended dependency-aware order:
 
-1. begin `IntegratedS3.Provider.S3` using native AWS SDK — validate streaming, error translation, and metadata/version/checksum semantics; mark `BackendOwned` or `Delegated` ownership in the support-state descriptor as appropriate
-2. add first-party presign generation once the S3 provider exists as the reference implementation
-3. deepen multi-backend orchestration with asynchronous replicas, health visibility, and richer failover semantics building on the current snapshot/probe foundation
-4. introduce reconciliation semantics for stale or divergent replicas after the second provider confirms the multi-backend model
-5. continue closing remaining versioning/tagging/subresource/header edge-case fidelity on the current supported surface
+1. execute Track B to finish native S3 copy/multipart/checksum parity
+2. execute Track E in parallel to harden multipart/subresource/conditional/header fidelity on the S3-compatible surface
+3. execute Track D in parallel to add feature-group toggles and first-class route-group authorization configuration
+4. execute Track H in parallel to expand conformance, fault-injection, and publish verification around the slices landing from Tracks B, D, and E
+5. start Track C once Track B's provider-backed presign semantics are stable enough to expose cleanly
+6. start Track F and then Track G after the above slices reduce abstraction churn
 
-## Suggested Next Step
+## Suggested First Parallel Batch
 
-Given the current implementation state, the next recommended step should be:
+Given the current implementation state, the first parallel batch should be:
 
-1. begin `IntegratedS3.Provider.S3` — native AWS SDK backend, streaming semantics, error translation, and support-state descriptor with `BackendOwned` or `Delegated` ownership per concern
-2. add first-party presign generation once the S3 provider provides a reference implementation
-3. deepen multi-backend orchestration with asynchronous replicas, health visibility, and richer failover semantics on top of the current health snapshot/probe foundation
-4. introduce reconciliation semantics for stale or divergent replicas once a second provider confirms the multi-backend model
-5. continue closing remaining versioning/tagging/subresource/header edge-case fidelity on the current supported surface
+1. Track B — implement `CopyObjectAsync` plus the multipart upload lifecycle in `IntegratedS3.Provider.S3`
+2. Track D — add feature-group endpoint toggles and route-group authorization configuration in `IntegratedS3.AspNetCore`
+3. Track E — close multipart listing, subresource, conditional-precedence, and checksum/header edge cases on the S3-compatible HTTP surface
+4. Track H — add local S3-compatible integration coverage, broader conformance cases, and publish/fault-injection automation around the above work
