@@ -72,6 +72,7 @@ internal interface IS3StorageClient : IDisposable
         string? contentType,
         IReadOnlyDictionary<string, string>? metadata,
         IReadOnlyDictionary<string, string>? checksums,
+        ObjectServerSideEncryptionSettings? serverSideEncryption,
         CancellationToken cancellationToken = default);
 
     Task<S3DeleteObjectResult> DeleteObjectAsync(
@@ -92,6 +93,7 @@ internal interface IS3StorageClient : IDisposable
         DateTimeOffset? sourceIfModifiedSinceUtc,
         DateTimeOffset? sourceIfUnmodifiedSinceUtc,
         bool overwriteIfExists,
+        ObjectServerSideEncryptionSettings? destinationServerSideEncryption,
         CancellationToken cancellationToken = default);
 
     Task<MultipartUploadInfo> InitiateMultipartUploadAsync(
@@ -100,6 +102,7 @@ internal interface IS3StorageClient : IDisposable
         string? contentType,
         IReadOnlyDictionary<string, string>? metadata,
         string? checksumAlgorithm,
+        ObjectServerSideEncryptionSettings? serverSideEncryption,
         CancellationToken cancellationToken = default);
 
     Task<MultipartUploadPart> UploadMultipartPartAsync(

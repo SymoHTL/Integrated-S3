@@ -16,6 +16,20 @@ public sealed class IntegratedS3EndpointOptions
 
     public Action<RouteGroupBuilder>? ConfigureRouteGroup { get; set; }
 
+    public Action<RouteGroupBuilder>? ConfigureRootRouteGroup { get; set; }
+
+    public Action<RouteGroupBuilder>? ConfigureCompatibilityRouteGroup { get; set; }
+
+    public Action<RouteGroupBuilder>? ConfigureServiceRouteGroup { get; set; }
+
+    public Action<RouteGroupBuilder>? ConfigureBucketRouteGroup { get; set; }
+
+    public Action<RouteGroupBuilder>? ConfigureObjectRouteGroup { get; set; }
+
+    public Action<RouteGroupBuilder>? ConfigureMultipartRouteGroup { get; set; }
+
+    public Action<RouteGroupBuilder>? ConfigureAdminRouteGroup { get; set; }
+
     internal IntegratedS3EndpointOptions Clone()
     {
         return new IntegratedS3EndpointOptions
@@ -25,7 +39,14 @@ public sealed class IntegratedS3EndpointOptions
             EnableObjectEndpoints = EnableObjectEndpoints,
             EnableMultipartEndpoints = EnableMultipartEndpoints,
             EnableAdminEndpoints = EnableAdminEndpoints,
-            ConfigureRouteGroup = ConfigureRouteGroup
+            ConfigureRouteGroup = ConfigureRouteGroup,
+            ConfigureRootRouteGroup = ConfigureRootRouteGroup,
+            ConfigureCompatibilityRouteGroup = ConfigureCompatibilityRouteGroup,
+            ConfigureServiceRouteGroup = ConfigureServiceRouteGroup,
+            ConfigureBucketRouteGroup = ConfigureBucketRouteGroup,
+            ConfigureObjectRouteGroup = ConfigureObjectRouteGroup,
+            ConfigureMultipartRouteGroup = ConfigureMultipartRouteGroup,
+            ConfigureAdminRouteGroup = ConfigureAdminRouteGroup
         };
     }
 }

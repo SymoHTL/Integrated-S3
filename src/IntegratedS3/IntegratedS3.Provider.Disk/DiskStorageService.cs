@@ -437,6 +437,15 @@ internal sealed class DiskStorageService(
 
     public async ValueTask<StorageResult<GetObjectResponse>> GetObjectAsync(GetObjectRequest request, CancellationToken cancellationToken = default)
     {
+        var serverSideEncryptionError = GetUnsupportedServerSideEncryptionError(
+            request.ServerSideEncryption,
+            request.BucketName,
+            request.Key,
+            "object retrieval");
+        if (serverSideEncryptionError is not null) {
+            return StorageResult<GetObjectResponse>.Failure(serverSideEncryptionError);
+        }
+
         var storedObjectResult = await ResolveStoredObjectAsync(request.BucketName, request.Key, request.VersionId, cancellationToken);
         if (!storedObjectResult.IsSuccess) {
             return StorageResult<GetObjectResponse>.Failure(storedObjectResult.Error!);
@@ -536,6 +545,24 @@ internal sealed class DiskStorageService(
     {
         ArgumentNullException.ThrowIfNull(request);
 
+        var sourceServerSideEncryptionError = GetUnsupportedServerSideEncryptionError(
+            request.SourceServerSideEncryption,
+            request.SourceBucketName,
+            request.SourceKey,
+            "copy source requests");
+        if (sourceServerSideEncryptionError is not null) {
+            return StorageResult<ObjectInfo>.Failure(sourceServerSideEncryptionError);
+        }
+
+        var destinationServerSideEncryptionError = GetUnsupportedServerSideEncryptionError(
+            request.DestinationServerSideEncryption,
+            request.DestinationBucketName,
+            request.DestinationKey,
+            "copy destination requests");
+        if (destinationServerSideEncryptionError is not null) {
+            return StorageResult<ObjectInfo>.Failure(destinationServerSideEncryptionError);
+        }
+
         var sourceObjectResult = await ResolveStoredObjectAsync(request.SourceBucketName, request.SourceKey, request.SourceVersionId, cancellationToken);
         if (!sourceObjectResult.IsSuccess) {
             return StorageResult<ObjectInfo>.Failure(sourceObjectResult.Error!);
@@ -628,6 +655,15 @@ internal sealed class DiskStorageService(
     {
         ArgumentNullException.ThrowIfNull(request);
         ArgumentNullException.ThrowIfNull(request.Content);
+
+        var serverSideEncryptionError = GetUnsupportedServerSideEncryptionError(
+            request.ServerSideEncryption,
+            request.BucketName,
+            request.Key,
+            "object writes");
+        if (serverSideEncryptionError is not null) {
+            return StorageResult<ObjectInfo>.Failure(serverSideEncryptionError);
+        }
 
         var bucketPath = GetBucketPath(request.BucketName);
         if (!Directory.Exists(bucketPath)) {
@@ -773,6 +809,15 @@ internal sealed class DiskStorageService(
     {
         ArgumentNullException.ThrowIfNull(request);
         cancellationToken.ThrowIfCancellationRequested();
+
+        var serverSideEncryptionError = GetUnsupportedServerSideEncryptionError(
+            request.ServerSideEncryption,
+            request.BucketName,
+            request.Key,
+            "multipart upload initiation");
+        if (serverSideEncryptionError is not null) {
+            return ValueTask.FromResult(StorageResult<MultipartUploadInfo>.Failure(serverSideEncryptionError));
+        }
 
         if (!Directory.Exists(GetBucketPath(request.BucketName))) {
             return ValueTask.FromResult(StorageResult<MultipartUploadInfo>.Failure(BucketNotFound(request.BucketName)));
@@ -1061,6 +1106,15 @@ internal sealed class DiskStorageService(
 
     public async ValueTask<StorageResult<ObjectInfo>> HeadObjectAsync(HeadObjectRequest request, CancellationToken cancellationToken = default)
     {
+        var serverSideEncryptionError = GetUnsupportedServerSideEncryptionError(
+            request.ServerSideEncryption,
+            request.BucketName,
+            request.Key,
+            "object metadata lookups");
+        if (serverSideEncryptionError is not null) {
+            return StorageResult<ObjectInfo>.Failure(serverSideEncryptionError);
+        }
+
         var storedObjectResult = await ResolveStoredObjectAsync(request.BucketName, request.Key, request.VersionId, cancellationToken);
         if (!storedObjectResult.IsSuccess) {
             return StorageResult<ObjectInfo>.Failure(storedObjectResult.Error!);
@@ -2469,6 +2523,20 @@ internal sealed class DiskStorageService(
             ["crc32"] = Convert.ToBase64String(crc32.GetHashBytes()),
             ["crc32c"] = Convert.ToBase64String(crc32c.GetHashBytes())
         };
+    }
+
+    private static StorageError? GetUnsupportedServerSideEncryptionError(
+        ObjectServerSideEncryptionSettings? serverSideEncryption,
+        string bucketName,
+        string objectKey,
+        string operationDescription)
+    {
+        return serverSideEncryption is null
+            ? null
+            : StorageError.Unsupported(
+                $"Server-side encryption is not currently supported by the disk provider for {operationDescription}.",
+                bucketName,
+                objectKey);
     }
 
     private StorageError? ValidateRequestedChecksums(

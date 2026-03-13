@@ -1,3 +1,5 @@
+using System.Net;
+using System.Net.Http.Headers;
 using IntegratedS3.Core.Models;
 
 namespace IntegratedS3.Client;
@@ -338,6 +340,97 @@ public static class IntegratedS3ClientTransferExtensions
         await DownloadPresignedToFileAsync(transferClient, presigned, filePath, cancellationToken);
     }
 
+    /// <summary>
+    /// Obtains a presigned GET URL and downloads the object to <paramref name="filePath"/>,
+    /// resuming from an existing destination file when possible.
+    /// The response body is streamed without buffering the full payload into memory.
+    /// </summary>
+    /// <remarks>
+    /// If the destination file already exists, the helper requests the remaining bytes with an HTTP range request.
+    /// When the server ignores that range and returns a full <c>200 OK</c> response instead, the file is rewritten
+    /// from the start. When the server returns <c>416 Requested Range Not Satisfiable</c> and reports the same total
+    /// length as the destination file, the download is treated as already complete.
+    /// Pre-existing partial files are preserved on resume failures so callers can retry, while files created by the
+    /// current call are removed on failure.
+    /// </remarks>
+    /// <param name="client">The <see cref="IIntegratedS3Client"/> used to obtain the presigned URL.</param>
+    /// <param name="transferClient">The <see cref="HttpClient"/> used to execute the download transfer.</param>
+    /// <param name="bucketName">The source bucket name.</param>
+    /// <param name="key">The source object key.</param>
+    /// <param name="filePath">The local file path to write the downloaded object to.</param>
+    /// <param name="expiresInSeconds">How long the presigned URL should remain valid, in seconds.</param>
+    /// <param name="versionId">Optional version identifier for the object.</param>
+    /// <param name="cancellationToken">A token to cancel the operation.</param>
+    public static async Task DownloadToFileWithResumeAsync(
+        this IIntegratedS3Client client,
+        HttpClient transferClient,
+        string bucketName,
+        string key,
+        string filePath,
+        int expiresInSeconds,
+        string? versionId = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(client);
+        ArgumentNullException.ThrowIfNull(transferClient);
+        ArgumentException.ThrowIfNullOrWhiteSpace(filePath);
+
+        var presigned = await client.PresignGetObjectAsync(
+            bucketName, key, expiresInSeconds, versionId, cancellationToken);
+
+        await DownloadPresignedToFileWithResumeAsync(transferClient, presigned, filePath, cancellationToken);
+    }
+
+    /// <summary>
+    /// Obtains a presigned GET URL and downloads the object to <paramref name="filePath"/>,
+    /// resuming from an existing destination file when possible and forwarding
+    /// <paramref name="preferredAccessMode"/> to the presign request.
+    /// The response body is streamed without buffering the full payload into memory.
+    /// </summary>
+    /// <remarks>
+    /// If the destination file already exists, the helper requests the remaining bytes with an HTTP range request.
+    /// When the server ignores that range and returns a full <c>200 OK</c> response instead, the file is rewritten
+    /// from the start. When the server returns <c>416 Requested Range Not Satisfiable</c> and reports the same total
+    /// length as the destination file, the download is treated as already complete.
+    /// Pre-existing partial files are preserved on resume failures so callers can retry, while files created by the
+    /// current call are removed on failure.
+    /// </remarks>
+    /// <param name="client">The <see cref="IIntegratedS3Client"/> used to obtain the presigned URL.</param>
+    /// <param name="transferClient">The <see cref="HttpClient"/> used to execute the download transfer.</param>
+    /// <param name="bucketName">The source bucket name.</param>
+    /// <param name="key">The source object key.</param>
+    /// <param name="filePath">The local file path to write the downloaded object to.</param>
+    /// <param name="expiresInSeconds">How long the presigned URL should remain valid, in seconds.</param>
+    /// <param name="preferredAccessMode">
+    /// The preferred access mode hint forwarded to the server with the presign request.
+    /// Use <see cref="StorageAccessMode.Direct"/> to request a public URL redirect,
+    /// <see cref="StorageAccessMode.Delegated"/> to request a provider-signed URL,
+    /// or <see cref="StorageAccessMode.Proxy"/> to force proxy streaming through the server.
+    /// The server may fall back to <see cref="StorageAccessMode.Proxy"/> if the requested mode is unavailable.
+    /// </param>
+    /// <param name="versionId">Optional version identifier for the object.</param>
+    /// <param name="cancellationToken">A token to cancel the operation.</param>
+    public static async Task DownloadToFileWithResumeAsync(
+        this IIntegratedS3Client client,
+        HttpClient transferClient,
+        string bucketName,
+        string key,
+        string filePath,
+        int expiresInSeconds,
+        StorageAccessMode preferredAccessMode,
+        string? versionId = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(client);
+        ArgumentNullException.ThrowIfNull(transferClient);
+        ArgumentException.ThrowIfNullOrWhiteSpace(filePath);
+
+        var presigned = await client.PresignGetObjectAsync(
+            bucketName, key, expiresInSeconds, preferredAccessMode, versionId, cancellationToken);
+
+        await DownloadPresignedToFileWithResumeAsync(transferClient, presigned, filePath, cancellationToken);
+    }
+
     private static async Task DownloadPresignedToFileAsync(
         HttpClient transferClient,
         StoragePresignedRequest presigned,
@@ -367,6 +460,133 @@ public static class IntegratedS3ClientTransferExtensions
             DeletePartialDownload(filePath, exception);
             throw;
         }
+    }
+
+    private static async Task DownloadPresignedToFileWithResumeAsync(
+        HttpClient transferClient,
+        StoragePresignedRequest presigned,
+        string filePath,
+        CancellationToken cancellationToken)
+    {
+        if (!File.Exists(filePath)) {
+            await DownloadPresignedToFileAsync(transferClient, presigned, filePath, cancellationToken);
+            return;
+        }
+
+        var existingLength = new FileInfo(filePath).Length;
+
+        using var request = presigned.CreateHttpRequestMessage();
+        request.Headers.Range = new RangeHeaderValue(existingLength, null);
+
+        using var response = await transferClient.SendAsync(
+            request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+
+        if (response.StatusCode == HttpStatusCode.PartialContent) {
+            await AppendPartialDownloadAsync(response, filePath, cancellationToken);
+            return;
+        }
+
+        if (response.StatusCode == HttpStatusCode.RequestedRangeNotSatisfiable) {
+            if (TryGetReportedObjectLength(response, out var totalLength) && totalLength == existingLength) {
+                return;
+            }
+
+            await RewriteDownloadFromStartAsync(
+                transferClient, presigned, filePath, responseToReuse: null, cancellationToken);
+            return;
+        }
+
+        if (response.IsSuccessStatusCode) {
+            await RewriteDownloadFromStartAsync(
+                transferClient, presigned, filePath, response, cancellationToken);
+            return;
+        }
+
+        response.EnsureSuccessStatusCode();
+    }
+
+    private static async Task AppendPartialDownloadAsync(
+        HttpResponseMessage response,
+        string filePath,
+        CancellationToken cancellationToken)
+    {
+        await using var fileStream = new FileStream(
+            filePath, FileMode.Append, FileAccess.Write, FileShare.None,
+            bufferSize: 65536, useAsync: true);
+
+        await response.Content.CopyToAsync(fileStream, cancellationToken);
+    }
+
+    private static async Task RewriteDownloadFromStartAsync(
+        HttpClient transferClient,
+        StoragePresignedRequest presigned,
+        string filePath,
+        HttpResponseMessage? responseToReuse,
+        CancellationToken cancellationToken)
+    {
+        var temporaryFilePath = CreateTemporaryDownloadPath(filePath);
+
+        try {
+            if (responseToReuse is null) {
+                using var request = presigned.CreateHttpRequestMessage();
+                using var response = await transferClient.SendAsync(
+                    request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+                response.EnsureSuccessStatusCode();
+                await WriteResponseToNewFileAsync(response, temporaryFilePath, cancellationToken);
+            }
+            else {
+                await WriteResponseToNewFileAsync(responseToReuse, temporaryFilePath, cancellationToken);
+            }
+
+            File.Move(temporaryFilePath, filePath, overwrite: true);
+        }
+        catch (HttpRequestException exception) {
+            DeletePartialDownload(temporaryFilePath, exception);
+            throw;
+        }
+        catch (IOException exception) {
+            DeletePartialDownload(temporaryFilePath, exception);
+            throw;
+        }
+        catch (OperationCanceledException exception) {
+            DeletePartialDownload(temporaryFilePath, exception);
+            throw;
+        }
+        catch (UnauthorizedAccessException exception) {
+            DeletePartialDownload(temporaryFilePath, exception);
+            throw;
+        }
+    }
+
+    private static async Task WriteResponseToNewFileAsync(
+        HttpResponseMessage response,
+        string filePath,
+        CancellationToken cancellationToken)
+    {
+        await using var fileStream = new FileStream(
+            filePath, FileMode.CreateNew, FileAccess.Write, FileShare.None,
+            bufferSize: 65536, useAsync: true);
+
+        await response.Content.CopyToAsync(fileStream, cancellationToken);
+    }
+
+    private static string CreateTemporaryDownloadPath(string destinationFilePath)
+    {
+        var destinationDirectory = Path.GetDirectoryName(Path.GetFullPath(destinationFilePath))
+            ?? Directory.GetCurrentDirectory();
+
+        return Path.Combine(destinationDirectory, Path.GetRandomFileName());
+    }
+
+    private static bool TryGetReportedObjectLength(HttpResponseMessage response, out long totalLength)
+    {
+        if (response.Content.Headers.ContentRange?.Length is long reportedLength) {
+            totalLength = reportedLength;
+            return true;
+        }
+
+        totalLength = 0;
+        return false;
     }
 
     private static void DeletePartialDownload(string filePath, Exception transferFailure)

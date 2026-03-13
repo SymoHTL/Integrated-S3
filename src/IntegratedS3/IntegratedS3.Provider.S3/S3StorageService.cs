@@ -383,6 +383,10 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
 
     public async ValueTask<StorageResult<ObjectInfo>> HeadObjectAsync(HeadObjectRequest request, CancellationToken cancellationToken = default)
     {
+        var serverSideEncryptionError = ValidateReadServerSideEncryptionRequest(request.ServerSideEncryption, request.BucketName, request.Key, "HEAD");
+        if (serverSideEncryptionError is not null)
+            return StorageResult<ObjectInfo>.Failure(serverSideEncryptionError);
+
         try
         {
             var entry = await _client.HeadObjectAsync(request.BucketName, request.Key, request.VersionId, cancellationToken).ConfigureAwait(false);
@@ -402,10 +406,18 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
         {
             return StorageResult<ObjectInfo>.Failure(S3ErrorTranslator.Translate(ex, Name, request.BucketName, request.Key));
         }
+        catch (S3ServerSideEncryptionNotSupportedException ex)
+        {
+            return StorageResult<ObjectInfo>.Failure(StorageError.Unsupported(ex.Message, request.BucketName, request.Key));
+        }
     }
 
     public async ValueTask<StorageResult<GetObjectResponse>> GetObjectAsync(GetObjectRequest request, CancellationToken cancellationToken = default)
     {
+        var serverSideEncryptionError = ValidateReadServerSideEncryptionRequest(request.ServerSideEncryption, request.BucketName, request.Key, "GET");
+        if (serverSideEncryptionError is not null)
+            return StorageResult<GetObjectResponse>.Failure(serverSideEncryptionError);
+
         try
         {
             var result = await _client.GetObjectAsync(
@@ -432,27 +444,42 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
         catch (AmazonS3Exception ex) when ((int)ex.StatusCode == 304)
         {
             // If-None-Match matched — not modified. Retrieve metadata to return a complete ObjectInfo.
-            var headEntry = await _client.HeadObjectAsync(request.BucketName, request.Key, request.VersionId, cancellationToken).ConfigureAwait(false);
-            var objectInfo = headEntry is not null
-                ? EntryToObjectInfo(request.BucketName, headEntry)
-                : new ObjectInfo { BucketName = request.BucketName, Key = request.Key, VersionId = request.VersionId };
-
-            return StorageResult<GetObjectResponse>.Success(new GetObjectResponse
+            try
             {
-                Object = objectInfo,
-                Content = Stream.Null,
-                TotalContentLength = objectInfo.ContentLength,
-                IsNotModified = true
-            });
+                var headEntry = await _client.HeadObjectAsync(request.BucketName, request.Key, request.VersionId, cancellationToken).ConfigureAwait(false);
+                var objectInfo = headEntry is not null
+                    ? EntryToObjectInfo(request.BucketName, headEntry)
+                    : new ObjectInfo { BucketName = request.BucketName, Key = request.Key, VersionId = request.VersionId };
+
+                return StorageResult<GetObjectResponse>.Success(new GetObjectResponse
+                {
+                    Object = objectInfo,
+                    Content = Stream.Null,
+                    TotalContentLength = objectInfo.ContentLength,
+                    IsNotModified = true
+                });
+            }
+            catch (S3ServerSideEncryptionNotSupportedException sseEx)
+            {
+                return StorageResult<GetObjectResponse>.Failure(StorageError.Unsupported(sseEx.Message, request.BucketName, request.Key));
+            }
         }
         catch (AmazonS3Exception ex)
         {
             return StorageResult<GetObjectResponse>.Failure(S3ErrorTranslator.Translate(ex, Name, request.BucketName, request.Key));
         }
+        catch (S3ServerSideEncryptionNotSupportedException ex)
+        {
+            return StorageResult<GetObjectResponse>.Failure(StorageError.Unsupported(ex.Message, request.BucketName, request.Key));
+        }
     }
 
     public async ValueTask<StorageResult<ObjectInfo>> PutObjectAsync(PutObjectRequest request, CancellationToken cancellationToken = default)
     {
+        var serverSideEncryptionError = ValidateWriteServerSideEncryptionRequest(request.ServerSideEncryption, request.BucketName, request.Key);
+        if (serverSideEncryptionError is not null)
+            return StorageResult<ObjectInfo>.Failure(serverSideEncryptionError);
+
         try
         {
             var entry = await _client.PutObjectAsync(
@@ -463,6 +490,7 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
                 request.ContentType,
                 request.Metadata,
                 request.Checksums,
+                request.ServerSideEncryption,
                 cancellationToken).ConfigureAwait(false);
 
             return StorageResult<ObjectInfo>.Success(EntryToObjectInfo(request.BucketName, entry));
@@ -470,6 +498,10 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
         catch (AmazonS3Exception ex)
         {
             return StorageResult<ObjectInfo>.Failure(S3ErrorTranslator.Translate(ex, Name, request.BucketName, request.Key));
+        }
+        catch (S3ServerSideEncryptionNotSupportedException ex)
+        {
+            return StorageResult<ObjectInfo>.Failure(StorageError.Unsupported(ex.Message, request.BucketName, request.Key));
         }
     }
 
@@ -562,6 +594,20 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
     {
         ArgumentNullException.ThrowIfNull(request);
 
+        var sourceServerSideEncryptionError = ValidateCopySourceServerSideEncryptionRequest(
+            request.SourceServerSideEncryption,
+            request.SourceBucketName,
+            request.SourceKey);
+        if (sourceServerSideEncryptionError is not null)
+            return StorageResult<ObjectInfo>.Failure(sourceServerSideEncryptionError);
+
+        var destinationServerSideEncryptionError = ValidateWriteServerSideEncryptionRequest(
+            request.DestinationServerSideEncryption,
+            request.DestinationBucketName,
+            request.DestinationKey);
+        if (destinationServerSideEncryptionError is not null)
+            return StorageResult<ObjectInfo>.Failure(destinationServerSideEncryptionError);
+
         try
         {
             var copiedEntry = await _client.CopyObjectAsync(
@@ -575,6 +621,7 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
                 request.SourceIfModifiedSinceUtc,
                 request.SourceIfUnmodifiedSinceUtc,
                 request.OverwriteIfExists,
+                request.DestinationServerSideEncryption,
                 cancellationToken).ConfigureAwait(false);
 
             var enrichedEntry = await EnrichObjectEntryAsync(
@@ -589,11 +636,19 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
         {
             return StorageResult<ObjectInfo>.Failure(TranslateCopyObjectError(ex, request));
         }
+        catch (S3ServerSideEncryptionNotSupportedException ex)
+        {
+            return StorageResult<ObjectInfo>.Failure(StorageError.Unsupported(ex.Message, request.DestinationBucketName, request.DestinationKey));
+        }
     }
 
     public async ValueTask<StorageResult<MultipartUploadInfo>> InitiateMultipartUploadAsync(InitiateMultipartUploadRequest request, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(request);
+
+        var serverSideEncryptionError = ValidateWriteServerSideEncryptionRequest(request.ServerSideEncryption, request.BucketName, request.Key);
+        if (serverSideEncryptionError is not null)
+            return StorageResult<MultipartUploadInfo>.Failure(serverSideEncryptionError);
 
         try
         {
@@ -603,6 +658,7 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
                 request.ContentType,
                 request.Metadata,
                 request.ChecksumAlgorithm,
+                request.ServerSideEncryption,
                 cancellationToken).ConfigureAwait(false);
 
             return StorageResult<MultipartUploadInfo>.Success(upload);
@@ -610,6 +666,10 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
         catch (AmazonS3Exception ex)
         {
             return StorageResult<MultipartUploadInfo>.Failure(S3ErrorTranslator.Translate(ex, Name, request.BucketName, request.Key));
+        }
+        catch (S3ServerSideEncryptionNotSupportedException ex)
+        {
+            return StorageResult<MultipartUploadInfo>.Failure(StorageError.Unsupported(ex.Message, request.BucketName, request.Key));
         }
     }
 
@@ -663,6 +723,10 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
         {
             return StorageResult<ObjectInfo>.Failure(S3ErrorTranslator.Translate(ex, Name, request.BucketName, request.Key));
         }
+        catch (S3ServerSideEncryptionNotSupportedException ex)
+        {
+            return StorageResult<ObjectInfo>.Failure(StorageError.Unsupported(ex.Message, request.BucketName, request.Key));
+        }
     }
 
     public async ValueTask<StorageResult> AbortMultipartUploadAsync(AbortMultipartUploadRequest request, CancellationToken cancellationToken = default)
@@ -701,7 +765,8 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
         ETag = entry.ETag,
         LastModifiedUtc = entry.LastModifiedUtc,
         Metadata = entry.Metadata,
-        Checksums = entry.Checksums
+        Checksums = entry.Checksums,
+        ServerSideEncryption = entry.ServerSideEncryption
     };
 
     private async Task<S3ObjectEntry> EnrichObjectEntryAsync(
@@ -752,10 +817,84 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
             ContentType = preferred.ContentType ?? fallback.ContentType,
             ETag = preferred.ETag ?? fallback.ETag,
             LastModifiedUtc = preferred.LastModifiedUtc == default ? fallback.LastModifiedUtc : preferred.LastModifiedUtc,
-            Metadata = preferred.Metadata ?? fallback.Metadata,
+            Metadata = MergeValueDictionaries(preferred.Metadata, fallback.Metadata),
             VersionId = preferred.VersionId ?? fallback.VersionId,
-            Checksums = preferred.Checksums ?? fallback.Checksums
+            Checksums = MergeValueDictionaries(preferred.Checksums, fallback.Checksums),
+            ServerSideEncryption = preferred.ServerSideEncryption ?? fallback.ServerSideEncryption
         };
+    }
+
+    private StorageError? ValidateReadServerSideEncryptionRequest(
+        ObjectServerSideEncryptionSettings? serverSideEncryption,
+        string bucketName,
+        string key,
+        string operation)
+    {
+        if (serverSideEncryption is null)
+            return null;
+
+        return StorageError.Unsupported(
+            $"The S3 provider does not accept server-side encryption request settings for {operation} object reads in the current AES256/KMS slice. Read-time SSE headers are only used with customer-provided keys.",
+            bucketName,
+            key);
+    }
+
+    private StorageError? ValidateCopySourceServerSideEncryptionRequest(
+        ObjectServerSideEncryptionSettings? serverSideEncryption,
+        string bucketName,
+        string key)
+    {
+        if (serverSideEncryption is null)
+            return null;
+
+        return StorageError.Unsupported(
+            "The S3 provider does not support copy-source server-side encryption settings in the current AES256/KMS slice. Source-side SSE headers are only used with customer-provided keys.",
+            bucketName,
+            key);
+    }
+
+    private StorageError? ValidateWriteServerSideEncryptionRequest(
+        ObjectServerSideEncryptionSettings? serverSideEncryption,
+        string bucketName,
+        string key)
+    {
+        if (serverSideEncryption is null)
+            return null;
+
+        return serverSideEncryption.Algorithm switch
+        {
+            ObjectServerSideEncryptionAlgorithm.Aes256 when serverSideEncryption.KeyId is not null || serverSideEncryption.Context is not null
+                => StorageError.Unsupported(
+                    "AES256 server-side encryption does not support key identifiers or encryption context in the native S3 provider.",
+                    bucketName,
+                    key),
+            ObjectServerSideEncryptionAlgorithm.Aes256 => null,
+            ObjectServerSideEncryptionAlgorithm.Kms => null,
+            _ => StorageError.Unsupported(
+                $"Server-side encryption algorithm '{serverSideEncryption.Algorithm}' is not supported by the native S3 provider.",
+                bucketName,
+                key)
+        };
+    }
+
+    private static IReadOnlyDictionary<string, string>? MergeValueDictionaries(
+        IReadOnlyDictionary<string, string>? preferred,
+        IReadOnlyDictionary<string, string>? fallback)
+    {
+        if (preferred is null || preferred.Count == 0)
+            return fallback;
+
+        if (fallback is null || fallback.Count == 0)
+            return preferred;
+
+        var merged = new Dictionary<string, string>(fallback.Count + preferred.Count, StringComparer.OrdinalIgnoreCase);
+        foreach (var (key, value) in fallback)
+            merged[key] = value;
+
+        foreach (var (key, value) in preferred)
+            merged[key] = value;
+
+        return merged;
     }
 
     private StorageError ObjectNotFound(string bucketName, string key, string? versionId) => new()

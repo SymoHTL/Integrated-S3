@@ -1,3 +1,5 @@
+using IntegratedS3.Abstractions.Models;
+
 namespace IntegratedS3.Core.Persistence;
 
 public sealed class ObjectCatalogRecord
@@ -29,6 +31,10 @@ public sealed class ObjectCatalogRecord
     public string? TagsJson { get; set; }
 
     public string? ChecksumsJson { get; set; }
+
+    public ObjectServerSideEncryptionAlgorithm? ServerSideEncryptionAlgorithm { get; set; }
+
+    public string? ServerSideEncryptionKeyId { get; set; }
 
     public DateTimeOffset LastSyncedAtUtc { get; set; }
 }

@@ -494,8 +494,271 @@ public sealed class IntegratedS3ClientTransferTests(WebUiApplicationFactory fact
     }
 
     // -------------------------------------------------------------------------
+    // Unit — DownloadToFileWithResumeAsync resume and cleanup behavior
+    // -------------------------------------------------------------------------
+
+    [Fact]
+    public async Task DownloadToFileWithResumeAsync_PartialContent_AppendsRemainingBytes()
+    {
+        var tempDir = CreateTransferTempDirectory();
+        Directory.CreateDirectory(tempDir);
+        try {
+            var destPath = Path.Combine(tempDir, "resume-append.txt");
+            await File.WriteAllTextAsync(destPath, "hello ");
+
+            var capturingClient = new CapturingIntegratedS3Client();
+            var existingLength = new FileInfo(destPath).Length;
+            using var transferClient = new HttpClient(new DelegateHttpMessageHandler((request, cancellationToken) => {
+                Assert.Equal("GET", request.Method.Method);
+                Assert.NotNull(request.Headers.Range);
+                var range = Assert.Single(request.Headers.Range!.Ranges);
+                Assert.Equal(existingLength, range.From);
+                Assert.Null(range.To);
+
+                var response = new HttpResponseMessage(HttpStatusCode.PartialContent)
+                {
+                    Content = new ByteArrayContent(Encoding.UTF8.GetBytes("world"))
+                };
+                response.Content.Headers.ContentRange = new ContentRangeHeaderValue(
+                    existingLength,
+                    existingLength + "world".Length - 1,
+                    existingLength + "world".Length);
+
+                return Task.FromResult(response);
+            }));
+
+            await capturingClient.DownloadToFileWithResumeAsync(
+                transferClient,
+                "bucket",
+                "key",
+                destPath,
+                expiresInSeconds: 60);
+
+            Assert.Equal("hello world", await File.ReadAllTextAsync(destPath));
+        }
+        finally {
+            Directory.Delete(tempDir, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task DownloadToFileWithResumeAsync_RangeIgnored_RewritesFromStartAndForwardsAccessMode()
+    {
+        var tempDir = CreateTransferTempDirectory();
+        Directory.CreateDirectory(tempDir);
+        try {
+            var destPath = Path.Combine(tempDir, "range-ignored.txt");
+            const string rewrittenPayload = "fresh complete payload";
+            await File.WriteAllTextAsync(destPath, "stale partial payload");
+
+            var capturingClient = new CapturingIntegratedS3Client();
+            var existingLength = new FileInfo(destPath).Length;
+            var requestCount = 0;
+            using var transferClient = new HttpClient(new DelegateHttpMessageHandler((request, cancellationToken) => {
+                requestCount++;
+                Assert.NotNull(request.Headers.Range);
+                var range = Assert.Single(request.Headers.Range!.Ranges);
+                Assert.Equal(existingLength, range.From);
+                Assert.Null(range.To);
+
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new ByteArrayContent(Encoding.UTF8.GetBytes(rewrittenPayload))
+                });
+            }));
+
+            await capturingClient.DownloadToFileWithResumeAsync(
+                transferClient,
+                "bucket",
+                "key",
+                destPath,
+                expiresInSeconds: 60,
+                preferredAccessMode: StorageAccessMode.Delegated);
+
+            Assert.Equal(1, requestCount);
+            Assert.Equal(StorageAccessMode.Delegated, capturingClient.LastRequest?.PreferredAccessMode);
+            Assert.Equal(rewrittenPayload, await File.ReadAllTextAsync(destPath));
+        }
+        finally {
+            Directory.Delete(tempDir, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task DownloadToFileWithResumeAsync_RequestedRangeNotSatisfiableWithMatchingLength_TreatsDownloadAsComplete()
+    {
+        var tempDir = CreateTransferTempDirectory();
+        Directory.CreateDirectory(tempDir);
+        try {
+            var destPath = Path.Combine(tempDir, "already-complete.txt");
+            const string existingPayload = "already complete";
+            await File.WriteAllTextAsync(destPath, existingPayload);
+
+            var existingLength = new FileInfo(destPath).Length;
+            var capturingClient = new CapturingIntegratedS3Client();
+            using var transferClient = new HttpClient(new DelegateHttpMessageHandler((request, cancellationToken) => {
+                Assert.NotNull(request.Headers.Range);
+                var range = Assert.Single(request.Headers.Range!.Ranges);
+                Assert.Equal(existingLength, range.From);
+                Assert.Null(range.To);
+
+                var response = new HttpResponseMessage(HttpStatusCode.RequestedRangeNotSatisfiable)
+                {
+                    Content = new ByteArrayContent([])
+                };
+                response.Content.Headers.ContentRange = new ContentRangeHeaderValue(existingLength);
+                return Task.FromResult(response);
+            }));
+
+            await capturingClient.DownloadToFileWithResumeAsync(
+                transferClient,
+                "bucket",
+                "key",
+                destPath,
+                expiresInSeconds: 60);
+
+            Assert.Equal(existingPayload, await File.ReadAllTextAsync(destPath));
+        }
+        finally {
+            Directory.Delete(tempDir, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task DownloadToFileWithResumeAsync_RequestedRangeNotSatisfiableWithMismatchedLength_RewritesFromStart()
+    {
+        var tempDir = CreateTransferTempDirectory();
+        Directory.CreateDirectory(tempDir);
+        try {
+            var destPath = Path.Combine(tempDir, "range-mismatch.txt");
+            const string existingPayload = "stale-local-copy";
+            const string rewrittenPayload = "rewritten after mismatch";
+            await File.WriteAllTextAsync(destPath, existingPayload);
+
+            var existingLength = new FileInfo(destPath).Length;
+            var capturingClient = new CapturingIntegratedS3Client();
+            var requestCount = 0;
+            using var transferClient = new HttpClient(new DelegateHttpMessageHandler((request, cancellationToken) => {
+                requestCount++;
+
+                if (requestCount == 1) {
+                    Assert.NotNull(request.Headers.Range);
+                    var range = Assert.Single(request.Headers.Range!.Ranges);
+                    Assert.Equal(existingLength, range.From);
+                    Assert.Null(range.To);
+
+                    var response = new HttpResponseMessage(HttpStatusCode.RequestedRangeNotSatisfiable)
+                    {
+                        Content = new ByteArrayContent([])
+                    };
+                    response.Content.Headers.ContentRange = new ContentRangeHeaderValue(existingLength + 10);
+                    return Task.FromResult(response);
+                }
+
+                Assert.Null(request.Headers.Range);
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new ByteArrayContent(Encoding.UTF8.GetBytes(rewrittenPayload))
+                });
+            }));
+
+            await capturingClient.DownloadToFileWithResumeAsync(
+                transferClient,
+                "bucket",
+                "key",
+                destPath,
+                expiresInSeconds: 60);
+
+            Assert.Equal(2, requestCount);
+            Assert.Equal(rewrittenPayload, await File.ReadAllTextAsync(destPath));
+        }
+        finally {
+            Directory.Delete(tempDir, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task DownloadToFileWithResumeAsync_ResumeTransferFails_PreservesExistingPartialFile()
+    {
+        var tempDir = CreateTransferTempDirectory();
+        Directory.CreateDirectory(tempDir);
+        try {
+            var destPath = Path.Combine(tempDir, "resume-failure.txt");
+            await File.WriteAllTextAsync(destPath, "partial-");
+
+            var capturingClient = new CapturingIntegratedS3Client();
+            var existingLength = new FileInfo(destPath).Length;
+            using var transferClient = new HttpClient(new DelegateHttpMessageHandler((request, cancellationToken) => {
+                var response = new HttpResponseMessage(HttpStatusCode.PartialContent)
+                {
+                    Content = new StreamContent(new ThrowingReadStream(
+                        Encoding.UTF8.GetBytes("tail"),
+                        bytesBeforeFailure: 2,
+                        new IOException("Simulated resume failure.")))
+                };
+                response.Content.Headers.ContentRange = new ContentRangeHeaderValue(
+                    existingLength,
+                    existingLength + 3,
+                    existingLength + 4);
+                return Task.FromResult(response);
+            }));
+
+            var exception = await Assert.ThrowsAsync<HttpRequestException>(() =>
+                capturingClient.DownloadToFileWithResumeAsync(
+                    transferClient,
+                    "bucket",
+                    "key",
+                    destPath,
+                    expiresInSeconds: 60));
+
+            Assert.IsType<IOException>(exception.InnerException);
+            Assert.True(File.Exists(destPath), "Pre-existing partial files should be preserved on resume failure.");
+            Assert.Equal("partial-ta", await File.ReadAllTextAsync(destPath));
+        }
+        finally {
+            Directory.Delete(tempDir, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task DownloadToFileWithResumeAsync_NewDestinationTransferFails_DeletesCreatedFile()
+    {
+        var tempDir = CreateTransferTempDirectory();
+        Directory.CreateDirectory(tempDir);
+        try {
+            var destPath = Path.Combine(tempDir, "new-destination-failure.txt");
+            var capturingClient = new CapturingIntegratedS3Client();
+            using var transferClient = new HttpClient(new DelegateHttpMessageHandler((request, cancellationToken) =>
+                Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StreamContent(new ThrowingReadStream(
+                        Encoding.UTF8.GetBytes("payload"),
+                        bytesBeforeFailure: 3,
+                        new IOException("Simulated new file failure.")))
+                })));
+
+            var exception = await Assert.ThrowsAsync<HttpRequestException>(() =>
+                capturingClient.DownloadToFileWithResumeAsync(
+                    transferClient,
+                    "bucket",
+                    "key",
+                    destPath,
+                    expiresInSeconds: 60));
+
+            Assert.IsType<IOException>(exception.InnerException);
+            Assert.False(File.Exists(destPath), "Files created during this call should be removed when the transfer fails.");
+        }
+        finally {
+            Directory.Delete(tempDir, recursive: true);
+        }
+    }
+
+    // -------------------------------------------------------------------------
     // Helpers
     // -------------------------------------------------------------------------
+
+    private static string CreateTransferTempDirectory()
+        => Path.Combine(Path.GetTempPath(), "IntegratedS3.ClientTransferTests", Guid.NewGuid().ToString("N"));
 
     /// <summary>
     /// Configures an isolated test host with SigV4 + TestHeader authentication
@@ -620,5 +883,100 @@ public sealed class IntegratedS3ClientTransferTests(WebUiApplicationFactory fact
             {
                 Content = new ByteArrayContent([])
             });
+    }
+
+    private sealed class DelegateHttpMessageHandler(
+        Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> handler) : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            ArgumentNullException.ThrowIfNull(request);
+            return handler(request, cancellationToken);
+        }
+    }
+
+    private sealed class ThrowingReadStream(
+        byte[] payload,
+        int bytesBeforeFailure,
+        Exception failure) : Stream
+    {
+        private readonly byte[] _payload = payload;
+        private readonly int _failureOffset = Math.Clamp(bytesBeforeFailure, 0, payload.Length);
+        private readonly Exception _failure = failure;
+        private int _position;
+
+        public override bool CanRead => true;
+        public override bool CanSeek => false;
+        public override bool CanWrite => false;
+        public override long Length => _payload.Length;
+        public override long Position
+        {
+            get => _position;
+            set => throw new NotSupportedException();
+        }
+
+        public override void Flush()
+        {
+        }
+
+        public override int Read(byte[] buffer, int offset, int count)
+        {
+            ArgumentNullException.ThrowIfNull(buffer);
+            return ReadCore(buffer.AsSpan(offset, count));
+        }
+
+        public override int Read(Span<byte> buffer)
+            => ReadCore(buffer);
+
+        public override ValueTask<int> ReadAsync(
+            Memory<byte> buffer,
+            CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return ValueTask.FromResult(ReadCore(buffer.Span));
+        }
+
+        public override Task<int> ReadAsync(
+            byte[] buffer,
+            int offset,
+            int count,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.FromResult(Read(buffer, offset, count));
+        }
+
+        public override long Seek(long offset, SeekOrigin origin)
+            => throw new NotSupportedException();
+
+        public override void SetLength(long value)
+            => throw new NotSupportedException();
+
+        public override void Write(byte[] buffer, int offset, int count)
+            => throw new NotSupportedException();
+
+        private int ReadCore(Span<byte> buffer)
+        {
+            if (buffer.IsEmpty) {
+                return 0;
+            }
+
+            if (_position >= _failureOffset) {
+                throw _failure;
+            }
+
+            var bytesRemainingBeforeFailure = _failureOffset - _position;
+            var bytesRemaining = Math.Min(bytesRemainingBeforeFailure, _payload.Length - _position);
+            var bytesToCopy = Math.Min(buffer.Length, bytesRemaining);
+            if (bytesToCopy <= 0) {
+                throw _failure;
+            }
+
+            _payload.AsSpan(_position, bytesToCopy).CopyTo(buffer);
+            _position += bytesToCopy;
+            return bytesToCopy;
+        }
     }
 }

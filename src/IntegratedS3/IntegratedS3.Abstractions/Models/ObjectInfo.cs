@@ -25,4 +25,6 @@ public sealed class ObjectInfo
     public IReadOnlyDictionary<string, string>? Tags { get; init; }
 
     public IReadOnlyDictionary<string, string>? Checksums { get; init; }
+
+    public ObjectServerSideEncryptionInfo? ServerSideEncryption { get; init; }
 }

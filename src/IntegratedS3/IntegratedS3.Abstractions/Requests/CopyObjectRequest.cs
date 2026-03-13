@@ -1,3 +1,5 @@
+using IntegratedS3.Abstractions.Models;
+
 namespace IntegratedS3.Abstractions.Requests;
 
 public sealed class CopyObjectRequest
@@ -19,6 +21,10 @@ public sealed class CopyObjectRequest
     public DateTimeOffset? SourceIfModifiedSinceUtc { get; init; }
 
     public DateTimeOffset? SourceIfUnmodifiedSinceUtc { get; init; }
+
+    public ObjectServerSideEncryptionSettings? SourceServerSideEncryption { get; init; }
+
+    public ObjectServerSideEncryptionSettings? DestinationServerSideEncryption { get; init; }
 
     public bool OverwriteIfExists { get; init; } = true;
 }

@@ -27,7 +27,7 @@ public static class S3StorageCapabilities
         AccessControl = StorageCapabilitySupport.Unsupported,
         Cors = StorageCapabilitySupport.Native,
         ObjectLock = StorageCapabilitySupport.Unsupported,
-        ServerSideEncryption = StorageCapabilitySupport.Unsupported,
+        ServerSideEncryption = StorageCapabilitySupport.Native,
         Checksums = StorageCapabilitySupport.Native,
         XmlErrors = StorageCapabilitySupport.Unsupported,
         PathStyleAddressing = options.ForcePathStyle

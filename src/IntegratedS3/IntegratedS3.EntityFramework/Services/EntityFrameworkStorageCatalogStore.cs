@@ -157,6 +157,8 @@ internal sealed class EntityFrameworkStorageCatalogStore<TDbContext>(
         record.MetadataJson = @object.Metadata is null ? null : JsonSerializer.Serialize(@object.Metadata);
         record.TagsJson = @object.Tags is null ? null : JsonSerializer.Serialize(@object.Tags);
         record.ChecksumsJson = @object.Checksums is null ? null : JsonSerializer.Serialize(@object.Checksums);
+        record.ServerSideEncryptionAlgorithm = @object.ServerSideEncryption?.Algorithm;
+        record.ServerSideEncryptionKeyId = @object.ServerSideEncryption?.KeyId;
         record.LastSyncedAtUtc = DateTimeOffset.UtcNow;
 
         await dbContext.SaveChangesAsync(cancellationToken);
@@ -222,6 +224,13 @@ internal sealed class EntityFrameworkStorageCatalogStore<TDbContext>(
                 Checksums = string.IsNullOrWhiteSpace(@object.ChecksumsJson)
                     ? null
                     : JsonSerializer.Deserialize<Dictionary<string, string>>(@object.ChecksumsJson),
+                ServerSideEncryption = @object.ServerSideEncryptionAlgorithm.HasValue
+                    ? new ObjectServerSideEncryptionInfo
+                    {
+                        Algorithm = @object.ServerSideEncryptionAlgorithm.Value,
+                        KeyId = @object.ServerSideEncryptionKeyId
+                    }
+                    : null,
                 LastSyncedAtUtc = @object.LastSyncedAtUtc
             })
             .ToArrayAsync(cancellationToken);

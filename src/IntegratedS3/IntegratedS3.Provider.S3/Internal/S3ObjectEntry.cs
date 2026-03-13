@@ -1,3 +1,5 @@
+using IntegratedS3.Abstractions.Models;
+
 namespace IntegratedS3.Provider.S3.Internal;
 
 /// <summary>
@@ -14,4 +16,5 @@ internal sealed record S3ObjectEntry(
     string? VersionId,
     bool IsLatest = true,
     bool IsDeleteMarker = false,
-    IReadOnlyDictionary<string, string>? Checksums = null);
+    IReadOnlyDictionary<string, string>? Checksums = null,
+    ObjectServerSideEncryptionInfo? ServerSideEncryption = null);

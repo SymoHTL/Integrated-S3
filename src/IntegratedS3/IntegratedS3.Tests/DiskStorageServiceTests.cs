@@ -1,5 +1,6 @@
 using System.Text;
 using System.Security.Cryptography;
+using IntegratedS3.Abstractions.Errors;
 using IntegratedS3.Abstractions.Models;
 using IntegratedS3.Abstractions.Requests;
 using IntegratedS3.Abstractions.Services;
@@ -122,6 +123,39 @@ public sealed class DiskStorageServiceTests
 
         Assert.False(headResult.IsSuccess);
         Assert.Equal(IntegratedS3.Abstractions.Errors.StorageErrorCode.ObjectNotFound, headResult.Error!.Code);
+    }
+
+    [Fact]
+    public async Task DiskStorage_PutObject_RejectsServerSideEncryptionRequests()
+    {
+        await using var fixture = new DiskStorageFixture();
+        var storageService = fixture.Services.GetRequiredService<IStorageBackend>();
+
+        Assert.True((await storageService.CreateBucketAsync(new CreateBucketRequest
+        {
+            BucketName = "encrypted-put"
+        })).IsSuccess);
+
+        await using var uploadStream = new MemoryStream(Encoding.UTF8.GetBytes("encrypted payload"));
+        var putResult = await storageService.PutObjectAsync(new PutObjectRequest
+        {
+            BucketName = "encrypted-put",
+            Key = "docs/object.txt",
+            Content = uploadStream,
+            ServerSideEncryption = CreateServerSideEncryptionSettings()
+        });
+
+        Assert.False(putResult.IsSuccess);
+        AssertUnsupportedServerSideEncryption(putResult.Error, "encrypted-put", "docs/object.txt");
+
+        var headResult = await storageService.HeadObjectAsync(new HeadObjectRequest
+        {
+            BucketName = "encrypted-put",
+            Key = "docs/object.txt"
+        });
+
+        Assert.False(headResult.IsSuccess);
+        Assert.Equal(StorageErrorCode.ObjectNotFound, headResult.Error!.Code);
     }
 
     [Fact]
@@ -1066,6 +1100,58 @@ public sealed class DiskStorageServiceTests
     }
 
     [Fact]
+    public async Task DiskStorage_GetAndHeadObject_RejectServerSideEncryptionRequests()
+    {
+        await using var fixture = new DiskStorageFixture();
+        var storageService = fixture.Services.GetRequiredService<IStorageBackend>();
+
+        Assert.True((await storageService.CreateBucketAsync(new CreateBucketRequest
+        {
+            BucketName = "encrypted-reads"
+        })).IsSuccess);
+
+        await using var uploadStream = new MemoryStream(Encoding.UTF8.GetBytes("read me"));
+        var putResult = await storageService.PutObjectAsync(new PutObjectRequest
+        {
+            BucketName = "encrypted-reads",
+            Key = "docs/object.txt",
+            Content = uploadStream,
+            ContentType = "text/plain"
+        });
+
+        Assert.True(putResult.IsSuccess);
+
+        var getResult = await storageService.GetObjectAsync(new GetObjectRequest
+        {
+            BucketName = "encrypted-reads",
+            Key = "docs/object.txt",
+            ServerSideEncryption = CreateServerSideEncryptionSettings()
+        });
+
+        Assert.False(getResult.IsSuccess);
+        AssertUnsupportedServerSideEncryption(getResult.Error, "encrypted-reads", "docs/object.txt");
+
+        var headResult = await storageService.HeadObjectAsync(new HeadObjectRequest
+        {
+            BucketName = "encrypted-reads",
+            Key = "docs/object.txt",
+            ServerSideEncryption = CreateServerSideEncryptionSettings()
+        });
+
+        Assert.False(headResult.IsSuccess);
+        AssertUnsupportedServerSideEncryption(headResult.Error, "encrypted-reads", "docs/object.txt");
+
+        var plainHeadResult = await storageService.HeadObjectAsync(new HeadObjectRequest
+        {
+            BucketName = "encrypted-reads",
+            Key = "docs/object.txt"
+        });
+
+        Assert.True(plainHeadResult.IsSuccess);
+        Assert.Equal(putResult.Value!.VersionId, plainHeadResult.Value!.VersionId);
+    }
+
+    [Fact]
     public async Task DiskStorage_CopiesObjectsAndPreservesMetadata()
     {
         await using var fixture = new DiskStorageFixture();
@@ -1112,6 +1198,61 @@ public sealed class DiskStorageServiceTests
         Assert.Equal("tests", response.Object.Metadata!["origin"]);
         Assert.Equal(ComputeSha256Base64("copy me"), response.Object.Checksums!["sha256"]);
         Assert.NotEqual(putResult.Value!.BucketName, copyResult.Value.BucketName);
+    }
+
+    [Fact]
+    public async Task DiskStorage_CopyObject_RejectsServerSideEncryptionRequests()
+    {
+        await using var fixture = new DiskStorageFixture();
+        var storageService = fixture.Services.GetRequiredService<IStorageBackend>();
+        await storageService.CreateBucketAsync(new CreateBucketRequest { BucketName = "source" });
+        await storageService.CreateBucketAsync(new CreateBucketRequest { BucketName = "target" });
+
+        await using var uploadStream = new MemoryStream(Encoding.UTF8.GetBytes("copy me"));
+        var putResult = await storageService.PutObjectAsync(new PutObjectRequest
+        {
+            BucketName = "source",
+            Key = "docs/source.txt",
+            Content = uploadStream,
+            ContentType = "text/plain"
+        });
+
+        Assert.True(putResult.IsSuccess);
+
+        var sourceEncryptedCopy = await storageService.CopyObjectAsync(new CopyObjectRequest
+        {
+            SourceBucketName = "source",
+            SourceKey = "docs/source.txt",
+            DestinationBucketName = "target",
+            DestinationKey = "docs/source-encrypted.txt",
+            SourceServerSideEncryption = CreateServerSideEncryptionSettings()
+        });
+
+        Assert.False(sourceEncryptedCopy.IsSuccess);
+        AssertUnsupportedServerSideEncryption(sourceEncryptedCopy.Error, "source", "docs/source.txt");
+
+        var destinationEncryptedCopy = await storageService.CopyObjectAsync(new CopyObjectRequest
+        {
+            SourceBucketName = "source",
+            SourceKey = "docs/source.txt",
+            DestinationBucketName = "target",
+            DestinationKey = "docs/destination-encrypted.txt",
+            DestinationServerSideEncryption = CreateServerSideEncryptionSettings()
+        });
+
+        Assert.False(destinationEncryptedCopy.IsSuccess);
+        AssertUnsupportedServerSideEncryption(destinationEncryptedCopy.Error, "target", "docs/destination-encrypted.txt");
+
+        Assert.False((await storageService.HeadObjectAsync(new HeadObjectRequest
+        {
+            BucketName = "target",
+            Key = "docs/source-encrypted.txt"
+        })).IsSuccess);
+        Assert.False((await storageService.HeadObjectAsync(new HeadObjectRequest
+        {
+            BucketName = "target",
+            Key = "docs/destination-encrypted.txt"
+        })).IsSuccess);
     }
 
     [Fact]
@@ -1572,6 +1713,31 @@ public sealed class DiskStorageServiceTests
     }
 
     [Fact]
+    public async Task DiskStorage_MultipartUpload_RejectsServerSideEncryptionRequests()
+    {
+        await using var fixture = new DiskStorageFixture();
+        var storageService = fixture.Services.GetRequiredService<IStorageBackend>();
+        await storageService.CreateBucketAsync(new CreateBucketRequest { BucketName = "multipart-sse" });
+
+        var initiateResult = await storageService.InitiateMultipartUploadAsync(new InitiateMultipartUploadRequest
+        {
+            BucketName = "multipart-sse",
+            Key = "docs/assembled.txt",
+            ServerSideEncryption = CreateServerSideEncryptionSettings()
+        });
+
+        Assert.False(initiateResult.IsSuccess);
+        AssertUnsupportedServerSideEncryption(initiateResult.Error, "multipart-sse", "docs/assembled.txt");
+
+        var uploads = await storageService.ListMultipartUploadsAsync(new ListMultipartUploadsRequest
+        {
+            BucketName = "multipart-sse"
+        }).ToArrayAsync();
+
+        Assert.Empty(uploads);
+    }
+
+    [Fact]
     public async Task DiskStorage_MultipartUpload_CanBeAborted()
     {
         await using var fixture = new DiskStorageFixture();
@@ -1893,6 +2059,9 @@ public sealed class DiskStorageServiceTests
         Assert.Equal(IntegratedS3.Abstractions.Capabilities.StorageSupportStateOwnership.NotApplicable, supportState.AccessControl);
         Assert.Equal(IntegratedS3.Abstractions.Capabilities.StorageSupportStateOwnership.NotApplicable, supportState.Retention);
         Assert.Equal(IntegratedS3.Abstractions.Capabilities.StorageSupportStateOwnership.NotApplicable, supportState.ServerSideEncryption);
+
+        var capabilities = await storageService.GetCapabilitiesAsync();
+        Assert.Equal(IntegratedS3.Abstractions.Capabilities.StorageCapabilitySupport.Unsupported, capabilities.ServerSideEncryption);
 
         var providerMode = await storageService.GetProviderModeAsync();
         Assert.Equal(IntegratedS3.Abstractions.Models.StorageProviderMode.Hybrid, providerMode);
@@ -2509,6 +2678,29 @@ public sealed class DiskStorageServiceTests
             _states.Remove((providerName, bucketName, key, uploadId));
             return ValueTask.CompletedTask;
         }
+    }
+
+    private static void AssertUnsupportedServerSideEncryption(StorageError? error, string bucketName, string objectKey)
+    {
+        var actual = Assert.IsType<StorageError>(error);
+        Assert.Equal(StorageErrorCode.UnsupportedCapability, actual.Code);
+        Assert.Equal(bucketName, actual.BucketName);
+        Assert.Equal(objectKey, actual.ObjectKey);
+        Assert.Equal(501, actual.SuggestedHttpStatusCode);
+        Assert.Contains("server-side encryption", actual.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static ObjectServerSideEncryptionSettings CreateServerSideEncryptionSettings()
+    {
+        return new ObjectServerSideEncryptionSettings
+        {
+            Algorithm = ObjectServerSideEncryptionAlgorithm.Kms,
+            KeyId = "disk-provider-test-key",
+            Context = new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["tenant"] = "tests"
+            }
+        };
     }
 
     private static string ComputeSha1Base64(string content)

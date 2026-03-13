@@ -45,6 +45,7 @@ public sealed class S3StorageServiceTests
         Assert.Equal(StorageCapabilitySupport.Native, caps.CopyOperations);
         Assert.Equal(StorageCapabilitySupport.Native, caps.Checksums);
         Assert.Equal(StorageCapabilitySupport.Native, caps.PresignedUrls);
+        Assert.Equal(StorageCapabilitySupport.Native, caps.ServerSideEncryption);
     }
 
     // --- Support state descriptor ---
@@ -446,7 +447,19 @@ public sealed class S3StorageServiceTests
     {
         var lastModified = new DateTimeOffset(2025, 5, 1, 0, 0, 0, TimeSpan.Zero);
         var fake = new FakeS3Client();
-        fake.HeadObjectResult = new S3ObjectEntry("k", 512, "text/plain", "\"abc\"", lastModified, null, "v1");
+        fake.HeadObjectResult = new S3ObjectEntry(
+            "k",
+            512,
+            "text/plain",
+            "\"abc\"",
+            lastModified,
+            null,
+            "v1",
+            ServerSideEncryption: new ObjectServerSideEncryptionInfo
+            {
+                Algorithm = ObjectServerSideEncryptionAlgorithm.Kms,
+                KeyId = "kms-key-1"
+            });
         var svc = BuildService(fake);
 
         var result = await svc.HeadObjectAsync(new HeadObjectRequest { BucketName = "b", Key = "k" });
@@ -457,6 +470,28 @@ public sealed class S3StorageServiceTests
         Assert.Equal("text/plain", result.Value.ContentType);
         Assert.Equal("\"abc\"", result.Value.ETag);
         Assert.Equal("v1", result.Value.VersionId);
+        Assert.NotNull(result.Value.ServerSideEncryption);
+        Assert.Equal(ObjectServerSideEncryptionAlgorithm.Kms, result.Value.ServerSideEncryption!.Algorithm);
+        Assert.Equal("kms-key-1", result.Value.ServerSideEncryption.KeyId);
+    }
+
+    [Fact]
+    public async Task HeadObjectAsync_RejectsReadTimeServerSideEncryptionSettings()
+    {
+        var svc = BuildService(new FakeS3Client());
+
+        var result = await svc.HeadObjectAsync(new HeadObjectRequest
+        {
+            BucketName = "b",
+            Key = "k",
+            ServerSideEncryption = new ObjectServerSideEncryptionSettings
+            {
+                Algorithm = ObjectServerSideEncryptionAlgorithm.Aes256
+            }
+        });
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(StorageErrorCode.UnsupportedCapability, result.Error!.Code);
     }
 
     // --- GetObjectAsync ---
@@ -468,7 +503,18 @@ public sealed class S3StorageServiceTests
         var lastModified = new DateTimeOffset(2025, 6, 1, 0, 0, 0, TimeSpan.Zero);
         var fake = new FakeS3Client();
         fake.GetObjectResult = new S3GetObjectResult(
-            new S3ObjectEntry("k", 3, "application/octet-stream", "\"etag\"", lastModified, null, null),
+            new S3ObjectEntry(
+                "k",
+                3,
+                "application/octet-stream",
+                "\"etag\"",
+                lastModified,
+                null,
+                null,
+                ServerSideEncryption: new ObjectServerSideEncryptionInfo
+                {
+                    Algorithm = ObjectServerSideEncryptionAlgorithm.Aes256
+                }),
             content,
             3);
 
@@ -480,6 +526,8 @@ public sealed class S3StorageServiceTests
         Assert.Equal("k", response.Object.Key);
         Assert.Equal(3, response.TotalContentLength);
         Assert.False(response.IsNotModified);
+        Assert.NotNull(response.Object.ServerSideEncryption);
+        Assert.Equal(ObjectServerSideEncryptionAlgorithm.Aes256, response.Object.ServerSideEncryption!.Algorithm);
     }
 
     [Fact]
@@ -551,6 +599,15 @@ public sealed class S3StorageServiceTests
     [Fact]
     public async Task PutObjectAsync_ReturnsObjectInfo_OnSuccess()
     {
+        var serverSideEncryption = new ObjectServerSideEncryptionSettings
+        {
+            Algorithm = ObjectServerSideEncryptionAlgorithm.Kms,
+            KeyId = "kms-key-1",
+            Context = new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["tenant"] = "alpha"
+            }
+        };
         var fake = new FakeS3Client();
         fake.PutObjectResult = new S3ObjectEntry(
             "k",
@@ -563,6 +620,11 @@ public sealed class S3StorageServiceTests
             Checksums: new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
             {
                 ["sha256"] = "put-checksum"
+            },
+            ServerSideEncryption: new ObjectServerSideEncryptionInfo
+            {
+                Algorithm = ObjectServerSideEncryptionAlgorithm.Kms,
+                KeyId = "kms-key-1"
             });
 
         var svc = BuildService(fake);
@@ -571,7 +633,8 @@ public sealed class S3StorageServiceTests
             BucketName = "b",
             Key = "k",
             Content = new MemoryStream([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]),
-            ContentType = "text/plain"
+            ContentType = "text/plain",
+            ServerSideEncryption = serverSideEncryption
         });
 
         Assert.True(result.IsSuccess);
@@ -579,6 +642,32 @@ public sealed class S3StorageServiceTests
         Assert.Equal("\"new-etag\"", result.Value.ETag);
         Assert.Equal("v1", result.Value.VersionId);
         Assert.Equal("put-checksum", result.Value.Checksums!["sha256"]);
+        Assert.NotNull(fake.LastPutObjectServerSideEncryption);
+        Assert.Same(serverSideEncryption, fake.LastPutObjectServerSideEncryption);
+        Assert.NotNull(result.Value.ServerSideEncryption);
+        Assert.Equal(ObjectServerSideEncryptionAlgorithm.Kms, result.Value.ServerSideEncryption!.Algorithm);
+        Assert.Equal("kms-key-1", result.Value.ServerSideEncryption.KeyId);
+    }
+
+    [Fact]
+    public async Task PutObjectAsync_RejectsAes256WithKmsOnlyFields()
+    {
+        var svc = BuildService(new FakeS3Client());
+
+        var result = await svc.PutObjectAsync(new PutObjectRequest
+        {
+            BucketName = "b",
+            Key = "k",
+            Content = Stream.Null,
+            ServerSideEncryption = new ObjectServerSideEncryptionSettings
+            {
+                Algorithm = ObjectServerSideEncryptionAlgorithm.Aes256,
+                KeyId = "kms-key-1"
+            }
+        });
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(StorageErrorCode.UnsupportedCapability, result.Error!.Code);
     }
 
     [Fact]
@@ -687,10 +776,96 @@ public sealed class S3StorageServiceTests
         {
             ["sha256"] = "copied-checksum"
         };
+        var destinationServerSideEncryption = new ObjectServerSideEncryptionSettings
+        {
+            Algorithm = ObjectServerSideEncryptionAlgorithm.Kms,
+            KeyId = "kms-key-copy",
+            Context = new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["tenant"] = "alpha"
+            }
+        };
         var fake = new FakeS3Client
         {
-            CopyObjectResult = new S3ObjectEntry("dest-k", 0, null, "\"copy-etag\"", lastModified, null, "v2", Checksums: checksums),
-            HeadObjectResult = new S3ObjectEntry("dest-k", 42, "text/plain", "\"copy-etag\"", lastModified, null, "v2", Checksums: checksums)
+            CopyObjectResult = new S3ObjectEntry(
+                "dest-k",
+                0,
+                null,
+                "\"copy-etag\"",
+                lastModified,
+                null,
+                "v2",
+                Checksums: checksums,
+                ServerSideEncryption: new ObjectServerSideEncryptionInfo
+                {
+                    Algorithm = ObjectServerSideEncryptionAlgorithm.Kms,
+                    KeyId = "kms-key-copy"
+                }),
+            HeadObjectResult = new S3ObjectEntry(
+                "dest-k",
+                42,
+                "text/plain",
+                "\"copy-etag\"",
+                lastModified,
+                null,
+                "v2",
+                Checksums: checksums,
+                ServerSideEncryption: new ObjectServerSideEncryptionInfo
+                {
+                    Algorithm = ObjectServerSideEncryptionAlgorithm.Kms,
+                    KeyId = "kms-key-copy"
+                })
+        };
+
+        var svc = BuildService(fake);
+        var result = await svc.CopyObjectAsync(new CopyObjectRequest
+        {
+            SourceBucketName = "src-b",
+            SourceKey = "src-k",
+            DestinationBucketName = "dest-b",
+            DestinationKey = "dest-k",
+            DestinationServerSideEncryption = destinationServerSideEncryption
+        });
+
+        Assert.True(result.IsSuccess);
+        Assert.NotNull(fake.LastCopyRequest);
+        Assert.Equal("src-k", fake.LastCopyRequest!.SourceKey);
+        Assert.Equal("dest-k", fake.LastCopyRequest.DestinationKey);
+        Assert.Same(destinationServerSideEncryption, fake.LastCopyRequest.DestinationServerSideEncryption);
+        Assert.Equal(42, result.Value!.ContentLength);
+        Assert.Equal("v2", result.Value.VersionId);
+        Assert.Equal("copied-checksum", result.Value.Checksums!["sha256"]);
+        Assert.NotNull(result.Value.ServerSideEncryption);
+        Assert.Equal(ObjectServerSideEncryptionAlgorithm.Kms, result.Value.ServerSideEncryption!.Algorithm);
+        Assert.Equal("kms-key-copy", result.Value.ServerSideEncryption.KeyId);
+    }
+
+    [Fact]
+    public async Task CopyObjectAsync_MergesSparseHeadMetadataAndChecksums_WithCopyResponseValues()
+    {
+        var lastModified = new DateTimeOffset(2025, 8, 2, 0, 0, 0, TimeSpan.Zero);
+        var copyMetadata = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["content-language"] = "en",
+            ["cache-control"] = "private, max-age=60"
+        };
+        var headMetadata = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["content-language"] = "de"
+        };
+        var copyChecksums = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["sha256"] = "copy-sha256",
+            ["crc32c"] = "copy-crc32c"
+        };
+        var headChecksums = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["sha256"] = "head-sha256"
+        };
+        var fake = new FakeS3Client
+        {
+            CopyObjectResult = new S3ObjectEntry("dest-k", 0, "application/octet-stream", "\"copy-etag\"", lastModified, copyMetadata, "v-copy", Checksums: copyChecksums),
+            HeadObjectResult = new S3ObjectEntry("dest-k", 42, null, "\"head-etag\"", lastModified.AddMinutes(1), headMetadata, null, Checksums: headChecksums)
         };
 
         var svc = BuildService(fake);
@@ -703,12 +878,13 @@ public sealed class S3StorageServiceTests
         });
 
         Assert.True(result.IsSuccess);
-        Assert.NotNull(fake.LastCopyRequest);
-        Assert.Equal("src-k", fake.LastCopyRequest!.SourceKey);
-        Assert.Equal("dest-k", fake.LastCopyRequest.DestinationKey);
-        Assert.Equal(42, result.Value!.ContentLength);
-        Assert.Equal("v2", result.Value.VersionId);
-        Assert.Equal("copied-checksum", result.Value.Checksums!["sha256"]);
+        Assert.Equal("application/octet-stream", result.Value!.ContentType);
+        Assert.Equal("\"head-etag\"", result.Value.ETag);
+        Assert.Equal("v-copy", result.Value.VersionId);
+        Assert.Equal("de", result.Value.Metadata!["content-language"]);
+        Assert.Equal("private, max-age=60", result.Value.Metadata["cache-control"]);
+        Assert.Equal("head-sha256", result.Value.Checksums!["sha256"]);
+        Assert.Equal("copy-crc32c", result.Value.Checksums["crc32c"]);
     }
 
     [Fact]
@@ -731,6 +907,30 @@ public sealed class S3StorageServiceTests
         Assert.False(result.IsSuccess);
         Assert.Equal(StorageErrorCode.ObjectNotFound, result.Error!.Code);
         Assert.Equal("src-k", result.Error.ObjectKey);
+    }
+
+    [Fact]
+    public async Task CopyObjectAsync_RejectsSourceServerSideEncryptionSettings()
+    {
+        var fake = new FakeS3Client();
+        var svc = BuildService(fake);
+
+        var result = await svc.CopyObjectAsync(new CopyObjectRequest
+        {
+            SourceBucketName = "src-b",
+            SourceKey = "src-k",
+            DestinationBucketName = "dest-b",
+            DestinationKey = "dest-k",
+            SourceServerSideEncryption = new ObjectServerSideEncryptionSettings
+            {
+                Algorithm = ObjectServerSideEncryptionAlgorithm.Kms,
+                KeyId = "kms-key-source"
+            }
+        });
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(StorageErrorCode.UnsupportedCapability, result.Error!.Code);
+        Assert.Null(fake.LastCopyRequest);
     }
 
     [Fact]
@@ -763,6 +963,15 @@ public sealed class S3StorageServiceTests
     public async Task InitiateMultipartUploadAsync_ReturnsUploadInfo_FromClient()
     {
         var initiatedAtUtc = new DateTimeOffset(2025, 8, 1, 12, 0, 0, TimeSpan.Zero);
+        var serverSideEncryption = new ObjectServerSideEncryptionSettings
+        {
+            Algorithm = ObjectServerSideEncryptionAlgorithm.Kms,
+            KeyId = "kms-multipart-key",
+            Context = new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["scope"] = "multipart"
+            }
+        };
         var fake = new FakeS3Client
         {
             InitiateMultipartUploadResult = new MultipartUploadInfo
@@ -780,12 +989,15 @@ public sealed class S3StorageServiceTests
         {
             BucketName = "b",
             Key = "k",
-            ChecksumAlgorithm = "SHA256"
+            ChecksumAlgorithm = "SHA256",
+            ServerSideEncryption = serverSideEncryption
         });
 
         Assert.True(result.IsSuccess);
         Assert.Equal("upload-123", result.Value!.UploadId);
         Assert.Equal("sha256", result.Value.ChecksumAlgorithm);
+        Assert.NotNull(fake.LastInitiateMultipartUploadServerSideEncryption);
+        Assert.Same(serverSideEncryption, fake.LastInitiateMultipartUploadServerSideEncryption);
     }
 
     [Fact]
@@ -836,8 +1048,32 @@ public sealed class S3StorageServiceTests
         var lastModified = new DateTimeOffset(2025, 8, 1, 14, 0, 0, TimeSpan.Zero);
         var fake = new FakeS3Client
         {
-            CompleteMultipartUploadResult = new S3ObjectEntry("k", 0, null, "\"complete-etag\"", lastModified, null, "v-complete", Checksums: checksums),
-            HeadObjectResult = new S3ObjectEntry("k", 10, "application/octet-stream", "\"complete-etag\"", lastModified, null, "v-complete", Checksums: checksums)
+            CompleteMultipartUploadResult = new S3ObjectEntry(
+                "k",
+                0,
+                null,
+                "\"complete-etag\"",
+                lastModified,
+                null,
+                "v-complete",
+                Checksums: checksums,
+                ServerSideEncryption: new ObjectServerSideEncryptionInfo
+                {
+                    Algorithm = ObjectServerSideEncryptionAlgorithm.Aes256
+                }),
+            HeadObjectResult = new S3ObjectEntry(
+                "k",
+                10,
+                "application/octet-stream",
+                "\"complete-etag\"",
+                lastModified,
+                null,
+                "v-complete",
+                Checksums: checksums,
+                ServerSideEncryption: new ObjectServerSideEncryptionInfo
+                {
+                    Algorithm = ObjectServerSideEncryptionAlgorithm.Aes256
+                })
         };
 
         var svc = BuildService(fake);
@@ -862,6 +1098,51 @@ public sealed class S3StorageServiceTests
         Assert.Equal("v-complete", result.Value!.VersionId);
         Assert.Equal("complete-checksum", result.Value.Checksums!["sha256"]);
         Assert.Equal(10, result.Value.ContentLength);
+        Assert.NotNull(result.Value.ServerSideEncryption);
+        Assert.Equal(ObjectServerSideEncryptionAlgorithm.Aes256, result.Value.ServerSideEncryption!.Algorithm);
+    }
+
+    [Fact]
+    public async Task CompleteMultipartUploadAsync_MergesSparseHeadChecksums_WithCompletionResponseValues()
+    {
+        var completionChecksums = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["sha256"] = "completion-sha256",
+            ["crc32c"] = "completion-crc32c"
+        };
+        var headChecksums = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["sha256"] = "head-sha256"
+        };
+        var lastModified = new DateTimeOffset(2025, 8, 1, 14, 30, 0, TimeSpan.Zero);
+        var fake = new FakeS3Client
+        {
+            CompleteMultipartUploadResult = new S3ObjectEntry("k", 0, null, "\"complete-etag\"", lastModified, null, "v-complete", Checksums: completionChecksums),
+            HeadObjectResult = new S3ObjectEntry("k", 10, "application/octet-stream", "\"complete-etag\"", lastModified.AddMinutes(1), null, null, Checksums: headChecksums)
+        };
+
+        var svc = BuildService(fake);
+        var result = await svc.CompleteMultipartUploadAsync(new CompleteMultipartUploadRequest
+        {
+            BucketName = "b",
+            Key = "k",
+            UploadId = "upload-123",
+            Parts =
+            [
+                new MultipartUploadPart
+                {
+                    PartNumber = 1,
+                    ETag = "\"part-etag\"",
+                    ContentLength = 5,
+                    LastModifiedUtc = lastModified
+                }
+            ]
+        });
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal("v-complete", result.Value!.VersionId);
+        Assert.Equal("head-sha256", result.Value.Checksums!["sha256"]);
+        Assert.Equal("completion-crc32c", result.Value.Checksums["crc32c"]);
     }
 
     [Fact]
@@ -913,6 +1194,7 @@ public sealed class S3StorageServiceTests
         Assert.Equal(StorageCapabilitySupport.Native, provider.Capabilities.MultipartUploads);
         Assert.Equal(StorageCapabilitySupport.Native, provider.Capabilities.CopyOperations);
         Assert.Equal(StorageCapabilitySupport.Native, provider.Capabilities.Checksums);
+        Assert.Equal(StorageCapabilitySupport.Native, provider.Capabilities.ServerSideEncryption);
         Assert.Equal(StorageObjectAccessMode.Delegated, provider.ObjectLocation.DefaultAccessMode);
         Assert.Equal([StorageObjectAccessMode.Delegated, StorageObjectAccessMode.ProxyStream], provider.ObjectLocation.SupportedAccessModes);
     }
@@ -966,6 +1248,7 @@ internal sealed class FakeS3Client : IS3StorageClient
     // Put object
     public S3ObjectEntry? PutObjectResult { get; set; }
     public AmazonS3Exception? PutObjectException { get; set; }
+    public ObjectServerSideEncryptionSettings? LastPutObjectServerSideEncryption { get; private set; }
 
     // Delete object
     public S3DeleteObjectResult? DeleteObjectResult { get; set; }
@@ -978,6 +1261,7 @@ internal sealed class FakeS3Client : IS3StorageClient
     // Multipart
     public MultipartUploadInfo? InitiateMultipartUploadResult { get; set; }
     public AmazonS3Exception? InitiateMultipartUploadException { get; set; }
+    public ObjectServerSideEncryptionSettings? LastInitiateMultipartUploadServerSideEncryption { get; private set; }
     public MultipartUploadPart? UploadMultipartPartResult { get; set; }
     public AmazonS3Exception? UploadMultipartPartException { get; set; }
     public S3ObjectEntry? CompleteMultipartUploadResult { get; set; }
@@ -1112,9 +1396,10 @@ internal sealed class FakeS3Client : IS3StorageClient
         return Task.FromResult(result);
     }
 
-    public Task<S3ObjectEntry> PutObjectAsync(string bucketName, string key, Stream content, long? contentLength, string? contentType, IReadOnlyDictionary<string, string>? metadata, IReadOnlyDictionary<string, string>? checksums, CancellationToken cancellationToken = default)
+    public Task<S3ObjectEntry> PutObjectAsync(string bucketName, string key, Stream content, long? contentLength, string? contentType, IReadOnlyDictionary<string, string>? metadata, IReadOnlyDictionary<string, string>? checksums, ObjectServerSideEncryptionSettings? serverSideEncryption, CancellationToken cancellationToken = default)
     {
         if (PutObjectException is not null) throw PutObjectException;
+        LastPutObjectServerSideEncryption = serverSideEncryption;
         return Task.FromResult(PutObjectResult ?? new S3ObjectEntry(key, contentLength ?? 0, contentType, null, DateTimeOffset.UtcNow, metadata, null, Checksums: checksums));
     }
 
@@ -1132,6 +1417,7 @@ internal sealed class FakeS3Client : IS3StorageClient
         DateTimeOffset? sourceIfModifiedSinceUtc,
         DateTimeOffset? sourceIfUnmodifiedSinceUtc,
         bool overwriteIfExists,
+        ObjectServerSideEncryptionSettings? destinationServerSideEncryption,
         CancellationToken cancellationToken = default)
     {
         if (CopyObjectException is not null) throw CopyObjectException;
@@ -1147,6 +1433,7 @@ internal sealed class FakeS3Client : IS3StorageClient
             SourceIfNoneMatchETag = sourceIfNoneMatchETag,
             SourceIfModifiedSinceUtc = sourceIfModifiedSinceUtc,
             SourceIfUnmodifiedSinceUtc = sourceIfUnmodifiedSinceUtc,
+            DestinationServerSideEncryption = destinationServerSideEncryption,
             OverwriteIfExists = overwriteIfExists
         };
 
@@ -1159,9 +1446,11 @@ internal sealed class FakeS3Client : IS3StorageClient
         string? contentType,
         IReadOnlyDictionary<string, string>? metadata,
         string? checksumAlgorithm,
+        ObjectServerSideEncryptionSettings? serverSideEncryption,
         CancellationToken cancellationToken = default)
     {
         if (InitiateMultipartUploadException is not null) throw InitiateMultipartUploadException;
+        LastInitiateMultipartUploadServerSideEncryption = serverSideEncryption;
 
         return Task.FromResult(InitiateMultipartUploadResult ?? new MultipartUploadInfo
         {

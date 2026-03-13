@@ -1,3 +1,5 @@
+using IntegratedS3.Abstractions.Models;
+
 namespace IntegratedS3.Abstractions.Requests;
 
 public sealed class HeadObjectRequest
@@ -7,6 +9,8 @@ public sealed class HeadObjectRequest
     public required string Key { get; init; }
 
     public string? VersionId { get; init; }
+
+    public ObjectServerSideEncryptionSettings? ServerSideEncryption { get; init; }
 
     public string? IfMatchETag { get; init; }
 

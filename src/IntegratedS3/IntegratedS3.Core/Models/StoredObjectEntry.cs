@@ -1,3 +1,5 @@
+using IntegratedS3.Abstractions.Models;
+
 namespace IntegratedS3.Core.Models;
 
 public sealed class StoredObjectEntry
@@ -27,6 +29,8 @@ public sealed class StoredObjectEntry
     public IReadOnlyDictionary<string, string>? Tags { get; init; }
 
     public IReadOnlyDictionary<string, string>? Checksums { get; init; }
+
+    public ObjectServerSideEncryptionInfo? ServerSideEncryption { get; init; }
 
     public DateTimeOffset LastSyncedAtUtc { get; init; }
 }

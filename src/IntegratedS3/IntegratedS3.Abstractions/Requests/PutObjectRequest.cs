@@ -1,3 +1,5 @@
+using IntegratedS3.Abstractions.Models;
+
 namespace IntegratedS3.Abstractions.Requests;
 
 public sealed class PutObjectRequest
@@ -15,6 +17,8 @@ public sealed class PutObjectRequest
     public IReadOnlyDictionary<string, string>? Metadata { get; init; }
 
     public IReadOnlyDictionary<string, string>? Checksums { get; init; }
+
+    public ObjectServerSideEncryptionSettings? ServerSideEncryption { get; init; }
 
     public bool OverwriteIfExists { get; init; } = true;
 }

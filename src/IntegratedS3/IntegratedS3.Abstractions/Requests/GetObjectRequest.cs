@@ -12,6 +12,8 @@ public sealed class GetObjectRequest
 
     public ObjectRange? Range { get; init; }
 
+    public ObjectServerSideEncryptionSettings? ServerSideEncryption { get; init; }
+
     public string? IfMatchETag { get; init; }
 
     public string? IfNoneMatchETag { get; init; }

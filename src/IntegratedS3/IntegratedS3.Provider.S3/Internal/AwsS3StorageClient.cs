@@ -249,7 +249,10 @@ internal sealed class AwsS3StorageClient : IS3StorageClient
                 ETag: response.ETag,
                 LastModifiedUtc: ToDateTimeOffset(response.LastModified),
                 Metadata: BuildMetadataDictionary(response.Metadata),
-                VersionId: response.VersionId);
+                VersionId: response.VersionId,
+                ServerSideEncryption: S3ServerSideEncryptionMapper.ToInfo(
+                    response.ServerSideEncryptionMethod,
+                    response.ServerSideEncryptionKeyManagementServiceKeyId));
         }
         catch (AmazonS3Exception ex) when (ex.StatusCode == System.Net.HttpStatusCode.NotFound)
         {
@@ -329,7 +332,10 @@ internal sealed class AwsS3StorageClient : IS3StorageClient
             ETag: response.ETag,
             LastModifiedUtc: ToDateTimeOffset(response.LastModified),
             Metadata: BuildMetadataDictionary(response.Metadata),
-            VersionId: response.VersionId);
+            VersionId: response.VersionId,
+            ServerSideEncryption: S3ServerSideEncryptionMapper.ToInfo(
+                response.ServerSideEncryptionMethod,
+                response.ServerSideEncryptionKeyManagementServiceKeyId));
 
         long totalContentLength = TryParseContentRangeTotal(response.ContentRange)
             ?? response.ContentLength;
@@ -345,6 +351,7 @@ internal sealed class AwsS3StorageClient : IS3StorageClient
         string? contentType,
         IReadOnlyDictionary<string, string>? metadata,
         IReadOnlyDictionary<string, string>? checksums,
+        ObjectServerSideEncryptionSettings? serverSideEncryption,
         CancellationToken cancellationToken = default)
     {
         var request = new Amazon.S3.Model.PutObjectRequest
@@ -366,6 +373,7 @@ internal sealed class AwsS3StorageClient : IS3StorageClient
         }
 
         ApplyChecksumHeaders(request, checksumAlgorithm: null, checksums);
+        S3ServerSideEncryptionMapper.ApplyTo(request, serverSideEncryption);
 
         var response = await _s3.PutObjectAsync(request, cancellationToken).ConfigureAwait(false);
 
@@ -382,7 +390,10 @@ internal sealed class AwsS3StorageClient : IS3StorageClient
                 response.ChecksumCRC32C,
                 response.ChecksumCRC64NVME,
                 response.ChecksumSHA1,
-                response.ChecksumSHA256));
+                response.ChecksumSHA256),
+            ServerSideEncryption: S3ServerSideEncryptionMapper.ToInfo(
+                response.ServerSideEncryptionMethod,
+                response.ServerSideEncryptionKeyManagementServiceKeyId));
     }
 
     public async Task<S3DeleteObjectResult> DeleteObjectAsync(
@@ -421,6 +432,7 @@ internal sealed class AwsS3StorageClient : IS3StorageClient
         DateTimeOffset? sourceIfModifiedSinceUtc,
         DateTimeOffset? sourceIfUnmodifiedSinceUtc,
         bool overwriteIfExists,
+        ObjectServerSideEncryptionSettings? destinationServerSideEncryption,
         CancellationToken cancellationToken = default)
     {
         var request = new CopyObjectRequest
@@ -443,6 +455,8 @@ internal sealed class AwsS3StorageClient : IS3StorageClient
         if (!overwriteIfExists)
             request.IfNoneMatch = "*";
 
+        S3ServerSideEncryptionMapper.ApplyTo(request, destinationServerSideEncryption);
+
         var response = await _s3.CopyObjectAsync(request, cancellationToken).ConfigureAwait(false);
 
         return new S3ObjectEntry(
@@ -459,7 +473,10 @@ internal sealed class AwsS3StorageClient : IS3StorageClient
                 response.ChecksumCRC32C,
                 response.ChecksumCRC64NVME,
                 response.ChecksumSHA1,
-                response.ChecksumSHA256));
+                response.ChecksumSHA256),
+            ServerSideEncryption: S3ServerSideEncryptionMapper.ToInfo(
+                response.ServerSideEncryptionMethod,
+                response.ServerSideEncryptionKeyManagementServiceKeyId));
     }
 
     public async Task<MultipartUploadInfo> InitiateMultipartUploadAsync(
@@ -468,6 +485,7 @@ internal sealed class AwsS3StorageClient : IS3StorageClient
         string? contentType,
         IReadOnlyDictionary<string, string>? metadata,
         string? checksumAlgorithm,
+        ObjectServerSideEncryptionSettings? serverSideEncryption,
         CancellationToken cancellationToken = default)
     {
         var request = new InitiateMultipartUploadRequest
@@ -486,6 +504,8 @@ internal sealed class AwsS3StorageClient : IS3StorageClient
         var sdkChecksumAlgorithm = MapChecksumAlgorithm(checksumAlgorithm);
         if (sdkChecksumAlgorithm is not null)
             request.ChecksumAlgorithm = sdkChecksumAlgorithm;
+
+        S3ServerSideEncryptionMapper.ApplyTo(request, serverSideEncryption);
 
         var response = await _s3.InitiateMultipartUploadAsync(request, cancellationToken).ConfigureAwait(false);
 
@@ -575,7 +595,10 @@ internal sealed class AwsS3StorageClient : IS3StorageClient
                 response.ChecksumCRC32C,
                 response.ChecksumCRC64NVME,
                 response.ChecksumSHA1,
-                response.ChecksumSHA256));
+                response.ChecksumSHA256),
+            ServerSideEncryption: S3ServerSideEncryptionMapper.ToInfo(
+                response.ServerSideEncryptionMethod,
+                response.ServerSideEncryptionKeyManagementServiceKeyId));
     }
 
     public async Task AbortMultipartUploadAsync(

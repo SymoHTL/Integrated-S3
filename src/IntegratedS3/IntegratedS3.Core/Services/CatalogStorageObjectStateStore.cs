@@ -33,7 +33,8 @@ public sealed class CatalogStorageObjectStateStore(IStorageCatalogStore catalogS
             LastModifiedUtc = entry.LastModifiedUtc,
             Metadata = entry.Metadata,
             Tags = entry.Tags,
-            Checksums = entry.Checksums
+            Checksums = entry.Checksums,
+            ServerSideEncryption = entry.ServerSideEncryption
         };
     }
 
@@ -59,7 +60,8 @@ public sealed class CatalogStorageObjectStateStore(IStorageCatalogStore catalogS
                 LastModifiedUtc = entry.LastModifiedUtc,
                 Metadata = entry.Metadata,
                 Tags = entry.Tags,
-                Checksums = entry.Checksums
+                Checksums = entry.Checksums,
+                ServerSideEncryption = entry.ServerSideEncryption
             };
         }
     }
