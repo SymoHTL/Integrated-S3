@@ -483,3 +483,5 @@ FodyWeavers.xsd
 # JetBrains Rider
 *.sln.iml
 
+/.idea/
+/src/IntegratedS3/.idea/
