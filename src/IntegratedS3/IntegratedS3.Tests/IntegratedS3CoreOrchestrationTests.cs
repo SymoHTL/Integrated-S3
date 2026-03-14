@@ -1023,6 +1023,285 @@ public sealed class IntegratedS3CoreOrchestrationTests
     }
 
     [Fact]
+    public async Task OrchestratedStorageService_WriteToPrimaryAsyncReplicas_ReplaysBucketVersioningWhileSiblingRepairFails()
+    {
+        var primaryBackend = new InMemoryStorageBackend("primary-memory", isPrimary: true);
+        var currentReplicaBackend = new InMemoryStorageBackend("current-replica");
+        var failingReplicaBackend = new InMemoryStorageBackend("failing-replica");
+        failingReplicaBackend.QueueFailure(
+            SimulatedFailureOperation.PutBucketVersioning,
+            StorageErrorCode.ProviderUnavailable,
+            "Simulated bucket versioning repair failure.");
+
+        await using var fixture = new CoreStorageFixture(overrideCatalogStore: true, addDefaultDiskStorage: false, configureServices: services => {
+            services.Configure<IntegratedS3CoreOptions>(options => {
+                options.ConsistencyMode = StorageConsistencyMode.WriteToPrimaryAsyncReplicas;
+            });
+            services.AddSingleton<IStorageBackend>(primaryBackend);
+            services.AddSingleton<IStorageBackend>(currentReplicaBackend);
+            services.AddSingleton<IStorageBackend>(failingReplicaBackend);
+            services.AddSingleton<RecordingReplicaRepairDispatcher>();
+            services.AddSingleton<IStorageReplicaRepairDispatcher>(static serviceProvider => serviceProvider.GetRequiredService<RecordingReplicaRepairDispatcher>());
+        });
+
+        await SeedBucketAsync("versioning-bucket", primaryBackend, currentReplicaBackend, failingReplicaBackend);
+
+        var storageService = fixture.Services.GetRequiredService<IStorageService>();
+        var repairBacklog = fixture.Services.GetRequiredService<IStorageReplicaRepairBacklog>();
+        var repairDispatcher = fixture.Services.GetRequiredService<RecordingReplicaRepairDispatcher>();
+
+        var putVersioning = await storageService.PutBucketVersioningAsync(new PutBucketVersioningRequest
+        {
+            BucketName = "versioning-bucket",
+            Status = BucketVersioningStatus.Enabled
+        });
+
+        Assert.True(putVersioning.IsSuccess);
+        Assert.Equal(BucketVersioningStatus.Enabled, putVersioning.Value!.Status);
+        Assert.Equal(BucketVersioningStatus.Enabled, (await primaryBackend.GetBucketVersioningAsync("versioning-bucket")).Value!.Status);
+        Assert.Equal(2, repairDispatcher.Dispatches.Count);
+        Assert.Equal(2, (await repairBacklog.ListOutstandingAsync()).Count);
+        Assert.All(repairDispatcher.Dispatches, dispatch => Assert.Equal(StorageOperationType.PutBucketVersioning, dispatch.Entry.Operation));
+
+        var currentDispatch = Assert.Single(repairDispatcher.Dispatches, dispatch => dispatch.Entry.ReplicaBackendName == currentReplicaBackend.Name);
+        var failingDispatch = Assert.Single(repairDispatcher.Dispatches, dispatch => dispatch.Entry.ReplicaBackendName == failingReplicaBackend.Name);
+
+        var failingError = await failingDispatch.ExecuteAsync();
+        Assert.NotNull(failingError);
+        Assert.Equal(StorageErrorCode.ProviderUnavailable, failingError!.Code);
+
+        var currentError = await currentDispatch.ExecuteAsync();
+        Assert.Null(currentError);
+
+        var currentVersioning = await currentReplicaBackend.GetBucketVersioningAsync("versioning-bucket");
+        Assert.True(currentVersioning.IsSuccess);
+        Assert.Equal(BucketVersioningStatus.Enabled, currentVersioning.Value!.Status);
+
+        var failingVersioning = await failingReplicaBackend.GetBucketVersioningAsync("versioning-bucket");
+        Assert.True(failingVersioning.IsSuccess);
+        Assert.Equal(BucketVersioningStatus.Disabled, failingVersioning.Value!.Status);
+
+        var remainingRepair = Assert.Single(await repairBacklog.ListOutstandingAsync());
+        Assert.Equal(failingReplicaBackend.Name, remainingRepair.ReplicaBackendName);
+        Assert.Equal(StorageReplicaRepairStatus.Failed, remainingRepair.Status);
+        Assert.Equal(StorageOperationType.PutBucketVersioning, remainingRepair.Operation);
+        Assert.Equal(1, remainingRepair.AttemptCount);
+        Assert.Equal(StorageErrorCode.ProviderUnavailable, remainingRepair.LastErrorCode);
+        Assert.Equal("Simulated bucket versioning repair failure.", remainingRepair.LastErrorMessage);
+    }
+
+    [Fact]
+    public async Task OrchestratedStorageService_WriteToPrimaryAsyncReplicas_ReplaysBucketCorsDeletionWhileSiblingRepairFails()
+    {
+        var primaryBackend = new InMemoryStorageBackend("primary-memory", isPrimary: true);
+        var currentReplicaBackend = new InMemoryStorageBackend("current-replica");
+        var failingReplicaBackend = new InMemoryStorageBackend("failing-replica");
+        failingReplicaBackend.QueueFailure(
+            SimulatedFailureOperation.DeleteBucketCors,
+            StorageErrorCode.ProviderUnavailable,
+            "Simulated bucket CORS repair failure.");
+
+        await using var fixture = new CoreStorageFixture(overrideCatalogStore: true, addDefaultDiskStorage: false, configureServices: services => {
+            services.Configure<IntegratedS3CoreOptions>(options => {
+                options.ConsistencyMode = StorageConsistencyMode.WriteToPrimaryAsyncReplicas;
+            });
+            services.AddSingleton<IStorageBackend>(primaryBackend);
+            services.AddSingleton<IStorageBackend>(currentReplicaBackend);
+            services.AddSingleton<IStorageBackend>(failingReplicaBackend);
+            services.AddSingleton<RecordingReplicaRepairDispatcher>();
+            services.AddSingleton<IStorageReplicaRepairDispatcher>(static serviceProvider => serviceProvider.GetRequiredService<RecordingReplicaRepairDispatcher>());
+        });
+
+        await SeedBucketAsync("cors-bucket", primaryBackend, currentReplicaBackend, failingReplicaBackend);
+        await SeedBucketCorsAsync("cors-bucket", CreateBucketCorsRule(), primaryBackend, currentReplicaBackend, failingReplicaBackend);
+
+        var storageService = fixture.Services.GetRequiredService<IStorageService>();
+        var repairBacklog = fixture.Services.GetRequiredService<IStorageReplicaRepairBacklog>();
+        var repairDispatcher = fixture.Services.GetRequiredService<RecordingReplicaRepairDispatcher>();
+
+        var deleteCors = await storageService.DeleteBucketCorsAsync(new DeleteBucketCorsRequest
+        {
+            BucketName = "cors-bucket"
+        });
+
+        Assert.True(deleteCors.IsSuccess);
+        Assert.Equal(2, repairDispatcher.Dispatches.Count);
+        Assert.Equal(2, (await repairBacklog.ListOutstandingAsync()).Count);
+        Assert.All(repairDispatcher.Dispatches, dispatch => Assert.Equal(StorageOperationType.DeleteBucketCors, dispatch.Entry.Operation));
+
+        var currentDispatch = Assert.Single(repairDispatcher.Dispatches, dispatch => dispatch.Entry.ReplicaBackendName == currentReplicaBackend.Name);
+        var failingDispatch = Assert.Single(repairDispatcher.Dispatches, dispatch => dispatch.Entry.ReplicaBackendName == failingReplicaBackend.Name);
+
+        var failingError = await failingDispatch.ExecuteAsync();
+        Assert.NotNull(failingError);
+        Assert.Equal(StorageErrorCode.ProviderUnavailable, failingError!.Code);
+
+        var currentError = await currentDispatch.ExecuteAsync();
+        Assert.Null(currentError);
+
+        Assert.Equal(StorageErrorCode.CorsConfigurationNotFound, (await primaryBackend.GetBucketCorsAsync("cors-bucket")).Error!.Code);
+        Assert.Equal(StorageErrorCode.CorsConfigurationNotFound, (await currentReplicaBackend.GetBucketCorsAsync("cors-bucket")).Error!.Code);
+        Assert.True((await failingReplicaBackend.GetBucketCorsAsync("cors-bucket")).IsSuccess);
+
+        var remainingRepair = Assert.Single(await repairBacklog.ListOutstandingAsync());
+        Assert.Equal(failingReplicaBackend.Name, remainingRepair.ReplicaBackendName);
+        Assert.Equal(StorageReplicaRepairStatus.Failed, remainingRepair.Status);
+        Assert.Equal(StorageOperationType.DeleteBucketCors, remainingRepair.Operation);
+        Assert.Equal(1, remainingRepair.AttemptCount);
+        Assert.Equal(StorageErrorCode.ProviderUnavailable, remainingRepair.LastErrorCode);
+        Assert.Equal("Simulated bucket CORS repair failure.", remainingRepair.LastErrorMessage);
+    }
+
+    [Fact]
+    public async Task OrchestratedStorageService_WriteToPrimaryAsyncReplicas_ReplaysObjectTagDeletionWhileSiblingRepairFails()
+    {
+        var primaryBackend = new InMemoryStorageBackend("primary-memory", isPrimary: true);
+        var currentReplicaBackend = new InMemoryStorageBackend("current-replica");
+        var failingReplicaBackend = new InMemoryStorageBackend("failing-replica");
+        failingReplicaBackend.QueueFailure(
+            SimulatedFailureOperation.DeleteObjectTags,
+            StorageErrorCode.ProviderUnavailable,
+            "Simulated object tag repair failure.");
+
+        await using var fixture = new CoreStorageFixture(overrideCatalogStore: true, addDefaultDiskStorage: false, configureServices: services => {
+            services.Configure<IntegratedS3CoreOptions>(options => {
+                options.ConsistencyMode = StorageConsistencyMode.WriteToPrimaryAsyncReplicas;
+            });
+            services.AddSingleton<IStorageBackend>(primaryBackend);
+            services.AddSingleton<IStorageBackend>(currentReplicaBackend);
+            services.AddSingleton<IStorageBackend>(failingReplicaBackend);
+            services.AddSingleton<RecordingReplicaRepairDispatcher>();
+            services.AddSingleton<IStorageReplicaRepairDispatcher>(static serviceProvider => serviceProvider.GetRequiredService<RecordingReplicaRepairDispatcher>());
+        });
+
+        await SeedObjectWithTagsAsync(
+            "tag-bucket",
+            "docs/tagged.txt",
+            "tagged payload",
+            new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["environment"] = "test",
+                ["owner"] = "copilot"
+            },
+            primaryBackend,
+            currentReplicaBackend,
+            failingReplicaBackend);
+
+        var storageService = fixture.Services.GetRequiredService<IStorageService>();
+        var repairBacklog = fixture.Services.GetRequiredService<IStorageReplicaRepairBacklog>();
+        var repairDispatcher = fixture.Services.GetRequiredService<RecordingReplicaRepairDispatcher>();
+
+        var deleteTags = await storageService.DeleteObjectTagsAsync(new DeleteObjectTagsRequest
+        {
+            BucketName = "tag-bucket",
+            Key = "docs/tagged.txt"
+        });
+
+        Assert.True(deleteTags.IsSuccess);
+        Assert.Empty(deleteTags.Value!.Tags);
+        Assert.Equal(2, repairDispatcher.Dispatches.Count);
+        Assert.Equal(2, (await repairBacklog.ListOutstandingAsync()).Count);
+        Assert.All(repairDispatcher.Dispatches, dispatch => Assert.Equal(StorageOperationType.DeleteObjectTags, dispatch.Entry.Operation));
+
+        var currentDispatch = Assert.Single(repairDispatcher.Dispatches, dispatch => dispatch.Entry.ReplicaBackendName == currentReplicaBackend.Name);
+        var failingDispatch = Assert.Single(repairDispatcher.Dispatches, dispatch => dispatch.Entry.ReplicaBackendName == failingReplicaBackend.Name);
+
+        var failingError = await failingDispatch.ExecuteAsync();
+        Assert.NotNull(failingError);
+        Assert.Equal(StorageErrorCode.ProviderUnavailable, failingError!.Code);
+
+        var currentError = await currentDispatch.ExecuteAsync();
+        Assert.Null(currentError);
+
+        var currentTags = await currentReplicaBackend.GetObjectTagsAsync(new GetObjectTagsRequest
+        {
+            BucketName = "tag-bucket",
+            Key = "docs/tagged.txt"
+        });
+        Assert.True(currentTags.IsSuccess);
+        Assert.Empty(currentTags.Value!.Tags);
+
+        var failingTags = await failingReplicaBackend.GetObjectTagsAsync(new GetObjectTagsRequest
+        {
+            BucketName = "tag-bucket",
+            Key = "docs/tagged.txt"
+        });
+        Assert.True(failingTags.IsSuccess);
+        Assert.Equal("test", failingTags.Value!.Tags["environment"]);
+        Assert.Equal("copilot", failingTags.Value.Tags["owner"]);
+
+        var remainingRepair = Assert.Single(await repairBacklog.ListOutstandingAsync());
+        Assert.Equal(failingReplicaBackend.Name, remainingRepair.ReplicaBackendName);
+        Assert.Equal(StorageReplicaRepairStatus.Failed, remainingRepair.Status);
+        Assert.Equal(StorageOperationType.DeleteObjectTags, remainingRepair.Operation);
+        Assert.Equal(1, remainingRepair.AttemptCount);
+        Assert.Equal(StorageErrorCode.ProviderUnavailable, remainingRepair.LastErrorCode);
+        Assert.Equal("Simulated object tag repair failure.", remainingRepair.LastErrorMessage);
+    }
+
+    [Fact]
+    public async Task OrchestratedStorageService_WriteThroughAll_RecordsPartialBucketCorsDeleteFailuresAcrossReplicas()
+    {
+        var primaryBackend = new InMemoryStorageBackend("primary-memory", isPrimary: true);
+        var currentReplicaBackend = new InMemoryStorageBackend("current-replica");
+        var failingReplicaBackend = new InMemoryStorageBackend("failing-replica");
+        var trailingReplicaBackend = new InMemoryStorageBackend("trailing-replica");
+        failingReplicaBackend.QueueFailure(
+            SimulatedFailureOperation.DeleteBucketCors,
+            StorageErrorCode.ProviderUnavailable,
+            "Simulated bucket CORS delete failure.");
+
+        await using var fixture = new CoreStorageFixture(overrideCatalogStore: true, addDefaultDiskStorage: false, configureServices: services => {
+            services.Configure<IntegratedS3CoreOptions>(options => {
+                options.ConsistencyMode = StorageConsistencyMode.WriteThroughAll;
+            });
+            services.AddSingleton<IStorageBackend>(primaryBackend);
+            services.AddSingleton<IStorageBackend>(currentReplicaBackend);
+            services.AddSingleton<IStorageBackend>(failingReplicaBackend);
+            services.AddSingleton<IStorageBackend>(trailingReplicaBackend);
+        });
+
+        await SeedBucketAsync("partial-cors-bucket", primaryBackend, currentReplicaBackend, failingReplicaBackend, trailingReplicaBackend);
+        await SeedBucketCorsAsync("partial-cors-bucket", CreateBucketCorsRule(), primaryBackend, currentReplicaBackend, failingReplicaBackend, trailingReplicaBackend);
+
+        var storageService = fixture.Services.GetRequiredService<IStorageService>();
+        var repairBacklog = fixture.Services.GetRequiredService<IStorageReplicaRepairBacklog>();
+
+        var deleteCors = await storageService.DeleteBucketCorsAsync(new DeleteBucketCorsRequest
+        {
+            BucketName = "partial-cors-bucket"
+        });
+
+        Assert.False(deleteCors.IsSuccess);
+        Assert.Equal(StorageErrorCode.ProviderUnavailable, deleteCors.Error!.Code);
+        Assert.Equal(failingReplicaBackend.Name, deleteCors.Error.ProviderName);
+        Assert.Equal(StorageErrorCode.CorsConfigurationNotFound, (await primaryBackend.GetBucketCorsAsync("partial-cors-bucket")).Error!.Code);
+        Assert.Equal(StorageErrorCode.CorsConfigurationNotFound, (await currentReplicaBackend.GetBucketCorsAsync("partial-cors-bucket")).Error!.Code);
+        Assert.True((await failingReplicaBackend.GetBucketCorsAsync("partial-cors-bucket")).IsSuccess);
+        Assert.True((await trailingReplicaBackend.GetBucketCorsAsync("partial-cors-bucket")).IsSuccess);
+
+        var outstandingRepairs = (await repairBacklog.ListOutstandingAsync())
+            .ToDictionary(entry => entry.ReplicaBackendName, StringComparer.Ordinal);
+        Assert.Equal(2, outstandingRepairs.Count);
+
+        var failedRepair = outstandingRepairs[failingReplicaBackend.Name];
+        Assert.Equal(StorageReplicaRepairOrigin.PartialWriteFailure, failedRepair.Origin);
+        Assert.Equal(StorageReplicaRepairStatus.Failed, failedRepair.Status);
+        Assert.Equal(StorageOperationType.DeleteBucketCors, failedRepair.Operation);
+        Assert.Equal(1, failedRepair.AttemptCount);
+        Assert.Equal(StorageErrorCode.ProviderUnavailable, failedRepair.LastErrorCode);
+        Assert.Equal("Simulated bucket CORS delete failure.", failedRepair.LastErrorMessage);
+
+        var pendingRepair = outstandingRepairs[trailingReplicaBackend.Name];
+        Assert.Equal(StorageReplicaRepairOrigin.PartialWriteFailure, pendingRepair.Origin);
+        Assert.Equal(StorageReplicaRepairStatus.Pending, pendingRepair.Status);
+        Assert.Equal(StorageOperationType.DeleteBucketCors, pendingRepair.Operation);
+        Assert.Equal(0, pendingRepair.AttemptCount);
+        Assert.Null(pendingRepair.LastErrorCode);
+        Assert.Null(pendingRepair.LastErrorMessage);
+    }
+
+    [Fact]
     public async Task OrchestratedStorageService_WriteThroughAll_FailsBeforeMutatingPrimary_WhenReplicaIsKnownUnhealthy()
     {
         var primaryBackend = new InMemoryStorageBackend("primary-memory", isPrimary: true);
@@ -1942,6 +2221,93 @@ public sealed class IntegratedS3CoreOrchestrationTests
         return await reader.ReadToEndAsync();
     }
 
+    private static async Task SeedBucketAsync(string bucketName, params InMemoryStorageBackend[] backends)
+    {
+        foreach (var backend in backends) {
+            var createBucket = await backend.CreateBucketAsync(new CreateBucketRequest
+            {
+                BucketName = bucketName
+            });
+
+            Assert.True(createBucket.IsSuccess);
+        }
+    }
+
+    private static async Task SeedBucketCorsAsync(string bucketName, BucketCorsRule rule, params InMemoryStorageBackend[] backends)
+    {
+        foreach (var backend in backends) {
+            var putCors = await backend.PutBucketCorsAsync(new PutBucketCorsRequest
+            {
+                BucketName = bucketName,
+                Rules = [CloneBucketCorsRule(rule)]
+            });
+
+            Assert.True(putCors.IsSuccess);
+        }
+    }
+
+    private static async Task SeedObjectWithTagsAsync(
+        string bucketName,
+        string key,
+        string content,
+        IReadOnlyDictionary<string, string> tags,
+        params InMemoryStorageBackend[] backends)
+    {
+        foreach (var backend in backends) {
+            backend.AddObject(bucketName, key, content);
+
+            var putTags = await backend.PutObjectTagsAsync(new PutObjectTagsRequest
+            {
+                BucketName = bucketName,
+                Key = key,
+                Tags = new Dictionary<string, string>(tags, StringComparer.Ordinal)
+            });
+
+            Assert.True(putTags.IsSuccess);
+        }
+    }
+
+    private static BucketCorsRule CreateBucketCorsRule()
+    {
+        return new BucketCorsRule
+        {
+            Id = "rule-1",
+            AllowedOrigins = ["https://app.example"],
+            AllowedMethods = [BucketCorsMethod.Get, BucketCorsMethod.Put],
+            AllowedHeaders = ["authorization"],
+            ExposeHeaders = ["etag"],
+            MaxAgeSeconds = 120
+        };
+    }
+
+    private static BucketCorsRule CloneBucketCorsRule(BucketCorsRule rule)
+    {
+        return new BucketCorsRule
+        {
+            Id = rule.Id,
+            AllowedOrigins = rule.AllowedOrigins.ToArray(),
+            AllowedMethods = rule.AllowedMethods.ToArray(),
+            AllowedHeaders = rule.AllowedHeaders.ToArray(),
+            ExposeHeaders = rule.ExposeHeaders.ToArray(),
+            MaxAgeSeconds = rule.MaxAgeSeconds
+        };
+    }
+
+    private enum SimulatedFailureOperation
+    {
+        CreateBucket,
+        PutBucketVersioning,
+        PutBucketCors,
+        DeleteBucketCors,
+        DeleteBucket,
+        GetObject,
+        CopyObject,
+        PutObject,
+        PutObjectTags,
+        DeleteObjectTags,
+        DeleteObject
+    }
+
     private static StorageReplicaRepairEntry CreateRepairEntry(
         StorageReplicaRepairOrigin origin,
         StorageReplicaRepairStatus status,
@@ -2444,6 +2810,8 @@ public sealed class IntegratedS3CoreOrchestrationTests
         private readonly Dictionary<string, BucketInfo> _buckets = new(StringComparer.Ordinal);
         private readonly Dictionary<string, BucketCorsConfiguration> _bucketCorsConfigurations = new(StringComparer.Ordinal);
         private readonly Dictionary<(string BucketName, string Key), StoredObject> _objects = new();
+        private readonly Dictionary<SimulatedFailureOperation, Queue<QueuedFailure>> _queuedFailures = new();
+        private readonly object _queuedFailureLock = new();
 
         public string Name => name;
 
@@ -2538,6 +2906,11 @@ public sealed class IntegratedS3CoreOrchestrationTests
         {
             cancellationToken.ThrowIfCancellationRequested();
 
+            var queuedFailure = TakeQueuedFailure(SimulatedFailureOperation.CreateBucket, request.BucketName);
+            if (queuedFailure is not null) {
+                return ValueTask.FromResult(StorageResult<BucketInfo>.Failure(queuedFailure));
+            }
+
             if (_buckets.ContainsKey(request.BucketName)) {
                 return ValueTask.FromResult(StorageResult<BucketInfo>.Failure(new StorageError
                 {
@@ -2599,6 +2972,11 @@ public sealed class IntegratedS3CoreOrchestrationTests
         {
             cancellationToken.ThrowIfCancellationRequested();
 
+            var queuedFailure = TakeQueuedFailure(SimulatedFailureOperation.PutBucketVersioning, request.BucketName);
+            if (queuedFailure is not null) {
+                return ValueTask.FromResult(StorageResult<BucketVersioningInfo>.Failure(queuedFailure));
+            }
+
             if (!_buckets.TryGetValue(request.BucketName, out var bucket)) {
                 return ValueTask.FromResult(StorageResult<BucketVersioningInfo>.Failure(new StorageError
                 {
@@ -2657,6 +3035,11 @@ public sealed class IntegratedS3CoreOrchestrationTests
         {
             cancellationToken.ThrowIfCancellationRequested();
 
+            var queuedFailure = TakeQueuedFailure(SimulatedFailureOperation.PutBucketCors, request.BucketName);
+            if (queuedFailure is not null) {
+                return ValueTask.FromResult(StorageResult<BucketCorsConfiguration>.Failure(queuedFailure));
+            }
+
             if (!_buckets.ContainsKey(request.BucketName)) {
                 return ValueTask.FromResult(StorageResult<BucketCorsConfiguration>.Failure(new StorageError
                 {
@@ -2682,6 +3065,11 @@ public sealed class IntegratedS3CoreOrchestrationTests
         {
             cancellationToken.ThrowIfCancellationRequested();
 
+            var queuedFailure = TakeQueuedFailure(SimulatedFailureOperation.DeleteBucketCors, request.BucketName);
+            if (queuedFailure is not null) {
+                return ValueTask.FromResult(StorageResult.Failure(queuedFailure));
+            }
+
             if (!_buckets.ContainsKey(request.BucketName)) {
                 return ValueTask.FromResult(StorageResult.Failure(new StorageError
                 {
@@ -2700,6 +3088,11 @@ public sealed class IntegratedS3CoreOrchestrationTests
         public ValueTask<StorageResult> DeleteBucketAsync(DeleteBucketRequest request, CancellationToken cancellationToken = default)
         {
             cancellationToken.ThrowIfCancellationRequested();
+
+            var queuedFailure = TakeQueuedFailure(SimulatedFailureOperation.DeleteBucket, request.BucketName);
+            if (queuedFailure is not null) {
+                return ValueTask.FromResult(StorageResult.Failure(queuedFailure));
+            }
 
             if (!_buckets.Remove(request.BucketName)) {
                 return ValueTask.FromResult(StorageResult.Failure(new StorageError
@@ -2743,6 +3136,11 @@ public sealed class IntegratedS3CoreOrchestrationTests
         {
             cancellationToken.ThrowIfCancellationRequested();
             GetObjectCallCount++;
+
+            var queuedFailure = TakeQueuedFailure(SimulatedFailureOperation.GetObject, request.BucketName, request.Key, request.VersionId);
+            if (queuedFailure is not null) {
+                return ValueTask.FromResult(StorageResult<GetObjectResponse>.Failure(queuedFailure));
+            }
 
             var simulatedFailureCode = GetObjectFailureCode;
             if (simulatedFailureCode is null && FailGetObjectWithProviderUnavailable) {
@@ -2836,6 +3234,11 @@ public sealed class IntegratedS3CoreOrchestrationTests
         {
             cancellationToken.ThrowIfCancellationRequested();
 
+            var queuedFailure = TakeQueuedFailure(SimulatedFailureOperation.CopyObject, request.DestinationBucketName, request.DestinationKey);
+            if (queuedFailure is not null) {
+                return ValueTask.FromResult(StorageResult<ObjectInfo>.Failure(queuedFailure));
+            }
+
             if (!_objects.TryGetValue((request.SourceBucketName, request.SourceKey), out var sourceObject)) {
                 return ValueTask.FromResult(StorageResult<ObjectInfo>.Failure(new StorageError
                 {
@@ -2856,6 +3259,11 @@ public sealed class IntegratedS3CoreOrchestrationTests
         {
             cancellationToken.ThrowIfCancellationRequested();
             PutObjectCallCount++;
+
+            var queuedFailure = TakeQueuedFailure(SimulatedFailureOperation.PutObject, request.BucketName, request.Key);
+            if (queuedFailure is not null) {
+                return StorageResult<ObjectInfo>.Failure(queuedFailure);
+            }
 
             using var buffer = new MemoryStream();
             await request.Content.CopyToAsync(buffer, cancellationToken);
@@ -2896,6 +3304,11 @@ public sealed class IntegratedS3CoreOrchestrationTests
         public ValueTask<StorageResult<ObjectTagSet>> PutObjectTagsAsync(PutObjectTagsRequest request, CancellationToken cancellationToken = default)
         {
             cancellationToken.ThrowIfCancellationRequested();
+
+            var queuedFailure = TakeQueuedFailure(SimulatedFailureOperation.PutObjectTags, request.BucketName, request.Key, request.VersionId);
+            if (queuedFailure is not null) {
+                return ValueTask.FromResult(StorageResult<ObjectTagSet>.Failure(queuedFailure));
+            }
 
             if (!_objects.TryGetValue((request.BucketName, request.Key), out var storedObject)) {
                 return ValueTask.FromResult(StorageResult<ObjectTagSet>.Failure(new StorageError
@@ -2951,6 +3364,11 @@ public sealed class IntegratedS3CoreOrchestrationTests
         public ValueTask<StorageResult<ObjectTagSet>> DeleteObjectTagsAsync(DeleteObjectTagsRequest request, CancellationToken cancellationToken = default)
         {
             cancellationToken.ThrowIfCancellationRequested();
+
+            var queuedFailure = TakeQueuedFailure(SimulatedFailureOperation.DeleteObjectTags, request.BucketName, request.Key, request.VersionId);
+            if (queuedFailure is not null) {
+                return ValueTask.FromResult(StorageResult<ObjectTagSet>.Failure(queuedFailure));
+            }
 
             return PutObjectTagsAsync(new PutObjectTagsRequest
             {
@@ -3011,6 +3429,11 @@ public sealed class IntegratedS3CoreOrchestrationTests
         {
             cancellationToken.ThrowIfCancellationRequested();
 
+            var queuedFailure = TakeQueuedFailure(SimulatedFailureOperation.DeleteObject, request.BucketName, request.Key, request.VersionId);
+            if (queuedFailure is not null) {
+                return ValueTask.FromResult(StorageResult<DeleteObjectResult>.Failure(queuedFailure));
+            }
+
             if (_objects.TryGetValue((request.BucketName, request.Key), out var storedObject)
                 && !MatchesRequestedVersion(request.VersionId, storedObject.Info.VersionId)) {
                 return ValueTask.FromResult(StorageResult<DeleteObjectResult>.Failure(StorageError.Unsupported(
@@ -3037,6 +3460,68 @@ public sealed class IntegratedS3CoreOrchestrationTests
                 Key = request.Key,
                 VersionId = storedObject.Info.VersionId
             }));
+        }
+
+        public void QueueFailure(
+            SimulatedFailureOperation operation,
+            StorageErrorCode errorCode,
+            string message,
+            int? suggestedHttpStatusCode = null)
+        {
+            lock (_queuedFailureLock) {
+                if (!_queuedFailures.TryGetValue(operation, out var queue)) {
+                    queue = new Queue<QueuedFailure>();
+                    _queuedFailures[operation] = queue;
+                }
+
+                queue.Enqueue(new QueuedFailure(
+                    errorCode,
+                    message,
+                    suggestedHttpStatusCode ?? GetSuggestedHttpStatusCode(errorCode)));
+            }
+        }
+
+        private StorageError? TakeQueuedFailure(
+            SimulatedFailureOperation operation,
+            string bucketName,
+            string? objectKey = null,
+            string? versionId = null)
+        {
+            lock (_queuedFailureLock) {
+                if (!_queuedFailures.TryGetValue(operation, out var queue) || queue.Count == 0) {
+                    return null;
+                }
+
+                var failure = queue.Dequeue();
+                return new StorageError
+                {
+                    Code = failure.ErrorCode,
+                    Message = failure.Message,
+                    BucketName = bucketName,
+                    ObjectKey = objectKey,
+                    VersionId = versionId,
+                    ProviderName = Name,
+                    SuggestedHttpStatusCode = failure.SuggestedHttpStatusCode
+                };
+            }
+        }
+
+        private static int GetSuggestedHttpStatusCode(StorageErrorCode errorCode)
+        {
+            return errorCode switch
+            {
+                StorageErrorCode.AccessDenied => 403,
+                StorageErrorCode.BucketAlreadyExists => 409,
+                StorageErrorCode.BucketNotFound => 404,
+                StorageErrorCode.CorsConfigurationNotFound => 404,
+                StorageErrorCode.ObjectNotFound => 404,
+                StorageErrorCode.PreconditionFailed => 412,
+                StorageErrorCode.ProviderUnavailable => 503,
+                StorageErrorCode.QuotaExceeded => 507,
+                StorageErrorCode.Throttled => 429,
+                StorageErrorCode.UnsupportedCapability => 400,
+                _ => 500
+            };
         }
 
         private static BucketCorsConfiguration CloneBucketCorsConfiguration(BucketCorsConfiguration configuration)
@@ -3067,6 +3552,11 @@ public sealed class IntegratedS3CoreOrchestrationTests
 
             public required ObjectInfo Info { get; init; }
         }
+
+        private sealed record QueuedFailure(
+            StorageErrorCode ErrorCode,
+            string Message,
+            int SuggestedHttpStatusCode);
 
         private static bool MatchesRequestedVersion(string? requestedVersionId, string? currentVersionId)
         {
