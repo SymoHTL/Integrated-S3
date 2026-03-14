@@ -11,6 +11,7 @@ public enum StorageOperationType
     GetBucketPolicy,
     PutBucketPolicy,
     DeleteBucketPolicy,
+    GetBucketLocation,
     GetBucketVersioning,
     PutBucketVersioning,
     GetBucketCors,

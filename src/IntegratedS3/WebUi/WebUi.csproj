@@ -6,7 +6,7 @@
         <ImplicitUsings>enable</ImplicitUsings>
         <InvariantGlobalization>true</InvariantGlobalization>
         <PublishAot>true</PublishAot>
-        <Description>Reference host for IntegratedS3 using the minimal ASP.NET integration surface and disk-backed storage.</Description>
+        <Description>Reference host for IntegratedS3 using the minimal ASP.NET integration surface with disk or S3-backed storage.</Description>
         <IsPackable>false</IsPackable>
     </PropertyGroup>
 
@@ -28,6 +28,7 @@
     <ItemGroup>
         <ProjectReference Include="..\IntegratedS3.AspNetCore\IntegratedS3.AspNetCore.csproj" />
         <ProjectReference Include="..\IntegratedS3.Provider.Disk\IntegratedS3.Provider.Disk.csproj" />
+        <ProjectReference Include="..\IntegratedS3.Provider.S3\IntegratedS3.Provider.S3.csproj" />
     </ItemGroup>
 
 </Project>

@@ -191,12 +191,6 @@ public static class S3XmlRequestReader
                 })
                 .ToArray();
 
-            var duplicateKey = tags.GroupBy(static tag => tag.Key, StringComparer.Ordinal)
-                .FirstOrDefault(static grouping => grouping.Count() > 1)?.Key;
-            if (duplicateKey is not null) {
-                throw new FormatException($"Duplicate tag key '{duplicateKey}' is not allowed.");
-            }
-
             return new S3ObjectTagging
             {
                 TagSet = tags
