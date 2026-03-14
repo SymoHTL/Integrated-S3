@@ -8,6 +8,8 @@ public sealed class S3ListMultipartUploadsResult
 
     public string? Delimiter { get; init; }
 
+    public string? EncodingType { get; init; }
+
     public string? KeyMarker { get; init; }
 
     public string? UploadIdMarker { get; init; }
@@ -30,6 +32,10 @@ public sealed class S3MultipartUploadEntry
     public required string Key { get; init; }
 
     public required string UploadId { get; init; }
+
+    public S3BucketOwner? Initiator { get; init; }
+
+    public S3BucketOwner? Owner { get; init; }
 
     public DateTimeOffset InitiatedAtUtc { get; init; }
 
