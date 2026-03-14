@@ -567,6 +567,56 @@ public static class S3XmlResponseWriter
         return builder.ToString();
     }
 
+    public static string WriteAccessControlPolicy(S3AccessControlPolicy response)
+    {
+        ArgumentNullException.ThrowIfNull(response);
+
+        var builder = new StringBuilder();
+        using var stringWriter = new StringWriter(builder, CultureInfo.InvariantCulture);
+        using var xmlWriter = XmlWriter.Create(stringWriter, CreateSettings());
+
+        xmlWriter.WriteStartDocument();
+        xmlWriter.WriteStartElement("AccessControlPolicy");
+        xmlWriter.WriteStartElement("Owner");
+        xmlWriter.WriteElementString("ID", response.Owner.Id);
+        if (!string.IsNullOrWhiteSpace(response.Owner.DisplayName)) {
+            xmlWriter.WriteElementString("DisplayName", response.Owner.DisplayName);
+        }
+
+        xmlWriter.WriteEndElement();
+        xmlWriter.WriteStartElement("AccessControlList");
+
+        foreach (var grant in response.Grants) {
+            xmlWriter.WriteStartElement("Grant");
+            xmlWriter.WriteStartElement("Grantee");
+            xmlWriter.WriteAttributeString("xmlns", "xsi", null, "http://www.w3.org/2001/XMLSchema-instance");
+            xmlWriter.WriteAttributeString("xsi", "type", "http://www.w3.org/2001/XMLSchema-instance", grant.Grantee.Type);
+
+            if (!string.IsNullOrWhiteSpace(grant.Grantee.Id)) {
+                xmlWriter.WriteElementString("ID", grant.Grantee.Id);
+            }
+
+            if (!string.IsNullOrWhiteSpace(grant.Grantee.DisplayName)) {
+                xmlWriter.WriteElementString("DisplayName", grant.Grantee.DisplayName);
+            }
+
+            if (!string.IsNullOrWhiteSpace(grant.Grantee.Uri)) {
+                xmlWriter.WriteElementString("URI", grant.Grantee.Uri);
+            }
+
+            xmlWriter.WriteEndElement();
+            xmlWriter.WriteElementString("Permission", grant.Permission);
+            xmlWriter.WriteEndElement();
+        }
+
+        xmlWriter.WriteEndElement();
+        xmlWriter.WriteEndElement();
+        xmlWriter.WriteEndDocument();
+        xmlWriter.Flush();
+
+        return builder.ToString();
+    }
+
     private static XmlWriterSettings CreateSettings()
     {
         return new XmlWriterSettings

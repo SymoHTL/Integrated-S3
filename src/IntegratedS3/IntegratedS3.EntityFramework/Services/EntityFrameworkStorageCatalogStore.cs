@@ -148,10 +148,15 @@ internal sealed class EntityFrameworkStorageCatalogStore<TDbContext>(
         }
 
         record.VersionId = @object.VersionId;
-    record.IsLatest = @object.IsLatest;
-    record.IsDeleteMarker = @object.IsDeleteMarker;
+        record.IsLatest = @object.IsLatest;
+        record.IsDeleteMarker = @object.IsDeleteMarker;
         record.ContentLength = @object.ContentLength;
         record.ContentType = @object.ContentType;
+        record.CacheControl = @object.CacheControl;
+        record.ContentDisposition = @object.ContentDisposition;
+        record.ContentEncoding = @object.ContentEncoding;
+        record.ContentLanguage = @object.ContentLanguage;
+        record.ExpiresUtc = @object.ExpiresUtc;
         record.ETag = @object.ETag;
         record.LastModifiedUtc = @object.LastModifiedUtc;
         record.MetadataJson = @object.Metadata is null ? null : JsonSerializer.Serialize(@object.Metadata);
@@ -213,6 +218,11 @@ internal sealed class EntityFrameworkStorageCatalogStore<TDbContext>(
                 IsDeleteMarker = @object.IsDeleteMarker,
                 ContentLength = @object.ContentLength,
                 ContentType = @object.ContentType,
+                CacheControl = @object.CacheControl,
+                ContentDisposition = @object.ContentDisposition,
+                ContentEncoding = @object.ContentEncoding,
+                ContentLanguage = @object.ContentLanguage,
+                ExpiresUtc = @object.ExpiresUtc,
                 ETag = @object.ETag,
                 LastModifiedUtc = @object.LastModifiedUtc,
                 Metadata = string.IsNullOrWhiteSpace(@object.MetadataJson)

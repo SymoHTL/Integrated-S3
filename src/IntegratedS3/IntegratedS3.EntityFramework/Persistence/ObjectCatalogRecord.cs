@@ -22,6 +22,16 @@ public sealed class ObjectCatalogRecord
 
     public string? ContentType { get; set; }
 
+    public string? CacheControl { get; set; }
+
+    public string? ContentDisposition { get; set; }
+
+    public string? ContentEncoding { get; set; }
+
+    public string? ContentLanguage { get; set; }
+
+    public DateTimeOffset? ExpiresUtc { get; set; }
+
     public string? ETag { get; set; }
 
     public DateTimeOffset LastModifiedUtc { get; set; }

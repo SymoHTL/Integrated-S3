@@ -26,6 +26,7 @@ public static class IntegratedS3CoreServiceCollectionExtensions
         services.TryAddSingleton<IStorageCatalogStore, NullStorageCatalogStore>();
         services.TryAddSingleton<IStorageObjectLocationResolver, NullStorageObjectLocationResolver>();
         services.TryAddSingleton<IIntegratedS3AuthorizationService, AllowAllIntegratedS3AuthorizationService>();
+        services.TryAddSingleton<IStorageAuthorizationCompatibilityService, InMemoryStorageAuthorizationCompatibilityService>();
         services.TryAddSingleton<IIntegratedS3RequestContextAccessor, AsyncLocalIntegratedS3RequestContextAccessor>();
         services.TryAddSingleton<IStoragePresignStrategy, UnsupportedStoragePresignStrategy>();
         services.TryAddSingleton<IStorageBackendHealthEvaluator, DefaultStorageBackendHealthEvaluator>();
