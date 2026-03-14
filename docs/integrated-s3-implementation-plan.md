@@ -89,7 +89,7 @@ The repository has already moved beyond initial scaffolding and now contains a w
   - `MapIntegratedS3Endpoints(...)`
   - combined configuration-binding + inline-configuration overloads plus `AddIntegratedS3Provider(...)` helpers for named/manual configured-provider metadata registration and `AddIntegratedS3Backend(...)` helpers for custom backend DI activation
   - feature-group endpoint toggles for service, bucket, object, multipart, and admin surfaces
-  - `IntegratedS3EndpointOptions` can now bind from `IntegratedS3:Endpoints`, and map-time overrides start from those configured defaults so hosts/tests can keep endpoint toggles aligned without manual re-wiring
+  - `IntegratedS3EndpointOptions` can now bind from `IntegratedS3:Endpoints`, including common `RequireAuthorization` / named-policy / `AllowAnonymous` route-group conventions, and map-time overrides start from those configured defaults so hosts/tests can keep endpoint toggles aligned without manual re-wiring
   - first-class whole-route, per-feature, and explicit shared root/compatibility route-group configuration on endpoint mapping, including authorization/policy wiring
   - `IntegratedS3EndpointFeature` plus `SetFeatureRouteGroupConfiguration(...)` / `GetFeatureRouteGroupConfiguration(...)` as the stable per-feature callback pattern for future endpoint surfaces, with the current `Configure*RouteGroup` members retained as convenience wrappers for today's built-in features
   - backend-derived service/provider descriptors and capabilities
@@ -756,7 +756,7 @@ Status:
 - `IIntegratedS3AuthorizationService` is implemented
 - `IIntegratedS3RequestContextAccessor` is implemented so ASP.NET can flow the current `ClaimsPrincipal` into Core
 - authorization currently executes in an `IStorageService` decorator (`AuthorizingStorageService`) over `OrchestratedStorageService`
-- coarse endpoint-level authorization policies are still optional and not wired as first-class route-group configuration yet
+- coarse endpoint-level authorization policies are optional and now support first-class route-group configuration through both map-time callbacks and configuration-bound endpoint authorization conventions
 
 This service should receive:
 
@@ -1269,10 +1269,11 @@ This section is the execution board for the remaining implementation backlog. As
   - `MapIntegratedS3Endpoints(...)` now accepts endpoint options for service, bucket, object, multipart, and admin toggles plus whole-route, per-feature, and explicit shared root/compatibility route-group configuration callbacks for authorization/policy wiring
   - shared `GET /` and `/{**s3Path}` routes now use explicit `ConfigureRootRouteGroup` / `ConfigureCompatibilityRouteGroup` callbacks (or whole-route protection) instead of inheriting multiple feature-group callbacks onto one route
   - `WebUiApplication.ConfigurePipeline(...)` and the isolated test-host wiring can now forward endpoint-mapping options and conditionally enable `UseAuthorization()` alongside `UseAuthentication()`
-  - `IntegratedS3EndpointOptions` now bind from `IntegratedS3:Endpoints`, and the map-time `MapIntegratedS3Endpoints(...)` overloads now start from configured endpoint defaults so host-configured toggles remain overrideable per host/test
-  - `IntegratedS3EndpointOptions` now expose `IntegratedS3EndpointFeature`-keyed `SetFeatureRouteGroupConfiguration(...)` / `GetFeatureRouteGroupConfiguration(...)` helpers, and the current `Configure*RouteGroup` properties are wrappers over that shared per-feature registry so future endpoint surfaces can follow the same callback pattern
-- Remaining scope:
-  - evaluate whether common authorization conventions should also be exposed as configuration-bound host options in addition to the current map-time route-group callbacks
+    - `IntegratedS3EndpointOptions` now bind from `IntegratedS3:Endpoints`, including configuration-bound whole-route, shared-route, and per-feature authorization conventions, and the map-time `MapIntegratedS3Endpoints(...)` overloads now start from configured endpoint defaults so host-configured toggles remain overrideable per host/test
+    - `IntegratedS3EndpointOptions` now expose `IntegratedS3EndpointFeature`-keyed `SetFeatureRouteGroupConfiguration(...)` / `GetFeatureRouteGroupConfiguration(...)` helpers, and the current `Configure*RouteGroup` properties are wrappers over that shared per-feature registry so future endpoint surfaces can follow the same callback pattern
+  - Remaining scope:
+    - decide whether custom `IStorageBackend` registration needs more DI sugar than direct service registration plus the new configured-provider helpers
+    - evaluate whether common authorization conventions should also be exposed as configuration-bound host options in addition to the current map-time route-group callbacks
   - revisit whether future endpoint surfaces should automatically grow matching per-feature route-group callbacks as they are added
   - preserve `CreateSlimBuilder(...)`, Minimal API, trimming, and AOT friendliness as any follow-up ergonomics polish lands
 
@@ -1603,8 +1604,8 @@ Recommended dependency-aware order:
 2. execute Track H in parallel to expand conformance, fault-injection, local-endpoint coverage, benchmark baselines, and publish verification around the current Track B / E / G slices
 3. execute Track B in parallel to harden the landed native S3 copy/multipart/checksum/SSE/delegated-read slice against local S3-compatible endpoints and decide whether backend-direct presign should complement the current resolver path
 4. continue Track C in parallel with larger-object and checksum-aware client ergonomics now that direct/delegated read paths, typed transfer helpers, and resume-aware file downloads are already shipped
-5. revisit Track D follow-up only if consumer feedback warrants configuration-bound authorization conventions or more backend-registration sugar
-6. continue Track F in parallel and use the remaining Track G budget for retention/legal-hold plus any broader ACL/policy parity follow-on work, remaining encryption behavior, and richer health/admin visibility now that endpoint toggles, repair-backlog visibility, descriptor follow-ons, CORS `Vary` hardening, and the initial public-access ACL/policy slice are in place
+5. revisit Track D follow-up only if consumer feedback warrants more backend-registration sugar or additional endpoint-group ergonomics beyond the new configuration-bound authorization conventions
+6. continue Track F in parallel and use the remaining Track G budget for retention/legal-hold, ACL/policy parity follow-on work, remaining encryption behavior, and richer health/admin visibility now that endpoint toggles, repair-backlog visibility, descriptor follow-ons, CORS `Vary` hardening, and the initial public-access ACL/policy slice are in place
 
 ## Suggested First Parallel Batch
 
@@ -1652,7 +1653,7 @@ A March 2026 audit of code, tests, and docs created GitHub issues [#1](https://g
   - [#11](https://github.com/SymoHTL/Intergrated-S3/issues/11) optional maintenance/replay host integrations
   - [#12](https://github.com/SymoHTL/Intergrated-S3/issues/12) richer reconciliation and divergence-repair semantics
 - Track G:
-  - [#26](https://github.com/SymoHTL/Intergrated-S3/issues/26) ACL/policy-compatible behavior
+  - extend conformance and protocol hardening into the remaining delete-marker/versioning, checksum-override, and `aws-chunked` edge cases now that the current subresource/presign, conditional-precedence, and raw-query SigV4 gaps are covered
   - [#27](https://github.com/SymoHTL/Intergrated-S3/issues/27) broader server-side-encryption variants
   - [#28](https://github.com/SymoHTL/Intergrated-S3/issues/28) remaining S3/browser CORS conformance hardening
   - [#29](https://github.com/SymoHTL/Intergrated-S3/issues/29) object lock, retention, and legal hold

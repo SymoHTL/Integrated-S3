@@ -26,6 +26,7 @@ using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.WebUtilities;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Logging;
@@ -1779,6 +1780,12 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
         Assert.Equal("docs%2Fb%20file%282%29.txt", listedObject.Element("Key")?.Value);
         Assert.False(string.IsNullOrWhiteSpace(listedObject.Element("Owner")?.Element("ID")?.Value));
 
+        var secondPageResponse = await client.GetAsync(
+            $"/integrated-s3/{bucketName}?prefix={Uri.EscapeDataString("docs/")}&marker={Uri.EscapeDataString("docs/b file(2).txt")}&max-keys=10&encoding-type=url");
+
+        Assert.Equal(HttpStatusCode.OK, secondPageResponse.StatusCode);
+        var secondPageDocument = XDocument.Parse(await secondPageResponse.Content.ReadAsStringAsync());
+        Assert.Equal("docs%2Fc%20file%283%29.txt", Assert.Single(secondPageDocument.Root!.Elements("Contents")).Element("Key")?.Value);
     }
 
     [Fact]
@@ -2697,7 +2704,7 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
     {
         using var client = await _factory.CreateClientAsync();
 
-        var bucketName = $"multipart-subresource-bucket-{Guid.NewGuid():N}";
+        var bucketName = $"multipart-subresource-invalid-encoding-{Guid.NewGuid():N}";
 
         Assert.Equal(HttpStatusCode.Created, (await client.PutAsync($"/integrated-s3/buckets/{bucketName}", content: null)).StatusCode);
 
@@ -3943,6 +3950,41 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
     }
 
     [Fact]
+    public async Task EndpointRouteGroupAuthorization_CanBeConfiguredThroughBoundEndpointOptions()
+    {
+        await using var isolatedClient = await _factory.CreateIsolatedClientAsync(
+            builder => {
+                builder.Services.AddAuthentication("TestHeader")
+                    .AddScheme<AuthenticationSchemeOptions, TestHeaderAuthenticationHandler>("TestHeader", static _ => { });
+                builder.Services.AddAuthorization(options => {
+                    options.AddPolicy("IntegratedS3Route", policy => {
+                        policy.AddAuthenticationSchemes("TestHeader");
+                        policy.RequireAuthenticatedUser();
+                    });
+                });
+            },
+            configureConfiguration: configuration => {
+                configuration.AddInMemoryCollection(new Dictionary<string, string?>
+                {
+                    ["IntegratedS3:Endpoints:RouteAuthorization:PolicyNames:0"] = "IntegratedS3Route"
+                });
+            });
+
+        using var client = isolatedClient.Client;
+
+        var anonymousResponse = await client.GetAsync("/integrated-s3/capabilities");
+        Assert.Equal(HttpStatusCode.Unauthorized, anonymousResponse.StatusCode);
+
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("TestHeader", "storage.read");
+
+        var authenticatedResponse = await client.GetAsync("/integrated-s3/capabilities");
+        Assert.Equal(HttpStatusCode.OK, authenticatedResponse.StatusCode);
+
+        var authenticatedRepairsResponse = await client.GetAsync("/integrated-s3/admin/repairs");
+        Assert.Equal(HttpStatusCode.OK, authenticatedRepairsResponse.StatusCode);
+    }
+
+    [Fact]
     public async Task EndpointFeatureRouteGroupAuthorization_CanBeConfiguredThroughFeatureRegistry()
     {
         await using var isolatedClient = await _factory.CreateIsolatedClientAsync(
@@ -3984,6 +4026,21 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
 
         var adminResponse = await client.GetAsync("/integrated-s3/admin/repairs");
         Assert.Equal(HttpStatusCode.OK, adminResponse.StatusCode);
+    }
+
+    [Fact]
+    public async Task EndpointAuthorizationConventions_RejectConflictingAnonymousAndAuthorizedConfiguration()
+    {
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(() => _factory.CreateIsolatedClientAsync(
+            configureConfiguration: configuration => {
+                configuration.AddInMemoryCollection(new Dictionary<string, string?>
+                {
+                    ["IntegratedS3:Endpoints:RouteAuthorization:AllowAnonymous"] = "true",
+                    ["IntegratedS3:Endpoints:RouteAuthorization:RequireAuthorization"] = "true"
+                });
+            }));
+
+        Assert.Contains(nameof(IntegratedS3EndpointOptions.RouteAuthorization), exception.Message, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -5029,10 +5086,11 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
         };
 
         var signedHeaders = new[] { "host", "x-amz-content-sha256", "x-amz-date" };
+        var requestUri = CreateUri(pathAndQuery, host);
         var canonicalRequest = S3SigV4Signer.BuildCanonicalRequest(
             method.Method,
-            CreateUri(pathAndQuery, host).AbsolutePath,
-            EnumerateQueryParameters(CreateUri(pathAndQuery, host)),
+            requestUri.AbsolutePath,
+            EnumerateQueryParameters(requestUri),
             [
                 new KeyValuePair<string, string?>("host", host),
                 new KeyValuePair<string, string?>("x-amz-content-sha256", payloadHash),
@@ -5064,7 +5122,8 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
         var uri = CreateUri(pathAndQuery, host);
         var baseQuery = S3SigV4QueryStringParser.Parse(uri.Query).ToList();
 
-        baseQuery.AddRange([
+        baseQuery.AddRange(
+        [
             new KeyValuePair<string, string?>("X-Amz-Algorithm", "AWS4-HMAC-SHA256"),
             new KeyValuePair<string, string?>("X-Amz-Credential", $"{accessKeyId}/{credentialScope.Scope}"),
             new KeyValuePair<string, string?>("X-Amz-Date", timestampUtc.ToString("yyyyMMdd'T'HHmmss'Z'")),
