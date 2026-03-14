@@ -59,6 +59,16 @@ dotnet publish -c Release --self-contained src\IntegratedS3\WebUi\WebUi.csproj
 
 Treat the publish step as the trimming/AOT validation pass for the reference host, not just as an optional packaging command.
 
+## Observability
+
+The reference host now emits IntegratedS3 request/auth/storage observability through standard .NET logging, tracing, and metrics without baking in a fixed exporter stack.
+
+- responses on the IntegratedS3 HTTP surface echo `x-integrateds3-correlation-id`
+- the platform emits traces from the shared `IntegratedS3` activity source and metrics from the shared `IntegratedS3` meter
+- replica drift and backlog visibility are available through the admin repairs route plus the shared backlog/health metrics
+
+See `docs/observability.md` for the supported host-integration path and the current limitation that dedicated health endpoints remain host-owned.
+
 ## Test-host alignment
 
 `src\IntegratedS3\IntegratedS3.Tests\Infrastructure\WebUiApplicationFactory.cs` reuses `WebUiApplication.ConfigureServices(...)` and `WebUiApplication.ConfigurePipeline(...)` so runtime and test wiring stay aligned.

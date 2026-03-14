@@ -19,6 +19,7 @@ public static class IntegratedS3CoreServiceCollectionExtensions
         ArgumentNullException.ThrowIfNull(services);
         ArgumentNullException.ThrowIfNull(configure);
 
+        services.AddLogging();
         services.AddOptions<IntegratedS3CoreOptions>()
             .Configure(configure);
 
