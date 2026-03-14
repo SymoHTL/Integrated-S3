@@ -40,6 +40,46 @@ public sealed class IntegratedS3ClientPresignExtensionsTests
         Assert.Equal("text/plain", client.LastRequest?.ContentType);
     }
 
+    [Fact]
+    public async Task PresignPutObjectAsync_WithChecksum_ForwardsChecksumAlgorithmAndValue()
+    {
+        var client = new CapturingIntegratedS3Client();
+
+        await client.PresignPutObjectAsync(
+            "docs",
+            "guide.txt",
+            expiresInSeconds: 300,
+            checksumAlgorithm: IntegratedS3TransferChecksumAlgorithm.Sha256,
+            checksumValue: "abc123==",
+            contentType: "text/plain");
+
+        Assert.Equal(StoragePresignOperation.PutObject, client.LastRequest?.Operation);
+        Assert.Equal("text/plain", client.LastRequest?.ContentType);
+        Assert.Equal("sha256", client.LastRequest?.ChecksumAlgorithm);
+        Assert.NotNull(client.LastRequest?.Checksums);
+        Assert.Equal("abc123==", client.LastRequest!.Checksums!["sha256"]);
+    }
+
+    [Fact]
+    public async Task PresignPutObjectAsync_WithPreferredAccessModeAndChecksum_ForwardsEverything()
+    {
+        var client = new CapturingIntegratedS3Client();
+
+        await client.PresignPutObjectAsync(
+            "docs",
+            "guide.txt",
+            expiresInSeconds: 300,
+            preferredAccessMode: StorageAccessMode.Proxy,
+            checksumAlgorithm: IntegratedS3TransferChecksumAlgorithm.Crc32C,
+            checksumValue: "crc32c-base64==",
+            contentType: "application/octet-stream");
+
+        Assert.Equal(StorageAccessMode.Proxy, client.LastRequest?.PreferredAccessMode);
+        Assert.Equal("crc32c", client.LastRequest?.ChecksumAlgorithm);
+        Assert.Equal("crc32c-base64==", client.LastRequest!.Checksums!["crc32c"]);
+        Assert.Equal("application/octet-stream", client.LastRequest?.ContentType);
+    }
+
     private sealed class CapturingIntegratedS3Client : IIntegratedS3Client
     {
         public StoragePresignRequest? LastRequest { get; private set; }
