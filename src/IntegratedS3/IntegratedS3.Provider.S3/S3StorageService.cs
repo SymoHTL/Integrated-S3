@@ -58,6 +58,47 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
         });
     }
 
+    public async ValueTask<StorageResult<StorageDirectObjectAccessGrant>> PresignObjectDirectAsync(
+        StorageDirectObjectAccessRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        cancellationToken.ThrowIfCancellationRequested();
+
+        var expiresAtUtc = DateTimeOffset.UtcNow.AddSeconds(request.ExpiresInSeconds);
+
+        try
+        {
+            var presignedUrl = request.Operation switch
+            {
+                StorageDirectObjectAccessOperation.GetObject => await _client.CreatePresignedGetObjectUrlAsync(
+                    request.BucketName,
+                    request.Key,
+                    request.VersionId,
+                    expiresAtUtc,
+                    cancellationToken).ConfigureAwait(false),
+                StorageDirectObjectAccessOperation.PutObject => await _client.CreatePresignedPutObjectUrlAsync(
+                    request.BucketName,
+                    request.Key,
+                    request.ContentType,
+                    expiresAtUtc,
+                    cancellationToken).ConfigureAwait(false),
+                _ => throw new ArgumentOutOfRangeException(nameof(request), request.Operation, "The requested direct-presign operation is not supported.")
+            };
+
+            return StorageResult<StorageDirectObjectAccessGrant>.Success(new StorageDirectObjectAccessGrant
+            {
+                Url = presignedUrl,
+                ExpiresAtUtc = expiresAtUtc,
+                Headers = BuildDirectPresignHeaders(request)
+            });
+        }
+        catch (AmazonS3Exception ex)
+        {
+            return StorageResult<StorageDirectObjectAccessGrant>.Failure(S3ErrorTranslator.Translate(ex, Name, request.BucketName, request.Key));
+        }
+    }
+
     // -------------------------------------------------------------------------
     // Bucket operations
     // -------------------------------------------------------------------------
@@ -928,6 +969,20 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
                 $"Server-side encryption algorithm '{serverSideEncryption.Algorithm}' is not supported by the native S3 provider.",
                 bucketName,
                 key)
+        };
+    }
+
+    private static Dictionary<string, string> BuildDirectPresignHeaders(StorageDirectObjectAccessRequest request)
+    {
+        if (request.Operation != StorageDirectObjectAccessOperation.PutObject
+            || string.IsNullOrWhiteSpace(request.ContentType))
+        {
+            return new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        }
+
+        return new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["Content-Type"] = request.ContentType
         };
     }
 

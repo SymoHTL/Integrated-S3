@@ -321,6 +321,28 @@ internal sealed class AwsS3StorageClient : IS3StorageClient
         return Task.FromResult(AlignPresignedUrlWithServiceUrl(new Uri(presignedUrl, UriKind.Absolute)));
     }
 
+    public Task<Uri> CreatePresignedPutObjectUrlAsync(
+        string bucketName,
+        string key,
+        string? contentType,
+        DateTimeOffset expiresAtUtc,
+        CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+
+        var request = new GetPreSignedUrlRequest
+        {
+            BucketName = bucketName,
+            Key = key,
+            ContentType = contentType,
+            Expires = expiresAtUtc.UtcDateTime,
+            Verb = HttpVerb.PUT
+        };
+
+        var presignedUrl = _s3.GetPreSignedURL(request);
+        return Task.FromResult(new Uri(presignedUrl, UriKind.Absolute));
+    }
+
     public async Task<S3GetObjectResult> GetObjectAsync(
         string bucketName,
         string key,

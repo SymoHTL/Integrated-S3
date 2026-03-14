@@ -55,6 +55,13 @@ internal interface IS3StorageClient : IDisposable
         DateTimeOffset expiresAtUtc,
         CancellationToken cancellationToken = default);
 
+    Task<Uri> CreatePresignedPutObjectUrlAsync(
+        string bucketName,
+        string key,
+        string? contentType,
+        DateTimeOffset expiresAtUtc,
+        CancellationToken cancellationToken = default);
+
     Task<S3GetObjectResult> GetObjectAsync(
         string bucketName,
         string key,
