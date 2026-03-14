@@ -3274,7 +3274,7 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
                     request.HttpContext,
                     StatusCodes.Status400BadRequest,
                     "InvalidRequest",
-                    $"The '{ServerSideEncryptionHeaderName}' header must be 'aws:kms' when {FormatQuotedHeaderNames(dependentHeaders)} {(dependentHeaders.Count == 1 ? "is" : "are")} supplied.",
+                    $"The '{ServerSideEncryptionHeaderName}' header must be 'aws:kms' or 'aws:kms:dsse' when {FormatQuotedHeaderNames(dependentHeaders)} {(dependentHeaders.Count == 1 ? "is" : "are")} supplied.",
                     resource,
                     bucketName,
                     key);
@@ -3308,7 +3308,7 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
                     request.HttpContext,
                     StatusCodes.Status400BadRequest,
                     "InvalidRequest",
-                    $"{FormatQuotedHeaderNames(invalidHeaders)} {(invalidHeaders.Count == 1 ? "is" : "are")} only supported when '{ServerSideEncryptionHeaderName}=aws:kms' is supplied.",
+                    $"{FormatQuotedHeaderNames(invalidHeaders)} {(invalidHeaders.Count == 1 ? "is" : "are")} only supported when '{ServerSideEncryptionHeaderName}=aws:kms' or '{ServerSideEncryptionHeaderName}=aws:kms:dsse' is supplied.",
                     resource,
                     bucketName,
                     key);
@@ -3338,7 +3338,7 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
 
         serverSideEncryption = new ObjectServerSideEncryptionSettings
         {
-            Algorithm = ObjectServerSideEncryptionAlgorithm.Kms,
+            Algorithm = algorithm,
             KeyId = hasKmsKeyIdHeader ? rawKmsKeyId.Trim() : null,
             Context = context
         };
@@ -3374,6 +3374,11 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
             return true;
         }
 
+        if (string.Equals(rawValue, "aws:kms:dsse", StringComparison.OrdinalIgnoreCase)) {
+            algorithm = ObjectServerSideEncryptionAlgorithm.KmsDsse;
+            return true;
+        }
+
         algorithm = default;
         return false;
     }
@@ -3396,13 +3401,26 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
 
             var parsedContext = new Dictionary<string, string>(StringComparer.Ordinal);
             foreach (var property in document.RootElement.EnumerateObject()) {
+                if (string.IsNullOrWhiteSpace(property.Name)) {
+                    context = null;
+                    errorMessage = $"The '{ServerSideEncryptionContextHeaderName}' header must contain only non-empty string keys.";
+                    return false;
+                }
+
                 if (property.Value.ValueKind != JsonValueKind.String) {
                     context = null;
                     errorMessage = $"The '{ServerSideEncryptionContextHeaderName}' header must contain only string values.";
                     return false;
                 }
 
-                parsedContext[property.Name] = property.Value.GetString() ?? string.Empty;
+                var value = property.Value.GetString();
+                if (string.IsNullOrWhiteSpace(value)) {
+                    context = null;
+                    errorMessage = $"The '{ServerSideEncryptionContextHeaderName}' header must contain only non-empty string values.";
+                    return false;
+                }
+
+                parsedContext[property.Name] = value;
             }
 
             if (parsedContext.Count == 0) {
@@ -3857,7 +3875,8 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
             httpResponse.Headers[ServerSideEncryptionHeaderName] = responseAlgorithm;
         }
 
-        if (serverSideEncryption.Algorithm == ObjectServerSideEncryptionAlgorithm.Kms
+        if ((serverSideEncryption.Algorithm == ObjectServerSideEncryptionAlgorithm.Kms
+            || serverSideEncryption.Algorithm == ObjectServerSideEncryptionAlgorithm.KmsDsse)
             && !string.IsNullOrWhiteSpace(serverSideEncryption.KeyId)) {
             httpResponse.Headers[ServerSideEncryptionAwsKmsKeyIdHeaderName] = serverSideEncryption.KeyId;
         }
@@ -3931,6 +3950,7 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
         {
             ObjectServerSideEncryptionAlgorithm.Aes256 => "AES256",
             ObjectServerSideEncryptionAlgorithm.Kms => "aws:kms",
+            ObjectServerSideEncryptionAlgorithm.KmsDsse => "aws:kms:dsse",
             _ => null
         };
     }

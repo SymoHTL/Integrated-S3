@@ -16,6 +16,8 @@ namespace IntegratedS3.AspNetCore.Serialization;
 [JsonSerializable(typeof(ObjectInfo[]))]
 [JsonSerializable(typeof(ObjectServerSideEncryptionInfo))]
 [JsonSerializable(typeof(StorageCapabilities))]
+[JsonSerializable(typeof(StorageServerSideEncryptionDescriptor))]
+[JsonSerializable(typeof(StorageServerSideEncryptionVariantDescriptor))]
 [JsonSerializable(typeof(StorageObjectLocationDescriptor))]
 [JsonSerializable(typeof(StorageSupportStateDescriptor))]
 [JsonSerializable(typeof(StorageServiceDocument))]

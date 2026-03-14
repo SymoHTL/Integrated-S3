@@ -1,5 +1,6 @@
 using Amazon.Runtime;
 using IntegratedS3.Abstractions.Capabilities;
+using IntegratedS3.Abstractions.Models;
 using IntegratedS3.Provider.S3;
 using IntegratedS3.Provider.S3.DependencyInjection;
 using IntegratedS3.Provider.S3.Internal;
@@ -45,6 +46,18 @@ public sealed class S3StorageOptionsCapabilitiesTests
 
         Assert.Equal(StorageCapabilitySupport.Native, capsFps.BucketOperations);
         Assert.Equal(StorageCapabilitySupport.Native, capsVhs.BucketOperations);
+    }
+
+    [Fact]
+    public void CreateDefault_ReportsManagedServerSideEncryptionVariants()
+    {
+        var caps = S3StorageCapabilities.CreateDefault(new S3StorageOptions { ForcePathStyle = true });
+
+        Assert.Collection(
+            caps.ServerSideEncryptionDetails.Variants,
+            variant => AssertManagedVariant(variant, ObjectServerSideEncryptionAlgorithm.Aes256, supportsKeyId: false, supportsContext: false),
+            variant => AssertManagedVariant(variant, ObjectServerSideEncryptionAlgorithm.Kms, supportsKeyId: true, supportsContext: true),
+            variant => AssertManagedVariant(variant, ObjectServerSideEncryptionAlgorithm.KmsDsse, supportsKeyId: true, supportsContext: true));
     }
 
     [Fact]
@@ -243,5 +256,25 @@ public sealed class S3StorageOptionsCapabilitiesTests
             captured = o;
         });
         return captured!;
+    }
+
+    private static void AssertManagedVariant(
+        StorageServerSideEncryptionVariantDescriptor variant,
+        ObjectServerSideEncryptionAlgorithm algorithm,
+        bool supportsKeyId,
+        bool supportsContext)
+    {
+        Assert.Equal(algorithm, variant.Algorithm);
+        Assert.Equal(StorageServerSideEncryptionRequestStyle.Managed, variant.RequestStyle);
+        Assert.Equal(
+            [
+                StorageServerSideEncryptionRequestOperation.PutObject,
+                StorageServerSideEncryptionRequestOperation.CopyDestination,
+                StorageServerSideEncryptionRequestOperation.InitiateMultipartUpload
+            ],
+            variant.SupportedRequestOperations);
+        Assert.True(variant.SupportsResponseMetadata);
+        Assert.Equal(supportsKeyId, variant.SupportsKeyId);
+        Assert.Equal(supportsContext, variant.SupportsContext);
     }
 }
