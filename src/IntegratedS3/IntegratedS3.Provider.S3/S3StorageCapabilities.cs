@@ -1,4 +1,5 @@
 using IntegratedS3.Abstractions.Capabilities;
+using IntegratedS3.Abstractions.Models;
 
 namespace IntegratedS3.Provider.S3;
 
@@ -28,6 +29,7 @@ public static class S3StorageCapabilities
         Cors = StorageCapabilitySupport.Native,
         ObjectLock = StorageCapabilitySupport.Unsupported,
         ServerSideEncryption = StorageCapabilitySupport.Native,
+        ServerSideEncryptionDetails = CreateServerSideEncryptionDescriptor(),
         Checksums = StorageCapabilitySupport.Native,
         XmlErrors = StorageCapabilitySupport.Unsupported,
         PathStyleAddressing = options.ForcePathStyle
@@ -36,5 +38,33 @@ public static class S3StorageCapabilities
         VirtualHostedStyleAddressing = options.ForcePathStyle
             ? StorageCapabilitySupport.Unsupported
             : StorageCapabilitySupport.Native
+    };
+
+    private static StorageServerSideEncryptionDescriptor CreateServerSideEncryptionDescriptor() => new()
+    {
+        Variants =
+        [
+            CreateManagedVariant(ObjectServerSideEncryptionAlgorithm.Aes256),
+            CreateManagedVariant(ObjectServerSideEncryptionAlgorithm.Kms, supportsKeyId: true, supportsContext: true),
+            CreateManagedVariant(ObjectServerSideEncryptionAlgorithm.KmsDsse, supportsKeyId: true, supportsContext: true)
+        ]
+    };
+
+    private static StorageServerSideEncryptionVariantDescriptor CreateManagedVariant(
+        ObjectServerSideEncryptionAlgorithm algorithm,
+        bool supportsKeyId = false,
+        bool supportsContext = false) => new()
+    {
+        Algorithm = algorithm,
+        RequestStyle = StorageServerSideEncryptionRequestStyle.Managed,
+        SupportedRequestOperations =
+        [
+            StorageServerSideEncryptionRequestOperation.PutObject,
+            StorageServerSideEncryptionRequestOperation.CopyDestination,
+            StorageServerSideEncryptionRequestOperation.InitiateMultipartUpload
+        ],
+        SupportsResponseMetadata = true,
+        SupportsKeyId = supportsKeyId,
+        SupportsContext = supportsContext
     };
 }

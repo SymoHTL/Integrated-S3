@@ -16,7 +16,19 @@ public sealed class MultipartUploadCatalogRecord
 
     public string? ContentType { get; set; }
 
+    public string? CacheControl { get; set; }
+
+    public string? ContentDisposition { get; set; }
+
+    public string? ContentEncoding { get; set; }
+
+    public string? ContentLanguage { get; set; }
+
+    public DateTimeOffset? ExpiresUtc { get; set; }
+
     public string? MetadataJson { get; set; }
+
+    public string? TagsJson { get; set; }
 
     public string? ChecksumAlgorithm { get; set; }
 

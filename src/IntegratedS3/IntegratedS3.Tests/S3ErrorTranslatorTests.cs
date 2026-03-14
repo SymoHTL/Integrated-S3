@@ -97,4 +97,14 @@ public sealed class S3ErrorTranslatorTests
 
         Assert.Equal(StorageErrorCode.InvalidChecksum, error.Code);
     }
+
+    [Fact]
+    public void InvalidTag_MapsTo_InvalidTag()
+    {
+        var ex = MakeException("InvalidTag", HttpStatusCode.BadRequest);
+
+        var error = S3ErrorTranslator.Translate(ex, "test-provider", "my-bucket", "my-object.txt");
+
+        Assert.Equal(StorageErrorCode.InvalidTag, error.Code);
+    }
 }

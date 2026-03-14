@@ -410,6 +410,36 @@ public sealed class IntegratedS3HttpPresignStrategyTests
         Assert.Equal(0, resolver.CallCount); // resolver must not be consulted for write presigns
     }
 
+    [Fact]
+    public async Task PresignObjectAsync_PutObjectWithChecksumHeaders_ReturnsSignedChecksumHeaders()
+    {
+        var presignService = BuildPresignService(
+            new StubLocationResolver(resolvedLocation: null),
+            enableSigV4: true);
+
+        var request = new StoragePresignRequest
+        {
+            Operation = StoragePresignOperation.PutObject,
+            BucketName = "bucket",
+            Key = "key",
+            ExpiresInSeconds = 300,
+            ContentType = "application/octet-stream",
+            ChecksumAlgorithm = "sha256",
+            Checksums = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["sha256"] = "abc123=="
+            }
+        };
+
+        var result = await presignService.PresignObjectAsync(AnyPrincipal, request);
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(StorageAccessMode.Proxy, result.Value?.AccessMode);
+        Assert.Contains(result.Value!.Headers, static header => header.Name == "Content-Type" && header.Value == "application/octet-stream");
+        Assert.Contains(result.Value.Headers, static header => header.Name == "x-amz-sdk-checksum-algorithm" && header.Value == "SHA256");
+        Assert.Contains(result.Value.Headers, static header => header.Name == "x-amz-checksum-sha256" && header.Value == "abc123==");
+    }
+
     // -------------------------------------------------------------------------
     // Default behavior — no preferred mode bypasses resolver entirely
     // -------------------------------------------------------------------------
@@ -529,14 +559,14 @@ public sealed class IntegratedS3HttpPresignStrategyTests
     }
 
     [Fact]
-    public async Task PresignObjectAsync_WhenDirectPreferred_AndS3StorageOnlyProvidesDelegatedLocation_FallsBackToProxy()
+    public async Task PresignObjectAsync_WhenDirectPreferred_AndS3StorageRegistered_ReturnsNativeDirectGrant()
     {
         var fakeClient = new FakeS3Client
         {
             PresignedGetObjectUrl = new Uri("https://s3.us-east-1.amazonaws.com/bucket/key?X-Amz-Signature=abc", UriKind.Absolute)
         };
 
-        var presignService = BuildS3BackedPresignService(fakeClient, enableSigV4: true);
+        var presignService = BuildS3BackedPresignService(fakeClient, enableSigV4: false);
 
         var request = new StoragePresignRequest
         {
@@ -550,8 +580,40 @@ public sealed class IntegratedS3HttpPresignStrategyTests
         var result = await presignService.PresignObjectAsync(AnyPrincipal, request);
 
         Assert.True(result.IsSuccess);
-        Assert.Equal(StorageAccessMode.Proxy, result.Value?.AccessMode);
+        Assert.Equal(StorageAccessMode.Direct, result.Value?.AccessMode);
+        Assert.Equal(fakeClient.PresignedGetObjectUrl, result.Value?.Url);
         Assert.Equal(1, fakeClient.PresignedGetObjectUrlCalls);
+    }
+
+    [Fact]
+    public async Task PresignObjectAsync_WhenPutDirectPreferred_AndS3StorageRegistered_ReturnsNativeDirectGrant()
+    {
+        var fakeClient = new FakeS3Client
+        {
+            PresignedPutObjectUrl = new Uri("https://s3.us-east-1.amazonaws.com/bucket/key?X-Amz-Signature=put", UriKind.Absolute)
+        };
+
+        var presignService = BuildS3BackedPresignService(fakeClient, enableSigV4: false);
+
+        var request = new StoragePresignRequest
+        {
+            Operation = StoragePresignOperation.PutObject,
+            BucketName = "bucket",
+            Key = "key",
+            ExpiresInSeconds = 300,
+            ContentType = "text/plain",
+            PreferredAccessMode = StorageAccessMode.Direct
+        };
+
+        var result = await presignService.PresignObjectAsync(AnyPrincipal, request);
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(StorageAccessMode.Direct, result.Value?.AccessMode);
+        Assert.Equal("PUT", result.Value?.Method);
+        Assert.Equal(fakeClient.PresignedPutObjectUrl, result.Value?.Url);
+        Assert.Equal(1, fakeClient.PresignedPutObjectUrlCalls);
+        Assert.Equal("text/plain", fakeClient.LastPresignedContentType);
+        Assert.Contains(result.Value!.Headers, header => header.Name == "Content-Type" && header.Value == "text/plain");
     }
 
     [Fact]
@@ -917,6 +979,12 @@ public sealed class IntegratedS3HttpPresignStrategyTests
         }
 
         public ValueTask<StorageResult<BucketInfo>> CreateBucketAsync(CreateBucketRequest request, CancellationToken cancellationToken = default) => UnexpectedAsync<BucketInfo>();
+
+        public ValueTask<StorageResult<BucketLocationInfo>> GetBucketLocationAsync(string bucketName, CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return ValueTask.FromResult(StorageResult<BucketLocationInfo>.Failure(StorageError.Unsupported("Bucket location is not used in presign strategy tests.", bucketName)));
+        }
 
         public ValueTask<StorageResult<BucketVersioningInfo>> GetBucketVersioningAsync(string bucketName, CancellationToken cancellationToken = default) => UnexpectedAsync<BucketVersioningInfo>();
 

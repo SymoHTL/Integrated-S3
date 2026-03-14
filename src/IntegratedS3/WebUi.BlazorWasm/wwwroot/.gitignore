@@ -1,0 +1,3 @@
+# Keep the web root so the hosted Blazor sample can compose referenced static assets at runtime.
+*
+!.gitignore

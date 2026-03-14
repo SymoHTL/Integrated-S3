@@ -19,18 +19,21 @@ public static class IntegratedS3CoreServiceCollectionExtensions
         ArgumentNullException.ThrowIfNull(services);
         ArgumentNullException.ThrowIfNull(configure);
 
+        services.AddLogging();
         services.AddOptions<IntegratedS3CoreOptions>()
             .Configure(configure);
 
         services.TryAddSingleton<IStorageCatalogStore, NullStorageCatalogStore>();
         services.TryAddSingleton<IStorageObjectLocationResolver, NullStorageObjectLocationResolver>();
         services.TryAddSingleton<IIntegratedS3AuthorizationService, AllowAllIntegratedS3AuthorizationService>();
+        services.TryAddSingleton<IStorageAuthorizationCompatibilityService, InMemoryStorageAuthorizationCompatibilityService>();
         services.TryAddSingleton<IIntegratedS3RequestContextAccessor, AsyncLocalIntegratedS3RequestContextAccessor>();
         services.TryAddSingleton<IStoragePresignStrategy, UnsupportedStoragePresignStrategy>();
         services.TryAddSingleton<IStorageBackendHealthEvaluator, DefaultStorageBackendHealthEvaluator>();
         services.TryAddSingleton<IStorageBackendHealthProbe, DefaultStorageBackendHealthProbe>();
         services.TryAddSingleton<IStorageReplicaRepairBacklog, InMemoryStorageReplicaRepairBacklog>();
         services.TryAddSingleton<IStorageReplicaRepairDispatcher, InProcessStorageReplicaRepairDispatcher>();
+        services.TryAddSingleton<IStorageAdminDiagnosticsProvider, StorageAdminDiagnosticsProvider>();
         services.TryAddSingleton(TimeProvider.System);
         services.TryAddSingleton<StorageBackendHealthMonitor>();
         services.TryAddSingleton<OrchestratedStorageService>();

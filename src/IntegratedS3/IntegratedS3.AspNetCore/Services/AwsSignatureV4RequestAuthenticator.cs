@@ -1,12 +1,17 @@
+using System.Diagnostics;
 using System.Globalization;
 using System.Security.Claims;
+using IntegratedS3.Abstractions.Observability;
 using IntegratedS3.Protocol;
 using Microsoft.AspNetCore.Http;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
 namespace IntegratedS3.AspNetCore.Services;
 
-internal sealed class AwsSignatureV4RequestAuthenticator(IOptions<IntegratedS3Options> options) : IIntegratedS3RequestAuthenticator
+internal sealed class AwsSignatureV4RequestAuthenticator(
+    IOptions<IntegratedS3Options> options,
+    ILogger<AwsSignatureV4RequestAuthenticator> logger) : IIntegratedS3RequestAuthenticator
 {
     private const string Algorithm = "AWS4-HMAC-SHA256";
     private const string AwsContentSha256HeaderName = "x-amz-content-sha256";
@@ -25,16 +30,69 @@ internal sealed class AwsSignatureV4RequestAuthenticator(IOptions<IntegratedS3Op
             return ValueTask.FromResult(IntegratedS3RequestAuthenticationResult.NoResult());
         }
 
+        var correlationId = IntegratedS3AspNetCoreTelemetry.GetOrCreateCorrelationId(httpContext);
         var authorizationHeader = httpContext.Request.Headers.Authorization.ToString();
         if (S3SigV4RequestParser.TryParseAuthorizationHeader(authorizationHeader, out var headerAuthorization, out var headerError)) {
-            return ValueTask.FromResult(ValidateHeaderAuthorization(httpContext, settings, headerAuthorization, headerError));
+            using var activity = StartAuthenticationActivity(httpContext, correlationId, "sigv4-header", headerAuthorization?.CredentialScope.AccessKeyId);
+            var result = ValidateHeaderAuthorization(httpContext, settings, headerAuthorization, headerError);
+            ObserveAuthenticationResult(httpContext, activity, "sigv4-header", headerAuthorization?.CredentialScope.AccessKeyId, result);
+            return ValueTask.FromResult(result);
         }
 
         if (S3SigV4RequestParser.TryParsePresignedRequest(EnumerateQueryParameters(httpContext.Request), out var presignedRequest, out var queryError)) {
-            return ValueTask.FromResult(ValidatePresignedRequest(httpContext, settings, presignedRequest, queryError));
+            using var activity = StartAuthenticationActivity(httpContext, correlationId, "sigv4-presigned", presignedRequest?.CredentialScope.AccessKeyId);
+            var result = ValidatePresignedRequest(httpContext, settings, presignedRequest, queryError);
+            ObserveAuthenticationResult(httpContext, activity, "sigv4-presigned", presignedRequest?.CredentialScope.AccessKeyId, result);
+            return ValueTask.FromResult(result);
         }
 
         return ValueTask.FromResult(IntegratedS3RequestAuthenticationResult.NoResult());
+    }
+
+    private Activity? StartAuthenticationActivity(HttpContext httpContext, string correlationId, string authType, string? accessKeyId)
+    {
+        var activity = IntegratedS3Observability.ActivitySource.StartActivity("IntegratedS3.Authenticate", ActivityKind.Internal);
+        if (activity is null) {
+            return null;
+        }
+
+        activity.SetTag(IntegratedS3Observability.Tags.AuthType, authType);
+        activity.SetTag(IntegratedS3Observability.Tags.CorrelationId, correlationId);
+        activity.SetTag(IntegratedS3Observability.Tags.RequestId, httpContext.TraceIdentifier);
+        activity.SetTag("integrateds3.access_key_id", accessKeyId);
+        activity.SetTag("http.request.method", httpContext.Request.Method);
+        activity.SetTag("url.path", httpContext.Request.Path.ToString());
+        return activity;
+    }
+
+    private void ObserveAuthenticationResult(
+        HttpContext httpContext,
+        Activity? activity,
+        string authType,
+        string? accessKeyId,
+        IntegratedS3RequestAuthenticationResult result)
+    {
+        if (!result.HasAttemptedAuthentication) {
+            return;
+        }
+
+        if (result.Succeeded) {
+            IntegratedS3AspNetCoreTelemetry.MarkSuccess(activity, authType);
+            logger.LogDebug(
+                "IntegratedS3 authentication succeeded for {AuthType} access key {AccessKeyId}.",
+                authType,
+                accessKeyId);
+            return;
+        }
+
+        IntegratedS3AspNetCoreTelemetry.RecordAuthenticationFailure("authentication", authType, result.ErrorCode ?? "AccessDenied");
+        IntegratedS3AspNetCoreTelemetry.MarkFailure(activity, authType, result.ErrorCode ?? "AccessDenied", result.ErrorMessage);
+        logger.LogWarning(
+            "IntegratedS3 authentication failed for {AuthType}. AccessKeyId {AccessKeyId}. ErrorCode {ErrorCode}. RequestPath {RequestPath}.",
+            authType,
+            accessKeyId,
+            result.ErrorCode,
+            httpContext.Request.Path);
     }
 
     private static IntegratedS3RequestAuthenticationResult ValidateHeaderAuthorization(
@@ -71,7 +129,7 @@ internal sealed class AwsSignatureV4RequestAuthenticator(IOptions<IntegratedS3Op
             return IntegratedS3RequestAuthenticationResult.Failure("RequestTimeTooSkewed", "The difference between the request time and the server time is too large.");
         }
 
-        if (!TryResolvePayloadHash(httpContext.Request, isPresigned: false, out var payloadHash, out var payloadHashError, out statusCode)) {
+        if (!TryResolvePayloadHash(httpContext.Request, isPresigned: false, signedHeaders: authorization.SignedHeaders, out var payloadHash, out var payloadHashError, out statusCode)) {
             return IntegratedS3RequestAuthenticationResult.Failure("InvalidRequest", payloadHashError!, statusCode);
         }
 
@@ -119,7 +177,11 @@ internal sealed class AwsSignatureV4RequestAuthenticator(IOptions<IntegratedS3Op
             return IntegratedS3RequestAuthenticationResult.Failure("InvalidAccessKeyId", $"The AWS access key id '{presignedRequest.CredentialScope.AccessKeyId}' does not exist in this service.");
         }
 
-        if (!TryResolvePayloadHash(httpContext.Request, isPresigned: true, out var payloadHash, out var payloadHashError, out statusCode)) {
+        if (!presignedRequest.SignedHeaders.Contains("host", StringComparer.Ordinal)) {
+            return IntegratedS3RequestAuthenticationResult.Failure("AuthorizationQueryParametersError", "The presigned request must sign the 'host' header.", statusCode: 400);
+        }
+
+        if (!TryResolvePayloadHash(httpContext.Request, isPresigned: true, signedHeaders: presignedRequest.SignedHeaders, out var payloadHash, out var payloadHashError, out statusCode)) {
             return IntegratedS3RequestAuthenticationResult.Failure("InvalidRequest", payloadHashError!, statusCode);
         }
 
@@ -190,18 +252,40 @@ internal sealed class AwsSignatureV4RequestAuthenticator(IOptions<IntegratedS3Op
         return (DateTimeOffset.UtcNow - requestTimestampUtc).Duration() > clockSkew;
     }
 
-    private static bool TryResolvePayloadHash(HttpRequest request, bool isPresigned, out string? payloadHash, out string? error, out int statusCode)
+    private static bool TryResolvePayloadHash(
+        HttpRequest request,
+        bool isPresigned,
+        IReadOnlyList<string> signedHeaders,
+        out string? payloadHash,
+        out string? error,
+        out int statusCode)
     {
         var headerValue = request.Headers[AwsContentSha256HeaderName].ToString();
-        if (!string.IsNullOrWhiteSpace(headerValue)) {
-            payloadHash = headerValue.Trim();
+        var signsPayloadHashHeader = signedHeaders.Contains(AwsContentSha256HeaderName, StringComparer.Ordinal);
+
+        if (isPresigned) {
+            if (signsPayloadHashHeader) {
+                if (!string.IsNullOrWhiteSpace(headerValue)) {
+                    payloadHash = headerValue.Trim();
+                    error = null;
+                    statusCode = 200;
+                    return true;
+                }
+
+                payloadHash = null;
+                error = "The presigned request must include the signed x-amz-content-sha256 header.";
+                statusCode = 400;
+                return false;
+            }
+
+            payloadHash = UnsignedPayload;
             error = null;
             statusCode = 200;
             return true;
         }
 
-        if (isPresigned) {
-            payloadHash = UnsignedPayload;
+        if (!string.IsNullOrWhiteSpace(headerValue)) {
+            payloadHash = headerValue.Trim();
             error = null;
             statusCode = 200;
             return true;
@@ -279,15 +363,6 @@ internal sealed class AwsSignatureV4RequestAuthenticator(IOptions<IntegratedS3Op
 
     private static IEnumerable<KeyValuePair<string, string?>> EnumerateQueryParameters(HttpRequest request)
     {
-        foreach (var pair in request.Query) {
-            if (pair.Value.Count == 0) {
-                yield return new KeyValuePair<string, string?>(pair.Key, string.Empty);
-                continue;
-            }
-
-            foreach (var value in pair.Value) {
-                yield return new KeyValuePair<string, string?>(pair.Key, value);
-            }
-        }
+        return S3SigV4QueryStringParser.Parse(request.QueryString.Value);
     }
 }

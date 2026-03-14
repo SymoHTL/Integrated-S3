@@ -1,0 +1,151 @@
+@page "/"
+@inject WebUi.BlazorWasm.Client.Services.IntegratedS3BrowserSampleService SampleService
+
+<PageTitle>Integrated S3 Blazor WebAssembly Sample</PageTitle>
+
+<section class="panel hero-panel">
+    <h1>Blazor WebAssembly consumer</h1>
+    <p>
+        This browser sample calls the JSON endpoints for discovery and listing, then uses
+        <code>IntegratedS3.Client</code> to obtain presigned requests before uploading or downloading object data.
+    </p>
+</section>
+
+<section class="panel control-panel">
+    <div class="field-grid">
+        <label>
+            Bucket
+            <input @bind="_bucketName" />
+        </label>
+        <label>
+            Object key
+            <input @bind="_objectKey" />
+        </label>
+    </div>
+
+    <label class="textarea-label">
+        Text payload
+        <textarea rows="7" @bind="_uploadText"></textarea>
+    </label>
+
+    <div class="button-row">
+        <button class="primary" @onclick="UploadAsync" disabled="@_isBusy">Upload via presign</button>
+        <button @onclick="RefreshAsync" disabled="@_isBusy">Refresh dashboard</button>
+    </div>
+
+    @if (!string.IsNullOrWhiteSpace(_statusMessage)) {
+        <p class="status-message">@_statusMessage</p>
+    }
+</section>
+
+@if (_dashboard is null) {
+    <section class="panel">
+        <p>Loading the sample dashboard...</p>
+    </section>
+}
+else {
+    <section class="panel dashboard-panel">
+        <h2>@_dashboard.ServiceName</h2>
+        <p>Providers: @string.Join(", ", _dashboard.ProviderNames)</p>
+        <p>Known buckets: @_dashboard.Buckets.Count</p>
+    </section>
+
+    @foreach (var bucket in _dashboard.Buckets) {
+        <section class="panel bucket-panel">
+            <div class="bucket-header">
+                <div>
+                    <h3>@bucket.Name</h3>
+                    <p>Created @bucket.CreatedAtUtc.UtcDateTime.ToString("u")</p>
+                </div>
+            </div>
+
+            @if (bucket.Objects.Count == 0) {
+                <p>No objects are present yet.</p>
+            }
+            else {
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Object key</th>
+                            <th>Type</th>
+                            <th>Bytes</th>
+                            <th>Action</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                    @foreach (var objectEntry in bucket.Objects) {
+                        <tr>
+                            <td>@objectEntry.Key</td>
+                            <td>@(objectEntry.ContentType ?? "unknown")</td>
+                            <td>@objectEntry.ContentLength</td>
+                            <td>
+                                <button @onclick="() => DownloadAsync(bucket.Name, objectEntry.Key)" disabled="@_isBusy">Download preview</button>
+                            </td>
+                        </tr>
+                    }
+                    </tbody>
+                </table>
+            }
+        </section>
+    }
+}
+
+@if (_downloadResult is not null) {
+    <section class="panel preview-panel">
+        <h2>Downloaded preview</h2>
+        <p>
+            Retrieved <code>@_downloadResult.Key</code> through the <code>@_downloadResult.AccessMode</code> access mode.
+        </p>
+        <pre>@_downloadResult.Content</pre>
+    </section>
+}
+
+@code {
+    private BrowserSampleDashboardModel? _dashboard;
+    private BrowserSampleDownloadResult? _downloadResult;
+    private string _bucketName = "browser-demo";
+    private string _objectKey = "notes/welcome.txt";
+    private string _uploadText = "Hello from the Blazor WebAssembly IntegratedS3 sample consumer.";
+    private string? _statusMessage;
+    private bool _isBusy;
+
+    protected override Task OnInitializedAsync() => RefreshAsync();
+
+    private Task RefreshAsync() => RunAsync(async () => {
+        _dashboard = await SampleService.GetDashboardAsync();
+        _statusMessage = $"Refreshed {_dashboard.Buckets.Count} bucket(s) from /integrated-s3.";
+    });
+
+    private Task UploadAsync() => RunAsync(async () => {
+        var uploadResult = await SampleService.UploadTextAsync(_bucketName, _objectKey, _uploadText);
+        _dashboard = await SampleService.GetDashboardAsync();
+        _downloadResult = null;
+        _statusMessage = $"Uploaded '{uploadResult.Key}' through the {uploadResult.AccessMode} access mode.";
+    });
+
+    private Task DownloadAsync(string bucketName, string key) => RunAsync(async () => {
+        _downloadResult = await SampleService.DownloadTextAsync(bucketName, key);
+        _statusMessage = $"Downloaded '{_downloadResult.Key}' through the {_downloadResult.AccessMode} access mode.";
+    });
+
+    private async Task RunAsync(Func<Task> action)
+    {
+        if (_isBusy) {
+            return;
+        }
+
+        _isBusy = true;
+        try {
+            await action();
+        }
+        catch (HttpRequestException ex) {
+            _statusMessage = ex.Message;
+        }
+        catch (InvalidOperationException ex) {
+            _statusMessage = ex.Message;
+        }
+        finally {
+            _isBusy = false;
+        }
+    }
+}

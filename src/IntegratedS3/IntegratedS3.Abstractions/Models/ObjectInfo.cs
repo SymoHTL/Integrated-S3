@@ -16,6 +16,16 @@ public sealed class ObjectInfo
 
     public string? ContentType { get; init; }
 
+    public string? CacheControl { get; init; }
+
+    public string? ContentDisposition { get; init; }
+
+    public string? ContentEncoding { get; init; }
+
+    public string? ContentLanguage { get; init; }
+
+    public DateTimeOffset? ExpiresUtc { get; init; }
+
     public string? ETag { get; init; }
 
     public DateTimeOffset LastModifiedUtc { get; init; }
