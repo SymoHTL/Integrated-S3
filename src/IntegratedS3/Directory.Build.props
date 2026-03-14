@@ -5,7 +5,6 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <InvariantGlobalization>true</InvariantGlobalization>
     <GenerateDocumentationFile Condition="'$(IsPackable)' != 'false'">true</GenerateDocumentationFile>
-    <NoWarn Condition="'$(IsPackable)' != 'false'">$(NoWarn);CS1591</NoWarn>
     <PackageLicenseExpression Condition="'$(IsPackable)' != 'false'">BSD-3-Clause</PackageLicenseExpression>
     <PackageProjectUrl Condition="'$(IsPackable)' != 'false'">https://github.com/SymoHTL/Intergrated-S3</PackageProjectUrl>
     <PackageReadmeFile Condition="'$(IsPackable)' != 'false'">README.md</PackageReadmeFile>
