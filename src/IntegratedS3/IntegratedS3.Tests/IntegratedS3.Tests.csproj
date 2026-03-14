@@ -21,6 +21,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\IntegratedS3.AspNetCore\IntegratedS3.AspNetCore.csproj" />
+    <ProjectReference Include="..\IntegratedS3.Benchmarks\IntegratedS3.Benchmarks.csproj" />
     <ProjectReference Include="..\IntegratedS3.Client\IntegratedS3.Client.csproj" />
     <ProjectReference Include="..\IntegratedS3.Core\IntegratedS3.Core.csproj" />
     <ProjectReference Include="..\IntegratedS3.EntityFramework\IntegratedS3.EntityFramework.csproj" />

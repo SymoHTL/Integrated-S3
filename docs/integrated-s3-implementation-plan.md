@@ -1324,7 +1324,7 @@ This section is the execution board for the remaining implementation backlog. As
 
 ### Track H — Hardening, conformance, performance, samples, and release polish
 
-- Packages: `IntegratedS3.Tests`, `IntegratedS3.Testing`, `WebUi`, `docs/`
+- Packages: `IntegratedS3.Benchmarks`, `IntegratedS3.Tests`, `IntegratedS3.Testing`, `WebUi`, `docs/`
 - Ready: now
 - Depends on: can scaffold immediately; full coverage expands as the remaining Tracks B through G hardening slices land
 - Status update:
@@ -1333,6 +1333,9 @@ This section is the execution board for the remaining implementation backlog. As
   - `IntegratedS3CoreOrchestrationTests` now cover provider-unavailable read failover, no failover on not-found, unhealthy snapshot expiry recovery, probe-timeout handling, async replica recording/dispatch, unhealthy-replica preflight, outstanding-repair read policy, partial-write backlog semantics, failed-repair visibility, multi-replica dispatch-recording failure isolation, mixed replay success/failure, and backlog growth for replicas that remain stale.
   - `src\IntegratedS3\WebUi` now has a dedicated reference-host guide in `docs/webui-reference-host.md`, with local sample storage kept under `App_Data` and excluded from build/publish outputs.
   - CI automation now lives in `.github\workflows\trackh-publish-aot-ci.yml`, and `eng\Invoke-AotPublishValidation.ps1` enforces the current self-contained publish warning posture without depending on exact line numbers.
+  - `src\IntegratedS3\IntegratedS3.Benchmarks` now benchmarks the Track H hot paths across disk-backed service flows, write-through mirrored writes, loopback HTTP `GET` / `PUT` / `LIST` / SigV4 auth flows, and first-party presign generation, while `eng\Invoke-HotPathBenchmarkBaselines.ps1` refreshes normalized JSON / Markdown baseline reports under `docs\benchmarks`.
+  - `docs\performance-benchmarks.md` now documents the supported benchmark workflow, metric model, provider-breakdown strategy, and the currently supported limitations for repo-local baseline refreshes.
+  - `IntegratedS3.Tests` now verifies benchmark scenario coverage plus the summary/report generation path without requiring the full benchmark suite to run inside `dotnet test`.
 - Verification status (March 2026):
   - `dotnet build src\IntegratedS3\IntegratedS3.slnx` passed in the current Track E/H worktree.
   - `dotnet test src\IntegratedS3\IntegratedS3.slnx` passed in the current Track E/H worktree.
@@ -1341,14 +1344,14 @@ This section is the execution board for the remaining implementation backlog. As
   - extend conformance beyond the current versioned-read, presigned-expiry/clock-skew, and AWS SDK version-id coverage into the remaining protocol edge cases and broader client-compatibility scenarios
   - extend fault-injection beyond the current unhealthy-provider, async-replication/backlog, partial-write-through, and newly added multi-replica replay coverage into broader repair/reconciliation scenarios
   - add structured logs, metrics, traces, correlation IDs, provider tags, auth-failure visibility, mirror-lag visibility, and reconciliation-backlog visibility
-  - benchmark the hot paths called out in this plan and track throughput, latency, allocation, and provider-breakdown baselines
+  - expand the benchmark suite beyond the current disk, mirrored-disk, loopback HTTP, and first-party presign baseline set into reproducible native-S3 and broader client-comparison scenarios
   - keep the new trimming/AOT publish automation in CI aligned with the supported host surface and reduce or document the remaining publish warnings alongside benchmark baselines
   - add the planned MVC/Razor and Blazor WebAssembly sample consumers
   - finish package polish items such as XML docs, onboarding docs, versioned protocol compatibility guidance, and any analyzers/diagnostics worth shipping
 - Next recommended steps:
   - triage the remaining observed IL2026/IL3050 native AOT warnings in `IntegratedS3.AspNetCore` / `WebUi` and decide whether they should be eliminated further, annotated more precisely, or explicitly documented for consumers
   - extend conformance and protocol hardening into conditional-precedence, checksum/header, and delete-marker/versioning edge cases now that the current subresource/presign gaps are covered
-  - add benchmark baselines for representative disk plus HTTP get/put/list paths before broadening the remaining release-polish work
+  - decide whether benchmark baseline refresh should stay as a repo-local/manual release step or gain dedicated CI / scheduled automation once the current scenario set proves stable
 
 ## Relevant Repository Files
 
@@ -1369,6 +1372,18 @@ This section is the execution board for the remaining implementation backlog. As
 
 - `src/IntegratedS3/IntegratedS3.slnx`
   - should include all package, test, and benchmark projects
+
+- `src/IntegratedS3/IntegratedS3.Benchmarks/Program.cs`
+  - benchmark entrypoint plus scenario catalog and report emission
+  - exercises the public service and ASP.NET integration surfaces for hot-path baselines
+
+- `eng/Invoke-HotPathBenchmarkBaselines.ps1`
+  - refreshes the committed JSON / Markdown benchmark baselines
+  - wraps the benchmark project with release-mode defaults and scenario filtering
+
+- `docs/performance-benchmarks.md`
+  - supported benchmark workflow and metric model
+  - documents the current benchmark-specific limitations and provider-breakdown behavior
 
 - `src/IntegratedS3/IntegratedS3.Core/DependencyInjection/IntegratedS3CoreServiceCollectionExtensions.cs`
   - current Core registration entry point for orchestration and default non-persistent catalog behavior
