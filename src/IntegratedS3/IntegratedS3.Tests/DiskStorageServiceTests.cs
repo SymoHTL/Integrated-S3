@@ -1,12 +1,12 @@
 using System.Text;
-using System.Security.Cryptography;
 using IntegratedS3.Abstractions.Errors;
 using IntegratedS3.Abstractions.Models;
 using IntegratedS3.Abstractions.Requests;
 using IntegratedS3.Abstractions.Services;
-using IntegratedS3.Provider.Disk;
-using IntegratedS3.Provider.Disk.DependencyInjection;
+using IntegratedS3.Testing;
+using IntegratedS3.Tests.Infrastructure;
 using Microsoft.Extensions.DependencyInjection;
+using static IntegratedS3.Tests.ChecksumTestAlgorithms;
 using Xunit;
 
 namespace IntegratedS3.Tests;
@@ -2668,173 +2668,6 @@ public sealed class DiskStorageServiceTests
         Assert.Equal(IntegratedS3.Abstractions.Capabilities.StorageSupportStateOwnership.PlatformManaged, supportState.MultipartState);
     }
 
-    private sealed class DiskStorageFixture : IAsyncDisposable
-    {
-        public DiskStorageFixture(Action<IServiceCollection>? configureServices = null)
-        {
-            RootPath = Path.Combine(Path.GetTempPath(), "IntegratedS3.Tests", Guid.NewGuid().ToString("N"));
-            Services = CreateServiceProvider(RootPath, configureServices);
-        }
-
-        public string RootPath { get; }
-
-        public ServiceProvider Services { get; private set; }
-
-        public async Task RestartAsync(Action<IServiceCollection>? configureServices = null)
-        {
-            await Services.DisposeAsync();
-            Services = CreateServiceProvider(RootPath, configureServices);
-        }
-
-        private static ServiceProvider CreateServiceProvider(string rootPath, Action<IServiceCollection>? configureServices)
-        {
-            var services = new ServiceCollection();
-            configureServices?.Invoke(services);
-            services.AddDiskStorage(new DiskStorageOptions
-            {
-                ProviderName = "test-disk",
-                RootPath = rootPath,
-                CreateRootDirectory = true
-            });
-
-            return services.BuildServiceProvider();
-        }
-
-        public async ValueTask DisposeAsync()
-        {
-            await Services.DisposeAsync();
-
-            if (Directory.Exists(RootPath)) {
-                Directory.Delete(RootPath, recursive: true);
-            }
-        }
-    }
-
-    private sealed class InMemoryObjectStateStore : IStorageObjectStateStore
-    {
-        private readonly Dictionary<(string ProviderName, string BucketName, string Key, string? VersionId), ObjectInfo> _objects = new();
-
-        public IntegratedS3.Abstractions.Capabilities.StorageSupportStateOwnership Ownership
-            => IntegratedS3.Abstractions.Capabilities.StorageSupportStateOwnership.PlatformManaged;
-
-        public ValueTask<ObjectInfo?> GetObjectInfoAsync(string providerName, string bucketName, string key, string? versionId = null, CancellationToken cancellationToken = default)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-
-            if (!string.IsNullOrWhiteSpace(versionId)) {
-                return ValueTask.FromResult(_objects.TryGetValue((providerName, bucketName, key, versionId), out var byVersion) ? byVersion : null);
-            }
-
-            var current = _objects.Values.FirstOrDefault(existing => string.Equals(existing.BucketName, bucketName, StringComparison.Ordinal)
-                && string.Equals(existing.Key, key, StringComparison.Ordinal)
-                && existing.IsLatest);
-            return ValueTask.FromResult(current);
-        }
-
-        public async IAsyncEnumerable<ObjectInfo> ListObjectVersionsAsync(string providerName, string bucketName, string? prefix = null, [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
-        {
-            foreach (var value in _objects.Values
-                         .Where(existing => string.Equals(existing.BucketName, bucketName, StringComparison.Ordinal)
-                             && (string.IsNullOrWhiteSpace(prefix) || existing.Key.StartsWith(prefix, StringComparison.Ordinal)))
-                         .OrderBy(existing => existing.Key, StringComparer.Ordinal)
-                         .ThenByDescending(existing => existing.IsLatest)
-                         .ThenByDescending(existing => existing.VersionId, StringComparer.Ordinal)) {
-                cancellationToken.ThrowIfCancellationRequested();
-                yield return value;
-                await Task.Yield();
-            }
-        }
-
-        public ValueTask UpsertObjectInfoAsync(string providerName, ObjectInfo @object, CancellationToken cancellationToken = default)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            if (@object.IsLatest) {
-                foreach (var existingKey in _objects.Keys.Where(existing => existing.ProviderName == providerName && existing.BucketName == @object.BucketName && existing.Key == @object.Key).ToArray()) {
-                    var existing = _objects[existingKey];
-                    _objects[existingKey] = new ObjectInfo
-                    {
-                        BucketName = existing.BucketName,
-                        Key = existing.Key,
-                        VersionId = existing.VersionId,
-                        IsLatest = false,
-                        IsDeleteMarker = existing.IsDeleteMarker,
-                        ContentLength = existing.ContentLength,
-                        ContentType = existing.ContentType,
-                        ETag = existing.ETag,
-                        LastModifiedUtc = existing.LastModifiedUtc,
-                        Metadata = existing.Metadata,
-                        Tags = existing.Tags,
-                        Checksums = existing.Checksums
-                    };
-                }
-            }
-
-            _objects[(providerName, @object.BucketName, @object.Key, @object.VersionId)] = @object;
-            return ValueTask.CompletedTask;
-        }
-
-        public ValueTask RemoveObjectInfoAsync(string providerName, string bucketName, string key, string? versionId = null, CancellationToken cancellationToken = default)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-
-            foreach (var existingKey in _objects.Keys.Where(existing => existing.ProviderName == providerName
-                && existing.BucketName == bucketName
-                && existing.Key == key
-                && (string.IsNullOrWhiteSpace(versionId) || string.Equals(existing.VersionId, versionId, StringComparison.Ordinal))).ToArray()) {
-                _objects.Remove(existingKey);
-            }
-
-            return ValueTask.CompletedTask;
-        }
-    }
-
-    private sealed class InMemoryMultipartStateStore : IStorageMultipartStateStore
-    {
-        private readonly Dictionary<(string ProviderName, string BucketName, string Key, string UploadId), MultipartUploadState> _states = new();
-
-        public IntegratedS3.Abstractions.Capabilities.StorageSupportStateOwnership Ownership
-            => IntegratedS3.Abstractions.Capabilities.StorageSupportStateOwnership.PlatformManaged;
-
-        public ValueTask<MultipartUploadState?> GetMultipartUploadStateAsync(string providerName, string bucketName, string key, string uploadId, CancellationToken cancellationToken = default)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            return ValueTask.FromResult(_states.TryGetValue((providerName, bucketName, key, uploadId), out var value) ? value : null);
-        }
-
-        public async IAsyncEnumerable<MultipartUploadState> ListMultipartUploadStatesAsync(
-            string providerName,
-            string bucketName,
-            string? prefix = null,
-            [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
-        {
-            foreach (var entry in _states
-                         .Where(existing => string.Equals(existing.Key.ProviderName, providerName, StringComparison.Ordinal)
-                             && string.Equals(existing.Key.BucketName, bucketName, StringComparison.Ordinal)
-                             && (string.IsNullOrWhiteSpace(prefix) || existing.Key.Key.StartsWith(prefix, StringComparison.Ordinal)))
-                         .OrderBy(existing => existing.Value.Key, StringComparer.Ordinal)
-                         .ThenBy(existing => existing.Value.InitiatedAtUtc)
-                         .ThenBy(existing => existing.Value.UploadId, StringComparer.Ordinal)) {
-                cancellationToken.ThrowIfCancellationRequested();
-                yield return entry.Value;
-                await Task.Yield();
-            }
-        }
-
-        public ValueTask UpsertMultipartUploadStateAsync(string providerName, MultipartUploadState state, CancellationToken cancellationToken = default)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            _states[(providerName, state.BucketName, state.Key, state.UploadId)] = state;
-            return ValueTask.CompletedTask;
-        }
-
-        public ValueTask RemoveMultipartUploadStateAsync(string providerName, string bucketName, string key, string uploadId, CancellationToken cancellationToken = default)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            _states.Remove((providerName, bucketName, key, uploadId));
-            return ValueTask.CompletedTask;
-        }
-    }
-
     private static void AssertUnsupportedServerSideEncryption(StorageError? error, string bucketName, string objectKey)
     {
         var actual = Assert.IsType<StorageError>(error);
@@ -2856,15 +2689,5 @@ public sealed class DiskStorageServiceTests
                 ["tenant"] = "tests"
             }
         };
-    }
-
-    private static string ComputeSha1Base64(string content)
-    {
-        return Convert.ToBase64String(SHA1.HashData(Encoding.UTF8.GetBytes(content)));
-    }
-
-    private static string ComputeSha256Base64(string content)
-    {
-        return Convert.ToBase64String(SHA256.HashData(Encoding.UTF8.GetBytes(content)));
     }
 }

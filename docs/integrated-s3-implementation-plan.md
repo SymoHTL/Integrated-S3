@@ -392,8 +392,8 @@ Status:
   - useful for backend callers and Blazor-hosted consumers
 
 - `IntegratedS3.Testing`
-  - placeholder package for future shared fakes/test helpers; currently minimal
-  - provider verification tools
+  - reusable provider contract/conformance harness for custom `IStorageBackend` implementations
+  - shared xUnit contract tests, in-memory support-state stores, and checksum helpers
 
 - `IntegratedS3.Tests`
   - current automated test project for unit/integration coverage while the broader testing package strategy evolves
@@ -1384,6 +1384,7 @@ This section is the execution board for the remaining implementation backlog. As
   - `IntegratedS3HttpEndpointsTests` now cover unsupported mixed bucket subresources, multipart `encoding-type=url` rejection, and S3-compatible copy-source `versionId` handling for historical versions plus current/explicit delete-marker failures.
   - `IntegratedS3AwsSdkCompatibilityTests` now include version-id-aware metadata/read coverage plus `CopyObject.SourceVersionId` historical-copy and delete-marker compatibility coverage.
   - `IntegratedS3CoreOrchestrationTests` now cover provider-unavailable read failover, no failover on not-found, unhealthy snapshot expiry recovery, probe-timeout handling, async replica recording/dispatch, unhealthy-replica preflight, outstanding-repair read policy, partial-write backlog semantics, failed-repair visibility, multi-replica dispatch-recording failure isolation, mixed replay success/failure, and backlog growth for replicas that remain stale.
+  - `IntegratedS3.Testing` now ships a supported provider contract harness via `StorageProviderContractFixture`, `StorageProviderContractTests`, reusable in-memory support-state stores, checksum helpers, and DI registration helpers, with the disk provider consuming that path in first-party tests and onboarding documented in `docs/provider-contract-testing.md`.
   - `src\IntegratedS3\WebUi` now has a dedicated reference-host guide in `docs/webui-reference-host.md`, with local sample storage kept under `App_Data` and excluded from build/publish outputs.
   - `src\IntegratedS3\WebUi` now also supports config-driven disk-or-S3 provider selection plus optional route-policy mapping under `IntegratedS3:ReferenceHost`, and the reference-host guide now documents SigV4/authz composition, presign credential selection/custom-resolver overrides, and the supported route-policy limitations around SigV4-authenticated requests.
   - CI automation now lives in `.github\workflows\trackh-publish-aot-ci.yml`, and `eng\Invoke-AotPublishValidation.ps1` enforces the current self-contained publish warning posture without depending on exact line numbers.
@@ -1401,6 +1402,8 @@ This section is the execution board for the remaining implementation backlog. As
   - `dotnet test src\IntegratedS3\IntegratedS3.slnx` passed in the current Track H worktree.
   - `dotnet publish -c Release --self-contained src\IntegratedS3\WebUi\WebUi.csproj` passed in the current Track H worktree, and `eng\Invoke-AotPublishValidation.ps1` now tracks the remaining Minimal API / trimming-sensitive warning posture without depending on exact line numbers.
 - Remaining scope:
+  - extend the new provider contract harness beyond the current bucket/object/versioning/CORS/tags/copy/multipart/state-store coverage into the remaining protocol edge cases and broader client-compatibility scenarios
+  - extend fault-injection beyond the current unhealthy-provider, async-replication/backlog, partial-write-through, and newly added multi-replica replay coverage into broader repair/reconciliation scenarios
   - extend conformance beyond the current versioned-read, presigned-expiry/clock-skew, and AWS SDK version-id coverage into the remaining protocol edge cases and broader client-compatibility scenarios
   - extend fault-injection beyond the current unhealthy-provider, async-replication/backlog, partial-write-through, multi-replica replay, bucket-versioning/CORS/tag-delete repair, and write-through bucket-CORS delete coverage into backlog-saturation, topology-change, and other durable repair/reconciliation scenarios
   - add structured logs, metrics, traces, correlation IDs, provider tags, auth-failure visibility, mirror-lag visibility, and reconciliation-backlog visibility
@@ -1410,6 +1413,11 @@ This section is the execution board for the remaining implementation backlog. As
   - add structured logs, metrics, traces, correlation IDs, provider tags, auth-failure visibility, mirror-lag visibility, and reconciliation-backlog visibility
   - expand the benchmark suite beyond the current disk, mirrored-disk, loopback HTTP, and first-party presign baseline set into reproducible native-S3 and broader client-comparison scenarios
   - keep the new trimming/AOT publish automation in CI aligned with the supported host surface and reduce or document the remaining publish warnings alongside benchmark baselines
+  - add the planned MVC/Razor and Blazor WebAssembly sample consumers
+  - continue package polish with deeper XML docs, versioned protocol compatibility guidance, and any analyzers/diagnostics worth shipping
+- Next recommended steps:
+  - triage the remaining observed IL2026/IL3050 native AOT warnings in `IntegratedS3.AspNetCore` / `WebUi` and decide whether they should be eliminated further, annotated more precisely, or explicitly documented for consumers
+  - extend the provider contract harness and protocol hardening into conditional-precedence, checksum/header, and delete-marker/versioning edge cases now that the current subresource/presign gaps are covered
   - finish package polish items such as XML docs, onboarding docs, versioned protocol compatibility guidance, and any analyzers/diagnostics worth shipping
   - `src\IntegratedS3\WebUi` now has a dedicated reference-host guide in `docs/webui-reference-host.md`, with local sample storage kept under `App_Data` and excluded from build/publish outputs; broader secure/composed host guidance is tracked in [#19](https://github.com/SymoHTL/Intergrated-S3/issues/19).
   - `eng\Invoke-AotPublishValidation.ps1` is checked in, but the repository currently has no `.github\workflows\` directory; restoring checked-in build/test/publish validation is tracked in [#15](https://github.com/SymoHTL/Intergrated-S3/issues/15).
@@ -1674,7 +1682,7 @@ To maximize safe parallel execution without reopening shared abstractions too ea
    - Depends on: none
 6. `track-h-local-conformance-harness`
    - Packages: `IntegratedS3.Tests`, `IntegratedS3.Testing`
-   - Scope: expand reusable local S3-compatible integration coverage and fault-injection harnesses around the already-landed provider/protocol slices
+   - Scope: expand the reusable provider contract harness plus local S3-compatible integration/fault-injection coverage around the already-landed provider/protocol slices
    - Depends on: none
 7. `track-h-publish-benchmark-validation`
    - Packages: `eng\`, `.github\workflows\`, `docs\`, `WebUi`

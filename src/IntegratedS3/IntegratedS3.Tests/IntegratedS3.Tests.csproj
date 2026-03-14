@@ -27,6 +27,7 @@
     <ProjectReference Include="..\IntegratedS3.EntityFramework\IntegratedS3.EntityFramework.csproj" />
     <ProjectReference Include="..\IntegratedS3.Provider.Disk\IntegratedS3.Provider.Disk.csproj" />
     <ProjectReference Include="..\IntegratedS3.Provider.S3\IntegratedS3.Provider.S3.csproj" />
+    <ProjectReference Include="..\IntegratedS3.Testing\IntegratedS3.Testing.csproj" />
     <ProjectReference Include="..\WebUi\WebUi.csproj" />
     <ProjectReference Include="..\WebUi.MvcRazor\WebUi.MvcRazor.csproj" />
     <ProjectReference Include="..\WebUi.BlazorWasm.Client\WebUi.BlazorWasm.Client.csproj" />
