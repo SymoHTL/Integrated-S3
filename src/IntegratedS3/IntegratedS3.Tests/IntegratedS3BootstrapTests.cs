@@ -70,7 +70,10 @@ public sealed class IntegratedS3BootstrapTests
             {
                 ["IntegratedS3:Endpoints:EnableAdminEndpoints"] = "false",
                 ["IntegratedS3:Endpoints:EnableObjectEndpoints"] = "false",
-                ["IntegratedS3:Endpoints:EnableMultipartEndpoints"] = "false"
+                ["IntegratedS3:Endpoints:EnableMultipartEndpoints"] = "false",
+                ["IntegratedS3:Endpoints:RouteAuthorization:RequireAuthorization"] = "true",
+                ["IntegratedS3:Endpoints:BucketRouteAuthorization:PolicyNames:0"] = "IntegratedS3BucketRoute",
+                ["IntegratedS3:Endpoints:CompatibilityRouteAuthorization:AllowAnonymous"] = "true"
             })
             .Build();
 
@@ -85,6 +88,12 @@ public sealed class IntegratedS3BootstrapTests
         Assert.False(endpointOptions.EnableAdminEndpoints);
         Assert.False(endpointOptions.EnableObjectEndpoints);
         Assert.False(endpointOptions.EnableMultipartEndpoints);
+        Assert.NotNull(endpointOptions.RouteAuthorization);
+        Assert.True(endpointOptions.RouteAuthorization!.RequireAuthorization);
+        Assert.NotNull(endpointOptions.BucketRouteAuthorization);
+        Assert.Equal(["IntegratedS3BucketRoute"], endpointOptions.BucketRouteAuthorization!.PolicyNames);
+        Assert.NotNull(endpointOptions.CompatibilityRouteAuthorization);
+        Assert.True(endpointOptions.CompatibilityRouteAuthorization!.AllowAnonymous);
     }
 
     [Fact]

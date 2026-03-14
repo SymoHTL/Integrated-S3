@@ -1,6 +1,7 @@
 using IntegratedS3.Abstractions.Capabilities;
 using IntegratedS3.Abstractions.Models;
 using IntegratedS3.Abstractions.Services;
+using IntegratedS3.Core.Models;
 using System.Runtime.CompilerServices;
 
 namespace IntegratedS3.Core.Services;
@@ -20,22 +21,7 @@ public sealed class CatalogStorageObjectStateStore(IStorageCatalogStore catalogS
             return null;
         }
 
-        return new ObjectInfo
-        {
-            BucketName = entry.BucketName,
-            Key = entry.Key,
-            VersionId = entry.VersionId,
-            IsLatest = entry.IsLatest,
-            IsDeleteMarker = entry.IsDeleteMarker,
-            ContentLength = entry.ContentLength,
-            ContentType = entry.ContentType,
-            ETag = entry.ETag,
-            LastModifiedUtc = entry.LastModifiedUtc,
-            Metadata = entry.Metadata,
-            Tags = entry.Tags,
-            Checksums = entry.Checksums,
-            ServerSideEncryption = entry.ServerSideEncryption
-        };
+        return ToObjectInfo(entry);
     }
 
     public async IAsyncEnumerable<ObjectInfo> ListObjectVersionsAsync(string providerName, string bucketName, string? prefix = null, [EnumeratorCancellation] CancellationToken cancellationToken = default)
@@ -47,22 +33,7 @@ public sealed class CatalogStorageObjectStateStore(IStorageCatalogStore catalogS
                      .ThenByDescending(existing => existing.IsLatest)
                      .ThenByDescending(existing => existing.VersionId, StringComparer.Ordinal)) {
             cancellationToken.ThrowIfCancellationRequested();
-            yield return new ObjectInfo
-            {
-                BucketName = entry.BucketName,
-                Key = entry.Key,
-                VersionId = entry.VersionId,
-                IsLatest = entry.IsLatest,
-                IsDeleteMarker = entry.IsDeleteMarker,
-                ContentLength = entry.ContentLength,
-                ContentType = entry.ContentType,
-                ETag = entry.ETag,
-                LastModifiedUtc = entry.LastModifiedUtc,
-                Metadata = entry.Metadata,
-                Tags = entry.Tags,
-                Checksums = entry.Checksums,
-                ServerSideEncryption = entry.ServerSideEncryption
-            };
+            yield return ToObjectInfo(entry);
         }
     }
 
@@ -74,5 +45,30 @@ public sealed class CatalogStorageObjectStateStore(IStorageCatalogStore catalogS
     public ValueTask RemoveObjectInfoAsync(string providerName, string bucketName, string key, string? versionId = null, CancellationToken cancellationToken = default)
     {
         return catalogStore.RemoveObjectAsync(providerName, bucketName, key, versionId, cancellationToken);
+    }
+
+    private static ObjectInfo ToObjectInfo(StoredObjectEntry entry)
+    {
+        return new ObjectInfo
+        {
+            BucketName = entry.BucketName,
+            Key = entry.Key,
+            VersionId = entry.VersionId,
+            IsLatest = entry.IsLatest,
+            IsDeleteMarker = entry.IsDeleteMarker,
+            ContentLength = entry.ContentLength,
+            ContentType = entry.ContentType,
+            CacheControl = entry.CacheControl,
+            ContentDisposition = entry.ContentDisposition,
+            ContentEncoding = entry.ContentEncoding,
+            ContentLanguage = entry.ContentLanguage,
+            ExpiresUtc = entry.ExpiresUtc,
+            ETag = entry.ETag,
+            LastModifiedUtc = entry.LastModifiedUtc,
+            Metadata = entry.Metadata,
+            Tags = entry.Tags,
+            Checksums = entry.Checksums,
+            ServerSideEncryption = entry.ServerSideEncryption
+        };
     }
 }

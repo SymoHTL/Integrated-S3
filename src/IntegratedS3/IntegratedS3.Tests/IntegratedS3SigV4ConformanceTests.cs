@@ -62,8 +62,80 @@ public sealed class IntegratedS3SigV4ConformanceTests : IClassFixture<WebUiAppli
         Assert.Equal(HttpStatusCode.OK, getVersioningResponse.StatusCode);
         Assert.Equal("application/xml", getVersioningResponse.Content.Headers.ContentType?.MediaType);
         var versioningDocument = XDocument.Parse(await getVersioningResponse.Content.ReadAsStringAsync());
-        Assert.Equal("VersioningConfiguration", versioningDocument.Root?.Name.LocalName);
+        S3XmlTestHelper.AssertRoot(versioningDocument, "VersioningConfiguration");
         Assert.Equal("Enabled", GetRequiredElementValue(versioningDocument, "Status"));
+    }
+
+    [Fact]
+    public async Task SigV4PresignedQueryAuthentication_IgnoresUnsignedPayloadHashHeader()
+    {
+        const string accessKeyId = "sigv4-presign-payloadhash-access";
+        const string secretAccessKey = "sigv4-presign-payloadhash-secret";
+        const string bucketName = "sigv4-presign-payloadhash-bucket";
+        const string objectKey = "docs/payloadhash.txt";
+        const string payload = "presigned payload hash compatibility";
+
+        await using var isolatedClient = await CreateAuthenticatedClientAsync(accessKeyId, secretAccessKey);
+        using var client = isolatedClient.Client;
+
+        using var createBucketRequest = CreateSigV4HeaderSignedRequest(HttpMethod.Put, $"/integrated-s3/buckets/{bucketName}", accessKeyId, secretAccessKey);
+        Assert.Equal(HttpStatusCode.Created, (await client.SendAsync(createBucketRequest)).StatusCode);
+
+        using var putObjectRequest = CreateSigV4HeaderSignedRequest(
+            HttpMethod.Put,
+            $"/integrated-s3/{bucketName}/{objectKey}",
+            accessKeyId,
+            secretAccessKey,
+            body: payload,
+            contentType: "text/plain");
+        Assert.Equal(HttpStatusCode.OK, (await client.SendAsync(putObjectRequest)).StatusCode);
+
+        using var presignedRequest = CreateSigV4PresignedRequest(
+            HttpMethod.Get,
+            $"/integrated-s3/{bucketName}/{objectKey}",
+            accessKeyId,
+            secretAccessKey,
+            expiresSeconds: 300);
+        presignedRequest.Headers.TryAddWithoutValidation("x-amz-content-sha256", "STREAMING-AWS4-HMAC-SHA256-PAYLOAD");
+        var response = await client.SendAsync(presignedRequest);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal(payload, await response.Content.ReadAsStringAsync());
+    }
+
+    [Fact]
+    public async Task SigV4HeaderAuthentication_AllowsLiteralPlusSignsInSignedIgnoredQueryParameters()
+    {
+        const string accessKeyId = "sigv4-plus-access";
+        const string secretAccessKey = "sigv4-plus-secret";
+        const string bucketName = "sigv4-plus-bucket";
+        const string objectKey = "docs/plus.txt";
+        const string payload = "signed plus query";
+
+        await using var isolatedClient = await CreateAuthenticatedClientAsync(accessKeyId, secretAccessKey);
+        using var client = isolatedClient.Client;
+
+        using var createBucketRequest = CreateSigV4HeaderSignedRequest(HttpMethod.Put, $"/integrated-s3/buckets/{bucketName}", accessKeyId, secretAccessKey);
+        Assert.Equal(HttpStatusCode.Created, (await client.SendAsync(createBucketRequest)).StatusCode);
+
+        using var putObjectRequest = CreateSigV4HeaderSignedRequest(
+            HttpMethod.Put,
+            $"/integrated-s3/buckets/{bucketName}/objects/{objectKey}?x-id=PutObject+Test&x-id=PutObject%2BSecond",
+            accessKeyId,
+            secretAccessKey,
+            body: payload,
+            contentType: "text/plain");
+        Assert.Equal(HttpStatusCode.OK, (await client.SendAsync(putObjectRequest)).StatusCode);
+
+        using var getObjectRequest = CreateSigV4HeaderSignedRequest(
+            HttpMethod.Get,
+            $"/integrated-s3/buckets/{bucketName}/objects/{objectKey}?x-id=GetObject+Test&x-id=GetObject%2BSecond",
+            accessKeyId,
+            secretAccessKey);
+        var getObjectResponse = await client.SendAsync(getObjectRequest);
+
+        Assert.Equal(HttpStatusCode.OK, getObjectResponse.StatusCode);
+        Assert.Equal(payload, await getObjectResponse.Content.ReadAsStringAsync());
     }
 
     [Fact]
@@ -211,41 +283,6 @@ public sealed class IntegratedS3SigV4ConformanceTests : IClassFixture<WebUiAppli
         Assert.Contains("future", GetRequiredElementValue(errorDocument, "Message"), StringComparison.OrdinalIgnoreCase);
     }
 
-    [Fact]
-    public async Task SigV4HeaderAuthentication_AllowsLiteralPlusSignsInSignedIgnoredQueryParameters()
-    {
-        const string accessKeyId = "sigv4-plus-access";
-        const string secretAccessKey = "sigv4-plus-secret";
-        const string bucketName = "sigv4-plus-bucket";
-        const string objectKey = "docs/plus.txt";
-        const string payload = "signed plus query";
-
-        await using var isolatedClient = await CreateAuthenticatedClientAsync(accessKeyId, secretAccessKey);
-        using var client = isolatedClient.Client;
-
-        using var createBucketRequest = CreateSigV4HeaderSignedRequest(HttpMethod.Put, $"/integrated-s3/buckets/{bucketName}", accessKeyId, secretAccessKey);
-        Assert.Equal(HttpStatusCode.Created, (await client.SendAsync(createBucketRequest)).StatusCode);
-
-        using var putObjectRequest = CreateSigV4HeaderSignedRequest(
-            HttpMethod.Put,
-            $"/integrated-s3/buckets/{bucketName}/objects/{objectKey}",
-            accessKeyId,
-            secretAccessKey,
-            body: payload,
-            contentType: "text/plain");
-        Assert.Equal(HttpStatusCode.OK, (await client.SendAsync(putObjectRequest)).StatusCode);
-
-        using var getObjectRequest = CreateSigV4HeaderSignedRequest(
-            HttpMethod.Get,
-            $"/integrated-s3/buckets/{bucketName}/objects/{objectKey}?x-id=GetObject+Test&x-id=GetObject%2BSecond",
-            accessKeyId,
-            secretAccessKey);
-        var getObjectResponse = await client.SendAsync(getObjectRequest);
-
-        Assert.Equal(HttpStatusCode.OK, getObjectResponse.StatusCode);
-        Assert.Equal(payload, await getObjectResponse.Content.ReadAsStringAsync());
-    }
-
     private Task<WebUiApplicationFactory.IsolatedWebUiClient> CreateAuthenticatedClientAsync(
         string accessKeyId,
         string secretAccessKey,
@@ -281,6 +318,8 @@ public sealed class IntegratedS3SigV4ConformanceTests : IClassFixture<WebUiAppli
                 StorageOperationType.ListBuckets => "storage.read",
                 StorageOperationType.HeadBucket => "storage.read",
                 StorageOperationType.ListObjects => "storage.read",
+                StorageOperationType.ListObjectVersions => "storage.read",
+                StorageOperationType.ListMultipartUploads => "storage.read",
                 StorageOperationType.GetObject => "storage.read",
                 StorageOperationType.PresignGetObject => "storage.read",
                 StorageOperationType.GetBucketLocation => "storage.read",
@@ -308,7 +347,7 @@ public sealed class IntegratedS3SigV4ConformanceTests : IClassFixture<WebUiAppli
 
     private static string GetRequiredElementValue(XDocument document, string elementName)
     {
-        return document.Root?.Element(elementName)?.Value
+        return document.Root?.S3Element(elementName)?.Value
             ?? throw new Xunit.Sdk.XunitException($"Missing XML element '{elementName}'.");
     }
 

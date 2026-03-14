@@ -102,6 +102,10 @@ public sealed class IntegratedS3CoreOrchestrationTests
             Metadata = new Dictionary<string, string>
             {
                 ["source"] = "ef"
+            },
+            Tags = new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["environment"] = "test"
             }
         };
 
@@ -111,6 +115,7 @@ public sealed class IntegratedS3CoreOrchestrationTests
         Assert.NotNull(storedState);
         Assert.Equal("text/plain", storedState!.ContentType);
         Assert.Equal("ef", storedState.Metadata!["source"]);
+        Assert.Equal("test", storedState.Tags!["environment"]);
 
         await multipartStateStore.RemoveMultipartUploadStateAsync("catalog-disk", "catalog-bucket", "docs/multipart.txt", "upload-123");
         Assert.Null(await multipartStateStore.GetMultipartUploadStateAsync("catalog-disk", "catalog-bucket", "docs/multipart.txt", "upload-123"));
@@ -2026,7 +2031,9 @@ public sealed class IntegratedS3CoreOrchestrationTests
 
         Assert.True(result.IsSuccess);
 
-        var activity = Assert.Single(observability.Activities, candidate => string.Equals(candidate.OperationName, "IntegratedS3.Storage.CreateBucket", StringComparison.Ordinal));
+        var activity = Assert.Single(observability.Activities, candidate =>
+            string.Equals(candidate.OperationName, "IntegratedS3.Storage.CreateBucket", StringComparison.Ordinal)
+            && string.Equals(candidate.Tags[IntegratedS3Observability.Tags.CorrelationId], "core-correlation-001", StringComparison.Ordinal));
         Assert.Equal("core-correlation-001", activity.Tags[IntegratedS3Observability.Tags.CorrelationId]);
         Assert.Equal("catalog-disk", activity.Tags[IntegratedS3Observability.Tags.Provider]);
         Assert.Equal("catalog-disk", activity.Tags[IntegratedS3Observability.Tags.PrimaryProvider]);
@@ -2351,6 +2358,8 @@ public sealed class IntegratedS3CoreOrchestrationTests
                 StorageOperationType.ListBuckets => "storage.read",
                 StorageOperationType.HeadBucket => "storage.read",
                 StorageOperationType.ListObjects => "storage.read",
+                StorageOperationType.ListObjectVersions => "storage.read",
+                StorageOperationType.ListMultipartUploads => "storage.read",
                 StorageOperationType.GetObject => "storage.read",
                 StorageOperationType.PresignGetObject => "storage.read",
                 StorageOperationType.GetBucketLocation => "storage.read",
@@ -3428,6 +3437,7 @@ public sealed class IntegratedS3CoreOrchestrationTests
         public ValueTask<StorageResult<DeleteObjectResult>> DeleteObjectAsync(DeleteObjectRequest request, CancellationToken cancellationToken = default)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            string? deletedVersionId = null;
 
             var queuedFailure = TakeQueuedFailure(SimulatedFailureOperation.DeleteObject, request.BucketName, request.Key, request.VersionId);
             if (queuedFailure is not null) {
@@ -3441,6 +3451,9 @@ public sealed class IntegratedS3CoreOrchestrationTests
                     request.BucketName,
                     request.Key)));
             }
+
+            if (storedObject is not null)
+                deletedVersionId = storedObject.Info.VersionId;
 
             if (!_objects.Remove((request.BucketName, request.Key))) {
                 return ValueTask.FromResult(StorageResult<DeleteObjectResult>.Failure(new StorageError
@@ -3458,7 +3471,7 @@ public sealed class IntegratedS3CoreOrchestrationTests
             {
                 BucketName = request.BucketName,
                 Key = request.Key,
-                VersionId = storedObject.Info.VersionId
+                VersionId = deletedVersionId
             }));
         }
 

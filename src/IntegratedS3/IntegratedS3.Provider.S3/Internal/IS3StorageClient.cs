@@ -55,6 +55,13 @@ internal interface IS3StorageClient : IDisposable
         DateTimeOffset expiresAtUtc,
         CancellationToken cancellationToken = default);
 
+    Task<Uri> CreatePresignedPutObjectUrlAsync(
+        string bucketName,
+        string key,
+        string? contentType,
+        DateTimeOffset expiresAtUtc,
+        CancellationToken cancellationToken = default);
+
     Task<S3GetObjectResult> GetObjectAsync(
         string bucketName,
         string key,
@@ -72,7 +79,13 @@ internal interface IS3StorageClient : IDisposable
         Stream content,
         long? contentLength,
         string? contentType,
+        string? cacheControl,
+        string? contentDisposition,
+        string? contentEncoding,
+        string? contentLanguage,
+        DateTimeOffset? expiresUtc,
         IReadOnlyDictionary<string, string>? metadata,
+        IReadOnlyDictionary<string, string>? tags,
         IReadOnlyDictionary<string, string>? checksums,
         ObjectServerSideEncryptionSettings? serverSideEncryption,
         CancellationToken cancellationToken = default);
@@ -94,7 +107,17 @@ internal interface IS3StorageClient : IDisposable
         string? sourceIfNoneMatchETag,
         DateTimeOffset? sourceIfModifiedSinceUtc,
         DateTimeOffset? sourceIfUnmodifiedSinceUtc,
+        CopyObjectMetadataDirective metadataDirective,
+        string? contentType,
+        string? cacheControl,
+        string? contentDisposition,
+        string? contentEncoding,
+        string? contentLanguage,
+        DateTimeOffset? expiresUtc,
+        IReadOnlyDictionary<string, string>? metadata,
         bool overwriteIfExists,
+        ObjectTaggingDirective taggingDirective,
+        IReadOnlyDictionary<string, string>? tags,
         ObjectServerSideEncryptionSettings? destinationServerSideEncryption,
         CancellationToken cancellationToken = default);
 
@@ -102,7 +125,13 @@ internal interface IS3StorageClient : IDisposable
         string bucketName,
         string key,
         string? contentType,
+        string? cacheControl,
+        string? contentDisposition,
+        string? contentEncoding,
+        string? contentLanguage,
+        DateTimeOffset? expiresUtc,
         IReadOnlyDictionary<string, string>? metadata,
+        IReadOnlyDictionary<string, string>? tags,
         string? checksumAlgorithm,
         ObjectServerSideEncryptionSettings? serverSideEncryption,
         CancellationToken cancellationToken = default);
@@ -116,6 +145,21 @@ internal interface IS3StorageClient : IDisposable
         long? contentLength,
         string? checksumAlgorithm,
         IReadOnlyDictionary<string, string>? checksums,
+        CancellationToken cancellationToken = default);
+
+    Task<MultipartUploadPart> CopyMultipartPartAsync(
+        string bucketName,
+        string key,
+        string uploadId,
+        int partNumber,
+        string sourceBucketName,
+        string sourceKey,
+        string? sourceVersionId,
+        ObjectRange? sourceRange,
+        string? sourceIfMatchETag,
+        string? sourceIfNoneMatchETag,
+        DateTimeOffset? sourceIfModifiedSinceUtc,
+        DateTimeOffset? sourceIfUnmodifiedSinceUtc,
         CancellationToken cancellationToken = default);
 
     Task<S3ObjectEntry> CompleteMultipartUploadAsync(
@@ -137,6 +181,14 @@ internal interface IS3StorageClient : IDisposable
         string? keyMarker,
         string? uploadIdMarker,
         int? maxUploads,
+        CancellationToken cancellationToken = default);
+
+    Task<S3MultipartUploadPartListPage> ListMultipartUploadPartsAsync(
+        string bucketName,
+        string key,
+        string uploadId,
+        int? partNumberMarker,
+        int? maxParts,
         CancellationToken cancellationToken = default);
 
     // Object tags

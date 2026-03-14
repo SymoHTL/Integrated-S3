@@ -16,6 +16,7 @@ namespace IntegratedS3.Core.Services;
 internal sealed class AuthorizingStorageService(
     OrchestratedStorageService inner,
     IIntegratedS3AuthorizationService authorizationService,
+    IStorageAuthorizationCompatibilityService authorizationCompatibilityService,
     IIntegratedS3RequestContextAccessor requestContextAccessor,
     ILogger<AuthorizingStorageService> logger) : IStorageService
 {
@@ -33,7 +34,7 @@ internal sealed class AuthorizingStorageService(
         {
             Operation = StorageOperationType.CreateBucket,
             BucketName = request.BucketName
-        }, innerCancellationToken => inner.CreateBucketAsync(request, innerCancellationToken), cancellationToken);
+        }, innerCancellationToken => inner.CreateBucketAsync(request, innerCancellationToken), (_, innerCancellationToken) => authorizationCompatibilityService.RecordBucketCreatedAsync(request.BucketName, innerCancellationToken), cancellationToken);
     }
 
     public ValueTask<StorageResult<BucketLocationInfo>> GetBucketLocationAsync(string bucketName, CancellationToken cancellationToken = default)
@@ -105,7 +106,7 @@ internal sealed class AuthorizingStorageService(
         {
             Operation = StorageOperationType.DeleteBucket,
             BucketName = request.BucketName
-        }, innerCancellationToken => inner.DeleteBucketAsync(request, innerCancellationToken), cancellationToken);
+        }, innerCancellationToken => inner.DeleteBucketAsync(request, innerCancellationToken), innerCancellationToken => authorizationCompatibilityService.RecordBucketDeletedAsync(request.BucketName, innerCancellationToken), cancellationToken);
     }
 
     public IAsyncEnumerable<ObjectInfo> ListObjectsAsync(ListObjectsRequest request, CancellationToken cancellationToken = default)
@@ -122,7 +123,7 @@ internal sealed class AuthorizingStorageService(
     {
         return ExecuteAuthorizedEnumerableAsync(new StorageAuthorizationRequest
         {
-            Operation = StorageOperationType.ListObjects,
+            Operation = StorageOperationType.ListObjectVersions,
             BucketName = request.BucketName,
             Key = request.Prefix
         }, innerCancellationToken => inner.ListObjectVersionsAsync(request, innerCancellationToken), cancellationToken);
@@ -132,10 +133,20 @@ internal sealed class AuthorizingStorageService(
     {
         return ExecuteAuthorizedEnumerableAsync(new StorageAuthorizationRequest
         {
-            Operation = StorageOperationType.ListObjects,
+            Operation = StorageOperationType.ListMultipartUploads,
             BucketName = request.BucketName,
             Key = request.Prefix
         }, innerCancellationToken => inner.ListMultipartUploadsAsync(request, innerCancellationToken), cancellationToken);
+    }
+
+    public IAsyncEnumerable<MultipartUploadPart> ListMultipartUploadPartsAsync(ListMultipartUploadPartsRequest request, CancellationToken cancellationToken = default)
+    {
+        return ExecuteAuthorizedEnumerableAsync(new StorageAuthorizationRequest
+        {
+            Operation = StorageOperationType.ListObjects,
+            BucketName = request.BucketName,
+            Key = request.Key
+        }, innerCancellationToken => inner.ListMultipartUploadPartsAsync(request, innerCancellationToken), cancellationToken);
     }
 
     public ValueTask<StorageResult<GetObjectResponse>> GetObjectAsync(GetObjectRequest request, CancellationToken cancellationToken = default)
@@ -171,7 +182,7 @@ internal sealed class AuthorizingStorageService(
             SourceKey = request.SourceKey,
             VersionId = request.SourceVersionId,
             IncludesMetadata = true
-        }, innerCancellationToken => inner.CopyObjectAsync(request, innerCancellationToken), cancellationToken);
+        }, innerCancellationToken => inner.CopyObjectAsync(request, innerCancellationToken), (_, innerCancellationToken) => authorizationCompatibilityService.RecordObjectWrittenAsync(request.DestinationBucketName, request.DestinationKey, innerCancellationToken), cancellationToken);
     }
 
     public ValueTask<StorageResult<ObjectInfo>> PutObjectAsync(PutObjectRequest request, CancellationToken cancellationToken = default)
@@ -182,7 +193,7 @@ internal sealed class AuthorizingStorageService(
             BucketName = request.BucketName,
             Key = request.Key,
             IncludesMetadata = request.Metadata is not null
-        }, innerCancellationToken => inner.PutObjectAsync(request, innerCancellationToken), cancellationToken);
+        }, innerCancellationToken => inner.PutObjectAsync(request, innerCancellationToken), (_, innerCancellationToken) => authorizationCompatibilityService.RecordObjectWrittenAsync(request.BucketName, request.Key, innerCancellationToken), cancellationToken);
     }
 
     public ValueTask<StorageResult<ObjectTagSet>> PutObjectTagsAsync(PutObjectTagsRequest request, CancellationToken cancellationToken = default)
@@ -224,7 +235,10 @@ internal sealed class AuthorizingStorageService(
         {
             Operation = StorageOperationType.UploadMultipartPart,
             BucketName = request.BucketName,
-            Key = request.Key
+            Key = request.Key,
+            SourceBucketName = request.CopySourceBucketName,
+            SourceKey = request.CopySourceKey,
+            VersionId = request.CopySourceVersionId
         }, innerCancellationToken => inner.UploadMultipartPartAsync(request, innerCancellationToken), cancellationToken);
     }
 
@@ -235,7 +249,7 @@ internal sealed class AuthorizingStorageService(
             Operation = StorageOperationType.CompleteMultipartUpload,
             BucketName = request.BucketName,
             Key = request.Key
-        }, innerCancellationToken => inner.CompleteMultipartUploadAsync(request, innerCancellationToken), cancellationToken);
+        }, innerCancellationToken => inner.CompleteMultipartUploadAsync(request, innerCancellationToken), (_, innerCancellationToken) => authorizationCompatibilityService.RecordObjectWrittenAsync(request.BucketName, request.Key, innerCancellationToken), cancellationToken);
     }
 
     public ValueTask<StorageResult> AbortMultipartUploadAsync(AbortMultipartUploadRequest request, CancellationToken cancellationToken = default)
@@ -267,7 +281,7 @@ internal sealed class AuthorizingStorageService(
             BucketName = request.BucketName,
             Key = request.Key,
             VersionId = request.VersionId
-        }, innerCancellationToken => inner.DeleteObjectAsync(request, innerCancellationToken), cancellationToken);
+        }, innerCancellationToken => inner.DeleteObjectAsync(request, innerCancellationToken), (_, innerCancellationToken) => authorizationCompatibilityService.RecordObjectDeletedAsync(request.BucketName, request.Key, innerCancellationToken), cancellationToken);
     }
 
     private async ValueTask<StorageResult> AuthorizeAsync(StorageAuthorizationRequest request, CancellationToken cancellationToken)
@@ -278,6 +292,11 @@ internal sealed class AuthorizingStorageService(
         var result = await authorizationService.AuthorizeAsync(principal, request, cancellationToken);
         if (result.IsSuccess) {
             return result;
+        }
+
+        if ((result.Error is null || result.Error.Code == StorageErrorCode.AccessDenied)
+            && await authorizationCompatibilityService.IsAllowedAsync(request, cancellationToken)) {
+            return StorageResult.Success();
         }
 
         var error = result.Error ?? CreateAccessDeniedError(request);
@@ -295,6 +314,15 @@ internal sealed class AuthorizingStorageService(
         Func<CancellationToken, ValueTask<StorageResult<T>>> action,
         CancellationToken cancellationToken)
     {
+        return await ExecuteAuthorizedAsync(authorizationRequest, action, onSuccess: null, cancellationToken);
+    }
+
+    private async ValueTask<StorageResult<T>> ExecuteAuthorizedAsync<T>(
+        StorageAuthorizationRequest authorizationRequest,
+        Func<CancellationToken, ValueTask<StorageResult<T>>> action,
+        Func<T, CancellationToken, ValueTask>? onSuccess,
+        CancellationToken cancellationToken)
+    {
         var requestContext = requestContextAccessor.Current;
         using var scope = IntegratedS3CoreTelemetry.BeginOperationScope(logger, authorizationRequest, requestContext);
         using var activity = IntegratedS3CoreTelemetry.StartOperationActivity(authorizationRequest, requestContext);
@@ -309,6 +337,10 @@ internal sealed class AuthorizingStorageService(
             }
 
             var result = await action(cancellationToken);
+            if (result.IsSuccess && result.Value is not null && onSuccess is not null) {
+                await onSuccess(result.Value, cancellationToken);
+            }
+
             if (!result.IsSuccess) {
                 IntegratedS3CoreTelemetry.MarkFailure(activity, result.Error);
                 logger.LogWarning(
@@ -341,6 +373,15 @@ internal sealed class AuthorizingStorageService(
         Func<CancellationToken, ValueTask<StorageResult>> action,
         CancellationToken cancellationToken)
     {
+        return await ExecuteAuthorizedAsync(authorizationRequest, action, onSuccess: null, cancellationToken);
+    }
+
+    private async ValueTask<StorageResult> ExecuteAuthorizedAsync(
+        StorageAuthorizationRequest authorizationRequest,
+        Func<CancellationToken, ValueTask<StorageResult>> action,
+        Func<CancellationToken, ValueTask>? onSuccess,
+        CancellationToken cancellationToken)
+    {
         var requestContext = requestContextAccessor.Current;
         using var scope = IntegratedS3CoreTelemetry.BeginOperationScope(logger, authorizationRequest, requestContext);
         using var activity = IntegratedS3CoreTelemetry.StartOperationActivity(authorizationRequest, requestContext);
@@ -355,6 +396,10 @@ internal sealed class AuthorizingStorageService(
             }
 
             var result = await action(cancellationToken);
+            if (result.IsSuccess && onSuccess is not null) {
+                await onSuccess(cancellationToken);
+            }
+
             if (!result.IsSuccess) {
                 IntegratedS3CoreTelemetry.MarkFailure(activity, result.Error);
                 logger.LogWarning(

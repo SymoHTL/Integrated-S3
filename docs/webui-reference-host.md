@@ -47,6 +47,7 @@ Core `IntegratedS3` settings:
 
 - `IntegratedS3:ServiceName` — display name shown by the service document
 - `IntegratedS3:RoutePrefix` — base path for the IntegratedS3 HTTP surface
+- `IntegratedS3:Endpoints:*RouteAuthorization:*` — optional whole-route, shared-route, and per-feature authorization conventions (`RequireAuthorization`, named `PolicyNames`, or `AllowAnonymous`) applied when `MapIntegratedS3Endpoints(...)` maps the HTTP surface
 - `IntegratedS3:EnableAwsSignatureV4Authentication` — enables SigV4 header and presigned-query request authentication on the IntegratedS3 HTTP surface
 - `IntegratedS3:SignatureAuthenticationRegion` / `IntegratedS3:SignatureAuthenticationService` — expected SigV4 credential-scope values
 - `IntegratedS3:AccessKeyCredentials` — access keys used for SigV4 request authentication and first-party presign generation
@@ -61,6 +62,8 @@ Reference-host-specific settings:
 - `IntegratedS3:S3:*` — native S3 provider settings (`ProviderName`, `Region`, `ServiceUrl`, `ForcePathStyle`, `AccessKey`, `SecretKey`)
 
 By default, sample data is stored under `App_Data\IntegratedS3`. Runtime storage data is ignored by source control and excluded from build/publish outputs so local sample usage does not leak into release artifacts.
+
+The reference host does not register authentication or authorization services by default. If a consumer enables any `IntegratedS3:Endpoints:*RouteAuthorization:*` settings or `IntegratedS3:ReferenceHost:RoutePolicies:*` entries, the consuming host should also register the matching ASP.NET authentication/authorization services and policies before calling `MapIntegratedS3Endpoints(...)`.
 
 ## Disk baseline
 
@@ -200,6 +203,7 @@ builder.Services.AddSingleton<IIntegratedS3PresignCredentialResolver, MyPresignC
 ```
 
 Optional replay/cleanup jobs remain opt-in host composition. When a consumer wants background mirror replay, orphan detection, checksum verification, multipart cleanup, index compaction, or expired-artifact cleanup, register `AddIntegratedS3MaintenanceJob(...)` after the normal `AddIntegratedS3(...)` / provider wiring and follow `docs\host-maintenance-jobs.md`.
+
 ## Health check wiring
 
 The reference host shows the supported ASP.NET Core integration path for backend health:
@@ -214,6 +218,7 @@ app.MapIntegratedS3HealthEndpoints();
 ```
 
 `/health/live` stays a process liveness probe, while `/health/ready` runs the IntegratedS3 backend readiness check. The readiness mapper treats both `Degraded` and `Unhealthy` results as HTTP `503` by default so hosts can use it directly for readiness probes.
+
 ## Custom backend registration
 
 Hosts that implement their own `IStorageBackend` can now use `AddIntegratedS3Backend(...)` instead of manually pairing `AddSingleton<IStorageBackend>(...)` with the rest of the IntegratedS3 runtime wiring.

@@ -252,6 +252,14 @@ internal sealed class OrchestratedStorageService(
         }
     }
 
+    public async IAsyncEnumerable<MultipartUploadPart> ListMultipartUploadPartsAsync(ListMultipartUploadPartsRequest request, [EnumeratorCancellation] CancellationToken cancellationToken = default)
+    {
+        var backend = await SelectReadBackendAsync(cancellationToken);
+        await foreach (var part in backend.ListMultipartUploadPartsAsync(request, cancellationToken).WithCancellation(cancellationToken)) {
+            yield return part;
+        }
+    }
+
     public async ValueTask<StorageResult<GetObjectResponse>> GetObjectAsync(GetObjectRequest request, CancellationToken cancellationToken = default)
     {
         return await ExecuteReadAsync(
@@ -997,6 +1005,7 @@ internal sealed class OrchestratedStorageService(
                     sourceResponse.Object.ContentLength,
                     sourceResponse.Object.ContentType,
                     sourceResponse.Object.Metadata,
+                    sourceResponse.Object.Tags,
                     sourceResponse.Object.Checksums,
                     request.OverwriteIfExists,
                     ct),
@@ -1186,6 +1195,7 @@ internal sealed class OrchestratedStorageService(
             request.ContentLength,
             request.ContentType,
             request.Metadata,
+            request.Tags,
             request.Checksums,
             request.OverwriteIfExists,
             cancellationToken);
@@ -1199,6 +1209,7 @@ internal sealed class OrchestratedStorageService(
         long? contentLength,
         string? contentType,
         IReadOnlyDictionary<string, string>? metadata,
+        IReadOnlyDictionary<string, string>? tags,
         IReadOnlyDictionary<string, string>? checksums,
         bool overwriteIfExists,
         CancellationToken cancellationToken)
@@ -1211,6 +1222,7 @@ internal sealed class OrchestratedStorageService(
             contentLength,
             contentType,
             metadata,
+            tags,
             checksums,
             overwriteIfExists,
             cancellationToken);
@@ -1245,6 +1257,7 @@ internal sealed class OrchestratedStorageService(
             ContentLength = sourceResponse.Object.ContentLength,
             ContentType = sourceResponse.Object.ContentType,
             Metadata = CloneMetadata(sourceResponse.Object.Metadata),
+            Tags = CloneTags(sourceResponse.Object.Tags),
             Checksums = CloneChecksums(sourceResponse.Object.Checksums),
             OverwriteIfExists = true
         }, cancellationToken);
@@ -1471,6 +1484,7 @@ internal sealed class OrchestratedStorageService(
             request.ContentLength,
             request.ContentType,
             request.Metadata,
+            request.Tags,
             request.Checksums,
             request.OverwriteIfExists,
             cancellationToken);
@@ -1484,6 +1498,7 @@ internal sealed class OrchestratedStorageService(
         long? contentLength,
         string? contentType,
         IReadOnlyDictionary<string, string>? metadata,
+        IReadOnlyDictionary<string, string>? tags,
         IReadOnlyDictionary<string, string>? checksums,
         bool overwriteIfExists,
         CancellationToken cancellationToken)
@@ -1497,6 +1512,7 @@ internal sealed class OrchestratedStorageService(
             ContentLength = contentLength,
             ContentType = contentType,
             Metadata = CloneMetadata(metadata),
+            Tags = CloneTags(tags),
             Checksums = CloneChecksums(checksums),
             OverwriteIfExists = overwriteIfExists
         }, cancellationToken);

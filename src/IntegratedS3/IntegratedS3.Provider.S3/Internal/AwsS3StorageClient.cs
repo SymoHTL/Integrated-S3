@@ -2,7 +2,9 @@ using Amazon;
 using Amazon.Runtime;
 using Amazon.S3;
 using Amazon.S3.Model;
+using System.Globalization;
 using IntegratedS3.Abstractions.Models;
+using System.Globalization;
 
 namespace IntegratedS3.Provider.S3.Internal;
 
@@ -283,6 +285,11 @@ internal sealed class AwsS3StorageClient : IS3StorageClient
                 LastModifiedUtc: ToDateTimeOffset(response.LastModified),
                 Metadata: BuildMetadataDictionary(response.Metadata),
                 VersionId: response.VersionId,
+                CacheControl: response.CacheControl,
+                ContentDisposition: response.ContentDisposition,
+                ContentEncoding: response.ContentEncoding,
+                ContentLanguage: response.ContentLanguage,
+                ExpiresUtc: ParseExpiresString(response.ExpiresString),
                 ServerSideEncryption: S3ServerSideEncryptionMapper.ToInfo(
                     response.ServerSideEncryptionMethod,
                     response.ServerSideEncryptionKeyManagementServiceKeyId));
@@ -313,6 +320,28 @@ internal sealed class AwsS3StorageClient : IS3StorageClient
 
         var presignedUrl = _s3.GetPreSignedURL(request);
         return Task.FromResult(AlignPresignedUrlWithServiceUrl(new Uri(presignedUrl, UriKind.Absolute)));
+    }
+
+    public Task<Uri> CreatePresignedPutObjectUrlAsync(
+        string bucketName,
+        string key,
+        string? contentType,
+        DateTimeOffset expiresAtUtc,
+        CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+
+        var request = new GetPreSignedUrlRequest
+        {
+            BucketName = bucketName,
+            Key = key,
+            ContentType = contentType,
+            Expires = expiresAtUtc.UtcDateTime,
+            Verb = HttpVerb.PUT
+        };
+
+        var presignedUrl = _s3.GetPreSignedURL(request);
+        return Task.FromResult(new Uri(presignedUrl, UriKind.Absolute));
     }
 
     public async Task<S3GetObjectResult> GetObjectAsync(
@@ -366,6 +395,11 @@ internal sealed class AwsS3StorageClient : IS3StorageClient
             LastModifiedUtc: ToDateTimeOffset(response.LastModified),
             Metadata: BuildMetadataDictionary(response.Metadata),
             VersionId: response.VersionId,
+            CacheControl: response.Headers.CacheControl,
+            ContentDisposition: response.Headers.ContentDisposition,
+            ContentEncoding: response.Headers.ContentEncoding,
+            ContentLanguage: GetHeaderValue(response.Headers, "Content-Language"),
+            ExpiresUtc: ParseExpiresString(response.ExpiresString),
             ServerSideEncryption: S3ServerSideEncryptionMapper.ToInfo(
                 response.ServerSideEncryptionMethod,
                 response.ServerSideEncryptionKeyManagementServiceKeyId));
@@ -382,7 +416,13 @@ internal sealed class AwsS3StorageClient : IS3StorageClient
         Stream content,
         long? contentLength,
         string? contentType,
+        string? cacheControl,
+        string? contentDisposition,
+        string? contentEncoding,
+        string? contentLanguage,
+        DateTimeOffset? expiresUtc,
         IReadOnlyDictionary<string, string>? metadata,
+        IReadOnlyDictionary<string, string>? tags,
         IReadOnlyDictionary<string, string>? checksums,
         ObjectServerSideEncryptionSettings? serverSideEncryption,
         CancellationToken cancellationToken = default)
@@ -399,12 +439,15 @@ internal sealed class AwsS3StorageClient : IS3StorageClient
         if (contentLength.HasValue)
             request.Headers.ContentLength = contentLength.Value;
 
+        ApplyStandardObjectHeaders(request.Headers, cacheControl, contentDisposition, contentEncoding, contentLanguage, expiresUtc);
+
         if (metadata is not null)
         {
             foreach (var (k, v) in metadata)
                 request.Metadata[k] = v;
         }
 
+        request.TagSet = BuildTagSet(tags);
         ApplyChecksumHeaders(request, checksumAlgorithm: null, checksums);
         S3ServerSideEncryptionMapper.ApplyTo(request, serverSideEncryption);
 
@@ -424,6 +467,11 @@ internal sealed class AwsS3StorageClient : IS3StorageClient
                 response.ChecksumCRC64NVME,
                 response.ChecksumSHA1,
                 response.ChecksumSHA256),
+            CacheControl: cacheControl,
+            ContentDisposition: contentDisposition,
+            ContentEncoding: contentEncoding,
+            ContentLanguage: contentLanguage,
+            ExpiresUtc: expiresUtc,
             ServerSideEncryption: S3ServerSideEncryptionMapper.ToInfo(
                 response.ServerSideEncryptionMethod,
                 response.ServerSideEncryptionKeyManagementServiceKeyId));
@@ -464,7 +512,17 @@ internal sealed class AwsS3StorageClient : IS3StorageClient
         string? sourceIfNoneMatchETag,
         DateTimeOffset? sourceIfModifiedSinceUtc,
         DateTimeOffset? sourceIfUnmodifiedSinceUtc,
+        CopyObjectMetadataDirective metadataDirective,
+        string? contentType,
+        string? cacheControl,
+        string? contentDisposition,
+        string? contentEncoding,
+        string? contentLanguage,
+        DateTimeOffset? expiresUtc,
+        IReadOnlyDictionary<string, string>? metadata,
         bool overwriteIfExists,
+        ObjectTaggingDirective taggingDirective,
+        IReadOnlyDictionary<string, string>? tags,
         ObjectServerSideEncryptionSettings? destinationServerSideEncryption,
         CancellationToken cancellationToken = default)
     {
@@ -488,6 +546,31 @@ internal sealed class AwsS3StorageClient : IS3StorageClient
         if (!overwriteIfExists)
             request.IfNoneMatch = "*";
 
+        request.MetadataDirective = metadataDirective == CopyObjectMetadataDirective.Replace
+            ? S3MetadataDirective.REPLACE
+            : S3MetadataDirective.COPY;
+
+        if (metadataDirective == CopyObjectMetadataDirective.Replace)
+        {
+            request.ContentType = contentType;
+            ApplyStandardObjectHeaders(request.Headers, cacheControl, contentDisposition, contentEncoding, contentLanguage, expiresUtc);
+
+            if (metadata is not null)
+            {
+                foreach (var (name, value) in metadata)
+                    request.Metadata[name] = value;
+            }
+        }
+
+        request.TaggingDirective = taggingDirective == ObjectTaggingDirective.Replace
+            ? TaggingDirective.REPLACE
+            : TaggingDirective.COPY;
+
+        if (taggingDirective == ObjectTaggingDirective.Replace)
+        {
+            request.TagSet = BuildTagSet(tags) ?? new List<Tag>();
+        }
+
         S3ServerSideEncryptionMapper.ApplyTo(request, destinationServerSideEncryption);
 
         var response = await _s3.CopyObjectAsync(request, cancellationToken).ConfigureAwait(false);
@@ -495,11 +578,11 @@ internal sealed class AwsS3StorageClient : IS3StorageClient
         return new S3ObjectEntry(
             Key: destinationKey,
             ContentLength: 0,
-            ContentType: null,
+            ContentType: metadataDirective == CopyObjectMetadataDirective.Replace ? contentType : null,
             ETag: response.ETag,
             LastModifiedUtc: string.IsNullOrEmpty(response.LastModified) ? DateTimeOffset.UtcNow
                 : DateTime.TryParse(response.LastModified, out var dt) ? new DateTimeOffset(dt, TimeSpan.Zero) : DateTimeOffset.UtcNow,
-            Metadata: null,
+            Metadata: metadataDirective == CopyObjectMetadataDirective.Replace ? metadata : null,
             VersionId: response.VersionId,
             Checksums: BuildChecksums(
                 response.ChecksumCRC32,
@@ -507,6 +590,11 @@ internal sealed class AwsS3StorageClient : IS3StorageClient
                 response.ChecksumCRC64NVME,
                 response.ChecksumSHA1,
                 response.ChecksumSHA256),
+            CacheControl: metadataDirective == CopyObjectMetadataDirective.Replace ? cacheControl : null,
+            ContentDisposition: metadataDirective == CopyObjectMetadataDirective.Replace ? contentDisposition : null,
+            ContentEncoding: metadataDirective == CopyObjectMetadataDirective.Replace ? contentEncoding : null,
+            ContentLanguage: metadataDirective == CopyObjectMetadataDirective.Replace ? contentLanguage : null,
+            ExpiresUtc: metadataDirective == CopyObjectMetadataDirective.Replace ? expiresUtc : null,
             ServerSideEncryption: S3ServerSideEncryptionMapper.ToInfo(
                 response.ServerSideEncryptionMethod,
                 response.ServerSideEncryptionKeyManagementServiceKeyId));
@@ -516,7 +604,13 @@ internal sealed class AwsS3StorageClient : IS3StorageClient
         string bucketName,
         string key,
         string? contentType,
+        string? cacheControl,
+        string? contentDisposition,
+        string? contentEncoding,
+        string? contentLanguage,
+        DateTimeOffset? expiresUtc,
         IReadOnlyDictionary<string, string>? metadata,
+        IReadOnlyDictionary<string, string>? tags,
         string? checksumAlgorithm,
         ObjectServerSideEncryptionSettings? serverSideEncryption,
         CancellationToken cancellationToken = default)
@@ -528,12 +622,15 @@ internal sealed class AwsS3StorageClient : IS3StorageClient
             ContentType = contentType
         };
 
+        ApplyStandardObjectHeaders(request.Headers, cacheControl, contentDisposition, contentEncoding, contentLanguage, expiresUtc);
+
         if (metadata is not null)
         {
             foreach (var (name, value) in metadata)
                 request.Metadata[name] = value;
         }
 
+        request.TagSet = BuildTagSet(tags);
         var sdkChecksumAlgorithm = MapChecksumAlgorithm(checksumAlgorithm);
         if (sdkChecksumAlgorithm is not null)
             request.ChecksumAlgorithm = sdkChecksumAlgorithm;
@@ -591,6 +688,84 @@ internal sealed class AwsS3StorageClient : IS3StorageClient
                 response.ChecksumCRC64NVME,
                 response.ChecksumSHA1,
                 response.ChecksumSHA256)
+        };
+    }
+
+    public async Task<MultipartUploadPart> CopyMultipartPartAsync(
+        string bucketName,
+        string key,
+        string uploadId,
+        int partNumber,
+        string sourceBucketName,
+        string sourceKey,
+        string? sourceVersionId,
+        ObjectRange? sourceRange,
+        string? sourceIfMatchETag,
+        string? sourceIfNoneMatchETag,
+        DateTimeOffset? sourceIfModifiedSinceUtc,
+        DateTimeOffset? sourceIfUnmodifiedSinceUtc,
+        CancellationToken cancellationToken = default)
+    {
+        var request = new CopyPartRequest
+        {
+            DestinationBucket = bucketName,
+            DestinationKey = key,
+            UploadId = uploadId,
+            PartNumber = partNumber,
+            SourceBucket = sourceBucketName,
+            SourceKey = sourceKey,
+            SourceVersionId = sourceVersionId
+        };
+
+        if (!string.IsNullOrWhiteSpace(sourceIfMatchETag))
+        {
+            request.ETagToMatch =
+            [
+                sourceIfMatchETag
+            ];
+        }
+
+        if (!string.IsNullOrWhiteSpace(sourceIfNoneMatchETag))
+        {
+            request.ETagsToNotMatch = sourceIfNoneMatchETag
+                .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Where(static candidate => !string.IsNullOrWhiteSpace(candidate))
+                .ToList();
+        }
+
+        if (sourceIfModifiedSinceUtc.HasValue)
+            request.ModifiedSinceDate = sourceIfModifiedSinceUtc.Value.UtcDateTime;
+
+        if (sourceIfUnmodifiedSinceUtc.HasValue)
+            request.UnmodifiedSinceDate = sourceIfUnmodifiedSinceUtc.Value.UtcDateTime;
+
+        if (sourceRange is { Start: long firstByte, End: long lastByte })
+        {
+            request.FirstByte = firstByte;
+            request.LastByte = lastByte;
+        }
+
+        var response = await _s3.CopyPartAsync(request, cancellationToken).ConfigureAwait(false);
+
+        var contentLength = sourceRange is { Start: long start, End: long end }
+            ? end - start + 1
+            : 0;
+
+        return new MultipartUploadPart
+        {
+            PartNumber = response.PartNumber.GetValueOrDefault(partNumber),
+            ETag = response.ETag ?? string.Empty,
+            ContentLength = contentLength,
+            LastModifiedUtc = response.LastModified.HasValue
+                ? new DateTimeOffset(DateTime.SpecifyKind(response.LastModified.Value, DateTimeKind.Utc))
+                : DateTimeOffset.UtcNow,
+            Checksums = BuildChecksums(
+                response.ChecksumCRC32,
+                response.ChecksumCRC32C,
+                response.ChecksumCRC64NVME,
+                response.ChecksumSHA1,
+                response.ChecksumSHA256),
+            CopySourceVersionId = response.CopySourceVersionId
         };
     }
 
@@ -688,6 +863,51 @@ internal sealed class AwsS3StorageClient : IS3StorageClient
             response.IsTruncated == true ? response.NextUploadIdMarker : null);
     }
 
+    public async Task<S3MultipartUploadPartListPage> ListMultipartUploadPartsAsync(
+        string bucketName,
+        string key,
+        string uploadId,
+        int? partNumberMarker,
+        int? maxParts,
+        CancellationToken cancellationToken = default)
+    {
+        var request = new ListPartsRequest
+        {
+            BucketName = bucketName,
+            Key = key,
+            UploadId = uploadId
+        };
+
+        if (partNumberMarker.HasValue)
+            request.PartNumberMarker = partNumberMarker.Value.ToString(CultureInfo.InvariantCulture);
+
+        if (maxParts.HasValue)
+            request.MaxParts = Math.Min(maxParts.Value, 1000);
+
+        var response = await _s3.ListPartsAsync(request, cancellationToken).ConfigureAwait(false);
+
+        var entries = (response.Parts ?? [])
+            .Select(part => new MultipartUploadPart
+            {
+                PartNumber = part.PartNumber.GetValueOrDefault(),
+                ETag = part.ETag ?? string.Empty,
+                ContentLength = part.Size ?? 0,
+                LastModifiedUtc = ToDateTimeOffset(part.LastModified),
+                Checksums = BuildChecksums(
+                    part.ChecksumCRC32,
+                    part.ChecksumCRC32C,
+                    part.ChecksumCRC64NVME,
+                    part.ChecksumSHA1,
+                    part.ChecksumSHA256)
+            })
+            .OrderBy(static part => part.PartNumber)
+            .ToList();
+
+        return new S3MultipartUploadPartListPage(
+            entries,
+            response.IsTruncated == true ? response.NextPartNumberMarker : null);
+    }
+
     // -------------------------------------------------------------------------
     // Object tags
     // -------------------------------------------------------------------------
@@ -757,6 +977,20 @@ internal sealed class AwsS3StorageClient : IS3StorageClient
     private static DateTimeOffset ToDateTimeOffset(DateTime? value)
         => value.HasValue ? new DateTimeOffset(DateTime.SpecifyKind(value.Value, DateTimeKind.Utc)) : DateTimeOffset.UtcNow;
 
+    private static DateTimeOffset? ParseExpiresString(string? rawValue)
+    {
+        if (string.IsNullOrWhiteSpace(rawValue))
+            return null;
+
+        return DateTimeOffset.TryParse(
+            rawValue,
+            CultureInfo.InvariantCulture,
+            DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal,
+            out var parsedValue)
+            ? parsedValue
+            : null;
+    }
+
     private static IReadOnlyDictionary<string, string>? BuildMetadataDictionary(MetadataCollection? metadata)
     {
         if (metadata is null || metadata.Count == 0)
@@ -794,6 +1028,40 @@ internal sealed class AwsS3StorageClient : IS3StorageClient
 
         checksums ??= new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         checksums[algorithm] = value;
+    }
+
+    private static List<Tag>? BuildTagSet(IReadOnlyDictionary<string, string>? tags)
+    {
+        return tags is null || tags.Count == 0
+            ? null
+            : tags.Select(static pair => new Tag
+            {
+                Key = pair.Key,
+                Value = pair.Value
+            }).ToList();
+    }
+
+    private static void ApplyStandardObjectHeaders(
+        HeadersCollection headers,
+        string? cacheControl,
+        string? contentDisposition,
+        string? contentEncoding,
+        string? contentLanguage,
+        DateTimeOffset? expiresUtc)
+    {
+        headers.CacheControl = cacheControl;
+        headers.ContentDisposition = contentDisposition;
+        headers.ContentEncoding = contentEncoding;
+        headers["Content-Language"] = contentLanguage;
+        headers.Expires = expiresUtc?.UtcDateTime;
+    }
+
+    private static string? GetHeaderValue(HeadersCollection headers, string headerName)
+    {
+        var value = headers[headerName];
+        return string.IsNullOrWhiteSpace(value)
+            ? null
+            : value;
     }
 
     private static void ApplyChecksumHeaders(PutObjectRequest request, string? checksumAlgorithm, IReadOnlyDictionary<string, string>? checksums)

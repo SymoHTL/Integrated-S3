@@ -913,7 +913,7 @@ public sealed class IntegratedS3ClientTransferTests(WebUiApplicationFactory fact
                 return Task.FromResult(response);
             }));
 
-            var exception = await Assert.ThrowsAsync<IOException>(() =>
+            var exception = await Assert.ThrowsAsync<HttpRequestException>(() =>
                 capturingClient.DownloadToFileWithResumeAsync(
                     transferClient,
                     "bucket",
@@ -921,8 +921,11 @@ public sealed class IntegratedS3ClientTransferTests(WebUiApplicationFactory fact
                     destPath,
                     expiresInSeconds: 60));
 
+            Assert.Equal("The resumed download failed while appending to the destination file.", exception.Message);
+            var innerException = Assert.IsType<IOException>(exception.InnerException);
+            Assert.Equal("Simulated resume failure.", innerException.Message);
             Assert.True(File.Exists(destPath), "Pre-existing partial files should be preserved on resume failure.");
-            Assert.Equal("partial-", await File.ReadAllTextAsync(destPath));
+            Assert.Equal("partial-ta", await File.ReadAllTextAsync(destPath));
         }
         finally {
             Directory.Delete(tempDir, recursive: true);
@@ -946,7 +949,7 @@ public sealed class IntegratedS3ClientTransferTests(WebUiApplicationFactory fact
                         new IOException("Simulated new file failure.")))
                 })));
 
-            var exception = await Assert.ThrowsAsync<IOException>(() =>
+            var exception = await Assert.ThrowsAsync<HttpRequestException>(() =>
                 capturingClient.DownloadToFileWithResumeAsync(
                     transferClient,
                     "bucket",
@@ -954,7 +957,9 @@ public sealed class IntegratedS3ClientTransferTests(WebUiApplicationFactory fact
                     destPath,
                     expiresInSeconds: 60));
 
-            Assert.Equal("Simulated new file failure.", exception.Message);
+            Assert.Equal("The download failed while writing the response body.", exception.Message);
+            var innerException = Assert.IsType<IOException>(exception.InnerException);
+            Assert.Equal("Simulated new file failure.", innerException.Message);
             Assert.False(File.Exists(destPath), "Files created during this call should be removed when the transfer fails.");
         }
         finally {
