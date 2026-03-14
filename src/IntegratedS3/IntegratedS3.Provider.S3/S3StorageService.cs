@@ -437,6 +437,56 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
         while (keyMarker is not null || uploadIdMarker is not null);
     }
 
+    public async IAsyncEnumerable<MultipartUploadPart> ListMultipartUploadPartsAsync(ListMultipartUploadPartsRequest request, [EnumeratorCancellation] CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        if (request.PageSize is <= 0)
+            throw new ArgumentException("Page size must be greater than zero.", nameof(request));
+
+        var partNumberMarker = request.PartNumberMarker;
+        var remaining = request.PageSize;
+
+        while (true)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            S3MultipartUploadPartListPage page;
+            try
+            {
+                page = await _client.ListMultipartUploadPartsAsync(
+                    request.BucketName,
+                    request.Key,
+                    request.UploadId,
+                    partNumberMarker,
+                    remaining,
+                    cancellationToken).ConfigureAwait(false);
+            }
+            catch (AmazonS3Exception ex)
+            {
+                throw new InvalidOperationException(
+                    S3ErrorTranslator.Translate(ex, Name, request.BucketName, request.Key).Message, ex);
+            }
+
+            foreach (var entry in page.Entries)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                yield return entry;
+
+                if (remaining.HasValue)
+                {
+                    remaining--;
+                    if (remaining <= 0)
+                        yield break;
+                }
+            }
+
+            if (!page.NextPartNumberMarker.HasValue)
+                yield break;
+
+            partNumberMarker = page.NextPartNumberMarker;
+        }
+    }
+
     // -------------------------------------------------------------------------
     // Object CRUD
     // -------------------------------------------------------------------------

@@ -451,6 +451,69 @@ internal sealed class DiskStorageService(
         }
     }
 
+    public async IAsyncEnumerable<MultipartUploadPart> ListMultipartUploadPartsAsync(ListMultipartUploadPartsRequest request, [EnumeratorCancellation] CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+
+        var bucketPath = GetBucketPath(request.BucketName);
+        if (!Directory.Exists(bucketPath)) {
+            yield break;
+        }
+
+        if (request.PageSize is <= 0) {
+            throw new ArgumentException("Page size must be greater than zero.", nameof(request));
+        }
+
+        if (request.PartNumberMarker < 0) {
+            throw new ArgumentException("Part number marker must be zero or greater.", nameof(request));
+        }
+
+        var uploadStateResult = await ReadMultipartStateAsync(request.BucketName, request.Key, request.UploadId, cancellationToken);
+        if (!uploadStateResult.IsSuccess) {
+            yield break;
+        }
+
+        var uploadState = uploadStateResult.Value!;
+        var partsDirectoryPath = GetMultipartPartsDirectoryPath(uploadState.UploadDirectoryPath);
+        if (!Directory.Exists(partsDirectoryPath)) {
+            yield break;
+        }
+
+        var yielded = 0;
+        foreach (var partEntry in Directory.EnumerateFiles(partsDirectoryPath, "*.part", SearchOption.TopDirectoryOnly)
+                     .Select(static partPath => new
+                     {
+                         PartPath = partPath,
+                         PartNumber = TryParseMultipartPartNumber(partPath)
+                     })
+                     .Where(static entry => entry.PartNumber.HasValue)
+                     .OrderBy(static entry => entry.PartNumber!.Value)) {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var partNumber = partEntry.PartNumber!.Value;
+            if (request.PartNumberMarker.HasValue && partNumber <= request.PartNumberMarker.Value) {
+                continue;
+            }
+
+            var partInfo = new FileInfo(partEntry.PartPath);
+            var actualChecksums = await ComputeChecksumsAsync(partEntry.PartPath, cancellationToken);
+
+            yield return new MultipartUploadPart
+            {
+                PartNumber = partNumber,
+                ETag = BuildETag(partInfo),
+                ContentLength = partInfo.Length,
+                LastModifiedUtc = partInfo.LastWriteTimeUtc,
+                Checksums = CreateMultipartPartResponseChecksums(actualChecksums, uploadState.State.ChecksumAlgorithm, requestedChecksums: null)
+            };
+
+            yielded++;
+            if (request.PageSize is not null && yielded >= request.PageSize.Value) {
+                yield break;
+            }
+        }
+    }
+
     public async ValueTask<StorageResult<GetObjectResponse>> GetObjectAsync(GetObjectRequest request, CancellationToken cancellationToken = default)
     {
         var serverSideEncryptionError = GetUnsupportedServerSideEncryptionError(
@@ -1477,6 +1540,14 @@ internal sealed class DiskStorageService(
     private static string GetMultipartPartPath(string uploadDirectoryPath, int partNumber)
     {
         return Path.Combine(GetMultipartPartsDirectoryPath(uploadDirectoryPath), $"{partNumber:D5}.part");
+    }
+
+    private static int? TryParseMultipartPartNumber(string partPath)
+    {
+        var partFileName = Path.GetFileNameWithoutExtension(partPath);
+        return int.TryParse(partFileName, out var partNumber) && partNumber > 0
+            ? partNumber
+            : null;
     }
 
     private async Task<ObjectInfo> CreateObjectInfoAsync(string bucketName, string filePath, bool isLatest, CancellationToken cancellationToken)

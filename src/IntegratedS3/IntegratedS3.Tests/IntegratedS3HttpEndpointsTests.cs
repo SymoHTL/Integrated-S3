@@ -2762,7 +2762,6 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
     {
         using var client = await _factory.CreateClientAsync();
 
-        var bucketName = $"multipart-invalid-encoding-subresource-bucket-{Guid.NewGuid():N}";
         var bucketName = $"multipart-subresource-invalid-encoding-{Guid.NewGuid():N}";
 
         Assert.Equal(HttpStatusCode.Created, (await client.PutAsync($"/integrated-s3/buckets/{bucketName}", content: null)).StatusCode);
@@ -3319,6 +3318,89 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
         Assert.Equal(compositeChecksum, Assert.Single(downloadResponse.Headers.GetValues("x-amz-checksum-crc32c")));
         Assert.Equal("COMPOSITE", Assert.Single(downloadResponse.Headers.GetValues("x-amz-checksum-type")));
         Assert.Equal(part1Payload + part2Payload, await downloadResponse.Content.ReadAsStringAsync());
+    }
+
+    [Fact]
+    public async Task S3CompatibleMultipartUpload_ListParts_EmitsPagedChecksumAwareXml()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        const string bucketName = "multipart-listparts-bucket";
+        const string objectKey = "docs/listparts.txt";
+        const string part1Payload = "first";
+        const string part2Payload = "second";
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync($"/integrated-s3/buckets/{bucketName}", content: null)).StatusCode);
+
+        var part1Checksum = ComputeSha256Base64(part1Payload);
+        var part2Checksum = ComputeSha256Base64(part2Payload);
+
+        using var initiateRequest = new HttpRequestMessage(HttpMethod.Post, $"/integrated-s3/{bucketName}/{objectKey}?uploads");
+        initiateRequest.Headers.TryAddWithoutValidation("x-amz-sdk-checksum-algorithm", "SHA256");
+        initiateRequest.Headers.TryAddWithoutValidation("Content-Type", "text/plain");
+
+        var initiateResponse = await client.SendAsync(initiateRequest);
+        Assert.Equal(HttpStatusCode.OK, initiateResponse.StatusCode);
+
+        var initiateDocument = XDocument.Parse(await initiateResponse.Content.ReadAsStringAsync());
+        var uploadId = GetRequiredElementValue(initiateDocument, "UploadId");
+
+        using var part1Request = new HttpRequestMessage(HttpMethod.Put, $"/integrated-s3/{bucketName}/{objectKey}?partNumber=1&uploadId={Uri.EscapeDataString(uploadId)}")
+        {
+            Content = new StringContent(part1Payload, Encoding.UTF8, "text/plain")
+        };
+        part1Request.Headers.TryAddWithoutValidation("x-amz-sdk-checksum-algorithm", "SHA256");
+        part1Request.Headers.TryAddWithoutValidation("x-amz-checksum-sha256", part1Checksum);
+
+        var part1Response = await client.SendAsync(part1Request);
+        Assert.Equal(HttpStatusCode.OK, part1Response.StatusCode);
+        var part1ETag = part1Response.Headers.ETag?.Tag ?? throw new Xunit.Sdk.XunitException("Expected first multipart part ETag header.");
+
+        using var part2Request = new HttpRequestMessage(HttpMethod.Put, $"/integrated-s3/{bucketName}/{objectKey}?partNumber=2&uploadId={Uri.EscapeDataString(uploadId)}")
+        {
+            Content = new StringContent(part2Payload, Encoding.UTF8, "text/plain")
+        };
+        part2Request.Headers.TryAddWithoutValidation("x-amz-sdk-checksum-algorithm", "SHA256");
+        part2Request.Headers.TryAddWithoutValidation("x-amz-checksum-sha256", part2Checksum);
+
+        var part2Response = await client.SendAsync(part2Request);
+        Assert.Equal(HttpStatusCode.OK, part2Response.StatusCode);
+        var part2ETag = part2Response.Headers.ETag?.Tag ?? throw new Xunit.Sdk.XunitException("Expected second multipart part ETag header.");
+
+        var firstPageResponse = await client.GetAsync($"/integrated-s3/{bucketName}/{objectKey}?uploadId={Uri.EscapeDataString(uploadId)}&max-parts=1");
+        Assert.Equal(HttpStatusCode.OK, firstPageResponse.StatusCode);
+
+        var firstPageDocument = XDocument.Parse(await firstPageResponse.Content.ReadAsStringAsync());
+        Assert.Equal("ListPartsResult", firstPageDocument.Root?.Name.LocalName);
+        Assert.Equal(bucketName, GetRequiredElementValue(firstPageDocument, "Bucket"));
+        Assert.Equal(objectKey, GetRequiredElementValue(firstPageDocument, "Key"));
+        Assert.Equal(uploadId, GetRequiredElementValue(firstPageDocument, "UploadId"));
+        Assert.Equal("0", GetRequiredElementValue(firstPageDocument, "PartNumberMarker"));
+        Assert.Equal("1", GetRequiredElementValue(firstPageDocument, "NextPartNumberMarker"));
+        Assert.Equal("1", GetRequiredElementValue(firstPageDocument, "MaxParts"));
+        Assert.Equal("true", GetRequiredElementValue(firstPageDocument, "IsTruncated"));
+        Assert.Equal("STANDARD", GetRequiredElementValue(firstPageDocument, "StorageClass"));
+        Assert.Equal("SHA256", GetRequiredElementValue(firstPageDocument, "ChecksumAlgorithm"));
+        Assert.Equal("COMPOSITE", GetRequiredElementValue(firstPageDocument, "ChecksumType"));
+
+        var firstPart = Assert.Single(firstPageDocument.Root!.Elements(), static element => element.Name.LocalName == "Part");
+        Assert.Equal("1", firstPart.Elements().Single(static element => element.Name.LocalName == "PartNumber").Value);
+        Assert.Equal(part1ETag, firstPart.Elements().Single(static element => element.Name.LocalName == "ETag").Value);
+        Assert.Equal(part1Checksum, firstPart.Elements().Single(static element => element.Name.LocalName == "ChecksumSHA256").Value);
+
+        var secondPageResponse = await client.GetAsync($"/integrated-s3/{bucketName}/{objectKey}?uploadId={Uri.EscapeDataString(uploadId)}&part-number-marker=1");
+        Assert.Equal(HttpStatusCode.OK, secondPageResponse.StatusCode);
+
+        var secondPageDocument = XDocument.Parse(await secondPageResponse.Content.ReadAsStringAsync());
+        Assert.Equal("1", GetRequiredElementValue(secondPageDocument, "PartNumberMarker"));
+        Assert.Equal("1000", GetRequiredElementValue(secondPageDocument, "MaxParts"));
+        Assert.Equal("false", GetRequiredElementValue(secondPageDocument, "IsTruncated"));
+        Assert.Null(secondPageDocument.Root!.Elements().FirstOrDefault(static element => element.Name.LocalName == "NextPartNumberMarker"));
+
+        var secondPart = Assert.Single(secondPageDocument.Root.Elements(), static element => element.Name.LocalName == "Part");
+        Assert.Equal("2", secondPart.Elements().Single(static element => element.Name.LocalName == "PartNumber").Value);
+        Assert.Equal(part2ETag, secondPart.Elements().Single(static element => element.Name.LocalName == "ETag").Value);
+        Assert.Equal(part2Checksum, secondPart.Elements().Single(static element => element.Name.LocalName == "ChecksumSHA256").Value);
     }
 
     [Theory]
@@ -4709,6 +4791,8 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
         public IAsyncEnumerable<ObjectInfo> ListObjectVersionsAsync(ListObjectVersionsRequest request, CancellationToken cancellationToken = default) => throw new NotSupportedException();
 
         public IAsyncEnumerable<MultipartUploadInfo> ListMultipartUploadsAsync(ListMultipartUploadsRequest request, CancellationToken cancellationToken = default) => throw new NotSupportedException();
+
+        public IAsyncEnumerable<MultipartUploadPart> ListMultipartUploadPartsAsync(ListMultipartUploadPartsRequest request, CancellationToken cancellationToken = default) => throw new NotSupportedException();
 
         public ValueTask<StorageResult<GetObjectResponse>> GetObjectAsync(GetObjectRequest request, CancellationToken cancellationToken = default)
         {

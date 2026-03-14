@@ -2,6 +2,7 @@ using Amazon;
 using Amazon.Runtime;
 using Amazon.S3;
 using Amazon.S3.Model;
+using System.Globalization;
 using IntegratedS3.Abstractions.Models;
 using System.Globalization;
 
@@ -784,6 +785,51 @@ internal sealed class AwsS3StorageClient : IS3StorageClient
             response.IsTruncated == true ? response.NextUploadIdMarker : null);
     }
 
+    public async Task<S3MultipartUploadPartListPage> ListMultipartUploadPartsAsync(
+        string bucketName,
+        string key,
+        string uploadId,
+        int? partNumberMarker,
+        int? maxParts,
+        CancellationToken cancellationToken = default)
+    {
+        var request = new ListPartsRequest
+        {
+            BucketName = bucketName,
+            Key = key,
+            UploadId = uploadId
+        };
+
+        if (partNumberMarker.HasValue)
+            request.PartNumberMarker = partNumberMarker.Value.ToString(CultureInfo.InvariantCulture);
+
+        if (maxParts.HasValue)
+            request.MaxParts = Math.Min(maxParts.Value, 1000);
+
+        var response = await _s3.ListPartsAsync(request, cancellationToken).ConfigureAwait(false);
+
+        var entries = (response.Parts ?? [])
+            .Select(part => new MultipartUploadPart
+            {
+                PartNumber = part.PartNumber.GetValueOrDefault(),
+                ETag = part.ETag ?? string.Empty,
+                ContentLength = part.Size ?? 0,
+                LastModifiedUtc = ToDateTimeOffset(part.LastModified),
+                Checksums = BuildChecksums(
+                    part.ChecksumCRC32,
+                    part.ChecksumCRC32C,
+                    part.ChecksumCRC64NVME,
+                    part.ChecksumSHA1,
+                    part.ChecksumSHA256)
+            })
+            .OrderBy(static part => part.PartNumber)
+            .ToList();
+
+        return new S3MultipartUploadPartListPage(
+            entries,
+            response.IsTruncated == true ? response.NextPartNumberMarker : null);
+    }
+
     // -------------------------------------------------------------------------
     // Object tags
     // -------------------------------------------------------------------------
@@ -915,6 +961,7 @@ internal sealed class AwsS3StorageClient : IS3StorageClient
                 Key = pair.Key,
                 Value = pair.Value
             }).ToList();
+    }
 
     private static void ApplyStandardObjectHeaders(
         HeadersCollection headers,

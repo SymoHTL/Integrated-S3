@@ -70,6 +70,9 @@ public interface IStorageBackend
     IAsyncEnumerable<MultipartUploadInfo> ListMultipartUploadsAsync(ListMultipartUploadsRequest request, CancellationToken cancellationToken = default)
         => throw new NotSupportedException("Multipart upload listing is not implemented by this storage backend.");
 
+    IAsyncEnumerable<MultipartUploadPart> ListMultipartUploadPartsAsync(ListMultipartUploadPartsRequest request, CancellationToken cancellationToken = default)
+        => throw new NotSupportedException("Multipart upload part listing is not implemented by this storage backend.");
+
     ValueTask<StorageResult<GetObjectResponse>> GetObjectAsync(GetObjectRequest request, CancellationToken cancellationToken = default);
 
     ValueTask<StorageResult<ObjectTagSet>> GetObjectTagsAsync(GetObjectTagsRequest request, CancellationToken cancellationToken = default);

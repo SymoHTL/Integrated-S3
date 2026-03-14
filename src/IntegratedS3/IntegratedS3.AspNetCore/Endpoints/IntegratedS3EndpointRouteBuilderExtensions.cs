@@ -70,6 +70,7 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
     private const string StartAfterQueryParameterName = "start-after";
     private const string MaxKeysQueryParameterName = "max-keys";
     private const string MaxUploadsQueryParameterName = "max-uploads";
+    private const string MaxPartsQueryParameterName = "max-parts";
     private const string ContinuationTokenQueryParameterName = "continuation-token";
     private const string AclQueryParameterName = "acl";
     private const string EncodingTypeQueryParameterName = "encoding-type";
@@ -86,6 +87,7 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
     private const string UploadsQueryParameterName = "uploads";
     private const string UploadIdQueryParameterName = "uploadId";
     private const string PartNumberQueryParameterName = "partNumber";
+    private const string PartNumberMarkerQueryParameterName = "part-number-marker";
     private const string VersionIdQueryParameterName = "versionId";
     private const string DeleteQueryParameterName = "delete";
     private const string OriginHeaderName = "Origin";
@@ -120,14 +122,14 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
     private static readonly HashSet<string> BucketMultipartUploadsQueryParameters = CreateQueryParameterSet(UploadsQueryParameterName, PrefixQueryParameterName, DelimiterQueryParameterName, MaxUploadsQueryParameterName, KeyMarkerQueryParameterName, UploadIdMarkerQueryParameterName, EncodingTypeQueryParameterName);
     private static readonly HashSet<string> BucketDeleteQueryParameters = CreateQueryParameterSet(DeleteQueryParameterName);
     private static readonly HashSet<string> KnownBucketQueryParameters = CreateQueryParameterSet(ListTypeQueryParameterName, PrefixQueryParameterName, DelimiterQueryParameterName, MarkerQueryParameterName, StartAfterQueryParameterName, MaxKeysQueryParameterName, MaxUploadsQueryParameterName, ContinuationTokenQueryParameterName, EncodingTypeQueryParameterName, FetchOwnerQueryParameterName, LocationQueryParameterName, AclQueryParameterName, CorsQueryParameterName, PolicyQueryParameterName, VersioningQueryParameterName, VersionsQueryParameterName, KeyMarkerQueryParameterName, VersionIdMarkerQueryParameterName, UploadIdMarkerQueryParameterName, UploadsQueryParameterName, DeleteQueryParameterName);
-    private static readonly HashSet<string> KnownBucketQueryParameters = CreateQueryParameterSet(ListTypeQueryParameterName, PrefixQueryParameterName, DelimiterQueryParameterName, MarkerQueryParameterName, StartAfterQueryParameterName, MaxKeysQueryParameterName, MaxUploadsQueryParameterName, ContinuationTokenQueryParameterName, EncodingTypeQueryParameterName, FetchOwnerQueryParameterName, LocationQueryParameterName, AclQueryParameterName, CorsQueryParameterName, PolicyQueryParameterName, VersioningQueryParameterName, VersionsQueryParameterName, KeyMarkerQueryParameterName, VersionIdMarkerQueryParameterName, UploadIdMarkerQueryParameterName, UploadsQueryParameterName, DeleteQueryParameterName);
     private static readonly HashSet<string> ObjectVersionQueryParameters = CreateQueryParameterSet(VersionIdQueryParameterName);
     private static readonly HashSet<string> ObjectAclQueryParameters = CreateQueryParameterSet(AclQueryParameterName);
     private static readonly HashSet<string> ObjectTaggingQueryParameters = CreateQueryParameterSet(TaggingQueryParameterName, VersionIdQueryParameterName);
     private static readonly HashSet<string> ObjectMultipartInitiateQueryParameters = CreateQueryParameterSet(UploadsQueryParameterName);
     private static readonly HashSet<string> ObjectMultipartPartQueryParameters = CreateQueryParameterSet(UploadIdQueryParameterName, PartNumberQueryParameterName);
     private static readonly HashSet<string> ObjectMultipartUploadQueryParameters = CreateQueryParameterSet(UploadIdQueryParameterName);
-    private static readonly HashSet<string> KnownObjectQueryParameters = CreateQueryParameterSet(AclQueryParameterName, TaggingQueryParameterName, VersionIdQueryParameterName, UploadsQueryParameterName, UploadIdQueryParameterName, PartNumberQueryParameterName);
+    private static readonly HashSet<string> ObjectMultipartListPartsQueryParameters = CreateQueryParameterSet(UploadIdQueryParameterName, PartNumberMarkerQueryParameterName, MaxPartsQueryParameterName);
+    private static readonly HashSet<string> KnownObjectQueryParameters = CreateQueryParameterSet(AclQueryParameterName, TaggingQueryParameterName, VersionIdQueryParameterName, UploadsQueryParameterName, UploadIdQueryParameterName, PartNumberQueryParameterName, PartNumberMarkerQueryParameterName, MaxPartsQueryParameterName);
     private static readonly HashSet<string> SupportedManagedServerSideEncryptionRequestHeaders = new(StringComparer.OrdinalIgnoreCase)
     {
         ServerSideEncryptionHeaderName,
@@ -1824,6 +1826,7 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
         {
             "GET" when httpContext.Request.Query.ContainsKey(AclQueryParameterName) => await GetObjectAclAsync(resolvedRequest.BucketName, key, httpContext, requestContextAccessor, cancellationToken),
             "GET" when httpContext.Request.Query.ContainsKey(TaggingQueryParameterName) => await GetObjectTaggingAsync(resolvedRequest.BucketName, key, httpContext, requestContextAccessor, storageService, cancellationToken),
+            "GET" when IsListMultipartUploadPartsRequest(httpContext.Request) => await ListMultipartUploadPartsAsync(resolvedRequest.BucketName, key, httpContext, requestContextAccessor, storageService, cancellationToken),
             "PUT" when httpContext.Request.Query.ContainsKey(AclQueryParameterName) => await PutObjectAclAsync(resolvedRequest.BucketName, key, httpContext, requestContextAccessor, cancellationToken),
             "PUT" when httpContext.Request.Query.ContainsKey(TaggingQueryParameterName) => await PutObjectTaggingAsync(resolvedRequest.BucketName, key, httpContext, requestContextAccessor, storageService, cancellationToken),
             "DELETE" when httpContext.Request.Query.ContainsKey(TaggingQueryParameterName) => await DeleteObjectTaggingAsync(resolvedRequest.BucketName, key, httpContext, requestContextAccessor, storageService, cancellationToken),
@@ -2378,6 +2381,87 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
         }
     }
 
+    private static async Task<IResult> ListMultipartUploadPartsAsync(
+        string bucketName,
+        string key,
+        HttpContext httpContext,
+        IIntegratedS3RequestContextAccessor requestContextAccessor,
+        IStorageService storageService,
+        CancellationToken cancellationToken)
+    {
+        if (!TryGetMultipartUploadId(httpContext.Request, out var uploadId, out var uploadIdError)) {
+            return ToErrorResult(httpContext, StatusCodes.Status400BadRequest, "InvalidArgument", uploadIdError!, BuildObjectResource(bucketName, key), bucketName, key);
+        }
+
+        var maxParts = ParseMaxParts(httpContext.Request);
+        var partNumberMarker = ParsePartNumberMarker(httpContext.Request);
+
+        try {
+            return await ExecuteWithRequestContextAsync(httpContext, requestContextAccessor, async innerCancellationToken => {
+                var bucketResult = await storageService.HeadBucketAsync(bucketName, innerCancellationToken);
+                if (!bucketResult.IsSuccess) {
+                    return ToErrorResult(httpContext, bucketResult.Error, resourceOverride: BuildObjectResource(bucketName, key));
+                }
+
+                if (maxParts is <= 0) {
+                    return ToErrorResult(httpContext, StatusCodes.Status400BadRequest, "InvalidArgument", "max-parts must be greater than zero.", BuildObjectResource(bucketName, key), bucketName, key);
+                }
+
+                try {
+                    var upload = await FindMultipartUploadAsync(bucketName, key, uploadId!, storageService, innerCancellationToken);
+                    if (upload is null) {
+                        return ToErrorResult(
+                            httpContext,
+                            StatusCodes.Status404NotFound,
+                            "NoSuchUpload",
+                            "The specified multipart upload does not exist. The upload ID might be invalid, or the multipart upload might have been aborted or completed.",
+                            BuildObjectResource(bucketName, key),
+                            bucketName,
+                            key);
+                    }
+
+                    var requestedPageSize = maxParts is null
+                        ? (int?)null
+                        : maxParts.Value == int.MaxValue
+                            ? int.MaxValue
+                            : maxParts.Value + 1;
+
+                    var parts = await storageService.ListMultipartUploadPartsAsync(new ListMultipartUploadPartsRequest
+                    {
+                        BucketName = bucketName,
+                        Key = key,
+                        UploadId = uploadId!,
+                        PartNumberMarker = partNumberMarker,
+                        PageSize = requestedPageSize
+                    }, innerCancellationToken).ToArrayAsync(innerCancellationToken);
+
+                    var response = BuildListMultipartUploadPartsResult(
+                        bucketName,
+                        key,
+                        uploadId!,
+                        partNumberMarker ?? 0,
+                        maxParts ?? 1000,
+                        upload.ChecksumAlgorithm,
+                        parts);
+
+                    return new XmlContentResult(S3XmlResponseWriter.WriteListPartsResult(response), StatusCodes.Status200OK, XmlContentType);
+                }
+                catch (StorageAuthorizationException exception) {
+                    return ToErrorResult(httpContext, exception.Error, resourceOverride: BuildObjectResource(bucketName, key));
+                }
+                catch (NotSupportedException exception) {
+                    return ToErrorResult(httpContext, StatusCodes.Status501NotImplemented, "NotImplemented", exception.Message, BuildObjectResource(bucketName, key), bucketName, key);
+                }
+            }, cancellationToken);
+        }
+        catch (EndpointStorageAuthorizationException exception) {
+            return ToErrorResult(httpContext, exception.Error, resourceOverride: BuildObjectResource(bucketName, key));
+        }
+        catch (ArgumentException exception) {
+            return ToErrorResult(httpContext, StatusCodes.Status400BadRequest, "InvalidArgument", exception.Message, BuildObjectResource(bucketName, key));
+        }
+    }
+
     private static async Task<IResult> ListObjectsV1Async(
         string bucketName,
         string? prefix,
@@ -2647,6 +2731,35 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
 
         return request.Query.ContainsKey(UploadsQueryParameterName)
             || request.Query.ContainsKey(UploadIdQueryParameterName);
+    }
+
+    private static bool IsListMultipartUploadPartsRequest(HttpRequest request)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+
+        return request.Query.ContainsKey(UploadIdQueryParameterName)
+            && !request.Query.ContainsKey(PartNumberQueryParameterName);
+    }
+
+    private static async ValueTask<MultipartUploadInfo?> FindMultipartUploadAsync(
+        string bucketName,
+        string key,
+        string uploadId,
+        IStorageService storageService,
+        CancellationToken cancellationToken)
+    {
+        await foreach (var upload in storageService.ListMultipartUploadsAsync(new ListMultipartUploadsRequest
+                       {
+                           BucketName = bucketName,
+                           Prefix = key
+                       }, cancellationToken).WithCancellation(cancellationToken)) {
+            if (string.Equals(upload.Key, key, StringComparison.Ordinal)
+                && string.Equals(upload.UploadId, uploadId, StringComparison.Ordinal)) {
+                return upload;
+            }
+        }
+
+        return null;
     }
 
     private static async Task<T> ExecuteWithRequestContextAsync<T>(
@@ -3272,7 +3385,6 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
             UploadIdMarker = uploadIdMarker,
             NextKeyMarker = isTruncated ? page[^1].NextKeyMarker : null,
             NextUploadIdMarker = isTruncated ? page[^1].NextUploadIdMarker : null,
-            EncodingType = encodingType,
             MaxUploads = maxUploads,
             IsTruncated = isTruncated,
             Uploads = page
@@ -3294,6 +3406,47 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
                     Prefix = entry.CommonPrefix!
                 })
                 .ToArray()
+        };
+    }
+
+    private static S3ListPartsResult BuildListMultipartUploadPartsResult(
+        string bucketName,
+        string key,
+        string uploadId,
+        int partNumberMarker,
+        int maxParts,
+        string? checksumAlgorithm,
+        IReadOnlyList<MultipartUploadPart> parts)
+    {
+        var isTruncated = parts.Count > maxParts;
+        var page = isTruncated
+            ? parts.Take(maxParts).ToArray()
+            : parts.ToArray();
+
+        return new S3ListPartsResult
+        {
+            Bucket = bucketName,
+            Key = key,
+            UploadId = uploadId,
+            PartNumberMarker = partNumberMarker,
+            NextPartNumberMarker = isTruncated ? page[^1].PartNumber : null,
+            MaxParts = maxParts,
+            IsTruncated = isTruncated,
+            StorageClass = "STANDARD",
+            ChecksumAlgorithm = ToS3ChecksumAlgorithmValue(checksumAlgorithm),
+            ChecksumType = string.IsNullOrWhiteSpace(checksumAlgorithm) ? null : "COMPOSITE",
+            Parts = page.Select(part => new S3ListPartEntry
+            {
+                PartNumber = part.PartNumber,
+                ETag = part.ETag,
+                Size = part.ContentLength,
+                LastModifiedUtc = part.LastModifiedUtc,
+                ChecksumCrc32 = GetChecksumValue(part.Checksums, "crc32"),
+                ChecksumCrc32c = GetChecksumValue(part.Checksums, "crc32c"),
+                ChecksumCrc64Nvme = GetChecksumValue(part.Checksums, "crc64nvme"),
+                ChecksumSha1 = GetChecksumValue(part.Checksums, "sha1"),
+                ChecksumSha256 = GetChecksumValue(part.Checksums, "sha256")
+            }).ToArray()
         };
     }
 
@@ -3319,6 +3472,30 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
         return int.TryParse(values.ToString(), out var parsedValue)
             ? parsedValue
             : throw new ArgumentException("The max-uploads query parameter must be an integer.", MaxUploadsQueryParameterName);
+    }
+
+    private static int? ParseMaxParts(HttpRequest request)
+    {
+        if (!request.Query.TryGetValue(MaxPartsQueryParameterName, out var values)
+            || string.IsNullOrWhiteSpace(values.ToString())) {
+            return 1000;
+        }
+
+        return int.TryParse(values.ToString(), out var parsedValue)
+            ? parsedValue
+            : throw new ArgumentException("The max-parts query parameter must be an integer.", MaxPartsQueryParameterName);
+    }
+
+    private static int? ParsePartNumberMarker(HttpRequest request)
+    {
+        if (!request.Query.TryGetValue(PartNumberMarkerQueryParameterName, out var values)
+            || string.IsNullOrWhiteSpace(values.ToString())) {
+            return null;
+        }
+
+        return int.TryParse(values.ToString(), out var parsedValue) && parsedValue >= 0
+            ? parsedValue
+            : throw new ArgumentException("The part-number-marker query parameter must be a non-negative integer.", PartNumberMarkerQueryParameterName);
     }
 
     private static bool TryValidateBucketRequestSubresources(HttpRequest request, out string? errorCode, out string? errorMessage, out int statusCode)
@@ -3422,10 +3599,11 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
         var isTaggingRequest = queryKeys.Contains(TaggingQueryParameterName) && queryKeys.IsSubsetOf(ObjectTaggingQueryParameters);
         var isInitiateMultipartRequest = queryKeys.SetEquals(ObjectMultipartInitiateQueryParameters);
         var isUploadMultipartPartRequest = queryKeys.SetEquals(ObjectMultipartPartQueryParameters);
+        var isListMultipartUploadPartsRequest = queryKeys.Contains(UploadIdQueryParameterName) && queryKeys.IsSubsetOf(ObjectMultipartListPartsQueryParameters);
         var isUploadScopedMultipartRequest = queryKeys.SetEquals(ObjectMultipartUploadQueryParameters);
 
         switch (request.Method) {
-            case "GET" when isCurrentObjectRequest || isVersionedObjectRequest || isAclRequest || isTaggingRequest:
+            case "GET" when isCurrentObjectRequest || isVersionedObjectRequest || isAclRequest || isTaggingRequest || isListMultipartUploadPartsRequest:
             case "PUT" when isCurrentObjectRequest || isAclRequest || isTaggingRequest || isUploadMultipartPartRequest:
             case "HEAD" when isCurrentObjectRequest || isVersionedObjectRequest:
             case "DELETE" when isCurrentObjectRequest || isVersionedObjectRequest || isTaggingRequest || isUploadScopedMultipartRequest:
@@ -5564,6 +5742,7 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
             "sha1" => "SHA1",
             "crc32" => "CRC32",
             "crc32c" => "CRC32C",
+            "crc64nvme" => "CRC64NVME",
             _ => null
         };
     }

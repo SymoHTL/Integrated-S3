@@ -139,6 +139,16 @@ internal sealed class AuthorizingStorageService(
         }, innerCancellationToken => inner.ListMultipartUploadsAsync(request, innerCancellationToken), cancellationToken);
     }
 
+    public IAsyncEnumerable<MultipartUploadPart> ListMultipartUploadPartsAsync(ListMultipartUploadPartsRequest request, CancellationToken cancellationToken = default)
+    {
+        return ExecuteAuthorizedEnumerableAsync(new StorageAuthorizationRequest
+        {
+            Operation = StorageOperationType.ListObjects,
+            BucketName = request.BucketName,
+            Key = request.Key
+        }, innerCancellationToken => inner.ListMultipartUploadPartsAsync(request, innerCancellationToken), cancellationToken);
+    }
+
     public ValueTask<StorageResult<GetObjectResponse>> GetObjectAsync(GetObjectRequest request, CancellationToken cancellationToken = default)
     {
         return ExecuteAuthorizedAsync(new StorageAuthorizationRequest

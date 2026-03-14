@@ -450,8 +450,75 @@ public static class S3XmlResponseWriter
             xmlWriter.WriteEndElement();
         }
 
-        if (!string.IsNullOrWhiteSpace(response.EncodingType)) {
-            xmlWriter.WriteElementString("EncodingType", response.EncodingType);
+        xmlWriter.WriteEndElement();
+        xmlWriter.WriteEndDocument();
+        xmlWriter.Flush();
+
+        return builder.ToString();
+    }
+
+    public static string WriteListPartsResult(S3ListPartsResult response)
+    {
+        ArgumentNullException.ThrowIfNull(response);
+
+        var builder = new StringBuilder();
+        using var stringWriter = new StringWriter(builder, CultureInfo.InvariantCulture);
+        using var xmlWriter = XmlWriter.Create(stringWriter, CreateSettings());
+
+        xmlWriter.WriteStartDocument();
+        xmlWriter.WriteStartElement("ListPartsResult");
+        xmlWriter.WriteElementString("Bucket", response.Bucket);
+        xmlWriter.WriteElementString("Key", response.Key);
+        xmlWriter.WriteElementString("UploadId", response.UploadId);
+        xmlWriter.WriteElementString("PartNumberMarker", response.PartNumberMarker.ToString(CultureInfo.InvariantCulture));
+
+        if (response.NextPartNumberMarker.HasValue) {
+            xmlWriter.WriteElementString("NextPartNumberMarker", response.NextPartNumberMarker.Value.ToString(CultureInfo.InvariantCulture));
+        }
+
+        xmlWriter.WriteElementString("MaxParts", response.MaxParts.ToString(CultureInfo.InvariantCulture));
+        xmlWriter.WriteElementString("IsTruncated", response.IsTruncated ? "true" : "false");
+
+        if (!string.IsNullOrWhiteSpace(response.StorageClass)) {
+            xmlWriter.WriteElementString("StorageClass", response.StorageClass);
+        }
+
+        if (!string.IsNullOrWhiteSpace(response.ChecksumAlgorithm)) {
+            xmlWriter.WriteElementString("ChecksumAlgorithm", response.ChecksumAlgorithm);
+        }
+
+        if (!string.IsNullOrWhiteSpace(response.ChecksumType)) {
+            xmlWriter.WriteElementString("ChecksumType", response.ChecksumType);
+        }
+
+        foreach (var part in response.Parts) {
+            xmlWriter.WriteStartElement("Part");
+            xmlWriter.WriteElementString("PartNumber", part.PartNumber.ToString(CultureInfo.InvariantCulture));
+            xmlWriter.WriteElementString("LastModified", FormatTimestamp(part.LastModifiedUtc));
+            xmlWriter.WriteElementString("ETag", QuoteETag(part.ETag));
+            xmlWriter.WriteElementString("Size", part.Size.ToString(CultureInfo.InvariantCulture));
+
+            if (!string.IsNullOrWhiteSpace(part.ChecksumCrc32)) {
+                xmlWriter.WriteElementString("ChecksumCRC32", part.ChecksumCrc32);
+            }
+
+            if (!string.IsNullOrWhiteSpace(part.ChecksumCrc32c)) {
+                xmlWriter.WriteElementString("ChecksumCRC32C", part.ChecksumCrc32c);
+            }
+
+            if (!string.IsNullOrWhiteSpace(part.ChecksumCrc64Nvme)) {
+                xmlWriter.WriteElementString("ChecksumCRC64NVME", part.ChecksumCrc64Nvme);
+            }
+
+            if (!string.IsNullOrWhiteSpace(part.ChecksumSha1)) {
+                xmlWriter.WriteElementString("ChecksumSHA1", part.ChecksumSha1);
+            }
+
+            if (!string.IsNullOrWhiteSpace(part.ChecksumSha256)) {
+                xmlWriter.WriteElementString("ChecksumSHA256", part.ChecksumSha256);
+            }
+
+            xmlWriter.WriteEndElement();
         }
 
         xmlWriter.WriteEndElement();
@@ -460,7 +527,6 @@ public static class S3XmlResponseWriter
 
         return builder.ToString();
     }
-
     public static string WriteListAllMyBucketsResult(S3ListAllMyBucketsResult response)
     {
         ArgumentNullException.ThrowIfNull(response);

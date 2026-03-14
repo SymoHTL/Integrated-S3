@@ -2257,6 +2257,80 @@ public sealed class DiskStorageServiceTests
     }
 
     [Fact]
+    public async Task DiskStorage_MultipartUpload_ListMultipartUploadParts_AppliesMarkersAndPageSize()
+    {
+        await using var fixture = new DiskStorageFixture();
+        var storageService = fixture.Services.GetRequiredService<IStorageBackend>();
+        await storageService.CreateBucketAsync(new CreateBucketRequest { BucketName = "multipart-parts" });
+
+        var initiateResult = await storageService.InitiateMultipartUploadAsync(new InitiateMultipartUploadRequest
+        {
+            BucketName = "multipart-parts",
+            Key = "docs/parts.txt",
+            ChecksumAlgorithm = "sha256"
+        });
+
+        Assert.True(initiateResult.IsSuccess);
+
+        var partPayloads = new Dictionary<int, string>
+        {
+            [1] = "alpha",
+            [2] = "bravo",
+            [3] = "charlie"
+        };
+
+        foreach (var (partNumber, payload) in partPayloads) {
+            await using var partStream = new MemoryStream(Encoding.UTF8.GetBytes(payload));
+            var uploadPartResult = await storageService.UploadMultipartPartAsync(new UploadMultipartPartRequest
+            {
+                BucketName = "multipart-parts",
+                Key = "docs/parts.txt",
+                UploadId = initiateResult.Value!.UploadId,
+                PartNumber = partNumber,
+                Content = partStream,
+                ChecksumAlgorithm = "sha256",
+                Checksums = new Dictionary<string, string>(StringComparer.Ordinal)
+                {
+                    ["sha256"] = ComputeSha256Base64(payload)
+                }
+            });
+
+            Assert.True(uploadPartResult.IsSuccess);
+        }
+
+        var firstPage = await storageService.ListMultipartUploadPartsAsync(new ListMultipartUploadPartsRequest
+        {
+            BucketName = "multipart-parts",
+            Key = "docs/parts.txt",
+            UploadId = initiateResult.Value!.UploadId,
+            PageSize = 2
+        }).ToArrayAsync();
+
+        Assert.Collection(
+            firstPage,
+            part => {
+                Assert.Equal(1, part.PartNumber);
+                Assert.Equal(ComputeSha256Base64(partPayloads[1]), part.Checksums!["sha256"]);
+            },
+            part => {
+                Assert.Equal(2, part.PartNumber);
+                Assert.Equal(ComputeSha256Base64(partPayloads[2]), part.Checksums!["sha256"]);
+            });
+
+        var secondPage = await storageService.ListMultipartUploadPartsAsync(new ListMultipartUploadPartsRequest
+        {
+            BucketName = "multipart-parts",
+            Key = "docs/parts.txt",
+            UploadId = initiateResult.Value!.UploadId,
+            PartNumberMarker = 2
+        }).ToArrayAsync();
+
+        var remainingPart = Assert.Single(secondPage);
+        Assert.Equal(3, remainingPart.PartNumber);
+        Assert.Equal(ComputeSha256Base64(partPayloads[3]), remainingPart.Checksums!["sha256"]);
+    }
+
+    [Fact]
     public async Task DiskStorage_UsesRegisteredPlatformObjectStateStoreForMetadataAndTags()
     {
         await using var fixture = new DiskStorageFixture(services => {

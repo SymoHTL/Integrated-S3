@@ -252,6 +252,14 @@ internal sealed class OrchestratedStorageService(
         }
     }
 
+    public async IAsyncEnumerable<MultipartUploadPart> ListMultipartUploadPartsAsync(ListMultipartUploadPartsRequest request, [EnumeratorCancellation] CancellationToken cancellationToken = default)
+    {
+        var backend = await SelectReadBackendAsync(cancellationToken);
+        await foreach (var part in backend.ListMultipartUploadPartsAsync(request, cancellationToken).WithCancellation(cancellationToken)) {
+            yield return part;
+        }
+    }
+
     public async ValueTask<StorageResult<GetObjectResponse>> GetObjectAsync(GetObjectRequest request, CancellationToken cancellationToken = default)
     {
         return await ExecuteReadAsync(
