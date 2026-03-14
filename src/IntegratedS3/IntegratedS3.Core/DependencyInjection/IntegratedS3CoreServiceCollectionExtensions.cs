@@ -42,6 +42,7 @@ public static class IntegratedS3CoreServiceCollectionExtensions
         services.TryAddSingleton<IStorageBackendHealthProbe, DefaultStorageBackendHealthProbe>();
         services.TryAddSingleton<IStorageReplicaRepairBacklog, InMemoryStorageReplicaRepairBacklog>();
         services.TryAddSingleton<IStorageReplicaRepairDispatcher, InProcessStorageReplicaRepairDispatcher>();
+        services.TryAddSingleton<IStorageReplicaRepairService, StorageReplicaRepairService>();
         services.TryAddSingleton<IStorageAdminDiagnosticsProvider, StorageAdminDiagnosticsProvider>();
         services.TryAddSingleton(TimeProvider.System);
         services.TryAddSingleton<StorageBackendHealthMonitor>();

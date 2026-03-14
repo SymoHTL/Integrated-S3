@@ -2907,10 +2907,10 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
         var document = XDocument.Parse(await response.Content.ReadAsStringAsync());
         Assert.Equal("url", GetRequiredElementValue(document, "EncodingType"));
         Assert.Equal("docs%2F", GetRequiredElementValue(document, "Prefix"));
-        var upload = Assert.Single(document.Root!.S3Elements("Upload"));
-        Assert.Equal("docs%2Ftest%20file%283%29.txt", upload.S3Element("Key")?.Value);
-        Assert.False(string.IsNullOrWhiteSpace(upload.S3Element("Owner")?.S3Element("ID")?.Value));
-        Assert.False(string.IsNullOrWhiteSpace(upload.S3Element("Initiator")?.S3Element("ID")?.Value));
+    var upload = Assert.Single(document.Root!.S3Elements("Upload"));
+    Assert.Equal("docs%2Ftest%20file%283%29.txt", upload.S3Element("Key")?.Value);
+    Assert.False(string.IsNullOrWhiteSpace(upload.S3Element("Owner")?.S3Element("ID")?.Value));
+    Assert.False(string.IsNullOrWhiteSpace(upload.S3Element("Initiator")?.S3Element("ID")?.Value));
     }
 
     [Fact]
@@ -4895,6 +4895,9 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
                 Assert.Equal("failed-repair", failedRepair.Id);
                 Assert.Equal(StorageReplicaRepairOrigin.PartialWriteFailure, failedRepair.Origin);
                 Assert.Equal(StorageReplicaRepairStatus.Failed, failedRepair.Status);
+                Assert.Equal(
+                    StorageReplicaRepairDivergenceKind.Content | StorageReplicaRepairDivergenceKind.Metadata | StorageReplicaRepairDivergenceKind.Version,
+                    failedRepair.DivergenceKinds);
                 Assert.Equal("replica-memory", failedRepair.ReplicaBackendName);
                 Assert.Equal(1, failedRepair.AttemptCount);
                 Assert.Equal(StorageErrorCode.ProviderUnavailable, failedRepair.LastErrorCode);
@@ -4904,6 +4907,9 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
                 Assert.Equal("pending-repair", pendingRepair.Id);
                 Assert.Equal(StorageReplicaRepairOrigin.AsyncReplication, pendingRepair.Origin);
                 Assert.Equal(StorageReplicaRepairStatus.Pending, pendingRepair.Status);
+                Assert.Equal(
+                    StorageReplicaRepairDivergenceKind.Content | StorageReplicaRepairDivergenceKind.Metadata | StorageReplicaRepairDivergenceKind.Version,
+                    pendingRepair.DivergenceKinds);
                 Assert.Equal("trailing-replica", pendingRepair.ReplicaBackendName);
                 Assert.Equal(0, pendingRepair.AttemptCount);
                 Assert.Null(pendingRepair.LastErrorCode);
@@ -5459,7 +5465,8 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
         DateTimeOffset? updatedAtUtc = null,
         string? versionId = null,
         int attemptCount = 0,
-        StorageError? lastError = null)
+        StorageError? lastError = null,
+        StorageReplicaRepairDivergenceKind? divergenceKinds = null)
     {
         return new StorageReplicaRepairEntry
         {
@@ -5467,6 +5474,7 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
             Origin = origin,
             Status = status,
             Operation = operation,
+            DivergenceKinds = divergenceKinds ?? StorageReplicaRepairEntry.GetDefaultDivergenceKinds(operation),
             PrimaryBackendName = primaryBackendName,
             ReplicaBackendName = replicaBackendName,
             BucketName = bucketName,
