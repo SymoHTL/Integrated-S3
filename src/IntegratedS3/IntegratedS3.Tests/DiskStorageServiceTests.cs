@@ -89,6 +89,37 @@ public sealed class DiskStorageServiceTests
     }
 
     [Fact]
+    public async Task DeleteBucketAsync_ReturnsBucketNotEmpty_WhenBucketContainsObjects()
+    {
+        await using var fixture = new DiskStorageFixture();
+        var storageService = fixture.Services.GetRequiredService<IStorageBackend>();
+
+        Assert.True((await storageService.CreateBucketAsync(new CreateBucketRequest
+        {
+            BucketName = "non-empty-delete"
+        })).IsSuccess);
+
+        await using var uploadStream = new MemoryStream(Encoding.UTF8.GetBytes("still here"));
+        Assert.True((await storageService.PutObjectAsync(new PutObjectRequest
+        {
+            BucketName = "non-empty-delete",
+            Key = "docs/hello.txt",
+            Content = uploadStream,
+            ContentType = "text/plain"
+        })).IsSuccess);
+
+        var deleteBucket = await storageService.DeleteBucketAsync(new DeleteBucketRequest
+        {
+            BucketName = "non-empty-delete"
+        });
+
+        Assert.False(deleteBucket.IsSuccess);
+        Assert.Equal(StorageErrorCode.BucketNotEmpty, deleteBucket.Error!.Code);
+        Assert.Equal(409, deleteBucket.Error.SuggestedHttpStatusCode);
+        Assert.Contains("empty", deleteBucket.Error.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public async Task DiskStorage_ValidatesRequestedChecksumsOnPut()
     {
         await using var fixture = new DiskStorageFixture();
@@ -421,6 +452,24 @@ public sealed class DiskStorageServiceTests
 
         var listBuckets = await storageService.ListBucketsAsync().ToArrayAsync();
         Assert.Contains(listBuckets, static bucket => bucket.Name == "bucket-versioning" && !bucket.VersioningEnabled);
+    }
+
+    [Fact]
+    public async Task DiskStorage_BucketLocation_ReturnsDefaultEmptyConstraint()
+    {
+        await using var fixture = new DiskStorageFixture();
+        var storageService = fixture.Services.GetRequiredService<IStorageBackend>();
+
+        Assert.True((await storageService.CreateBucketAsync(new CreateBucketRequest
+        {
+            BucketName = "bucket-location"
+        })).IsSuccess);
+
+        var location = await storageService.GetBucketLocationAsync("bucket-location");
+
+        Assert.True(location.IsSuccess);
+        Assert.Equal("bucket-location", location.Value!.BucketName);
+        Assert.Null(location.Value.LocationConstraint);
     }
 
     [Fact]

@@ -9,6 +9,7 @@ using Microsoft.AspNetCore.Mvc;
 namespace IntegratedS3.AspNetCore.Serialization;
 
 [JsonSerializable(typeof(ProblemDetails))]
+[JsonSerializable(typeof(Dictionary<string, string>))]
 [JsonSerializable(typeof(BucketInfo))]
 [JsonSerializable(typeof(BucketInfo[]))]
 [JsonSerializable(typeof(ObjectInfo))]
@@ -24,6 +25,11 @@ namespace IntegratedS3.AspNetCore.Serialization;
 [JsonSerializable(typeof(StoragePresignedHeader))]
 [JsonSerializable(typeof(StoragePresignedHeader[]))]
 [JsonSerializable(typeof(StoragePresignedRequest))]
+[JsonSerializable(typeof(StorageAdminDiagnostics))]
+[JsonSerializable(typeof(StorageAdminProviderDiagnostics))]
+[JsonSerializable(typeof(StorageAdminProviderDiagnostics[]))]
+[JsonSerializable(typeof(StorageAdminReplicaLagDiagnostics))]
+[JsonSerializable(typeof(StorageAdminRepairDiagnostics))]
 [JsonSerializable(typeof(StorageReplicaRepairEntry))]
 [JsonSerializable(typeof(StorageReplicaRepairEntry[]))]
 internal partial class IntegratedS3AspNetCoreJsonSerializerContext : JsonSerializerContext

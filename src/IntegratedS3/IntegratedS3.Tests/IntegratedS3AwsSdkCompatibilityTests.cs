@@ -548,6 +548,31 @@ public sealed class IntegratedS3AwsSdkCompatibilityTests : IClassFixture<WebUiAp
     }
 
     [Fact]
+    public async Task AmazonS3Client_GetBucketLocation_WorksAgainstIntegratedS3()
+    {
+        const string accessKeyId = "aws-sdk-location-access";
+        const string secretAccessKey = "aws-sdk-location-secret";
+
+        await using var isolatedClient = await CreateAuthenticatedLoopbackClientAsync(accessKeyId, secretAccessKey);
+        using var s3Client = CreateS3Client(isolatedClient.BaseAddress!, accessKeyId, secretAccessKey);
+
+        const string bucketName = "aws-sdk-location-bucket";
+
+        Assert.Equal(HttpStatusCode.OK, (await s3Client.PutBucketAsync(new PutBucketRequest
+        {
+            BucketName = bucketName
+        })).HttpStatusCode);
+
+        var locationResponse = await s3Client.GetBucketLocationAsync(new GetBucketLocationRequest
+        {
+            BucketName = bucketName
+        });
+
+        Assert.Equal(HttpStatusCode.OK, locationResponse.HttpStatusCode);
+        Assert.Equal(string.Empty, locationResponse.Location?.ToString());
+    }
+
+    [Fact]
     public async Task AmazonS3Client_ListBuckets_WorksAgainstIntegratedS3()
     {
         const string accessKeyId = "aws-sdk-root-access";
@@ -1484,6 +1509,126 @@ public sealed class IntegratedS3AwsSdkCompatibilityTests : IClassFixture<WebUiAp
     }
 
     [Fact]
+    public async Task AmazonS3Client_CopyObject_SourceVersionIdUsesHistoricalVersionPreconditionsAndRejectsDeleteMarkers()
+    {
+        const string accessKeyId = "aws-sdk-copy-version-access";
+        const string secretAccessKey = "aws-sdk-copy-version-secret";
+
+        await using var isolatedClient = await CreateAuthenticatedLoopbackClientAsync(accessKeyId, secretAccessKey);
+        using var s3Client = CreateS3Client(isolatedClient.BaseAddress!, accessKeyId, secretAccessKey);
+
+        const string sourceBucketName = "aws-sdk-copy-version-source";
+        const string targetBucketName = "aws-sdk-copy-version-target";
+        const string sourceKey = "docs/source.txt";
+        const string historicalCopyKey = "docs/historical-copy.txt";
+        const string currentCopyKey = "docs/current-copy.txt";
+        const string deleteMarkerCopyKey = "docs/delete-marker-copy.txt";
+
+        Assert.Equal(HttpStatusCode.OK, (await s3Client.PutBucketAsync(new PutBucketRequest
+        {
+            BucketName = sourceBucketName
+        })).HttpStatusCode);
+
+        Assert.Equal(HttpStatusCode.OK, (await s3Client.PutBucketAsync(new PutBucketRequest
+        {
+            BucketName = targetBucketName
+        })).HttpStatusCode);
+
+        Assert.Equal(HttpStatusCode.OK, (await s3Client.PutBucketVersioningAsync(new PutBucketVersioningRequest
+        {
+            BucketName = sourceBucketName,
+            VersioningConfig = new S3BucketVersioningConfig
+            {
+                Status = VersionStatus.Enabled
+            }
+        })).HttpStatusCode);
+
+        var v1Put = await s3Client.PutObjectAsync(new PutObjectRequest
+        {
+            BucketName = sourceBucketName,
+            Key = sourceKey,
+            ContentBody = "version one",
+            ContentType = "text/plain",
+            UseChunkEncoding = false
+        });
+
+        var v2Put = await s3Client.PutObjectAsync(new PutObjectRequest
+        {
+            BucketName = sourceBucketName,
+            Key = sourceKey,
+            ContentBody = "version two",
+            ContentType = "text/plain",
+            UseChunkEncoding = false
+        });
+
+        Assert.NotEqual(v1Put.VersionId, v2Put.VersionId);
+
+        var historicalMetadata = await s3Client.GetObjectMetadataAsync(new GetObjectMetadataRequest
+        {
+            BucketName = sourceBucketName,
+            Key = sourceKey,
+            VersionId = v1Put.VersionId
+        });
+        Assert.Equal(HttpStatusCode.OK, historicalMetadata.HttpStatusCode);
+        Assert.Equal(v1Put.VersionId, historicalMetadata.VersionId);
+
+        var deleteCurrent = await s3Client.DeleteObjectAsync(new DeleteObjectRequest
+        {
+            BucketName = sourceBucketName,
+            Key = sourceKey
+        });
+
+        Assert.Equal(HttpStatusCode.NoContent, deleteCurrent.HttpStatusCode);
+        Assert.Equal("true", deleteCurrent.DeleteMarker);
+        var deleteMarkerVersionId = Assert.IsType<string>(deleteCurrent.VersionId);
+
+        var historicalCopy = await s3Client.CopyObjectAsync(new CopyObjectRequest
+        {
+            SourceBucket = sourceBucketName,
+            SourceKey = sourceKey,
+            SourceVersionId = v1Put.VersionId,
+            DestinationBucket = targetBucketName,
+            DestinationKey = historicalCopyKey,
+            ETagToMatch = historicalMetadata.ETag,
+            UnmodifiedSinceDate = historicalMetadata.LastModified!.Value.ToUniversalTime().AddMinutes(5)
+        });
+
+        Assert.Equal(HttpStatusCode.OK, historicalCopy.HttpStatusCode);
+        Assert.Equal(v1Put.VersionId, historicalCopy.SourceVersionId);
+
+        var copiedHistoricalObject = await s3Client.GetObjectAsync(new GetObjectRequest
+        {
+            BucketName = targetBucketName,
+            Key = historicalCopyKey
+        });
+        Assert.Equal(HttpStatusCode.OK, copiedHistoricalObject.HttpStatusCode);
+        using (var reader = new StreamReader(copiedHistoricalObject.ResponseStream)) {
+            Assert.Equal("version one", await reader.ReadToEndAsync());
+        }
+
+        var currentCopyException = await Assert.ThrowsAsync<AmazonS3Exception>(() => s3Client.CopyObjectAsync(new CopyObjectRequest
+        {
+            SourceBucket = sourceBucketName,
+            SourceKey = sourceKey,
+            DestinationBucket = targetBucketName,
+            DestinationKey = currentCopyKey
+        }));
+        Assert.Equal(HttpStatusCode.NotFound, currentCopyException.StatusCode);
+        Assert.Equal("NoSuchKey", currentCopyException.ErrorCode);
+
+        var deleteMarkerCopyException = await Assert.ThrowsAsync<AmazonS3Exception>(() => s3Client.CopyObjectAsync(new CopyObjectRequest
+        {
+            SourceBucket = sourceBucketName,
+            SourceKey = sourceKey,
+            SourceVersionId = deleteMarkerVersionId,
+            DestinationBucket = targetBucketName,
+            DestinationKey = deleteMarkerCopyKey
+        }));
+        Assert.Equal(HttpStatusCode.MethodNotAllowed, deleteMarkerCopyException.StatusCode);
+        Assert.Equal("MethodNotAllowed", deleteMarkerCopyException.ErrorCode);
+    }
+
+    [Fact]
     public async Task AmazonS3Client_ListVersions_WithMarkers_ContinuesWithinSameKey()
     {
         const string accessKeyId = "aws-sdk-version-markers-access";
@@ -1811,6 +1956,7 @@ public sealed class IntegratedS3AwsSdkCompatibilityTests : IClassFixture<WebUiAp
                 Core.Models.StorageOperationType.HeadBucket => "storage.read",
                 Core.Models.StorageOperationType.ListObjects => "storage.read",
                 Core.Models.StorageOperationType.GetObject => "storage.read",
+                Core.Models.StorageOperationType.GetBucketLocation => "storage.read",
                 Core.Models.StorageOperationType.GetBucketCors => "storage.read",
                 Core.Models.StorageOperationType.GetObjectTags => "storage.read",
                 Core.Models.StorageOperationType.HeadObject => "storage.read",

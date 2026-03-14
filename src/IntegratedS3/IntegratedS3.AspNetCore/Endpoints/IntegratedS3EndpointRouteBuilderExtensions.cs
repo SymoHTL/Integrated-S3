@@ -35,6 +35,7 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
     private const string CopySourceIfNoneMatchHeaderName = "x-amz-copy-source-if-none-match";
     private const string CopySourceIfModifiedSinceHeaderName = "x-amz-copy-source-if-modified-since";
     private const string CopySourceIfUnmodifiedSinceHeaderName = "x-amz-copy-source-if-unmodified-since";
+    private const string CopySourceVersionIdHeaderName = "x-amz-copy-source-version-id";
     private const string ServerSideEncryptionHeaderPrefix = "x-amz-server-side-encryption";
     private const string CopySourceServerSideEncryptionHeaderPrefix = "x-amz-copy-source-server-side-encryption";
     private const string ServerSideEncryptionHeaderName = "x-amz-server-side-encryption";
@@ -57,6 +58,7 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
     private const string MaxKeysQueryParameterName = "max-keys";
     private const string MaxUploadsQueryParameterName = "max-uploads";
     private const string ContinuationTokenQueryParameterName = "continuation-token";
+    private const string LocationQueryParameterName = "location";
     private const string CorsQueryParameterName = "cors";
     private const string TaggingQueryParameterName = "tagging";
     private const string VersioningQueryParameterName = "versioning";
@@ -78,14 +80,21 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
     private const string AccessControlAllowHeadersHeaderName = "Access-Control-Allow-Headers";
     private const string AccessControlExposeHeadersHeaderName = "Access-Control-Expose-Headers";
     private const string AccessControlMaxAgeHeaderName = "Access-Control-Max-Age";
+    private static readonly EndpointFeatureDescriptor ServiceEndpointFeature = new(IntegratedS3EndpointFeature.Service, "service", nameof(IntegratedS3EndpointOptions.ConfigureServiceRouteGroup));
+    private static readonly EndpointFeatureDescriptor BucketEndpointFeature = new(IntegratedS3EndpointFeature.Bucket, "bucket", nameof(IntegratedS3EndpointOptions.ConfigureBucketRouteGroup));
+    private static readonly EndpointFeatureDescriptor ObjectEndpointFeature = new(IntegratedS3EndpointFeature.Object, "object", nameof(IntegratedS3EndpointOptions.ConfigureObjectRouteGroup));
+    private static readonly EndpointFeatureDescriptor MultipartEndpointFeature = new(IntegratedS3EndpointFeature.Multipart, "multipart", nameof(IntegratedS3EndpointOptions.ConfigureMultipartRouteGroup));
+    private static readonly EndpointFeatureDescriptor AdminEndpointFeature = new(IntegratedS3EndpointFeature.Admin, "admin", nameof(IntegratedS3EndpointOptions.ConfigureAdminRouteGroup));
     private static readonly HashSet<string> EmptyQueryParameters = CreateQueryParameterSet();
     private static readonly HashSet<string> BucketListObjectsV2QueryParameters = CreateQueryParameterSet(ListTypeQueryParameterName, PrefixQueryParameterName, DelimiterQueryParameterName, StartAfterQueryParameterName, MaxKeysQueryParameterName, ContinuationTokenQueryParameterName);
+    private static readonly HashSet<string> BucketLocationQueryParameters = CreateQueryParameterSet(LocationQueryParameterName);
     private static readonly HashSet<string> BucketCorsQueryParameters = CreateQueryParameterSet(CorsQueryParameterName);
     private static readonly HashSet<string> BucketVersioningQueryParameters = CreateQueryParameterSet(VersioningQueryParameterName);
     private static readonly HashSet<string> BucketVersionListingQueryParameters = CreateQueryParameterSet(VersionsQueryParameterName, PrefixQueryParameterName, DelimiterQueryParameterName, MaxKeysQueryParameterName, KeyMarkerQueryParameterName, VersionIdMarkerQueryParameterName);
     private static readonly HashSet<string> BucketMultipartUploadsQueryParameters = CreateQueryParameterSet(UploadsQueryParameterName, PrefixQueryParameterName, DelimiterQueryParameterName, MaxUploadsQueryParameterName, KeyMarkerQueryParameterName, UploadIdMarkerQueryParameterName, EncodingTypeQueryParameterName);
     private static readonly HashSet<string> BucketDeleteQueryParameters = CreateQueryParameterSet(DeleteQueryParameterName);
     private static readonly HashSet<string> KnownBucketQueryParameters = CreateQueryParameterSet(ListTypeQueryParameterName, PrefixQueryParameterName, DelimiterQueryParameterName, StartAfterQueryParameterName, MaxKeysQueryParameterName, ContinuationTokenQueryParameterName, CorsQueryParameterName, VersioningQueryParameterName, VersionsQueryParameterName, KeyMarkerQueryParameterName, VersionIdMarkerQueryParameterName, MaxUploadsQueryParameterName, UploadIdMarkerQueryParameterName, EncodingTypeQueryParameterName, UploadsQueryParameterName, DeleteQueryParameterName);
+    private static readonly HashSet<string> KnownBucketQueryParameters = CreateQueryParameterSet(ListTypeQueryParameterName, PrefixQueryParameterName, DelimiterQueryParameterName, StartAfterQueryParameterName, MaxKeysQueryParameterName, ContinuationTokenQueryParameterName, LocationQueryParameterName, CorsQueryParameterName, VersioningQueryParameterName, VersionsQueryParameterName, KeyMarkerQueryParameterName, VersionIdMarkerQueryParameterName, MaxUploadsQueryParameterName, UploadIdMarkerQueryParameterName, UploadsQueryParameterName, DeleteQueryParameterName);
     private static readonly HashSet<string> ObjectVersionQueryParameters = CreateQueryParameterSet(VersionIdQueryParameterName);
     private static readonly HashSet<string> ObjectTaggingQueryParameters = CreateQueryParameterSet(TaggingQueryParameterName, VersionIdQueryParameterName);
     private static readonly HashSet<string> ObjectMultipartInitiateQueryParameters = CreateQueryParameterSet(UploadsQueryParameterName);
@@ -133,26 +142,26 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
         group.AddEndpointFilter<IntegratedS3RequestAuthenticationEndpointFilter>();
         resolvedEndpointOptions.ConfigureRouteGroup?.Invoke(group);
         var hasWholeRouteConfiguration = resolvedEndpointOptions.ConfigureRouteGroup is not null;
-        var bucketGroup = CreateConfiguredRouteGroup(group, resolvedEndpointOptions.ConfigureBucketRouteGroup);
-        var objectGroup = CreateConfiguredRouteGroup(group, resolvedEndpointOptions.ConfigureObjectRouteGroup);
-        var adminGroup = CreateConfiguredRouteGroup(group, resolvedEndpointOptions.ConfigureAdminRouteGroup);
+        var bucketGroup = CreateFeatureRouteGroup(group, resolvedEndpointOptions, BucketEndpointFeature);
+        var objectGroup = CreateFeatureRouteGroup(group, resolvedEndpointOptions, ObjectEndpointFeature);
+        var adminGroup = CreateFeatureRouteGroup(group, resolvedEndpointOptions, AdminEndpointFeature);
         var rootGetGroup = CreateSharedRouteGroup(
             group,
             "GET /",
             nameof(IntegratedS3EndpointOptions.ConfigureRootRouteGroup),
             resolvedEndpointOptions.ConfigureRootRouteGroup,
             hasWholeRouteConfiguration,
-            (resolvedEndpointOptions.EnableServiceEndpoints, "service", nameof(IntegratedS3EndpointOptions.ConfigureServiceRouteGroup), resolvedEndpointOptions.ConfigureServiceRouteGroup),
-            (resolvedEndpointOptions.EnableBucketEndpoints, "bucket", nameof(IntegratedS3EndpointOptions.ConfigureBucketRouteGroup), resolvedEndpointOptions.ConfigureBucketRouteGroup));
+            CreateSharedRouteFeatureConfiguration(resolvedEndpointOptions, ServiceEndpointFeature, resolvedEndpointOptions.EnableServiceEndpoints),
+            CreateSharedRouteFeatureConfiguration(resolvedEndpointOptions, BucketEndpointFeature, resolvedEndpointOptions.EnableBucketEndpoints));
         var compatibilityGroup = CreateSharedRouteGroup(
             group,
             "/{**s3Path}",
             nameof(IntegratedS3EndpointOptions.ConfigureCompatibilityRouteGroup),
             resolvedEndpointOptions.ConfigureCompatibilityRouteGroup,
             hasWholeRouteConfiguration,
-            (resolvedEndpointOptions.EnableBucketEndpoints, "bucket", nameof(IntegratedS3EndpointOptions.ConfigureBucketRouteGroup), resolvedEndpointOptions.ConfigureBucketRouteGroup),
-            (resolvedEndpointOptions.EnableObjectEndpoints, "object", nameof(IntegratedS3EndpointOptions.ConfigureObjectRouteGroup), resolvedEndpointOptions.ConfigureObjectRouteGroup),
-            (resolvedEndpointOptions.EnableMultipartEndpoints, "multipart", nameof(IntegratedS3EndpointOptions.ConfigureMultipartRouteGroup), resolvedEndpointOptions.ConfigureMultipartRouteGroup));
+            CreateSharedRouteFeatureConfiguration(resolvedEndpointOptions, BucketEndpointFeature, resolvedEndpointOptions.EnableBucketEndpoints),
+            CreateSharedRouteFeatureConfiguration(resolvedEndpointOptions, ObjectEndpointFeature, resolvedEndpointOptions.EnableObjectEndpoints),
+            CreateSharedRouteFeatureConfiguration(resolvedEndpointOptions, MultipartEndpointFeature, resolvedEndpointOptions.EnableMultipartEndpoints));
 
         if (resolvedEndpointOptions.EnableServiceEndpoints || resolvedEndpointOptions.EnableBucketEndpoints) {
             rootGetGroup.MapGet("/", (HttpContext httpContext, IOptions<IntegratedS3Options> integratedS3Options, IIntegratedS3RequestContextAccessor requestContextAccessor, IStorageService storageService, IStorageServiceDescriptorProvider descriptorProvider, CancellationToken cancellationToken) =>
@@ -173,6 +182,9 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
         if (resolvedEndpointOptions.EnableAdminEndpoints) {
             adminGroup.MapGet("/capabilities", GetCapabilitiesAsync)
                 .WithName("GetIntegratedS3Capabilities");
+
+            adminGroup.MapGet("/admin/diagnostics", GetAdminDiagnosticsAsync)
+                .WithName("GetIntegratedS3AdminDiagnostics");
 
             adminGroup.MapGet("/admin/repairs", ListOutstandingReplicaRepairsAsync)
                 .WithName("ListIntegratedS3ReplicaRepairs");
@@ -249,6 +261,30 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
         return configuredOptions?.Value.Clone() ?? new IntegratedS3EndpointOptions();
     }
 
+    private static RouteGroupBuilder CreateFeatureRouteGroup(
+        RouteGroupBuilder parentGroup,
+        IntegratedS3EndpointOptions endpointOptions,
+        EndpointFeatureDescriptor feature)
+    {
+        ArgumentNullException.ThrowIfNull(endpointOptions);
+
+        return CreateConfiguredRouteGroup(parentGroup, endpointOptions.GetFeatureRouteGroupConfiguration(feature.Feature));
+    }
+
+    private static (bool IsEnabled, string FeatureDisplayName, string ConfigurationDisplayName, Action<RouteGroupBuilder>? Configuration) CreateSharedRouteFeatureConfiguration(
+        IntegratedS3EndpointOptions endpointOptions,
+        EndpointFeatureDescriptor feature,
+        bool isEnabled)
+    {
+        ArgumentNullException.ThrowIfNull(endpointOptions);
+
+        return (
+            isEnabled,
+            feature.DisplayName,
+            FormatFeatureRouteGroupConfigurationReference(feature),
+            endpointOptions.GetFeatureRouteGroupConfiguration(feature.Feature));
+    }
+
     private static RouteGroupBuilder CreateConfiguredRouteGroup(RouteGroupBuilder parentGroup, params Action<RouteGroupBuilder>?[] configurations)
     {
         ArgumentNullException.ThrowIfNull(parentGroup);
@@ -272,7 +308,7 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
         string sharedConfigurationPropertyName,
         Action<RouteGroupBuilder>? sharedConfiguration,
         bool hasWholeRouteConfiguration,
-        params (bool IsEnabled, string FeatureDisplayName, string ConfigurationPropertyName, Action<RouteGroupBuilder>? Configuration)[] featureConfigurations)
+        params (bool IsEnabled, string FeatureDisplayName, string ConfigurationDisplayName, Action<RouteGroupBuilder>? Configuration)[] featureConfigurations)
     {
         ArgumentNullException.ThrowIfNull(parentGroup);
         ArgumentException.ThrowIfNullOrWhiteSpace(routeDisplayName);
@@ -297,7 +333,7 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
             enabledFeatureConfigurations.Add(featureConfiguration.Configuration);
 
             if (featureConfiguration.Configuration is not null) {
-                configuredCallbackNames.Add(featureConfiguration.ConfigurationPropertyName);
+                configuredCallbackNames.Add(featureConfiguration.ConfigurationDisplayName);
             }
         }
 
@@ -318,6 +354,17 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
             $"Multiple per-feature route-group callbacks ({string.Join(", ", configuredCallbackNames)}) do not automatically apply to shared routes. " +
             $"Configure {sharedConfigurationPropertyName} or {nameof(IntegratedS3EndpointOptions.ConfigureRouteGroup)} to protect the shared route explicitly.");
     }
+
+    private static string FormatFeatureRouteGroupConfigurationReference(EndpointFeatureDescriptor feature)
+    {
+        var genericReference = $"{nameof(IntegratedS3EndpointOptions.SetFeatureRouteGroupConfiguration)}({nameof(IntegratedS3EndpointFeature)}.{feature.Feature}, ...)";
+        return $"{feature.CompatibilityPropertyName} or {genericReference}";
+    }
+
+    private readonly record struct EndpointFeatureDescriptor(
+        IntegratedS3EndpointFeature Feature,
+        string DisplayName,
+        string CompatibilityPropertyName);
 
     private static async Task<IResult> HandleRootGetAsync(
         HttpContext httpContext,
@@ -373,6 +420,14 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
     {
         var capabilities = await capabilityProvider.GetCapabilitiesAsync(cancellationToken);
         return TypedResults.Ok(capabilities);
+    }
+
+    private static async Task<Ok<StorageAdminDiagnostics>> GetAdminDiagnosticsAsync(
+        IStorageAdminDiagnosticsProvider diagnosticsProvider,
+        CancellationToken cancellationToken)
+    {
+        var diagnostics = await diagnosticsProvider.GetDiagnosticsAsync(cancellationToken);
+        return TypedResults.Ok(diagnostics);
     }
 
     private static async Task<Ok<StorageReplicaRepairEntry[]>> ListOutstandingReplicaRepairsAsync(
@@ -806,8 +861,10 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
                         DestinationServerSideEncryption = copyServerSideEncryption
                     }, innerCancellationToken);
 
+                    var resolvedSourceVersionId = copyResult.Value?.SourceVersionId;
+
                     return copyResult.IsSuccess
-                        ? ToCopyObjectResult(httpContext, copyResult.Value!)
+                        ? ToCopyObjectResult(httpContext, copyResult.Value!, resolvedSourceVersionId)
                         : ToErrorResult(httpContext, copyResult.Error, resourceOverride: BuildObjectResource(bucketName, key));
                 }
 
@@ -1030,6 +1087,7 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
 
         return httpContext.Request.Method switch
         {
+            "GET" when httpContext.Request.Query.ContainsKey(LocationQueryParameterName) => await GetBucketLocationAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
             "GET" when httpContext.Request.Query.ContainsKey(CorsQueryParameterName) => await GetBucketCorsAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
             "GET" when httpContext.Request.Query.ContainsKey(VersioningQueryParameterName) => await GetBucketVersioningAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
             "GET" when httpContext.Request.Query.ContainsKey(UploadsQueryParameterName) => await ListMultipartUploadsAsync(
@@ -1076,6 +1134,34 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
             "POST" => ToErrorResult(httpContext, StatusCodes.Status400BadRequest, "InvalidRequest", "Unsupported bucket subresource request.", resolvedRequest.CanonicalResourcePath, resolvedRequest.BucketName),
             _ => TypedResults.StatusCode(StatusCodes.Status405MethodNotAllowed)
         }};
+    }
+
+    private static async Task<IResult> GetBucketLocationAsync(
+        string bucketName,
+        HttpContext httpContext,
+        IIntegratedS3RequestContextAccessor requestContextAccessor,
+        IStorageService storageService,
+        CancellationToken cancellationToken)
+    {
+        try {
+            return await ExecuteWithRequestContextAsync(httpContext, requestContextAccessor, async innerCancellationToken => {
+                var result = await storageService.GetBucketLocationAsync(bucketName, innerCancellationToken);
+                if (!result.IsSuccess) {
+                    return ToErrorResult(httpContext, result.Error, resourceOverride: BuildObjectResource(bucketName, null));
+                }
+
+                return new XmlContentResult(
+                    S3XmlResponseWriter.WriteBucketLocation(new S3BucketLocationResponse
+                    {
+                        LocationConstraint = result.Value!.LocationConstraint
+                    }),
+                    StatusCodes.Status200OK,
+                    XmlContentType);
+            }, cancellationToken);
+        }
+        catch (EndpointStorageAuthorizationException exception) {
+            return ToErrorResult(httpContext, exception.Error, resourceOverride: BuildObjectResource(bucketName, null));
+        }
     }
 
     private static async Task<IResult> GetBucketVersioningAsync(
@@ -1946,7 +2032,9 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
         var previousContext = requestContextAccessor.Current;
         requestContextAccessor.Current = new IntegratedS3RequestContext
         {
-            Principal = httpContext.User
+            Principal = httpContext.User,
+            CorrelationId = IntegratedS3AspNetCoreTelemetry.GetOrCreateCorrelationId(httpContext),
+            RequestId = httpContext.TraceIdentifier
         };
 
         try {
@@ -1969,7 +2057,8 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
 
     private static IResult ToErrorResult(HttpContext httpContext, StorageError? error, string? resourceOverride = null)
     {
-        if (error is null) {
+        if (error is null)
+        {
             return ToErrorResult(httpContext, StatusCodes.Status500InternalServerError, "InternalError", "Storage operation failed.", resourceOverride);
         }
 
@@ -2008,9 +2097,13 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
             XmlContentType);
     }
 
-    private static IResult ToCopyObjectResult(HttpContext httpContext, ObjectInfo @object)
+    private static IResult ToCopyObjectResult(HttpContext httpContext, ObjectInfo @object, string? sourceVersionId)
     {
         ApplyObjectHeaders(httpContext.Response, @object);
+        if (!string.IsNullOrWhiteSpace(sourceVersionId))
+        {
+            httpContext.Response.Headers[CopySourceVersionIdHeaderName] = sourceVersionId;
+        }
 
         return new XmlContentResult(
             S3XmlResponseWriter.WriteCopyObjectResult(new S3CopyObjectResult
@@ -2041,6 +2134,7 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
             StorageErrorCode.MethodNotAllowed => StatusCodes.Status405MethodNotAllowed,
             StorageErrorCode.VersionConflict => StatusCodes.Status409Conflict,
             StorageErrorCode.BucketAlreadyExists => StatusCodes.Status409Conflict,
+            StorageErrorCode.BucketNotEmpty => StatusCodes.Status409Conflict,
             StorageErrorCode.MultipartConflict => StatusCodes.Status409Conflict,
             StorageErrorCode.Throttled => StatusCodes.Status429TooManyRequests,
             StorageErrorCode.ProviderUnavailable => StatusCodes.Status503ServiceUnavailable,
@@ -2064,6 +2158,7 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
             StorageErrorCode.MethodNotAllowed => "MethodNotAllowed",
             StorageErrorCode.VersionConflict => "OperationAborted",
             StorageErrorCode.BucketAlreadyExists => "BucketAlreadyExists",
+            StorageErrorCode.BucketNotEmpty => "BucketNotEmpty",
             StorageErrorCode.MultipartConflict => "InvalidRequest",
             StorageErrorCode.Throttled => "SlowDown",
             StorageErrorCode.ProviderUnavailable => "ServiceUnavailable",
@@ -2550,6 +2645,7 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
     {
         var queryKeys = GetValidatedQueryKeys(request);
         var isListObjectsV2Request = queryKeys.IsSubsetOf(BucketListObjectsV2QueryParameters);
+        var isBucketLocationRequest = queryKeys.SetEquals(BucketLocationQueryParameters);
         var isBucketCorsRequest = queryKeys.SetEquals(BucketCorsQueryParameters);
         var isBucketVersioningRequest = queryKeys.SetEquals(BucketVersioningQueryParameters);
         var isListObjectVersionsRequest = queryKeys.Contains(VersionsQueryParameterName) && queryKeys.IsSubsetOf(BucketVersionListingQueryParameters);
@@ -2574,7 +2670,8 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
                     break;
                 }
 
-                if (isBucketCorsRequest
+                if (isBucketLocationRequest
+                    || isBucketCorsRequest
                     || isBucketVersioningRequest
                     || isListObjectVersionsRequest
                     || isListMultipartUploadsRequest) {

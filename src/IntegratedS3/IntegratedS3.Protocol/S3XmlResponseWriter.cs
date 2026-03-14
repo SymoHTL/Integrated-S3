@@ -6,6 +6,28 @@ namespace IntegratedS3.Protocol;
 
 public static class S3XmlResponseWriter
 {
+    public static string WriteBucketLocation(S3BucketLocationResponse response)
+    {
+        ArgumentNullException.ThrowIfNull(response);
+
+        var builder = new StringBuilder();
+        using var stringWriter = new StringWriter(builder, CultureInfo.InvariantCulture);
+        using var xmlWriter = XmlWriter.Create(stringWriter, CreateSettings());
+
+        xmlWriter.WriteStartDocument();
+        xmlWriter.WriteStartElement("LocationConstraint");
+
+        if (!string.IsNullOrWhiteSpace(response.LocationConstraint)) {
+            xmlWriter.WriteString(response.LocationConstraint);
+        }
+
+        xmlWriter.WriteEndElement();
+        xmlWriter.WriteEndDocument();
+        xmlWriter.Flush();
+
+        return builder.ToString();
+    }
+
     public static string WriteBucketVersioningConfiguration(S3BucketVersioningConfiguration response)
     {
         ArgumentNullException.ThrowIfNull(response);

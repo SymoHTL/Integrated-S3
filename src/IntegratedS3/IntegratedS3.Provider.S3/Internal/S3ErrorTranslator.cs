@@ -48,7 +48,7 @@ internal static class S3ErrorTranslator
                  $"Access denied for bucket '{bucketName}': {ex.Message}"),
 
             "BucketNotEmpty" =>
-                (StorageErrorCode.PreconditionFailed,
+                (StorageErrorCode.BucketNotEmpty,
                  $"Bucket '{bucketName}' is not empty and cannot be deleted."),
 
             "PreconditionFailed" =>

@@ -150,6 +150,22 @@ internal sealed class DiskStorageService(
         });
     }
 
+    public ValueTask<StorageResult<BucketLocationInfo>> GetBucketLocationAsync(string bucketName, CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+
+        var bucketPath = GetBucketPath(bucketName);
+        if (!Directory.Exists(bucketPath)) {
+            return ValueTask.FromResult(StorageResult<BucketLocationInfo>.Failure(BucketNotFound(bucketName)));
+        }
+
+        return ValueTask.FromResult(StorageResult<BucketLocationInfo>.Success(new BucketLocationInfo
+        {
+            BucketName = bucketName,
+            LocationConstraint = null
+        }));
+    }
+
     public async ValueTask<StorageResult<BucketVersioningInfo>> GetBucketVersioningAsync(string bucketName, CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
@@ -296,11 +312,11 @@ internal sealed class DiskStorageService(
         if (Directory.EnumerateFileSystemEntries(bucketPath).Any(static path => !IsBucketMetadataFile(path))) {
             return ValueTask.FromResult(StorageResult.Failure(new StorageError
             {
-                Code = StorageErrorCode.PreconditionFailed,
+                Code = StorageErrorCode.BucketNotEmpty,
                 Message = $"Bucket '{request.BucketName}' must be empty before it can be deleted.",
                 BucketName = request.BucketName,
                 ProviderName = options.ProviderName,
-                SuggestedHttpStatusCode = 412
+                SuggestedHttpStatusCode = 409
             }));
         }
 
