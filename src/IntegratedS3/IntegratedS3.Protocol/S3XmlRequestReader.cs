@@ -204,6 +204,58 @@ public static class S3XmlRequestReader
         }
     }
 
+    public static async Task<S3AccessControlPolicy> ReadAccessControlPolicyAsync(Stream content, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(content);
+
+        using var reader = new StreamReader(content, leaveOpen: true);
+        var xml = await reader.ReadToEndAsync(cancellationToken);
+        if (string.IsNullOrWhiteSpace(xml)) {
+            throw new FormatException("The ACL request body is required.");
+        }
+
+        try {
+            var document = XDocument.Parse(xml, LoadOptions.None);
+            var root = document.Root;
+            if (root is null || !string.Equals(root.Name.LocalName, "AccessControlPolicy", StringComparison.Ordinal)) {
+                throw new FormatException("The ACL request body must contain a root 'AccessControlPolicy' element.");
+            }
+
+            var ownerElement = root.Elements().FirstOrDefault(static element => string.Equals(element.Name.LocalName, "Owner", StringComparison.Ordinal));
+            var owner = ownerElement is null
+                ? new S3BucketOwner()
+                : new S3BucketOwner
+                {
+                    Id = ownerElement.Elements().FirstOrDefault(static child => string.Equals(child.Name.LocalName, "ID", StringComparison.Ordinal))?.Value ?? string.Empty,
+                    DisplayName = ownerElement.Elements().FirstOrDefault(static child => string.Equals(child.Name.LocalName, "DisplayName", StringComparison.Ordinal))?.Value ?? string.Empty
+                };
+
+            var accessControlList = root.Elements().FirstOrDefault(static element => string.Equals(element.Name.LocalName, "AccessControlList", StringComparison.Ordinal))
+                ?? throw new FormatException("The ACL request body must contain an 'AccessControlList' element.");
+
+            var grants = accessControlList.Elements()
+                .Where(static element => string.Equals(element.Name.LocalName, "Grant", StringComparison.Ordinal))
+                .Select(ParseAccessControlGrant)
+                .ToArray();
+
+            if (grants.Length == 0) {
+                throw new FormatException("The ACL request body must contain at least one 'Grant' element.");
+            }
+
+            return new S3AccessControlPolicy
+            {
+                Owner = owner,
+                Grants = grants
+            };
+        }
+        catch (FormatException) {
+            throw;
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException) {
+            throw new FormatException("The ACL request body is not valid XML.", exception);
+        }
+    }
+
     private static S3CompleteMultipartUploadPart ParseCompleteMultipartUploadPart(XElement element)
     {
         ArgumentNullException.ThrowIfNull(element);
@@ -270,6 +322,37 @@ public static class S3XmlRequestReader
             AllowedHeaders = allowedHeaders,
             ExposeHeaders = exposeHeaders,
             MaxAgeSeconds = maxAgeSeconds
+        };
+    }
+
+    private static S3AccessControlGrant ParseAccessControlGrant(XElement element)
+    {
+        ArgumentNullException.ThrowIfNull(element);
+
+        var granteeElement = element.Elements().FirstOrDefault(static child => string.Equals(child.Name.LocalName, "Grantee", StringComparison.Ordinal))
+            ?? throw new FormatException("Each ACL grant must contain a 'Grantee' element.");
+        var permission = element.Elements().FirstOrDefault(static child => string.Equals(child.Name.LocalName, "Permission", StringComparison.Ordinal))?.Value?.Trim();
+        if (string.IsNullOrWhiteSpace(permission)) {
+            throw new FormatException("Each ACL grant must contain a non-empty 'Permission' element.");
+        }
+
+        var type = granteeElement.Attributes().FirstOrDefault(static attribute =>
+            string.Equals(attribute.Name.LocalName, "type", StringComparison.Ordinal)
+            && string.Equals(attribute.Name.NamespaceName, "http://www.w3.org/2001/XMLSchema-instance", StringComparison.Ordinal))?.Value;
+        if (string.IsNullOrWhiteSpace(type)) {
+            throw new FormatException("Each ACL grant grantee must declare an xsi:type attribute.");
+        }
+
+        return new S3AccessControlGrant
+        {
+            Grantee = new S3AccessControlGrantee
+            {
+                Type = type.Trim(),
+                Id = granteeElement.Elements().FirstOrDefault(static child => string.Equals(child.Name.LocalName, "ID", StringComparison.Ordinal))?.Value,
+                DisplayName = granteeElement.Elements().FirstOrDefault(static child => string.Equals(child.Name.LocalName, "DisplayName", StringComparison.Ordinal))?.Value,
+                Uri = granteeElement.Elements().FirstOrDefault(static child => string.Equals(child.Name.LocalName, "URI", StringComparison.Ordinal))?.Value
+            },
+            Permission = permission
         };
     }
 

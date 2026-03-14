@@ -559,14 +559,14 @@ public sealed class IntegratedS3HttpPresignStrategyTests
     }
 
     [Fact]
-    public async Task PresignObjectAsync_WhenDirectPreferred_AndS3StorageOnlyProvidesDelegatedLocation_FallsBackToProxy()
+    public async Task PresignObjectAsync_WhenDirectPreferred_AndS3StorageRegistered_ReturnsNativeDirectGrant()
     {
         var fakeClient = new FakeS3Client
         {
             PresignedGetObjectUrl = new Uri("https://s3.us-east-1.amazonaws.com/bucket/key?X-Amz-Signature=abc", UriKind.Absolute)
         };
 
-        var presignService = BuildS3BackedPresignService(fakeClient, enableSigV4: true);
+        var presignService = BuildS3BackedPresignService(fakeClient, enableSigV4: false);
 
         var request = new StoragePresignRequest
         {
@@ -580,8 +580,40 @@ public sealed class IntegratedS3HttpPresignStrategyTests
         var result = await presignService.PresignObjectAsync(AnyPrincipal, request);
 
         Assert.True(result.IsSuccess);
-        Assert.Equal(StorageAccessMode.Proxy, result.Value?.AccessMode);
+        Assert.Equal(StorageAccessMode.Direct, result.Value?.AccessMode);
+        Assert.Equal(fakeClient.PresignedGetObjectUrl, result.Value?.Url);
         Assert.Equal(1, fakeClient.PresignedGetObjectUrlCalls);
+    }
+
+    [Fact]
+    public async Task PresignObjectAsync_WhenPutDirectPreferred_AndS3StorageRegistered_ReturnsNativeDirectGrant()
+    {
+        var fakeClient = new FakeS3Client
+        {
+            PresignedPutObjectUrl = new Uri("https://s3.us-east-1.amazonaws.com/bucket/key?X-Amz-Signature=put", UriKind.Absolute)
+        };
+
+        var presignService = BuildS3BackedPresignService(fakeClient, enableSigV4: false);
+
+        var request = new StoragePresignRequest
+        {
+            Operation = StoragePresignOperation.PutObject,
+            BucketName = "bucket",
+            Key = "key",
+            ExpiresInSeconds = 300,
+            ContentType = "text/plain",
+            PreferredAccessMode = StorageAccessMode.Direct
+        };
+
+        var result = await presignService.PresignObjectAsync(AnyPrincipal, request);
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(StorageAccessMode.Direct, result.Value?.AccessMode);
+        Assert.Equal("PUT", result.Value?.Method);
+        Assert.Equal(fakeClient.PresignedPutObjectUrl, result.Value?.Url);
+        Assert.Equal(1, fakeClient.PresignedPutObjectUrlCalls);
+        Assert.Equal("text/plain", fakeClient.LastPresignedContentType);
+        Assert.Contains(result.Value!.Headers, header => header.Name == "Content-Type" && header.Value == "text/plain");
     }
 
     [Fact]

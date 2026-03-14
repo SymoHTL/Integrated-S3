@@ -24,10 +24,10 @@ The repository has already moved beyond initial scaffolding and now contains a w
   - initial object-level server-side encryption (`AES256`, `aws:kms`) request mapping for put/copy/initiate-multipart plus returned SSE metadata on put/copy/get/head results
   - `S3ErrorTranslator` extended with native multipart/checksum error mappings (`NoSuchUpload`, `InvalidPart`, `InvalidPartOrder`, `EntityTooSmall`, `BadDigest`) plus per-error-code object key context
   - `S3StorageCapabilities` updated: `ObjectCrud`, `ObjectMetadata`, `ListObjects`, `Pagination`, `RangeRequests`, `ConditionalRequests`, `ObjectTags`, `Versioning`, `Cors`, `CopyOperations`, `MultipartUploads`, `PresignedUrls`, `Checksums`, and `ServerSideEncryption` are `Native`
-  - `IS3StorageClient` and `AwsS3StorageClient` extended with native copy, multipart, presign, checksum, versioning, bucket CORS, and initial object-level SSE operations using the SDK v4 API surface
+- `IS3StorageClient` and `AwsS3StorageClient` extended with native copy, multipart, direct/delegated presign, checksum, versioning, bucket CORS, and initial object-level SSE operations using the SDK v4 API surface
   - `AddS3Storage(...)` now also registers an S3-backed `IStorageObjectLocationResolver` so delegated read presigns can surface provider URLs with safe proxy fallback
   - Internal model records added/extended: `S3ObjectEntry`, `S3ObjectListPage`, `S3ObjectVersionListPage`, `S3MultipartUploadListPage`, `S3GetObjectResult`, `S3DeleteObjectResult`, `S3VersioningEntry`, `S3CorsConfigurationEntry`
-  - `FakeS3Client` in tests extended; unit tests now cover capabilities, copy, multipart lifecycle/listing, checksum mapping, paged listing, CRUD, tags, versioning, 304/412 flows, and get-object disposal behavior
+- `FakeS3Client` in tests extended; unit tests now cover capabilities, copy, multipart lifecycle/listing, checksum mapping, direct/delegated presign flows, paged listing, CRUD, tags, versioning, 304/412 flows, and get-object disposal behavior
 - modular project structure under `src/IntegratedS3/`
 - initial abstractions package with:
   - canonical error/result model
@@ -89,7 +89,7 @@ The repository has already moved beyond initial scaffolding and now contains a w
   - `MapIntegratedS3Endpoints(...)`
   - combined configuration-binding + inline-configuration overloads plus `AddIntegratedS3Provider(...)` helpers for named/manual configured-provider metadata registration and `AddIntegratedS3Backend(...)` helpers for custom backend DI activation
   - feature-group endpoint toggles for service, bucket, object, multipart, and admin surfaces
-  - `IntegratedS3EndpointOptions` can now bind from `IntegratedS3:Endpoints`, and map-time overrides start from those configured defaults so hosts/tests can keep endpoint toggles aligned without manual re-wiring
+  - `IntegratedS3EndpointOptions` can now bind from `IntegratedS3:Endpoints`, including common `RequireAuthorization` / named-policy / `AllowAnonymous` route-group conventions, and map-time overrides start from those configured defaults so hosts/tests can keep endpoint toggles aligned without manual re-wiring
   - first-class whole-route, per-feature, and explicit shared root/compatibility route-group configuration on endpoint mapping, including authorization/policy wiring
   - `IntegratedS3EndpointFeature` plus `SetFeatureRouteGroupConfiguration(...)` / `GetFeatureRouteGroupConfiguration(...)` as the stable per-feature callback pattern for future endpoint surfaces, with the current `Configure*RouteGroup` members retained as convenience wrappers for today's built-in features
   - backend-derived service/provider descriptors and capabilities
@@ -561,7 +561,7 @@ The project now has enough implemented surface area that the capability slices c
 | versioning | implemented for the current vertical slice | emulated with platform-managed historical catalogs | implemented for the current supported surface | yes | current object versions receive persisted opaque version IDs, overwrites archive historical versions, `versionId` read/head/delete/tagging/copy-source flows can target archived versions, `GET` / `PUT ?versioning` round-trip through Core/disk/HTTP, `GET ?versions` now lists historical versions and delete markers, version-enabled deletes now create S3-compatible delete markers, delete-marker reads now cover current-object `NoSuchKey` plus explicit-version `MethodNotAllowed` fidelity with the expected delete-marker/version/`Last-Modified` headers, and historical plus current auxiliary object state can be platform-managed when an object-state store is registered |
 | bucket location discovery | implemented for the current slice | emulated default constraint | implemented | yes | `GET ?location` now returns S3-compatible `LocationConstraint` XML; disk reports the default empty constraint (`us-east-1` semantics), while the native S3 provider maps `GetBucketLocation` through the AWS SDK and the HTTP/AWS SDK compatibility surface is covered |
 | checksums | partially implemented | emulated | partially implemented | yes | disk now computes and persists checksums for the current put/copy/multipart flows, the native S3 provider now forwards/echoes checksum data on native put/copy/multipart paths where the upstream SDK exposes it cleanly, and the current HTTP surface emits the supported checksum fields in copy-object XML plus object-response headers; deeper checksum/header edge cases and broader parity hardening are still pending |
-| ACL / policy behavior | not started | unsupported | not implemented | no | authorization is `ClaimsPrincipal`-driven rather than S3 ACL compatible today, but provider support-state descriptors can now report access-control ownership independently from capability support |
+| ACL / policy behavior | implemented for the current slice | emulated | implemented for the current slice | yes | the platform now layers a narrow ACL/policy compatibility model over `ClaimsPrincipal` authorization: bucket/object `private` and `public-read` plus `bucket-owner-full-control` normalization, `GET` / `PUT ?acl`, `GET` / `PUT` / `DELETE ?policy`, anonymous `ListObjects` / `HeadBucket` / `GetObject` / `HeadObject` fallback for stored public grants, and explicit `NotImplemented` errors for unsupported grants, conditions, version-specific ACLs, and multipart-initiation ACL headers |
 | CORS | implemented for the current slice | emulated | implemented | yes | bucket-level CORS contracts/configuration now round-trip through Core; disk reports `Cors = Emulated`, the native S3 provider reports `Cors = Native`, and ASP.NET now serves bucket-aware preflight plus actual-response headers without global middleware, including `Vary` handling for both allowed and rejected browser-facing CORS evaluations, S3-aligned `Access-Control-Allow-Credentials: true` emission for successful non-wildcard evaluations, and literal `*` origin responses that intentionally omit the credentials header for literal wildcard rules |
 | object lock / retention / legal hold | not started | unsupported | not implemented | no | behavior still needs abstractions and provider persistence shape, but retention ownership can now be surfaced separately in provider support-state descriptors |
 | server-side encryption variants | implemented for the current managed slice | unsupported with explicit guardrails | implemented for the current managed slice | yes | provider-agnostic object-level SSE request/response models now cover `AES256`, `aws:kms`, and `aws:kms:dsse` plus object-metadata surfacing; `StorageCapabilities` now expose provider-agnostic SSE variant details for request style/operations, the native S3 provider, Core/catalog flow, and ASP.NET S3-compatible header parsing/response emission cover put/copy/initiate-multipart plus put/copy/get/head response metadata for the managed slice, and the disk provider continues to reject unsupported managed SSE request shapes explicitly while customer-provided-key and broader provider-expansion work remains pending |
@@ -756,7 +756,7 @@ Status:
 - `IIntegratedS3AuthorizationService` is implemented
 - `IIntegratedS3RequestContextAccessor` is implemented so ASP.NET can flow the current `ClaimsPrincipal` into Core
 - authorization currently executes in an `IStorageService` decorator (`AuthorizingStorageService`) over `OrchestratedStorageService`
-- coarse endpoint-level authorization policies are still optional and not wired as first-class route-group configuration yet
+- coarse endpoint-level authorization policies are optional and now support first-class route-group configuration through both map-time callbacks and configuration-bound endpoint authorization conventions
 
 This service should receive:
 
@@ -900,12 +900,13 @@ Build `IntegratedS3.Provider.S3` next:
 Status: **native copy/multipart/presign/checksum provider slice is now implemented**
 
 - `S3StorageService` now implements bucket CRUD, object CRUD, object/version listing, object tagging, bucket versioning, bucket CORS, native copy, and the multipart upload lifecycle/listing surface through the AWS SDK
-- `IS3StorageClient` / `AwsS3StorageClient` now bridge the AWS SDK v4 surface for range, conditional, tagging, version-aware object flows, native copy, multipart upload listing/lifecycle, presigned GET URL generation, and checksum request/response mapping
+- `IS3StorageClient` / `AwsS3StorageClient` now bridge the AWS SDK v4 surface for range, conditional, tagging, version-aware object flows, native copy, multipart upload listing/lifecycle, presigned `GET` / `PUT` URL generation, and checksum request/response mapping
 - canonical error translation, DI registration, options, and S3-backed delegated-read resolver registration are in place
 - `S3StorageCapabilities` now declare bucket/object/list/range/conditional/tag/versioning/copy/multipart/presign/checksum/CORS support as `Native`
+- backend-direct native S3 presign is now enabled for explicit `Direct` `GET` / `PUT` requests alongside the existing delegated-read resolver path, preserving proxy fallback when no compatible direct or delegated grant is available
 - custom `ServiceUrl` endpoints now use explicit signing-region + required-only flexible-checksum defaults and preserve the configured endpoint scheme for delegated `GET` presigns, reducing common MinIO/LocalStack mismatches without changing provider-agnostic contracts
 - `IntegratedS3.Tests` now includes focused custom-endpoint config/presign coverage plus an opt-in local S3-compatible conformance test that exercises copy, multipart, checksum, AES256 SSE, versioning, and delegated-read flows when `INTEGRATEDS3_S3COMPAT_*` environment variables are provided
-- next steps center on continuously running that local S3-compatible harness against concrete endpoints and deciding whether backend-direct presign adds enough value beyond the current delegated-read resolver path
+- next steps center on continuously running that local S3-compatible harness against concrete endpoints and broadening parity/conformance hardening now that explicit-direct native S3 `GET` / `PUT` presigns and delegated-read resolver flows both exist
 
 ### 3. Future providers later
 
@@ -1098,7 +1099,7 @@ Status: **in progress / partially complete**
 - native S3 provider — **copy/multipart/presign/checksum slice is now implemented on top of the object/list/versioning foundation**:
   - `S3StorageService` implements `ListBucketsAsync`, `CreateBucketAsync`, `HeadBucketAsync`, and `DeleteBucketAsync` via the native AWS SDK
   - `S3StorageService` now also implements `ListObjectsAsync`, `ListObjectVersionsAsync`, `HeadObjectAsync`, `GetObjectAsync`, `PutObjectAsync`, `DeleteObjectAsync`, `CopyObjectAsync`, the multipart upload lifecycle/listing surface, `GetObjectTagsAsync`, `PutObjectTagsAsync`, `DeleteObjectTagsAsync`, `GetBucketVersioningAsync`, `PutBucketVersioningAsync`, `GetBucketCorsAsync`, `PutBucketCorsAsync`, and `DeleteBucketCorsAsync`
-  - `IS3StorageClient` / `AwsS3StorageClient` now bridge the AWS SDK v4 surface for object CRUD, paged listings, conditional GETs, range requests, tagging, versioning, bucket CORS, native copy/multipart flows, presigned GET URL generation, and checksum request/response mapping
+  - `IS3StorageClient` / `AwsS3StorageClient` now bridge the AWS SDK v4 surface for object CRUD, paged listings, conditional GETs, range requests, tagging, versioning, bucket CORS, native copy/multipart flows, presigned `GET` / `PUT` URL generation, and checksum request/response mapping
   - `S3ErrorTranslator` maps `AmazonS3Exception` to canonical `StorageErrorCode` values (`BucketNotFound`, `CorsConfigurationNotFound`, `BucketAlreadyExists`, `AccessDenied`, `PreconditionFailed`, `Throttled`, `ProviderUnavailable`) with provider name and bucket/object context preserved
   - `CreateBucketAsync` still rejects `EnableVersioning = true` during bucket creation; versioning is enabled afterward through `PutBucketVersioningAsync`
   - `S3StorageCapabilities` now report `BucketOperations`, `ObjectCrud`, `ObjectMetadata`, `ListObjects`, `Pagination`, `RangeRequests`, `ConditionalRequests`, `ObjectTags`, `Versioning`, `Cors`, `MultipartUploads`, `CopyOperations`, `PresignedUrls`, and `Checksums` as `Native`; advanced features remain `Unsupported`
@@ -1171,7 +1172,8 @@ Status: **in progress / partially complete**
 
 - bucket-level CORS is now implemented across abstractions, Core orchestration, the disk provider, the native S3 provider, and the ASP.NET S3-compatible surface
 - ASP.NET now supports bucket-aware preflight `OPTIONS` handling and actual-response `Access-Control-*` headers without relying on global middleware, including S3-aligned successful-credential headers for non-wildcard origins and literal `*` origin responses that intentionally omit `Access-Control-Allow-Credentials` for literal wildcard rules
-- ACL/policy mapping, object lock / retention / legal hold, and encryption-related support are still not started
+- ACL/policy compatibility is now implemented for a narrow public-access slice: current bucket/object canned ACLs (`private`, `public-read`, `bucket-owner-full-control` normalization), S3-compatible bucket/object `GET` / `PUT ?acl`, limited anonymous bucket policies (`s3:ListBucket`, `s3:GetObject`, `s3:GetObjectVersion` with bucket/object ARN resources), and authorization fallback for anonymous/public `ListObjects`, `HeadBucket`, `GetObject`, and `HeadObject`
+- unsupported ACL grant headers, version-specific ACLs, multipart-initiation ACL headers, richer bucket policy principals/actions/resources/conditions, object lock / retention / legal hold, and encryption-related follow-ons still remain outside the current implemented slice and now fail explicitly instead of being ignored
 
 ### M8 — Hardening
 
@@ -1224,13 +1226,15 @@ This section is the execution board for the remaining implementation backlog. As
 - Status:
   - the core native S3 copy/multipart/checksum/delegated-read presign slice is now implemented in `IntegratedS3.Provider.S3`
   - `S3StorageCapabilities` now report `CopyOperations`, `MultipartUploads`, `PresignedUrls`, and `Checksums` as `Native`, and provider-specific unit coverage now covers copy, multipart lifecycle/listing, checksum mapping, bucket CORS, and capability/provider-mode reporting
-  - delegated `GET` presign semantics are now wired end-to-end for the native S3 provider: `ResolveObjectLocationRequest` now carries requested expiry, `IntegratedS3HttpPresignStrategy` forwards provider/expiry/version metadata through the resolver seam, `AddS3Storage(...)` registers an S3-backed object-location resolver, and the provider now advertises native presigned-URL plus delegated read-location support while the separate backend-direct presign seam remains available for future providers and native S3 `PUT` presigns stay proxy-only
-  - focused presign/provider tests now cover delegated S3 URL issuance, expiry/version forwarding, proxy fallback for unavailable or incompatible delegated resolution, and the intentional proxy-only `PUT` behavior
+  - delegated `GET` presign semantics are wired end-to-end for the native S3 provider: `ResolveObjectLocationRequest` carries requested expiry, `IntegratedS3HttpPresignStrategy` forwards provider/expiry/version metadata through the resolver seam, `AddS3Storage(...)` registers an S3-backed object-location resolver, and delegated-mode callers receive provider URLs with safe proxy fallback
+  - backend-direct native S3 presign is also enabled for explicit `Direct` requests: the provider's existing provider-agnostic `IStorageBackend.PresignObjectDirectAsync(...)` seam now issues native S3 `GET` / `PUT` grants without changing the delegated-read path or proxy fallback behavior
+  - focused presign/provider tests now cover delegated S3 URL issuance, backend-direct S3 `GET` / `PUT` selection, expiry/version forwarding, proxy fallback for unavailable or incompatible direct/delegated resolution, and custom-endpoint defaults
   - custom `ServiceUrl` endpoints now use the configured region as the AWS SDK authentication region, preserve `http` delegated-read presigns instead of silently upgrading to `https`, and reduce AWS SDK v4 flexible-checksum behavior to required-only mode so copy/multipart/checksum flows are less brittle against local S3-compatible backends
   - `IntegratedS3.Tests` now adds focused config/presign regression coverage for those custom-endpoint defaults plus an opt-in local S3-compatible conformance test that exercises copy, multipart, checksum, AES256 SSE, versioning, and delegated-read flows via `INTEGRATEDS3_S3COMPAT_SERVICE_URL`, `..._ACCESS_KEY`, `..._SECRET_KEY`, optional `..._REGION`, and optional `..._FORCE_PATH_STYLE`
+
 - Remaining scope:
   - run the new local S3-compatible conformance harness continuously against concrete MinIO/LocalStack-style endpoints, capture any intentionally unsupported checksum/SSE differences explicitly, and extend provider-specific parity coverage from those findings
-  - evaluate later whether the native S3 backend should also use the now-available backend direct-presign seam for direct `GET` / `PUT` in addition to the implemented delegated-read resolver path
+  - keep reviewing whether backend-direct presign should remain enabled for both native S3 `GET` and `PUT` long-term or be narrowed once more real-endpoint compatibility data is gathered
   - keep public contracts provider-agnostic while preserving the clarified provider capability/support-state reporting
 
 ### Track C — First-party presign and client surface
@@ -1246,7 +1250,7 @@ This section is the execution board for the remaining implementation backlog. As
   - `StorageAccessMode` now covers `Proxy`, `Direct`, and `Delegated` modes; `StoragePresignRequest` now carries an optional `PreferredAccessMode` field so callers can express access-mode preference; strategies may honour, downgrade, or ignore the preference depending on provider capabilities
   - `IStorageBackend` now includes a provider-agnostic direct-presign seam for object `GET` / `PUT`; `IntegratedS3HttpPresignStrategy` consults the primary backend first when `PreferredAccessMode` is `Direct`, then falls back to the existing resolver/proxy paths when no backend-native grant is available
   - `IntegratedS3HttpPresignStrategy` still consults `IStorageObjectLocationResolver` when `PreferredAccessMode` is `Direct` or `Delegated` for `GetObject` presigns; maps `StorageObjectAccessMode.Delegated`/`Passthrough` → `StorageAccessMode.Delegated` and `StorageObjectAccessMode.Redirect` → `StorageAccessMode.Direct`; falls back to proxy-mode issuance when the resolver returns null, an incompatible mode, or the operation is not a read
-  - native S3-backed delegated `GET` presigns now flow through that resolver seam: resolver requests carry provider/expiry/version metadata, the S3 provider returns real provider URLs for delegated reads, and unsupported or incompatible requests still fall back to proxy-mode issuance
+  - native S3-backed direct `GET` / `PUT` presigns now flow through that backend seam for explicit `Direct` requests, while delegated S3 `GET` presigns continue to flow through the resolver seam with provider/expiry/version metadata forwarding and safe proxy fallback for unsupported or incompatible requests
   - client transfer helpers now accept explicit preferred access-mode hints, keep streaming/file transfers on the high-level client surface, delete failed download targets instead of leaving partial files behind, and surface presign-endpoint error bodies in thrown `HttpRequestException` messages
   - the first-party client now also exposes explicit resume-aware file download helpers that issue `Range` requests against existing partial files, rewrite from the start when a server ignores the range, treat matching `416 RequestedRangeNotSatisfiable` responses as already complete, and preserve pre-existing partial files while cleaning up files created by the current attempt
   - first-party client defaults now intentionally keep access-mode selection explicit at the caller boundary: overloads that omit `PreferredAccessMode` / `preferredAccessMode` leave the hint unset, do not infer `Direct` / `Delegated` access from provider/service discovery, and therefore keep proxy-mode as the stable default; callers can inspect provider descriptors for UX and then opt into `Direct` / `Delegated` explicitly where appropriate
@@ -1265,16 +1269,17 @@ This section is the execution board for the remaining implementation backlog. As
   - `MapIntegratedS3Endpoints(...)` now accepts endpoint options for service, bucket, object, multipart, and admin toggles plus whole-route, per-feature, and explicit shared root/compatibility route-group configuration callbacks for authorization/policy wiring
   - shared `GET /` and `/{**s3Path}` routes now use explicit `ConfigureRootRouteGroup` / `ConfigureCompatibilityRouteGroup` callbacks (or whole-route protection) instead of inheriting multiple feature-group callbacks onto one route
   - `WebUiApplication.ConfigurePipeline(...)` and the isolated test-host wiring can now forward endpoint-mapping options and conditionally enable `UseAuthorization()` alongside `UseAuthentication()`
-  - `IntegratedS3EndpointOptions` now bind from `IntegratedS3:Endpoints`, and the map-time `MapIntegratedS3Endpoints(...)` overloads now start from configured endpoint defaults so host-configured toggles remain overrideable per host/test
-  - `IntegratedS3EndpointOptions` now expose `IntegratedS3EndpointFeature`-keyed `SetFeatureRouteGroupConfiguration(...)` / `GetFeatureRouteGroupConfiguration(...)` helpers, and the current `Configure*RouteGroup` properties are wrappers over that shared per-feature registry so future endpoint surfaces can follow the same callback pattern
-- Remaining scope:
-  - evaluate whether common authorization conventions should also be exposed as configuration-bound host options in addition to the current map-time route-group callbacks
+    - `IntegratedS3EndpointOptions` now bind from `IntegratedS3:Endpoints`, including configuration-bound whole-route, shared-route, and per-feature authorization conventions, and the map-time `MapIntegratedS3Endpoints(...)` overloads now start from configured endpoint defaults so host-configured toggles remain overrideable per host/test
+    - `IntegratedS3EndpointOptions` now expose `IntegratedS3EndpointFeature`-keyed `SetFeatureRouteGroupConfiguration(...)` / `GetFeatureRouteGroupConfiguration(...)` helpers, and the current `Configure*RouteGroup` properties are wrappers over that shared per-feature registry so future endpoint surfaces can follow the same callback pattern
+  - Remaining scope:
+    - decide whether custom `IStorageBackend` registration needs more DI sugar than direct service registration plus the new configured-provider helpers
+    - evaluate whether common authorization conventions should also be exposed as configuration-bound host options in addition to the current map-time route-group callbacks
   - revisit whether future endpoint surfaces should automatically grow matching per-feature route-group callbacks as they are added
   - preserve `CreateSlimBuilder(...)`, Minimal API, trimming, and AOT friendliness as any follow-up ergonomics polish lands
 
 ### Track E — S3 protocol fidelity and edge-case hardening
 
-- Packages: `IntegratedS3.AspNetCore`, `IntegratedS3.Protocol`, `IntegratedS3.Provider.Disk`, `IntegratedS3.Tests`
+- Packages: `IntegratedS3.Abstractions`, `IntegratedS3.AspNetCore`, `IntegratedS3.Core`, `IntegratedS3.Provider.Disk`, `IntegratedS3.Provider.S3`, `IntegratedS3.EntityFramework`, `IntegratedS3.Protocol`, `IntegratedS3.Tests`
 - Ready: now
 - Depends on: coordinate with Tracks B and C as parity and client-surface hardening follow-ons land
 - Status update:
@@ -1291,10 +1296,10 @@ This section is the execution board for the remaining implementation backlog. As
   - protocol/conformance coverage now locks in canonical empty-value subresource signing plus presigned bucket-versioning and historical-version reads on the S3-compatible route
   - object-tagging header parity is now implemented end-to-end for `PUT Object`, `CopyObject`, and `InitiateMultipartUpload`: the S3-compatible HTTP surface now parses `x-amz-tagging` and `x-amz-tagging-directive`, copy requests honor `COPY` vs `REPLACE` semantics, and the resulting tags flow through Core replication, disk/native-S3 providers, and platform-managed multipart state so completed multipart objects retain their initiated tags
   - focused coverage now locks in direct disk-provider persistence, S3-provider forwarding, EF-backed multipart-state round-tripping, and end-to-end HTTP behavior for put/copy/multipart tagging-header flows
-  - presigned-query authentication now keeps host-only presigned URLs valid when a client also sends an unsigned `x-amz-content-sha256` header, which matches common SDK/browser request behavior
-  - AWS SDK compatibility coverage now locks in path-style `aws-chunked` PUT uploads, virtual-hosted-style `aws-chunked` PUT uploads, and virtual-hosted-style presigned PUT uploads that sign `content-type`
+  - standard object-header parity now covers `x-amz-meta-*`, `Cache-Control`, `Content-Disposition`, `Content-Encoding`, `Content-Language`, `Expires`, multipart-initiation header persistence, and `x-amz-metadata-directive` copy replacement semantics across the current HTTP, disk, S3-provider, and persisted-state surfaces; the sample-host-only `x-integrateds3-meta-*` prefix remains accepted/emitted for compatibility
   - object-tagging header parity is now implemented end-to-end for `PUT Object`, `CopyObject`, and `InitiateMultipartUpload`: the S3-compatible HTTP surface now parses `x-amz-tagging` and `x-amz-tagging-directive`, copy requests honor `COPY` vs `REPLACE` semantics, and the resulting tags flow through Core replication, disk/native-S3 providers, and platform-managed multipart state so completed multipart objects retain their initiated tags
   - focused coverage now locks in direct disk-provider persistence, S3-provider forwarding, EF-backed multipart-state round-tripping, and end-to-end HTTP behavior for put/copy/multipart tagging-header flows
+  - standard object-header parity now covers `x-amz-meta-*`, `Cache-Control`, `Content-Disposition`, `Content-Encoding`, `Content-Language`, `Expires`, multipart-initiation header persistence, and `x-amz-metadata-directive` copy replacement semantics across the current HTTP, disk, S3-provider, and persisted-state surfaces; the sample-host-only `x-integrateds3-meta-*` prefix remains accepted/emitted for compatibility
   - presigned-query authentication now keeps host-only presigned URLs valid when a client also sends an unsigned `x-amz-content-sha256` header, which matches common SDK/browser request behavior
   - AWS SDK compatibility coverage now locks in path-style `aws-chunked` PUT uploads, virtual-hosted-style `aws-chunked` PUT uploads, and virtual-hosted-style presigned PUT uploads that sign `content-type`
   - copy-object source conditionals now return S3-style `412 PreconditionFailed` responses for `x-amz-copy-source-if-none-match` / `x-amz-copy-source-if-modified-since` failures while preserving the existing `if-match` / `if-unmodified-since` precedence behavior
@@ -1304,9 +1309,9 @@ This section is the execution board for the remaining implementation backlog. As
   - non-empty bucket deletion now preserves S3-compatible `BucketNotEmpty` / `409 Conflict` semantics across the disk provider, native S3 translation path, and S3-compatible HTTP DeleteBucket surface, with focused regression coverage at each layer
 - Remaining scope:
   - next: harden conditional precedence, checksum/header behavior, and canonical-request edge cases now that the bucket/object subresource matrix is explicit on the S3-compatible HTTP surface
-  - continue versioning/delete-marker parity work plus any remaining advanced object-tagging edge cases outside the newly landed upload/copy/multipart header paths
+  - next: harden conditional precedence, canonical-request, and remaining checksum/delete-marker/versioning edge cases now that the bucket/object subresource matrix and standard object-header parity are explicit on the S3-compatible HTTP surface
+  - continue versioning/tagging/delete-marker parity work for the remaining advanced edge cases, including any remaining advanced object-tagging behavior outside the landed upload/copy/multipart header paths
   - remaining versioning/tagging parity gaps are now narrowed to deliberately unsupported or not-yet-modeled semantics such as broader S3 tag-character validation and whether single-object explicit missing-version operations should surface a dedicated `NoSuchVersion` contract instead of the current generic not-found behavior
-  - keep `aws-chunked`, presigned-query, checksum-override, and virtual-hosted-style compatibility tightening against real client behavior
   - keep `aws-chunked`, presigned-query, checksum-override, and virtual-hosted-style compatibility tightening against real client behavior beyond the now-covered PUT/presign routing flows
   - temporary-session SigV4 credentials plus trailer-backed `aws-chunked` checksum/signature flows are still not modeled end-to-end on the current HTTP surface, so they should continue to be treated as unsupported compatibility gaps for now
   - decide whether multipart `encoding-type=url` and further multipart-listing edge semantics should be implemented next or remain explicitly unsupported for now
@@ -1363,8 +1368,11 @@ This section is the execution board for the remaining implementation backlog. As
   - the disk provider now rejects the managed SSE request shapes explicitly across the current get/head/put/copy/initiate-multipart surface so unsupported requests fail consistently instead of being ignored
   - `IntegratedS3.Tests` now exercises the end-to-end SSE slice across contracts, S3 provider mapping, disk guardrails, HTTP header/response behavior, and catalog persistence for the shipped `AES256` / `aws:kms` surface
   - browser-facing CORS handling now preserves `Vary` headers for both allowed and rejected preflight/actual responses, successful non-wildcard evaluations emit `Access-Control-Allow-Credentials: true`, literal `*` origin rules return `Access-Control-Allow-Origin: *` while intentionally omitting the credentials header, and S3-compatible bucket subresource validation ignores SigV4 presign query parameters so presigned bucket-versioning reads continue to work
+  - Core now includes a platform-managed ACL/policy compatibility service that tracks current bucket/object canned ACL state plus limited bucket public-policy documents, resets current-object ACL state on writes/deletes, and augments the existing `ClaimsPrincipal` authorization decorator with anonymous/public read/list fallback instead of replacing the host authorization model
+  - ASP.NET now supports S3-compatible bucket/object `GET` / `PUT ?acl`, bucket `GET` / `PUT` / `DELETE ?policy`, `x-amz-acl` handling on bucket create and object put/copy, compatible `AccessControlPolicy` XML body parsing for `PUT ?acl`, and explicit `NotImplemented` / `MalformedPolicy` / `MalformedACLError` responses for unsupported grant headers, unsupported policy conditions, and malformed compatibility requests
+  - `IntegratedS3.Tests` now cover bucket ACL public-list behavior, object ACL public-read behavior, policy-backed anonymous list/read behavior, ACL reset-on-overwrite semantics, XML ACL body parsing, and explicit unsupported ACL/policy request errors
 - Remaining scope:
-  - ACL/policy-compatible behavior where it makes sense alongside the existing `ClaimsPrincipal` authorization model
+  - broader ACL/policy parity beyond the implemented public-read/list slice, including grant-header semantics, version-specific ACLs, multipart ACL persistence, richer principals/actions/resources/conditions, and any future provider-owned access-control passthrough work
   - object lock, retention, and legal-hold abstractions plus provider persistence shape
   - any remaining server-side-encryption follow-on work beyond the implemented native-S3-plus-explicit-disk-guardrails `AES256` / `aws:kms` slice, including broader SSE variants and any future provider expansion, without leaking provider SDK details into shared contracts
   - `IntegratedS3.Tests` now exercise the extended managed SSE slice across contracts, capability reporting, S3 provider mapping, disk guardrails, HTTP header/response behavior, and catalog persistence for the shipped `AES256` / `aws:kms` / `aws:kms:dsse` surface
@@ -1584,7 +1592,7 @@ Status note (March 2026): current Track H validation covers checklist items 5, 6
 
 ## Recommended Next Execution Slices
 
-Track A's contract slice, Track B's native S3 copy/multipart/checksum/delegated-read slice, and Track C's first direct/delegated presign-client slice are now in place, so the best next execution step is to harden the already-landed provider and protocol surfaces rather than reopen shared abstractions. In parallel, Track E can keep closing the remaining S3-compatible edge cases, Track H can expand conformance/fault-injection/publish/benchmark validation around those paths, while Track D mostly shifts to lower-priority follow-up ergonomics after the new toggle/authorization slice.
+Track A's contract slice, Track B's native S3 copy/multipart/checksum/delegated-read slice, Track C's first direct/delegated presign-client slice, and Track E's multipart-listing plus standard object-header parity slice are now in place, so the best next execution step is to harden the already-landed provider and protocol surfaces rather than reopen shared abstractions. In parallel, Track E can keep closing the remaining S3-compatible edge cases, Track H can expand conformance/fault-injection/publish/benchmark validation around those paths, while Track D mostly shifts to lower-priority follow-up ergonomics after the new toggle/authorization slice.
 
 Why these should come next:
 
@@ -1596,18 +1604,18 @@ Why these should come next:
 
 Recommended dependency-aware order:
 
-1. execute Track E to harden remaining bucket/object subresource, conditional-precedence, checksum/header, and delete-marker/versioning edge cases on the S3-compatible surface
+1. execute Track E to harden remaining conditional-precedence, canonical-request, checksum, and delete-marker/versioning edge cases on the S3-compatible surface
 2. execute Track H in parallel to expand conformance, fault-injection, local-endpoint coverage, benchmark baselines, and publish verification around the current Track B / E / G slices
 3. execute Track B in parallel to harden the landed native S3 copy/multipart/checksum/SSE/delegated-read slice against local S3-compatible endpoints and decide whether backend-direct presign should complement the current resolver path
 4. continue Track C in parallel with larger-object and checksum-aware client ergonomics now that direct/delegated read paths, typed transfer helpers, and resume-aware file downloads are already shipped
-5. revisit Track D follow-up only if consumer feedback warrants configuration-bound authorization conventions or more backend-registration sugar
-6. continue Track F in parallel and use the remaining Track G budget for ACL/policy plus retention/encryption behavior and richer health/admin visibility now that endpoint toggles, repair-backlog visibility, descriptor follow-ons, and CORS `Vary` hardening are in place
+5. revisit Track D follow-up only if consumer feedback warrants more backend-registration sugar or additional endpoint-group ergonomics beyond the new configuration-bound authorization conventions
+6. continue Track F in parallel and use the remaining Track G budget for retention/legal-hold, ACL/policy parity follow-on work, remaining encryption behavior, and richer health/admin visibility now that endpoint toggles, repair-backlog visibility, descriptor follow-ons, CORS `Vary` hardening, and the initial public-access ACL/policy slice are in place
 
 ## Suggested First Parallel Batch
 
 Given the current implementation state, the first parallel batch should be:
 
-1. Track E — close the remaining bucket/object subresource, conditional-precedence, checksum/header, and delete-marker/versioning edge cases on the S3-compatible HTTP surface
+1. Track E — close the remaining conditional-precedence, canonical-request, checksum, and delete-marker/versioning edge cases on the S3-compatible HTTP surface
 2. Track H — add local S3-compatible integration coverage, broader conformance/fault-injection cases, benchmark baselines, and publish automation around the already-landed provider/protocol slices
 3. Track B — harden the landed native S3 copy/multipart/checksum/SSE/delegated-read slice against local S3-compatible endpoints and evaluate whether backend-direct presign should complement the current resolver path in `IntegratedS3.Provider.S3`
 4. Track C follow-up — harden larger-object and checksum-aware client transfer flows on top of the current proxy/direct/delegated presign surface
@@ -1649,7 +1657,7 @@ A March 2026 audit of code, tests, and docs created GitHub issues [#1](https://g
   - [#11](https://github.com/SymoHTL/Intergrated-S3/issues/11) optional maintenance/replay host integrations
   - [#12](https://github.com/SymoHTL/Intergrated-S3/issues/12) richer reconciliation and divergence-repair semantics
 - Track G:
-  - [#26](https://github.com/SymoHTL/Intergrated-S3/issues/26) ACL/policy-compatible behavior
+  - extend conformance and protocol hardening into the remaining delete-marker/versioning, checksum-override, and `aws-chunked` edge cases now that the current subresource/presign, conditional-precedence, and raw-query SigV4 gaps are covered
   - [#27](https://github.com/SymoHTL/Intergrated-S3/issues/27) broader server-side-encryption variants
   - [#28](https://github.com/SymoHTL/Intergrated-S3/issues/28) remaining S3/browser CORS conformance hardening
   - [#29](https://github.com/SymoHTL/Intergrated-S3/issues/29) object lock, retention, and legal hold

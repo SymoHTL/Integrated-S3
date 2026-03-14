@@ -17,4 +17,9 @@ internal sealed record S3ObjectEntry(
     bool IsLatest = true,
     bool IsDeleteMarker = false,
     IReadOnlyDictionary<string, string>? Checksums = null,
-    ObjectServerSideEncryptionInfo? ServerSideEncryption = null);
+    ObjectServerSideEncryptionInfo? ServerSideEncryption = null,
+    string? CacheControl = null,
+    string? ContentDisposition = null,
+    string? ContentEncoding = null,
+    string? ContentLanguage = null,
+    DateTimeOffset? ExpiresUtc = null);

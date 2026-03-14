@@ -16,6 +16,22 @@ public sealed class IntegratedS3EndpointOptions
 
     public bool EnableAdminEndpoints { get; set; } = true;
 
+    public IntegratedS3EndpointAuthorizationOptions? RouteAuthorization { get; set; }
+
+    public IntegratedS3EndpointAuthorizationOptions? RootRouteAuthorization { get; set; }
+
+    public IntegratedS3EndpointAuthorizationOptions? CompatibilityRouteAuthorization { get; set; }
+
+    public IntegratedS3EndpointAuthorizationOptions? ServiceRouteAuthorization { get; set; }
+
+    public IntegratedS3EndpointAuthorizationOptions? BucketRouteAuthorization { get; set; }
+
+    public IntegratedS3EndpointAuthorizationOptions? ObjectRouteAuthorization { get; set; }
+
+    public IntegratedS3EndpointAuthorizationOptions? MultipartRouteAuthorization { get; set; }
+
+    public IntegratedS3EndpointAuthorizationOptions? AdminRouteAuthorization { get; set; }
+
     public Action<RouteGroupBuilder>? ConfigureRouteGroup { get; set; }
 
     public Action<RouteGroupBuilder>? ConfigureRootRouteGroup { get; set; }
@@ -82,6 +98,14 @@ public sealed class IntegratedS3EndpointOptions
             EnableObjectEndpoints = EnableObjectEndpoints,
             EnableMultipartEndpoints = EnableMultipartEndpoints,
             EnableAdminEndpoints = EnableAdminEndpoints,
+            RouteAuthorization = RouteAuthorization?.Clone(),
+            RootRouteAuthorization = RootRouteAuthorization?.Clone(),
+            CompatibilityRouteAuthorization = CompatibilityRouteAuthorization?.Clone(),
+            ServiceRouteAuthorization = ServiceRouteAuthorization?.Clone(),
+            BucketRouteAuthorization = BucketRouteAuthorization?.Clone(),
+            ObjectRouteAuthorization = ObjectRouteAuthorization?.Clone(),
+            MultipartRouteAuthorization = MultipartRouteAuthorization?.Clone(),
+            AdminRouteAuthorization = AdminRouteAuthorization?.Clone(),
             ConfigureRouteGroup = ConfigureRouteGroup,
             ConfigureRootRouteGroup = ConfigureRootRouteGroup,
             ConfigureCompatibilityRouteGroup = ConfigureCompatibilityRouteGroup

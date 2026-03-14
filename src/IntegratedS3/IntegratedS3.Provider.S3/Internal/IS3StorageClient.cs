@@ -55,6 +55,13 @@ internal interface IS3StorageClient : IDisposable
         DateTimeOffset expiresAtUtc,
         CancellationToken cancellationToken = default);
 
+    Task<Uri> CreatePresignedPutObjectUrlAsync(
+        string bucketName,
+        string key,
+        string? contentType,
+        DateTimeOffset expiresAtUtc,
+        CancellationToken cancellationToken = default);
+
     Task<S3GetObjectResult> GetObjectAsync(
         string bucketName,
         string key,
@@ -72,6 +79,11 @@ internal interface IS3StorageClient : IDisposable
         Stream content,
         long? contentLength,
         string? contentType,
+        string? cacheControl,
+        string? contentDisposition,
+        string? contentEncoding,
+        string? contentLanguage,
+        DateTimeOffset? expiresUtc,
         IReadOnlyDictionary<string, string>? metadata,
         IReadOnlyDictionary<string, string>? tags,
         IReadOnlyDictionary<string, string>? checksums,
@@ -95,6 +107,14 @@ internal interface IS3StorageClient : IDisposable
         string? sourceIfNoneMatchETag,
         DateTimeOffset? sourceIfModifiedSinceUtc,
         DateTimeOffset? sourceIfUnmodifiedSinceUtc,
+        CopyObjectMetadataDirective metadataDirective,
+        string? contentType,
+        string? cacheControl,
+        string? contentDisposition,
+        string? contentEncoding,
+        string? contentLanguage,
+        DateTimeOffset? expiresUtc,
+        IReadOnlyDictionary<string, string>? metadata,
         bool overwriteIfExists,
         ObjectTaggingDirective taggingDirective,
         IReadOnlyDictionary<string, string>? tags,
@@ -105,6 +125,11 @@ internal interface IS3StorageClient : IDisposable
         string bucketName,
         string key,
         string? contentType,
+        string? cacheControl,
+        string? contentDisposition,
+        string? contentEncoding,
+        string? contentLanguage,
+        DateTimeOffset? expiresUtc,
         IReadOnlyDictionary<string, string>? metadata,
         IReadOnlyDictionary<string, string>? tags,
         string? checksumAlgorithm,
