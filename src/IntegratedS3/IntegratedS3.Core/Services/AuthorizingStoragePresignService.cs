@@ -11,6 +11,7 @@ namespace IntegratedS3.Core.Services;
 internal sealed class AuthorizingStoragePresignService(
     IIntegratedS3AuthorizationService authorizationService,
     IStoragePresignStrategy strategy,
+    IIntegratedS3RequestContextAccessor requestContextAccessor,
     ILogger<AuthorizingStoragePresignService> logger) : IStoragePresignService
 {
     public async ValueTask<StorageResult<StoragePresignedRequest>> PresignObjectAsync(
@@ -23,9 +24,12 @@ internal sealed class AuthorizingStoragePresignService(
         cancellationToken.ThrowIfCancellationRequested();
 
         var authorizationRequest = CreateAuthorizationRequest(request);
+        var existing = requestContextAccessor.Current;
         var requestContext = new IntegratedS3RequestContext
         {
-            Principal = principal
+            Principal = principal,
+            CorrelationId = existing?.CorrelationId,
+            RequestId = existing?.RequestId
         };
         using var scope = IntegratedS3CoreTelemetry.BeginOperationScope(logger, authorizationRequest, requestContext);
         using var activity = IntegratedS3CoreTelemetry.StartOperationActivity(authorizationRequest, requestContext);
