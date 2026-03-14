@@ -1,4 +1,6 @@
+using Amazon.Runtime;
 using IntegratedS3.Abstractions.Capabilities;
+using IntegratedS3.Abstractions.Models;
 using IntegratedS3.Provider.S3;
 using IntegratedS3.Provider.S3.DependencyInjection;
 using IntegratedS3.Provider.S3.Internal;
@@ -44,6 +46,18 @@ public sealed class S3StorageOptionsCapabilitiesTests
 
         Assert.Equal(StorageCapabilitySupport.Native, capsFps.BucketOperations);
         Assert.Equal(StorageCapabilitySupport.Native, capsVhs.BucketOperations);
+    }
+
+    [Fact]
+    public void CreateDefault_ReportsManagedServerSideEncryptionVariants()
+    {
+        var caps = S3StorageCapabilities.CreateDefault(new S3StorageOptions { ForcePathStyle = true });
+
+        Assert.Collection(
+            caps.ServerSideEncryptionDetails.Variants,
+            variant => AssertManagedVariant(variant, ObjectServerSideEncryptionAlgorithm.Aes256, supportsKeyId: false, supportsContext: false),
+            variant => AssertManagedVariant(variant, ObjectServerSideEncryptionAlgorithm.Kms, supportsKeyId: true, supportsContext: true),
+            variant => AssertManagedVariant(variant, ObjectServerSideEncryptionAlgorithm.KmsDsse, supportsKeyId: true, supportsContext: true));
     }
 
     [Fact]
@@ -108,6 +122,17 @@ public sealed class S3StorageOptionsCapabilitiesTests
         Assert.Null(normalized.SecretKey);
     }
 
+    [Theory]
+    [InlineData("  http://localhost:9000  ", "http://localhost:9000")]
+    [InlineData("http://localhost:9000", "http://localhost:9000")]
+    [InlineData("  ", null)]
+    [InlineData("", null)]
+    public void Normalize_ServiceUrl_TrimsWhitespace_AndTreatsBlankAsNull(string raw, string? expected)
+    {
+        var normalized = NormalizeViaAddS3Storage(o => o.ServiceUrl = raw);
+        Assert.Equal(expected, normalized.ServiceUrl);
+    }
+
     // ── Explicit credential construction ───────────────────────────────────
 
     [Fact]
@@ -153,6 +178,66 @@ public sealed class S3StorageOptionsCapabilitiesTests
         Assert.NotNull(client);
     }
 
+    [Fact]
+    public void CreateConfig_WithCustomHttpServiceUrl_UsesAuthenticationRegion_Http_AndRequiredChecksumModes()
+    {
+        var config = AwsS3StorageClient.CreateConfig(new S3StorageOptions
+        {
+            Region = "us-east-1",
+            ServiceUrl = "http://localhost:9000",
+            ForcePathStyle = true
+        });
+
+        Assert.Equal(new Uri("http://localhost:9000"), new Uri(config.ServiceURL!, UriKind.Absolute));
+        Assert.True(config.ForcePathStyle);
+        Assert.Equal("us-east-1", config.AuthenticationRegion);
+        Assert.True(config.UseHttp);
+        Assert.Equal(RequestChecksumCalculation.WHEN_REQUIRED, config.RequestChecksumCalculation);
+        Assert.Equal(ResponseChecksumValidation.WHEN_REQUIRED, config.ResponseChecksumValidation);
+    }
+
+    [Fact]
+    public void CreateConfig_WithoutServiceUrl_UsesRegionalEndpoint_AndDefaultChecksumModes()
+    {
+        var config = AwsS3StorageClient.CreateConfig(new S3StorageOptions
+        {
+            Region = "eu-central-1"
+        });
+
+        Assert.Null(config.ServiceURL);
+        Assert.Equal("eu-central-1", config.RegionEndpoint?.SystemName);
+        Assert.Null(config.AuthenticationRegion);
+        Assert.False(config.UseHttp);
+        Assert.Equal(RequestChecksumCalculation.WHEN_SUPPORTED, config.RequestChecksumCalculation);
+        Assert.Equal(ResponseChecksumValidation.WHEN_SUPPORTED, config.ResponseChecksumValidation);
+    }
+
+    [Fact]
+    public async Task CreatePresignedGetObjectUrlAsync_WithCustomHttpServiceUrl_PreservesHttpScheme_AndSigV4Shape()
+    {
+        using var client = new AwsS3StorageClient(new S3StorageOptions
+        {
+            Region = "us-east-1",
+            ServiceUrl = "http://localhost:9000",
+            ForcePathStyle = true,
+            AccessKey = "minioadmin",
+            SecretKey = "minioadmin"
+        });
+
+        var presignedUrl = await client.CreatePresignedGetObjectUrlAsync(
+            "bucket-name",
+            "docs/object.txt",
+            "v-123",
+            DateTimeOffset.UtcNow.AddMinutes(10));
+
+        Assert.Equal("http", presignedUrl.Scheme);
+        Assert.Equal("localhost", presignedUrl.Host);
+        Assert.Equal(9000, presignedUrl.Port);
+        Assert.Equal("/bucket-name/docs/object.txt", presignedUrl.AbsolutePath);
+        Assert.Contains("versionId=v-123", presignedUrl.Query, StringComparison.Ordinal);
+        Assert.Contains("X-Amz-Algorithm=AWS4-HMAC-SHA256", presignedUrl.Query, StringComparison.Ordinal);
+    }
+
     // ── Helpers ─────────────────────────────────────────────────────────────
 
     /// <summary>
@@ -171,5 +256,25 @@ public sealed class S3StorageOptionsCapabilitiesTests
             captured = o;
         });
         return captured!;
+    }
+
+    private static void AssertManagedVariant(
+        StorageServerSideEncryptionVariantDescriptor variant,
+        ObjectServerSideEncryptionAlgorithm algorithm,
+        bool supportsKeyId,
+        bool supportsContext)
+    {
+        Assert.Equal(algorithm, variant.Algorithm);
+        Assert.Equal(StorageServerSideEncryptionRequestStyle.Managed, variant.RequestStyle);
+        Assert.Equal(
+            [
+                StorageServerSideEncryptionRequestOperation.PutObject,
+                StorageServerSideEncryptionRequestOperation.CopyDestination,
+                StorageServerSideEncryptionRequestOperation.InitiateMultipartUpload
+            ],
+            variant.SupportedRequestOperations);
+        Assert.True(variant.SupportsResponseMetadata);
+        Assert.Equal(supportsKeyId, variant.SupportsKeyId);
+        Assert.Equal(supportsContext, variant.SupportsContext);
     }
 }

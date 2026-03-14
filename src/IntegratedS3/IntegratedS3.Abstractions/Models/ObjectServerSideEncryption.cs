@@ -22,5 +22,6 @@ public sealed class ObjectServerSideEncryptionInfo
 public enum ObjectServerSideEncryptionAlgorithm
 {
     Aes256,
-    Kms
+    Kms,
+    KmsDsse
 }

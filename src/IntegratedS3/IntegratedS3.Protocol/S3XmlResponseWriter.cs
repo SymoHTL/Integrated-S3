@@ -6,6 +6,28 @@ namespace IntegratedS3.Protocol;
 
 public static class S3XmlResponseWriter
 {
+    public static string WriteBucketLocation(S3BucketLocationResponse response)
+    {
+        ArgumentNullException.ThrowIfNull(response);
+
+        var builder = new StringBuilder();
+        using var stringWriter = new StringWriter(builder, CultureInfo.InvariantCulture);
+        using var xmlWriter = XmlWriter.Create(stringWriter, CreateSettings());
+
+        xmlWriter.WriteStartDocument();
+        xmlWriter.WriteStartElement("LocationConstraint");
+
+        if (!string.IsNullOrWhiteSpace(response.LocationConstraint)) {
+            xmlWriter.WriteString(response.LocationConstraint);
+        }
+
+        xmlWriter.WriteEndElement();
+        xmlWriter.WriteEndDocument();
+        xmlWriter.Flush();
+
+        return builder.ToString();
+    }
+
     public static string WriteBucketVersioningConfiguration(S3BucketVersioningConfiguration response)
     {
         ArgumentNullException.ThrowIfNull(response);
@@ -232,42 +254,65 @@ public static class S3XmlResponseWriter
         xmlWriter.WriteStartDocument();
         xmlWriter.WriteStartElement("ListBucketResult");
         xmlWriter.WriteElementString("Name", response.Name);
-        xmlWriter.WriteElementString("Prefix", response.Prefix ?? string.Empty);
+        xmlWriter.WriteElementString("Prefix", EncodeS3ListValue(response.Prefix ?? string.Empty, response.EncodingType));
 
-        if (!string.IsNullOrWhiteSpace(response.Delimiter)) {
-            xmlWriter.WriteElementString("Delimiter", response.Delimiter);
+        if (response.IsV2) {
+            if (!string.IsNullOrWhiteSpace(response.Delimiter)) {
+                xmlWriter.WriteElementString("Delimiter", EncodeS3ListValue(response.Delimiter, response.EncodingType));
+            }
+
+            if (!string.IsNullOrWhiteSpace(response.StartAfter)) {
+                xmlWriter.WriteElementString("StartAfter", EncodeS3ListValue(response.StartAfter, response.EncodingType));
+            }
+
+            if (!string.IsNullOrWhiteSpace(response.ContinuationToken)) {
+                xmlWriter.WriteElementString("ContinuationToken", response.ContinuationToken);
+            }
+
+            if (!string.IsNullOrWhiteSpace(response.NextContinuationToken)) {
+                xmlWriter.WriteElementString("NextContinuationToken", response.NextContinuationToken);
+            }
+
+            xmlWriter.WriteElementString("KeyCount", response.KeyCount.ToString(CultureInfo.InvariantCulture));
+        }
+        else {
+            xmlWriter.WriteElementString("Marker", EncodeS3ListValue(response.Marker ?? string.Empty, response.EncodingType));
+
+            if (!string.IsNullOrWhiteSpace(response.Delimiter)) {
+                xmlWriter.WriteElementString("Delimiter", EncodeS3ListValue(response.Delimiter, response.EncodingType));
+            }
+
+            if (!string.IsNullOrWhiteSpace(response.NextMarker)) {
+                xmlWriter.WriteElementString("NextMarker", EncodeS3ListValue(response.NextMarker, response.EncodingType));
+            }
         }
 
-        if (!string.IsNullOrWhiteSpace(response.StartAfter)) {
-            xmlWriter.WriteElementString("StartAfter", response.StartAfter);
-        }
-
-        if (!string.IsNullOrWhiteSpace(response.ContinuationToken)) {
-            xmlWriter.WriteElementString("ContinuationToken", response.ContinuationToken);
-        }
-
-        if (!string.IsNullOrWhiteSpace(response.NextContinuationToken)) {
-            xmlWriter.WriteElementString("NextContinuationToken", response.NextContinuationToken);
-        }
-
-        xmlWriter.WriteElementString("KeyCount", response.KeyCount.ToString(CultureInfo.InvariantCulture));
         xmlWriter.WriteElementString("MaxKeys", response.MaxKeys.ToString(CultureInfo.InvariantCulture));
         xmlWriter.WriteElementString("IsTruncated", response.IsTruncated ? "true" : "false");
 
         foreach (var content in response.Contents) {
             xmlWriter.WriteStartElement("Contents");
-            xmlWriter.WriteElementString("Key", content.Key);
+            xmlWriter.WriteElementString("Key", EncodeS3ListValue(content.Key, response.EncodingType));
             xmlWriter.WriteElementString("LastModified", FormatTimestamp(content.LastModifiedUtc));
             xmlWriter.WriteElementString("ETag", QuoteETag(content.ETag ?? string.Empty));
             xmlWriter.WriteElementString("Size", content.Size.ToString(CultureInfo.InvariantCulture));
             xmlWriter.WriteElementString("StorageClass", content.StorageClass);
+
+            if (content.Owner is not null) {
+                WriteOwner(xmlWriter, "Owner", content.Owner);
+            }
+
             xmlWriter.WriteEndElement();
         }
 
         foreach (var commonPrefix in response.CommonPrefixes) {
             xmlWriter.WriteStartElement("CommonPrefixes");
-            xmlWriter.WriteElementString("Prefix", commonPrefix.Prefix);
+            xmlWriter.WriteElementString("Prefix", EncodeS3ListValue(commonPrefix.Prefix, response.EncodingType));
             xmlWriter.WriteEndElement();
+        }
+
+        if (!string.IsNullOrWhiteSpace(response.EncodingType)) {
+            xmlWriter.WriteElementString("EncodingType", response.EncodingType);
         }
 
         xmlWriter.WriteEndElement();
@@ -353,20 +398,24 @@ public static class S3XmlResponseWriter
         xmlWriter.WriteStartDocument();
         xmlWriter.WriteStartElement("ListMultipartUploadsResult");
         xmlWriter.WriteElementString("Bucket", response.Bucket);
-        xmlWriter.WriteElementString("KeyMarker", response.KeyMarker ?? string.Empty);
+        xmlWriter.WriteElementString("KeyMarker", EncodeS3ListValue(response.KeyMarker ?? string.Empty, response.EncodingType));
         xmlWriter.WriteElementString("UploadIdMarker", response.UploadIdMarker ?? string.Empty);
-        xmlWriter.WriteElementString("Prefix", response.Prefix ?? string.Empty);
+        xmlWriter.WriteElementString("Prefix", EncodeS3ListValue(response.Prefix ?? string.Empty, response.EncodingType));
 
         if (!string.IsNullOrWhiteSpace(response.Delimiter)) {
-            xmlWriter.WriteElementString("Delimiter", response.Delimiter);
+            xmlWriter.WriteElementString("Delimiter", EncodeS3ListValue(response.Delimiter, response.EncodingType));
         }
 
         if (!string.IsNullOrWhiteSpace(response.NextKeyMarker)) {
-            xmlWriter.WriteElementString("NextKeyMarker", response.NextKeyMarker);
+            xmlWriter.WriteElementString("NextKeyMarker", EncodeS3ListValue(response.NextKeyMarker, response.EncodingType));
         }
 
         if (!string.IsNullOrWhiteSpace(response.NextUploadIdMarker)) {
             xmlWriter.WriteElementString("NextUploadIdMarker", response.NextUploadIdMarker);
+        }
+
+        if (!string.IsNullOrWhiteSpace(response.EncodingType)) {
+            xmlWriter.WriteElementString("EncodingType", response.EncodingType);
         }
 
         xmlWriter.WriteElementString("MaxUploads", response.MaxUploads.ToString(CultureInfo.InvariantCulture));
@@ -374,8 +423,17 @@ public static class S3XmlResponseWriter
 
         foreach (var upload in response.Uploads) {
             xmlWriter.WriteStartElement("Upload");
-            xmlWriter.WriteElementString("Key", upload.Key);
+            xmlWriter.WriteElementString("Key", EncodeS3ListValue(upload.Key, response.EncodingType));
             xmlWriter.WriteElementString("UploadId", upload.UploadId);
+
+            if (upload.Initiator is not null) {
+                WriteOwner(xmlWriter, "Initiator", upload.Initiator);
+            }
+
+            if (upload.Owner is not null) {
+                WriteOwner(xmlWriter, "Owner", upload.Owner);
+            }
+
             xmlWriter.WriteElementString("Initiated", FormatTimestamp(upload.InitiatedAtUtc));
 
             if (!string.IsNullOrWhiteSpace(upload.ChecksumAlgorithm)) {
@@ -388,8 +446,12 @@ public static class S3XmlResponseWriter
 
         foreach (var commonPrefix in response.CommonPrefixes) {
             xmlWriter.WriteStartElement("CommonPrefixes");
-            xmlWriter.WriteElementString("Prefix", commonPrefix.Prefix);
+            xmlWriter.WriteElementString("Prefix", EncodeS3ListValue(commonPrefix.Prefix, response.EncodingType));
             xmlWriter.WriteEndElement();
+        }
+
+        if (!string.IsNullOrWhiteSpace(response.EncodingType)) {
+            xmlWriter.WriteElementString("EncodingType", response.EncodingType);
         }
 
         xmlWriter.WriteEndElement();
@@ -410,10 +472,7 @@ public static class S3XmlResponseWriter
         xmlWriter.WriteStartDocument();
         xmlWriter.WriteStartElement("ListAllMyBucketsResult");
 
-        xmlWriter.WriteStartElement("Owner");
-        xmlWriter.WriteElementString("ID", response.Owner.Id);
-        xmlWriter.WriteElementString("DisplayName", response.Owner.DisplayName);
-        xmlWriter.WriteEndElement();
+        WriteOwner(xmlWriter, "Owner", response.Owner);
 
         xmlWriter.WriteStartElement("Buckets");
         foreach (var bucket in response.Buckets) {
@@ -530,5 +589,30 @@ public static class S3XmlResponseWriter
         return string.IsNullOrWhiteSpace(value)
             ? "\"\""
             : value.StartsWith('"') ? value : $"\"{value}\"";
+    }
+
+    private static void WriteOwner(XmlWriter xmlWriter, string elementName, S3BucketOwner owner)
+    {
+        ArgumentNullException.ThrowIfNull(xmlWriter);
+        ArgumentException.ThrowIfNullOrWhiteSpace(elementName);
+        ArgumentNullException.ThrowIfNull(owner);
+
+        xmlWriter.WriteStartElement(elementName);
+        xmlWriter.WriteElementString("ID", owner.Id);
+
+        if (!string.IsNullOrWhiteSpace(owner.DisplayName)) {
+            xmlWriter.WriteElementString("DisplayName", owner.DisplayName);
+        }
+
+        xmlWriter.WriteEndElement();
+    }
+
+    private static string EncodeS3ListValue(string value, string? encodingType)
+    {
+        ArgumentNullException.ThrowIfNull(value);
+
+        return string.Equals(encodingType, "url", StringComparison.Ordinal)
+            ? Uri.EscapeDataString(value)
+            : value;
     }
 }
