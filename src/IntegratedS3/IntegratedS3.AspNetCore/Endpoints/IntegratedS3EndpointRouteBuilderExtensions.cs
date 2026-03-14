@@ -1,6 +1,7 @@
 using System.Net;
 using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
+using System.Security.Claims;
 using System.Text;
 using System.Text.Json;
 using IntegratedS3.Abstractions.Capabilities;
@@ -55,10 +56,13 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
     private const string ListTypeQueryParameterName = "list-type";
     private const string PrefixQueryParameterName = "prefix";
     private const string DelimiterQueryParameterName = "delimiter";
+    private const string MarkerQueryParameterName = "marker";
     private const string StartAfterQueryParameterName = "start-after";
     private const string MaxKeysQueryParameterName = "max-keys";
     private const string MaxUploadsQueryParameterName = "max-uploads";
     private const string ContinuationTokenQueryParameterName = "continuation-token";
+    private const string EncodingTypeQueryParameterName = "encoding-type";
+    private const string FetchOwnerQueryParameterName = "fetch-owner";
     private const string LocationQueryParameterName = "location";
     private const string CorsQueryParameterName = "cors";
     private const string TaggingQueryParameterName = "tagging";
@@ -82,6 +86,11 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
     private const string AccessControlAllowHeadersHeaderName = "Access-Control-Allow-Headers";
     private const string AccessControlExposeHeadersHeaderName = "Access-Control-Expose-Headers";
     private const string AccessControlMaxAgeHeaderName = "Access-Control-Max-Age";
+    private const string UrlEncodingTypeValue = "url";
+    private const string DefaultS3ListingIdentityId = "integrated-s3";
+    private static readonly HashSet<string> EmptyQueryParameters = CreateQueryParameterSet();
+    private static readonly HashSet<string> BucketListObjectsV1QueryParameters = CreateQueryParameterSet(PrefixQueryParameterName, DelimiterQueryParameterName, MarkerQueryParameterName, MaxKeysQueryParameterName, EncodingTypeQueryParameterName);
+    private static readonly HashSet<string> BucketListObjectsV2QueryParameters = CreateQueryParameterSet(ListTypeQueryParameterName, PrefixQueryParameterName, DelimiterQueryParameterName, StartAfterQueryParameterName, MaxKeysQueryParameterName, ContinuationTokenQueryParameterName, EncodingTypeQueryParameterName, FetchOwnerQueryParameterName);
     private static readonly EndpointFeatureDescriptor ServiceEndpointFeature = new(IntegratedS3EndpointFeature.Service, "service", nameof(IntegratedS3EndpointOptions.ConfigureServiceRouteGroup));
     private static readonly EndpointFeatureDescriptor BucketEndpointFeature = new(IntegratedS3EndpointFeature.Bucket, "bucket", nameof(IntegratedS3EndpointOptions.ConfigureBucketRouteGroup));
     private static readonly EndpointFeatureDescriptor ObjectEndpointFeature = new(IntegratedS3EndpointFeature.Object, "object", nameof(IntegratedS3EndpointOptions.ConfigureObjectRouteGroup));
@@ -95,6 +104,7 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
     private static readonly HashSet<string> BucketVersionListingQueryParameters = CreateQueryParameterSet(VersionsQueryParameterName, PrefixQueryParameterName, DelimiterQueryParameterName, MaxKeysQueryParameterName, KeyMarkerQueryParameterName, VersionIdMarkerQueryParameterName);
     private static readonly HashSet<string> BucketMultipartUploadsQueryParameters = CreateQueryParameterSet(UploadsQueryParameterName, PrefixQueryParameterName, DelimiterQueryParameterName, MaxUploadsQueryParameterName, KeyMarkerQueryParameterName, UploadIdMarkerQueryParameterName, EncodingTypeQueryParameterName);
     private static readonly HashSet<string> BucketDeleteQueryParameters = CreateQueryParameterSet(DeleteQueryParameterName);
+    private static readonly HashSet<string> KnownBucketQueryParameters = CreateQueryParameterSet(ListTypeQueryParameterName, PrefixQueryParameterName, DelimiterQueryParameterName, MarkerQueryParameterName, StartAfterQueryParameterName, MaxKeysQueryParameterName, MaxUploadsQueryParameterName, ContinuationTokenQueryParameterName, EncodingTypeQueryParameterName, FetchOwnerQueryParameterName, CorsQueryParameterName, VersioningQueryParameterName, VersionsQueryParameterName, KeyMarkerQueryParameterName, VersionIdMarkerQueryParameterName, UploadIdMarkerQueryParameterName, UploadsQueryParameterName, DeleteQueryParameterName);
     private static readonly HashSet<string> KnownBucketQueryParameters = CreateQueryParameterSet(ListTypeQueryParameterName, PrefixQueryParameterName, DelimiterQueryParameterName, StartAfterQueryParameterName, MaxKeysQueryParameterName, ContinuationTokenQueryParameterName, CorsQueryParameterName, VersioningQueryParameterName, VersionsQueryParameterName, KeyMarkerQueryParameterName, VersionIdMarkerQueryParameterName, MaxUploadsQueryParameterName, UploadIdMarkerQueryParameterName, EncodingTypeQueryParameterName, UploadsQueryParameterName, DeleteQueryParameterName);
     private static readonly HashSet<string> KnownBucketQueryParameters = CreateQueryParameterSet(ListTypeQueryParameterName, PrefixQueryParameterName, DelimiterQueryParameterName, StartAfterQueryParameterName, MaxKeysQueryParameterName, ContinuationTokenQueryParameterName, LocationQueryParameterName, CorsQueryParameterName, VersioningQueryParameterName, VersionsQueryParameterName, KeyMarkerQueryParameterName, VersionIdMarkerQueryParameterName, MaxUploadsQueryParameterName, UploadIdMarkerQueryParameterName, UploadsQueryParameterName, DeleteQueryParameterName);
     private static readonly HashSet<string> ObjectVersionQueryParameters = CreateQueryParameterSet(VersionIdQueryParameterName);
@@ -1099,6 +1109,8 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
                 ParseDelimiter(httpContext.Request),
                 ParseKeyMarker(httpContext.Request),
                 ParseUploadIdMarker(httpContext.Request),
+                ParseMaxUploads(httpContext.Request),
+                ParseEncodingType(httpContext.Request),
                 httpContext,
                 requestContextAccessor,
                 storageService,
@@ -1119,17 +1131,31 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
             "DELETE" when httpContext.Request.Query.ContainsKey(CorsQueryParameterName) => await DeleteBucketCorsAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
             _ => httpContext.Request.Method switch
         {
-            "GET" => await ListObjectsV2Async(
-                resolvedRequest.BucketName,
-                ParsePrefix(httpContext.Request),
-                ParseDelimiter(httpContext.Request),
-                ParseStartAfter(httpContext.Request),
-                ParseContinuationToken(httpContext.Request),
-                ParseMaxKeys(httpContext.Request),
-                httpContext,
-                requestContextAccessor,
-                storageService,
-                cancellationToken),
+            "GET" => IsListObjectsV2Request(httpContext.Request)
+                ? await ListObjectsV2Async(
+                    resolvedRequest.BucketName,
+                    ParsePrefix(httpContext.Request),
+                    ParseDelimiter(httpContext.Request),
+                    ParseStartAfter(httpContext.Request),
+                    ParseContinuationToken(httpContext.Request),
+                    ParseMaxKeys(httpContext.Request),
+                    ParseEncodingType(httpContext.Request),
+                    ParseFetchOwner(httpContext.Request),
+                    httpContext,
+                    requestContextAccessor,
+                    storageService,
+                    cancellationToken)
+                : await ListObjectsV1Async(
+                    resolvedRequest.BucketName,
+                    ParsePrefix(httpContext.Request),
+                    ParseDelimiter(httpContext.Request),
+                    ParseMarker(httpContext.Request),
+                    ParseMaxKeys(httpContext.Request),
+                    ParseEncodingType(httpContext.Request),
+                    httpContext,
+                    requestContextAccessor,
+                    storageService,
+                    cancellationToken),
             "PUT" => await CreateBucketS3CompatibleAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
             "HEAD" => await HeadBucketAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
             "DELETE" => await DeleteBucketAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
@@ -1766,6 +1792,8 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
         string? delimiter,
         string? keyMarker,
         string? uploadIdMarker,
+        int? maxUploads,
+        string? encodingType,
         HttpContext httpContext,
         IIntegratedS3RequestContextAccessor requestContextAccessor,
         IStorageService storageService,
@@ -1811,7 +1839,9 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
                         normalizedUploadIdMarker,
                         encodingType,
                         requestedPageSize,
-                        uploads);
+                        uploads,
+                        encodingType,
+                        ResolveS3ListingIdentity(httpContext.User));
 
                     return new XmlContentResult(S3XmlResponseWriter.WriteListMultipartUploadsResult(response), StatusCodes.Status200OK, XmlContentType);
                 }
@@ -1831,13 +1861,13 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
         }
     }
 
-    private static async Task<IResult> ListObjectsV2Async(
+    private static async Task<IResult> ListObjectsV1Async(
         string bucketName,
         string? prefix,
         string? delimiter,
-        string? startAfter,
-        string? continuationToken,
+        string? marker,
         int? maxKeys,
+        string? encodingType,
         HttpContext httpContext,
         IIntegratedS3RequestContextAccessor requestContextAccessor,
         IStorageService storageService,
@@ -1867,10 +1897,78 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
                         bucketName,
                         prefix,
                         delimiter,
+                        marker,
+                        startAfter: null,
+                        continuationToken: null,
+                        requestedPageSize,
+                        objects,
+                        isV2: false,
+                        includeOwner: true,
+                        encodingType,
+                        ResolveS3ListingIdentity(httpContext.User));
+
+                    return new XmlContentResult(S3XmlResponseWriter.WriteListBucketResult(response), StatusCodes.Status200OK, XmlContentType);
+                }
+                catch (StorageAuthorizationException exception) {
+                    return ToErrorResult(httpContext, exception.Error, resourceOverride: BuildObjectResource(bucketName, null));
+                }
+            }, cancellationToken);
+        }
+        catch (EndpointStorageAuthorizationException exception) {
+            return ToErrorResult(httpContext, exception.Error, resourceOverride: BuildObjectResource(bucketName, null));
+        }
+        catch (ArgumentException exception) {
+            return ToErrorResult(httpContext, StatusCodes.Status400BadRequest, "InvalidArgument", exception.Message, BuildObjectResource(bucketName, null), bucketName);
+        }
+    }
+
+    private static async Task<IResult> ListObjectsV2Async(
+        string bucketName,
+        string? prefix,
+        string? delimiter,
+        string? startAfter,
+        string? continuationToken,
+        int? maxKeys,
+        string? encodingType,
+        bool fetchOwner,
+        HttpContext httpContext,
+        IIntegratedS3RequestContextAccessor requestContextAccessor,
+        IStorageService storageService,
+        CancellationToken cancellationToken)
+    {
+        try {
+            return await ExecuteWithRequestContextAsync(httpContext, requestContextAccessor, async innerCancellationToken => {
+                var bucketResult = await storageService.HeadBucketAsync(bucketName, innerCancellationToken);
+                if (!bucketResult.IsSuccess) {
+                    return ToErrorResult(httpContext, bucketResult.Error, resourceOverride: BuildObjectResource(bucketName, null));
+                }
+
+                if (maxKeys is <= 0) {
+                    return ToErrorResult(httpContext, StatusCodes.Status400BadRequest, "InvalidArgument", "max-keys must be greater than zero.", BuildObjectResource(bucketName, null), bucketName);
+                }
+
+                var requestedPageSize = maxKeys ?? 1000;
+
+                try {
+                    var objects = await storageService.ListObjectsAsync(new ListObjectsRequest
+                    {
+                        BucketName = bucketName,
+                        Prefix = prefix
+                    }, innerCancellationToken).ToArrayAsync(innerCancellationToken);
+
+                    var response = BuildListBucketResult(
+                        bucketName,
+                        prefix,
+                        delimiter,
+                        marker: null,
                         startAfter,
                         continuationToken,
                         requestedPageSize,
-                        objects);
+                        objects,
+                        isV2: true,
+                        includeOwner: fetchOwner,
+                        encodingType,
+                        ResolveS3ListingIdentity(httpContext.User));
 
                     return new XmlContentResult(S3XmlResponseWriter.WriteListBucketResult(response), StatusCodes.Status200OK, XmlContentType);
                 }
@@ -2328,11 +2426,46 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
             : startAfter;
     }
 
+    private static string? ParseMarker(HttpRequest request)
+    {
+        if (!request.Query.TryGetValue(MarkerQueryParameterName, out var values)) {
+            return null;
+        }
+
+        var marker = values.ToString();
+        return string.IsNullOrWhiteSpace(marker)
+            ? null
+            : marker;
+    }
+
     private static string? ParseContinuationToken(HttpRequest request)
     {
         return request.Query.TryGetValue(ContinuationTokenQueryParameterName, out var values)
             ? values.ToString()
             : null;
+    }
+
+    private static string? ParseEncodingType(HttpRequest request)
+    {
+        if (!request.Query.TryGetValue(EncodingTypeQueryParameterName, out var values)) {
+            return null;
+        }
+
+        var encodingType = values.ToString();
+        return string.Equals(encodingType, UrlEncodingTypeValue, StringComparison.Ordinal)
+            ? encodingType
+            : throw new ArgumentException("The encoding-type query parameter must be 'url'.", EncodingTypeQueryParameterName);
+    }
+
+    private static bool ParseFetchOwner(HttpRequest request)
+    {
+        if (!request.Query.TryGetValue(FetchOwnerQueryParameterName, out var values)) {
+            return false;
+        }
+
+        return bool.TryParse(values.ToString(), out var fetchOwner)
+            ? fetchOwner
+            : throw new ArgumentException("The fetch-owner query parameter must be 'true' or 'false'.", FetchOwnerQueryParameterName);
     }
 
     private static string? ParseKeyMarker(HttpRequest request)
@@ -2376,16 +2509,21 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
         string bucketName,
         string? prefix,
         string? delimiter,
+        string? marker,
         string? startAfter,
         string? continuationToken,
         int maxKeys,
-        IReadOnlyList<ObjectInfo> objects)
+        IReadOnlyList<ObjectInfo> objects,
+        bool isV2,
+        bool includeOwner,
+        string? encodingType,
+        S3BucketOwner owner)
     {
         var normalizedPrefix = prefix ?? string.Empty;
         var normalizedDelimiter = string.IsNullOrEmpty(delimiter) ? null : delimiter;
-        var marker = string.IsNullOrWhiteSpace(continuationToken)
+        var markerValue = isV2 && string.IsNullOrWhiteSpace(continuationToken)
             ? startAfter
-            : continuationToken;
+            : isV2 ? continuationToken : marker;
 
         var entries = new List<ListBucketResultEntry>();
 
@@ -2395,8 +2533,8 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
                 continue;
             }
 
-            if (!string.IsNullOrWhiteSpace(marker)
-                && StringComparer.Ordinal.Compare(currentObject.Key, marker) <= 0) {
+            if (!string.IsNullOrWhiteSpace(markerValue)
+                && StringComparer.Ordinal.Compare(currentObject.Key, markerValue) <= 0) {
                 continue;
             }
 
@@ -2433,22 +2571,27 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
         return new S3ListBucketResult
         {
             Name = bucketName,
+            IsV2 = isV2,
             Prefix = prefix,
             Delimiter = normalizedDelimiter,
-            StartAfter = startAfter,
-            ContinuationToken = continuationToken,
-            NextContinuationToken = isTruncated ? page[^1].ContinuationToken : null,
-            KeyCount = page.Length,
+            Marker = isV2 ? null : marker,
+            StartAfter = isV2 ? startAfter : null,
+            ContinuationToken = isV2 ? continuationToken : null,
+            NextMarker = !isV2 && isTruncated && normalizedDelimiter is not null ? page[^1].ContinuationToken : null,
+            NextContinuationToken = isV2 && isTruncated ? page[^1].ContinuationToken : null,
+            EncodingType = encodingType,
+            KeyCount = isV2 ? page.Length : 0,
             MaxKeys = maxKeys,
             IsTruncated = isTruncated,
             Contents = page
                 .Where(static entry => entry.Object is not null)
-                .Select(static entry => new S3ListBucketObject
+                .Select(entry => new S3ListBucketObject
                 {
                     Key = entry.Object!.Key,
                     ETag = entry.Object.ETag,
                     Size = entry.Object.ContentLength,
-                    LastModifiedUtc = entry.Object.LastModifiedUtc
+                    LastModifiedUtc = entry.Object.LastModifiedUtc,
+                    Owner = includeOwner ? owner : null
                 })
                 .ToArray(),
             CommonPrefixes = page
@@ -2556,7 +2699,9 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
         string? uploadIdMarker,
         string? encodingType,
         int maxUploads,
-        IReadOnlyList<MultipartUploadInfo> uploads)
+        IReadOnlyList<MultipartUploadInfo> uploads,
+        string? encodingType,
+        S3BucketOwner owner)
     {
         var normalizedPrefix = prefix ?? string.Empty;
         var normalizedDelimiter = string.IsNullOrEmpty(delimiter) ? null : delimiter;
@@ -2607,6 +2752,7 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
             Bucket = bucketName,
             Prefix = prefix,
             Delimiter = normalizedDelimiter,
+            EncodingType = encodingType,
             KeyMarker = keyMarker,
             UploadIdMarker = uploadIdMarker,
             EncodingType = encodingType,
@@ -2616,10 +2762,12 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
             IsTruncated = isTruncated,
             Uploads = page
                 .Where(static entry => entry.Upload is not null)
-                .Select(static entry => new S3MultipartUploadEntry
+                .Select(entry => new S3MultipartUploadEntry
                 {
                     Key = entry.Upload!.Key,
                     UploadId = entry.Upload.UploadId,
+                    Initiator = owner,
+                    Owner = owner,
                     InitiatedAtUtc = entry.Upload.InitiatedAtUtc,
                     ChecksumAlgorithm = ToS3ChecksumAlgorithmValue(entry.Upload.ChecksumAlgorithm)
                 })
@@ -2661,6 +2809,8 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
     private static bool TryValidateBucketRequestSubresources(HttpRequest request, out string? errorCode, out string? errorMessage, out int statusCode)
     {
         var queryKeys = GetValidatedQueryKeys(request);
+        var isListObjectsV2Request = IsListObjectsV2Request(request) && queryKeys.IsSubsetOf(BucketListObjectsV2QueryParameters);
+        var isListObjectsV1Request = !IsListObjectsV2Request(request) && queryKeys.IsSubsetOf(BucketListObjectsV1QueryParameters);
         var isListObjectsV2Request = queryKeys.IsSubsetOf(BucketListObjectsV2QueryParameters);
         var isBucketLocationRequest = queryKeys.SetEquals(BucketLocationQueryParameters);
         var isBucketCorsRequest = queryKeys.SetEquals(BucketCorsQueryParameters);
@@ -2671,7 +2821,7 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
 
         switch (request.Method) {
             case "GET":
-                if (isListObjectsV2Request) {
+                if (isListObjectsV1Request || isListObjectsV2Request) {
                     if (request.Query.TryGetValue(ListTypeQueryParameterName, out var listTypeValue)
                         && !string.IsNullOrWhiteSpace(listTypeValue.ToString())
                         && !string.Equals(listTypeValue.ToString(), "2", StringComparison.Ordinal)) {
@@ -2779,6 +2929,12 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
     }
 
+    private static bool IsListObjectsV2Request(HttpRequest request)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        return request.Query.ContainsKey(ListTypeQueryParameterName);
+    }
+
     private static bool IsSigV4PresignQueryParameter(string? queryKey)
     {
         return !string.IsNullOrWhiteSpace(queryKey)
@@ -2789,6 +2945,20 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
     private static HashSet<string> CreateQueryParameterSet(params string[] queryKeys)
     {
         return new HashSet<string>(queryKeys, StringComparer.OrdinalIgnoreCase);
+    }
+
+    private static S3BucketOwner ResolveS3ListingIdentity(ClaimsPrincipal principal)
+    {
+        ArgumentNullException.ThrowIfNull(principal);
+
+        var identifier = principal.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+        var displayName = principal.FindFirst(ClaimTypes.Name)?.Value;
+
+        return new S3BucketOwner
+        {
+            Id = string.IsNullOrWhiteSpace(identifier) ? DefaultS3ListingIdentityId : identifier,
+            DisplayName = string.IsNullOrWhiteSpace(displayName) ? string.Empty : displayName
+        };
     }
 
     private static bool SetValidationSuccess(out string? errorCode, out string? errorMessage, out int statusCode)
