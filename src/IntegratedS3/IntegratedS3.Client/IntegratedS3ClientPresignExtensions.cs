@@ -2,6 +2,16 @@ using IntegratedS3.Core.Models;
 
 namespace IntegratedS3.Client;
 
+/// <summary>
+/// Convenience helpers for first-party object presign flows.
+/// </summary>
+/// <remarks>
+/// Overloads without a <c>preferredAccessMode</c> parameter intentionally keep access-mode selection
+/// explicit at the caller boundary. They do not infer <see cref="StorageAccessMode.Direct" /> or
+/// <see cref="StorageAccessMode.Delegated" /> from service/provider discovery and therefore preserve
+/// the server's proxy-mode default. Callers opt into non-proxy flows through the overloads that accept
+/// <see cref="StorageAccessMode" />.
+/// </remarks>
 public static class IntegratedS3ClientPresignExtensions
 {
     public static ValueTask<StoragePresignedRequest> PresignGetObjectAsync(

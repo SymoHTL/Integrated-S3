@@ -21,8 +21,10 @@ The sample host currently demonstrates more than the service document alone:
 
 - JSON convenience routes under `/integrated-s3`, including service, capability, bucket, and object operations
 - S3-compatible bucket/object routing under `/integrated-s3/{**s3Path}` for the current supported surface, including multipart, tagging, versioning, and bucket-CORS configuration flows
-- `POST /integrated-s3/presign/object` for the current first-party proxy-mode object `GET` / `PUT` presign flow
+- `POST /integrated-s3/presign/object` for first-party object `GET` / `PUT` presign flows, with explicit opt-in `Direct` / `Delegated` access-mode hints and proxy-mode as the default when no preference is sent
 - bucket-aware browser-facing CORS handling on bucket/object routes, including unauthenticated preflight `OPTIONS` evaluation and actual-response `Access-Control-*` headers without global ASP.NET CORS middleware
+
+The service document may report provider `ObjectLocation` defaults for host inspection or UX, but the first-party presign and transfer helpers do not apply those defaults implicitly. Callers that want `Direct` or `Delegated` access should send `PreferredAccessMode` / `preferredAccessMode` explicitly; omitting it keeps proxy streaming through the IntegratedS3 host as the stable default.
 
 ## Default configuration
 

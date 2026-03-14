@@ -7,6 +7,22 @@ namespace IntegratedS3.Tests;
 public sealed class IntegratedS3ClientPresignExtensionsTests
 {
     [Fact]
+    public async Task PresignGetObjectAsync_WithoutPreferredAccessMode_LeavesPreferenceNullAndForwardsVersion()
+    {
+        var client = new CapturingIntegratedS3Client();
+
+        await client.PresignGetObjectAsync(
+            "docs",
+            "guide.txt",
+            expiresInSeconds: 300,
+            versionId: "v-123");
+
+        Assert.Equal(StoragePresignOperation.GetObject, client.LastRequest?.Operation);
+        Assert.Null(client.LastRequest?.PreferredAccessMode);
+        Assert.Equal("v-123", client.LastRequest?.VersionId);
+    }
+
+    [Fact]
     public async Task PresignGetObjectAsync_WithPreferredAccessMode_ForwardsPreferenceAndVersion()
     {
         var client = new CapturingIntegratedS3Client();
@@ -21,6 +37,22 @@ public sealed class IntegratedS3ClientPresignExtensionsTests
         Assert.Equal(StoragePresignOperation.GetObject, client.LastRequest?.Operation);
         Assert.Equal(StorageAccessMode.Direct, client.LastRequest?.PreferredAccessMode);
         Assert.Equal("v-123", client.LastRequest?.VersionId);
+    }
+
+    [Fact]
+    public async Task PresignPutObjectAsync_WithoutPreferredAccessMode_LeavesPreferenceNullAndForwardsContentType()
+    {
+        var client = new CapturingIntegratedS3Client();
+
+        await client.PresignPutObjectAsync(
+            "docs",
+            "guide.txt",
+            expiresInSeconds: 300,
+            contentType: "text/plain");
+
+        Assert.Equal(StoragePresignOperation.PutObject, client.LastRequest?.Operation);
+        Assert.Null(client.LastRequest?.PreferredAccessMode);
+        Assert.Equal("text/plain", client.LastRequest?.ContentType);
     }
 
     [Fact]

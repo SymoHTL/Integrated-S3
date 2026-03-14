@@ -16,8 +16,10 @@ public sealed class StoragePresignRequest
 
     /// <summary>
     /// The caller's preferred access mode for the returned presigned grant.
-    /// When <see langword="null" /> the server chooses the default mode (typically <see cref="StorageAccessMode.Proxy" />).
-    /// Strategies may honour, downgrade, or ignore this preference depending on provider capabilities.
+    /// When <see langword="null" />, the server keeps proxy-mode issuance as the stable default
+    /// rather than inferring <see cref="StorageAccessMode.Direct" /> or
+    /// <see cref="StorageAccessMode.Delegated" /> from provider discovery.
+    /// Strategies may honour, downgrade, or ignore an explicit preference depending on provider capabilities.
     /// </summary>
     public StorageAccessMode? PreferredAccessMode { get; init; }
 }

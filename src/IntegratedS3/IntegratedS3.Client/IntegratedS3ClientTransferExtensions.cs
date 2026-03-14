@@ -13,6 +13,10 @@ namespace IntegratedS3.Client;
 /// <paramref name="transferClient"/> for the actual data transfer, keeping the two concerns
 /// (authorization/presign issuance vs. data movement) on separate <see cref="HttpClient"/> instances.
 /// This allows callers to apply different auth, timeout, or handler policies to each leg of the request.
+/// Overloads without a <c>preferredAccessMode</c> parameter intentionally keep access-mode selection
+/// explicit at the caller boundary. They do not infer <see cref="StorageAccessMode.Direct" /> or
+/// <see cref="StorageAccessMode.Delegated" /> from service/provider discovery and therefore preserve
+/// proxy-mode as the stable default until the caller opts into another mode explicitly.
 /// </remarks>
 public static class IntegratedS3ClientTransferExtensions
 {

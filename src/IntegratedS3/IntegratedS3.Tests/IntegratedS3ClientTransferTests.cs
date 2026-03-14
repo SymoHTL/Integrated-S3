@@ -116,6 +116,69 @@ public sealed class IntegratedS3ClientTransferTests(WebUiApplicationFactory fact
     }
 
     // -------------------------------------------------------------------------
+    // Default behavior — overloads without preferred access mode leave selection explicit
+    // -------------------------------------------------------------------------
+
+    [Fact]
+    public async Task DownloadToStreamAsync_WithoutPreferredAccessMode_LeavesPreferenceUnset()
+    {
+        var capturingClient = new CapturingIntegratedS3Client();
+        await using var destination = new MemoryStream();
+
+        await capturingClient.DownloadToStreamAsync(
+            capturingClient.CreateNoOpTransferClient(),
+            "bucket",
+            "key",
+            destination,
+            expiresInSeconds: 60);
+
+        Assert.Equal(StoragePresignOperation.GetObject, capturingClient.LastRequest?.Operation);
+        Assert.Null(capturingClient.LastRequest?.PreferredAccessMode);
+    }
+
+    [Fact]
+    public async Task UploadStreamAsync_WithoutPreferredAccessMode_LeavesPreferenceUnset()
+    {
+        var capturingClient = new CapturingIntegratedS3Client();
+        await using var content = new MemoryStream("payload"u8.ToArray());
+
+        await capturingClient.UploadStreamAsync(
+            capturingClient.CreateNoOpTransferClient(),
+            "bucket",
+            "key",
+            content,
+            expiresInSeconds: 60);
+
+        Assert.Equal(StoragePresignOperation.PutObject, capturingClient.LastRequest?.Operation);
+        Assert.Null(capturingClient.LastRequest?.PreferredAccessMode);
+    }
+
+    [Fact]
+    public async Task DownloadToFileWithResumeAsync_WithoutPreferredAccessMode_LeavesPreferenceUnset()
+    {
+        var capturingClient = new CapturingIntegratedS3Client();
+        var tempDir = CreateTransferTempDirectory();
+        Directory.CreateDirectory(tempDir);
+
+        try {
+            var destinationPath = Path.Combine(tempDir, "default-access-mode.txt");
+
+            await capturingClient.DownloadToFileWithResumeAsync(
+                capturingClient.CreateNoOpTransferClient(),
+                "bucket",
+                "key",
+                destinationPath,
+                expiresInSeconds: 60);
+
+            Assert.Equal(StoragePresignOperation.GetObject, capturingClient.LastRequest?.Operation);
+            Assert.Null(capturingClient.LastRequest?.PreferredAccessMode);
+        }
+        finally {
+            Directory.Delete(tempDir, recursive: true);
+        }
+    }
+
+    // -------------------------------------------------------------------------
     // Unit — access-mode overloads forward preference through presign request
     // -------------------------------------------------------------------------
 
