@@ -1115,6 +1115,28 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
     }
 
     [Fact]
+    public async Task DeleteNonEmptyBucket_S3CompatibleRoute_ReturnsBucketNotEmptyConflict()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync("/integrated-s3/buckets/non-empty-delete-bucket", content: null)).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await client.PutAsync(
+            "/integrated-s3/buckets/non-empty-delete-bucket/objects/docs/hello.txt",
+            new StringContent("hello", Encoding.UTF8, "text/plain"))).StatusCode);
+
+        var deleteResponse = await client.DeleteAsync("/integrated-s3/non-empty-delete-bucket");
+
+        Assert.Equal(HttpStatusCode.Conflict, deleteResponse.StatusCode);
+        Assert.Equal("application/xml", deleteResponse.Content.Headers.ContentType?.MediaType);
+
+        var errorDocument = XDocument.Parse(await deleteResponse.Content.ReadAsStringAsync());
+        Assert.Equal("Error", errorDocument.Root?.Name.LocalName);
+        Assert.Equal("BucketNotEmpty", GetRequiredElementValue(errorDocument, "Code"));
+        Assert.Contains("empty", GetRequiredElementValue(errorDocument, "Message"), StringComparison.OrdinalIgnoreCase);
+        Assert.Equal("/non-empty-delete-bucket", GetRequiredElementValue(errorDocument, "Resource"));
+    }
+
+    [Fact]
     public async Task ServiceDocument_AdvertisesDiskProviderCapabilities()
     {
         using var client = await _factory.CreateClientAsync();
@@ -2919,6 +2941,50 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
     }
 
     [Fact]
+    public async Task EndpointFeatureRouteGroupAuthorization_CanBeConfiguredThroughFeatureRegistry()
+    {
+        await using var isolatedClient = await _factory.CreateIsolatedClientAsync(
+            builder => ConfigureTestHeaderRoutePolicies(
+                builder.Services,
+                ("IntegratedS3BucketRoute", "bucket.write"),
+                ("IntegratedS3AdminRoute", "admin.read")),
+            configureIntegratedS3Endpoints: options => {
+                options.EnableObjectEndpoints = false;
+                options.EnableMultipartEndpoints = false;
+                options.SetFeatureRouteGroupConfiguration(IntegratedS3EndpointFeature.Bucket, static group => group.RequireAuthorization("IntegratedS3BucketRoute"));
+                options.SetFeatureRouteGroupConfiguration(IntegratedS3EndpointFeature.Admin, static group => group.RequireAuthorization("IntegratedS3AdminRoute"));
+            });
+
+        using var client = isolatedClient.Client;
+
+        var anonymousBucketResponse = await client.PutAsync("/integrated-s3/buckets/feature-registry-bucket", content: null);
+        Assert.Equal(HttpStatusCode.Unauthorized, anonymousBucketResponse.StatusCode);
+
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("TestHeader", "bucket.write");
+
+        var createBucketResponse = await client.PutAsync("/integrated-s3/buckets/feature-registry-bucket", content: null);
+        Assert.Equal(HttpStatusCode.Created, createBucketResponse.StatusCode);
+
+        client.DefaultRequestHeaders.Authorization = null;
+
+        var anonymousCompatibilityBucketResponse = await client.GetAsync("/integrated-s3/feature-registry-bucket?versioning");
+        Assert.Equal(HttpStatusCode.Unauthorized, anonymousCompatibilityBucketResponse.StatusCode);
+
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("TestHeader", "bucket.write");
+
+        var compatibilityBucketResponse = await client.GetAsync("/integrated-s3/feature-registry-bucket?versioning");
+        Assert.Equal(HttpStatusCode.OK, compatibilityBucketResponse.StatusCode);
+
+        var bucketScopedAdminResponse = await client.GetAsync("/integrated-s3/admin/repairs");
+        Assert.Equal(HttpStatusCode.Forbidden, bucketScopedAdminResponse.StatusCode);
+
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("TestHeader", "admin.read");
+
+        var adminResponse = await client.GetAsync("/integrated-s3/admin/repairs");
+        Assert.Equal(HttpStatusCode.OK, adminResponse.StatusCode);
+    }
+
+    [Fact]
     public async Task EndpointFeatureRouteGroupAuthorization_CanProtectBucketObjectAndAdminEndpoints()
     {
         await using var isolatedClient = await _factory.CreateIsolatedClientAsync(
@@ -3091,6 +3157,7 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
             }));
 
         Assert.Contains(nameof(IntegratedS3EndpointOptions.ConfigureRootRouteGroup), rootRouteException.Message, StringComparison.Ordinal);
+        Assert.Contains(nameof(IntegratedS3EndpointOptions.SetFeatureRouteGroupConfiguration), rootRouteException.Message, StringComparison.Ordinal);
 
         var compatibilityRouteException = await Assert.ThrowsAsync<InvalidOperationException>(() => _factory.CreateIsolatedClientAsync(
             builder => ConfigureTestHeaderRoutePolicies(
@@ -3103,6 +3170,7 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
             }));
 
         Assert.Contains(nameof(IntegratedS3EndpointOptions.ConfigureCompatibilityRouteGroup), compatibilityRouteException.Message, StringComparison.Ordinal);
+        Assert.Contains(nameof(IntegratedS3EndpointOptions.SetFeatureRouteGroupConfiguration), compatibilityRouteException.Message, StringComparison.Ordinal);
     }
 
     [Fact]
