@@ -5,6 +5,7 @@ using IntegratedS3.Core.Models;
 namespace IntegratedS3.Client;
 
 [JsonSourceGenerationOptions(JsonSerializerDefaults.Web)]
+[JsonSerializable(typeof(Dictionary<string, string>))]
 [JsonSerializable(typeof(StoragePresignRequest))]
 [JsonSerializable(typeof(StoragePresignedHeader))]
 [JsonSerializable(typeof(StoragePresignedHeader[]))]

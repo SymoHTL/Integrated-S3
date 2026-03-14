@@ -19,6 +19,7 @@ public static class IntegratedS3CoreServiceCollectionExtensions
         ArgumentNullException.ThrowIfNull(services);
         ArgumentNullException.ThrowIfNull(configure);
 
+        services.AddLogging();
         services.AddOptions<IntegratedS3CoreOptions>()
             .Configure(configure);
 
@@ -32,6 +33,7 @@ public static class IntegratedS3CoreServiceCollectionExtensions
         services.TryAddSingleton<IStorageReplicaRepairBacklog, InMemoryStorageReplicaRepairBacklog>();
         services.TryAddSingleton<IStorageReplicaRepairDispatcher, InProcessStorageReplicaRepairDispatcher>();
         services.TryAddSingleton<IStorageReplicaRepairService, StorageReplicaRepairService>();
+        services.TryAddSingleton<IStorageAdminDiagnosticsProvider, StorageAdminDiagnosticsProvider>();
         services.TryAddSingleton(TimeProvider.System);
         services.TryAddSingleton<StorageBackendHealthMonitor>();
         services.TryAddSingleton<OrchestratedStorageService>();

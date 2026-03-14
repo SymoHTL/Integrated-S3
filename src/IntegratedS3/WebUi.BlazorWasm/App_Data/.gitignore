@@ -1,0 +1,3 @@
+# Ignore runtime sample storage data created by the hosted Blazor WebAssembly sample.
+*
+!.gitignore

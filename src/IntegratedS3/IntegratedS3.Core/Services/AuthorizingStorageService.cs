@@ -1,19 +1,23 @@
+using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using System.Security.Claims;
 using IntegratedS3.Abstractions.Errors;
 using IntegratedS3.Abstractions.Models;
+using IntegratedS3.Abstractions.Observability;
 using IntegratedS3.Abstractions.Requests;
 using IntegratedS3.Abstractions.Responses;
 using IntegratedS3.Abstractions.Results;
 using IntegratedS3.Abstractions.Services;
 using IntegratedS3.Core.Models;
+using Microsoft.Extensions.Logging;
 
 namespace IntegratedS3.Core.Services;
 
 internal sealed class AuthorizingStorageService(
     OrchestratedStorageService inner,
     IIntegratedS3AuthorizationService authorizationService,
-    IIntegratedS3RequestContextAccessor requestContextAccessor) : IStorageService
+    IIntegratedS3RequestContextAccessor requestContextAccessor,
+    ILogger<AuthorizingStorageService> logger) : IStorageService
 {
     public IAsyncEnumerable<BucketInfo> ListBucketsAsync(CancellationToken cancellationToken = default)
     {
@@ -30,6 +34,15 @@ internal sealed class AuthorizingStorageService(
             Operation = StorageOperationType.CreateBucket,
             BucketName = request.BucketName
         }, innerCancellationToken => inner.CreateBucketAsync(request, innerCancellationToken), cancellationToken);
+    }
+
+    public ValueTask<StorageResult<BucketLocationInfo>> GetBucketLocationAsync(string bucketName, CancellationToken cancellationToken = default)
+    {
+        return ExecuteAuthorizedAsync(new StorageAuthorizationRequest
+        {
+            Operation = StorageOperationType.GetBucketLocation,
+            BucketName = bucketName
+        }, innerCancellationToken => inner.GetBucketLocationAsync(bucketName, innerCancellationToken), cancellationToken);
     }
 
     public ValueTask<StorageResult<BucketVersioningInfo>> GetBucketVersioningAsync(string bucketName, CancellationToken cancellationToken = default)
@@ -267,7 +280,14 @@ internal sealed class AuthorizingStorageService(
             return result;
         }
 
-        return StorageResult.Failure(result.Error ?? CreateAccessDeniedError(request));
+        var error = result.Error ?? CreateAccessDeniedError(request);
+        IntegratedS3CoreTelemetry.RecordAuthorizationFailure(request, error);
+        logger.LogWarning(
+            "IntegratedS3 authorization denied for {Operation}. ErrorCode {ErrorCode}.",
+            request.Operation,
+            error.Code);
+
+        return StorageResult.Failure(error);
     }
 
     private async ValueTask<StorageResult<T>> ExecuteAuthorizedAsync<T>(
@@ -275,12 +295,45 @@ internal sealed class AuthorizingStorageService(
         Func<CancellationToken, ValueTask<StorageResult<T>>> action,
         CancellationToken cancellationToken)
     {
-        var authorizationResult = await AuthorizeAsync(authorizationRequest, cancellationToken);
-        if (!authorizationResult.IsSuccess) {
-            return StorageResult<T>.Failure(authorizationResult.Error!);
-        }
+        var requestContext = requestContextAccessor.Current;
+        using var scope = IntegratedS3CoreTelemetry.BeginOperationScope(logger, authorizationRequest, requestContext);
+        using var activity = IntegratedS3CoreTelemetry.StartOperationActivity(authorizationRequest, requestContext);
+        var startedAt = Stopwatch.GetTimestamp();
 
-        return await action(cancellationToken);
+        try {
+            var authorizationResult = await AuthorizeAsync(authorizationRequest, cancellationToken);
+            if (!authorizationResult.IsSuccess) {
+                IntegratedS3CoreTelemetry.MarkFailure(activity, authorizationResult.Error);
+                IntegratedS3CoreTelemetry.RecordStorageOperation(authorizationRequest, authorizationResult, Stopwatch.GetElapsedTime(startedAt));
+                return StorageResult<T>.Failure(authorizationResult.Error!);
+            }
+
+            var result = await action(cancellationToken);
+            if (!result.IsSuccess) {
+                IntegratedS3CoreTelemetry.MarkFailure(activity, result.Error);
+                logger.LogWarning(
+                    "IntegratedS3 operation {Operation} failed with {ErrorCode}.",
+                    authorizationRequest.Operation,
+                    result.Error?.Code);
+            }
+            else {
+                activity?.SetTag(IntegratedS3Observability.Tags.Result, "success");
+                logger.LogDebug("IntegratedS3 operation {Operation} completed successfully.", authorizationRequest.Operation);
+            }
+
+            IntegratedS3CoreTelemetry.RecordStorageOperation(authorizationRequest, result, Stopwatch.GetElapsedTime(startedAt));
+            return result;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) {
+            IntegratedS3CoreTelemetry.MarkCancelled(activity);
+            throw;
+        }
+        catch (Exception exception) {
+            IntegratedS3CoreTelemetry.MarkFailure(activity, "UnhandledException", exception.Message);
+            IntegratedS3CoreTelemetry.RecordStorageOperationFailure(authorizationRequest, "UnhandledException", Stopwatch.GetElapsedTime(startedAt));
+            logger.LogError(exception, "IntegratedS3 operation {Operation} failed unexpectedly.", authorizationRequest.Operation);
+            throw;
+        }
     }
 
     private async ValueTask<StorageResult> ExecuteAuthorizedAsync(
@@ -288,12 +341,45 @@ internal sealed class AuthorizingStorageService(
         Func<CancellationToken, ValueTask<StorageResult>> action,
         CancellationToken cancellationToken)
     {
-        var authorizationResult = await AuthorizeAsync(authorizationRequest, cancellationToken);
-        if (!authorizationResult.IsSuccess) {
-            return authorizationResult;
-        }
+        var requestContext = requestContextAccessor.Current;
+        using var scope = IntegratedS3CoreTelemetry.BeginOperationScope(logger, authorizationRequest, requestContext);
+        using var activity = IntegratedS3CoreTelemetry.StartOperationActivity(authorizationRequest, requestContext);
+        var startedAt = Stopwatch.GetTimestamp();
 
-        return await action(cancellationToken);
+        try {
+            var authorizationResult = await AuthorizeAsync(authorizationRequest, cancellationToken);
+            if (!authorizationResult.IsSuccess) {
+                IntegratedS3CoreTelemetry.MarkFailure(activity, authorizationResult.Error);
+                IntegratedS3CoreTelemetry.RecordStorageOperation(authorizationRequest, authorizationResult, Stopwatch.GetElapsedTime(startedAt));
+                return authorizationResult;
+            }
+
+            var result = await action(cancellationToken);
+            if (!result.IsSuccess) {
+                IntegratedS3CoreTelemetry.MarkFailure(activity, result.Error);
+                logger.LogWarning(
+                    "IntegratedS3 operation {Operation} failed with {ErrorCode}.",
+                    authorizationRequest.Operation,
+                    result.Error?.Code);
+            }
+            else {
+                activity?.SetTag(IntegratedS3Observability.Tags.Result, "success");
+                logger.LogDebug("IntegratedS3 operation {Operation} completed successfully.", authorizationRequest.Operation);
+            }
+
+            IntegratedS3CoreTelemetry.RecordStorageOperation(authorizationRequest, result, Stopwatch.GetElapsedTime(startedAt));
+            return result;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) {
+            IntegratedS3CoreTelemetry.MarkCancelled(activity);
+            throw;
+        }
+        catch (Exception exception) {
+            IntegratedS3CoreTelemetry.MarkFailure(activity, "UnhandledException", exception.Message);
+            IntegratedS3CoreTelemetry.RecordStorageOperationFailure(authorizationRequest, "UnhandledException", Stopwatch.GetElapsedTime(startedAt));
+            logger.LogError(exception, "IntegratedS3 operation {Operation} failed unexpectedly.", authorizationRequest.Operation);
+            throw;
+        }
     }
 
     private async IAsyncEnumerable<T> ExecuteAuthorizedEnumerableAsync<T>(
@@ -301,13 +387,39 @@ internal sealed class AuthorizingStorageService(
         Func<CancellationToken, IAsyncEnumerable<T>> action,
         [EnumeratorCancellation] CancellationToken cancellationToken)
     {
+        var requestContext = requestContextAccessor.Current;
+        using var scope = IntegratedS3CoreTelemetry.BeginOperationScope(logger, authorizationRequest, requestContext);
+        using var activity = IntegratedS3CoreTelemetry.StartOperationActivity(authorizationRequest, requestContext);
+        var startedAt = Stopwatch.GetTimestamp();
+
         var authorizationResult = await AuthorizeAsync(authorizationRequest, cancellationToken);
         if (!authorizationResult.IsSuccess) {
+            IntegratedS3CoreTelemetry.MarkFailure(activity, authorizationResult.Error);
+            IntegratedS3CoreTelemetry.RecordStorageOperation(authorizationRequest, authorizationResult, Stopwatch.GetElapsedTime(startedAt));
             throw new StorageAuthorizationException(authorizationResult.Error!);
         }
 
-        await foreach (var item in action(cancellationToken).WithCancellation(cancellationToken)) {
-            yield return item;
+        var completedSuccessfully = false;
+        try {
+            await foreach (var item in action(cancellationToken).WithCancellation(cancellationToken)) {
+                yield return item;
+            }
+
+            completedSuccessfully = true;
+        }
+        finally {
+            if (completedSuccessfully) {
+                activity?.SetTag(IntegratedS3Observability.Tags.Result, "success");
+                IntegratedS3CoreTelemetry.RecordStorageOperation(authorizationRequest, StorageResult.Success(), Stopwatch.GetElapsedTime(startedAt));
+                logger.LogDebug("IntegratedS3 operation {Operation} streamed successfully.", authorizationRequest.Operation);
+            }
+            else if (cancellationToken.IsCancellationRequested) {
+                IntegratedS3CoreTelemetry.MarkCancelled(activity);
+            }
+            else {
+                IntegratedS3CoreTelemetry.MarkFailure(activity, "UnhandledException", "Streaming failed");
+                IntegratedS3CoreTelemetry.RecordStorageOperationFailure(authorizationRequest, "UnhandledException", Stopwatch.GetElapsedTime(startedAt));
+            }
         }
     }
 

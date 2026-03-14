@@ -75,6 +75,29 @@ public static class IntegratedS3ServiceCollectionExtensions
         return services.AddIntegratedS3CoreServices();
     }
 
+    public static IServiceCollection AddIntegratedS3Backend<TBackend>(this IServiceCollection services)
+        where TBackend : class, IStorageBackend
+    {
+        ArgumentNullException.ThrowIfNull(services);
+
+        services.AddSingleton<IStorageBackend, TBackend>();
+
+        return services.AddIntegratedS3CoreServices();
+    }
+
+    public static IServiceCollection AddIntegratedS3Backend<TBackend>(
+        this IServiceCollection services,
+        Func<IServiceProvider, TBackend> implementationFactory)
+        where TBackend : class, IStorageBackend
+    {
+        ArgumentNullException.ThrowIfNull(services);
+        ArgumentNullException.ThrowIfNull(implementationFactory);
+
+        services.AddSingleton<IStorageBackend>(serviceProvider => implementationFactory(serviceProvider));
+
+        return services.AddIntegratedS3CoreServices();
+    }
+
     public static IServiceCollection AddIntegratedS3Provider(this IServiceCollection services, string name, string kind, bool isPrimary = false, string? description = null)
     {
         ArgumentNullException.ThrowIfNull(services);
@@ -332,10 +355,35 @@ public static class IntegratedS3ServiceCollectionExtensions
             Cors = capabilities.Cors,
             ObjectLock = capabilities.ObjectLock,
             ServerSideEncryption = capabilities.ServerSideEncryption,
+            ServerSideEncryptionDetails = CloneServerSideEncryptionDetails(capabilities.ServerSideEncryptionDetails),
             Checksums = capabilities.Checksums,
             XmlErrors = capabilities.XmlErrors,
             PathStyleAddressing = capabilities.PathStyleAddressing,
             VirtualHostedStyleAddressing = capabilities.VirtualHostedStyleAddressing
+        };
+    }
+
+    private static Abstractions.Capabilities.StorageServerSideEncryptionDescriptor CloneServerSideEncryptionDetails(Abstractions.Capabilities.StorageServerSideEncryptionDescriptor serverSideEncryptionDetails)
+    {
+        ArgumentNullException.ThrowIfNull(serverSideEncryptionDetails);
+
+        return new Abstractions.Capabilities.StorageServerSideEncryptionDescriptor
+        {
+            Variants = serverSideEncryptionDetails.Variants.Count == 0
+                ? []
+                : serverSideEncryptionDetails.Variants
+                    .Select(static variant => new Abstractions.Capabilities.StorageServerSideEncryptionVariantDescriptor
+                    {
+                        Algorithm = variant.Algorithm,
+                        RequestStyle = variant.RequestStyle,
+                        SupportedRequestOperations = variant.SupportedRequestOperations.Count == 0
+                            ? []
+                            : [.. variant.SupportedRequestOperations],
+                        SupportsResponseMetadata = variant.SupportsResponseMetadata,
+                        SupportsKeyId = variant.SupportsKeyId,
+                        SupportsContext = variant.SupportsContext
+                    })
+                    .ToArray()
         };
     }
 }

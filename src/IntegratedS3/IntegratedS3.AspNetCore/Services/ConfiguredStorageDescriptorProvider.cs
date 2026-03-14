@@ -140,10 +140,35 @@ internal sealed class ConfiguredStorageDescriptorProvider(
             Cors = capabilities.Cors,
             ObjectLock = capabilities.ObjectLock,
             ServerSideEncryption = capabilities.ServerSideEncryption,
+            ServerSideEncryptionDetails = CloneServerSideEncryptionDetails(capabilities.ServerSideEncryptionDetails),
             Checksums = capabilities.Checksums,
             XmlErrors = capabilities.XmlErrors,
             PathStyleAddressing = capabilities.PathStyleAddressing,
             VirtualHostedStyleAddressing = capabilities.VirtualHostedStyleAddressing
+        };
+    }
+
+    private static StorageServerSideEncryptionDescriptor CloneServerSideEncryptionDetails(StorageServerSideEncryptionDescriptor serverSideEncryptionDetails)
+    {
+        ArgumentNullException.ThrowIfNull(serverSideEncryptionDetails);
+
+        return new StorageServerSideEncryptionDescriptor
+        {
+            Variants = serverSideEncryptionDetails.Variants.Count == 0
+                ? []
+                : serverSideEncryptionDetails.Variants
+                    .Select(static variant => new StorageServerSideEncryptionVariantDescriptor
+                    {
+                        Algorithm = variant.Algorithm,
+                        RequestStyle = variant.RequestStyle,
+                        SupportedRequestOperations = variant.SupportedRequestOperations.Count == 0
+                            ? []
+                            : [.. variant.SupportedRequestOperations],
+                        SupportsResponseMetadata = variant.SupportsResponseMetadata,
+                        SupportsKeyId = variant.SupportsKeyId,
+                        SupportsContext = variant.SupportsContext
+                    })
+                    .ToArray()
         };
     }
 }
