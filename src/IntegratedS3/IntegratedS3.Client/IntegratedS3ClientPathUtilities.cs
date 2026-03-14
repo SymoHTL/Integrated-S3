@@ -20,10 +20,11 @@ internal static class IntegratedS3ClientPathUtilities
 
     public static string NormalizeRoutePrefix(string? routePrefix)
     {
-        if (string.IsNullOrWhiteSpace(routePrefix)) {
+        var trimmed = routePrefix?.Trim();
+        if (string.IsNullOrWhiteSpace(trimmed)) {
             return IntegratedS3ClientOptions.DefaultRoutePrefix;
         }
 
-        return routePrefix.Trim().Trim('/');
+        return trimmed.Trim('/');
     }
 }
