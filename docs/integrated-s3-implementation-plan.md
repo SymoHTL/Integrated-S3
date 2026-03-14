@@ -101,6 +101,7 @@ The repository has already moved beyond initial scaffolding and now contains a w
 - `IntegratedS3.Client` package with:
   - `IIntegratedS3Client` / `IntegratedS3Client` wrappers over the presign endpoint
   - presign convenience helpers for object `GET` / `PUT`, including access-mode preference overloads
+  - first-party `AddIntegratedS3Client(...)` DI registration with named `IHttpClientFactory` integration, configuration binding, and overrideable `HttpClientBuilder` customization
   - `StoragePresignedRequest.CreateHttpRequestMessage(...)` to materialize ready-to-send `HttpRequestMessage` instances from returned grants
   - typed streaming/file transfer helpers that compose presign issuance with upload/download execution
 - sample host in `src/IntegratedS3/WebUi` exposing:
@@ -928,6 +929,7 @@ The platform should register efficient services so app developers can directly u
 Status:
 
 - the first presign-centric client slice is now implemented with `IIntegratedS3Client` / `IntegratedS3Client`, typed presign request/response contracts, convenience `PresignGetObjectAsync` / `PresignPutObjectAsync` helpers, and `HttpRequestMessage` materialization for returned grants
+- the client package now also exposes first-party `AddIntegratedS3Client(...)` registration so consumers can resolve `IIntegratedS3Client` / `IntegratedS3Client` from DI, bind `IntegratedS3:Client` settings, and reuse the same named `IHttpClientFactory` client for additional policies or transfer helpers
 - typed streaming upload/download helpers are now implemented in `IntegratedS3ClientTransferExtensions`: `UploadStreamAsync`, `UploadFileAsync`, `DownloadToStreamAsync`, `DownloadToFileAsync` — all streaming-first, AOT-friendly, and accepting separate presign and transfer `HttpClient` instances; covered by dedicated tests in `IntegratedS3ClientTransferTests`
 - `DownloadToFileAsync` bug fixed: presigned URL is now obtained before the destination file is opened, and a `finally` block deletes the partial/empty file on any failure or cancellation — four targeted tests cover presign-failure, transfer-error, cancellation, and access-mode overload failure scenarios
 - `IntegratedS3Client.PresignObjectAsync` now reads the response body before throwing on non-success status, surfacing actionable server error detail in the `HttpRequestException` message; covered by `IntegratedS3ClientTests` (403, 400, 503, empty-body cases)
@@ -1222,6 +1224,7 @@ This section is the execution board for the remaining implementation backlog. As
   - provider-agnostic presign contracts and authorization-aware Core services are now implemented
   - ASP.NET now exposes `POST /integrated-s3/presign/object` with configurable signing-credential resolution and public-base-url fallback for proxy issuance, while the same endpoint can also surface backend-direct or delegated read grants through the new provider seams
   - `IntegratedS3.Client` now wraps the endpoint, can materialize upload/download `HttpRequestMessage` instances from returned grants, exposes direct-access convenience overloads for object `GET` / `PUT` presigns, and ships typed streaming/file transfer helpers
+  - the first-party client package now also ships `AddIntegratedS3Client(...)` with named `IHttpClientFactory` integration so consumers can register the client from configuration or inline options instead of manually constructing `HttpClient` instances
   - `StorageAccessMode` now covers `Proxy`, `Direct`, and `Delegated` modes; `StoragePresignRequest` now carries an optional `PreferredAccessMode` field so callers can express access-mode preference; strategies may honour, downgrade, or ignore the preference depending on provider capabilities
   - `IStorageBackend` now includes a provider-agnostic direct-presign seam for object `GET` / `PUT`; `IntegratedS3HttpPresignStrategy` consults the primary backend first when `PreferredAccessMode` is `Direct`, then falls back to the existing resolver/proxy paths when no backend-native grant is available
   - `IntegratedS3HttpPresignStrategy` still consults `IStorageObjectLocationResolver` when `PreferredAccessMode` is `Direct` or `Delegated` for `GetObject` presigns; maps `StorageObjectAccessMode.Delegated`/`Passthrough` → `StorageAccessMode.Delegated` and `StorageObjectAccessMode.Redirect` → `StorageAccessMode.Direct`; falls back to proxy-mode issuance when the resolver returns null, an incompatible mode, or the operation is not a read
