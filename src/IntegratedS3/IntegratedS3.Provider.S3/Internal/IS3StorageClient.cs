@@ -9,6 +9,8 @@ internal interface IS3StorageClient : IDisposable
     Task<S3BucketEntry> CreateBucketAsync(string bucketName, CancellationToken cancellationToken = default);
     Task<S3BucketEntry?> HeadBucketAsync(string bucketName, CancellationToken cancellationToken = default);
     Task DeleteBucketAsync(string bucketName, CancellationToken cancellationToken = default);
+    Task<S3BucketLocationEntry> GetBucketLocationAsync(string bucketName, CancellationToken cancellationToken = default)
+        => Task.FromException<S3BucketLocationEntry>(new NotSupportedException("Bucket location is not implemented by this S3 storage client."));
 
     // Bucket versioning
     Task<S3VersioningEntry> GetBucketVersioningAsync(string bucketName, CancellationToken cancellationToken = default);

@@ -24,14 +24,14 @@ public sealed class ServerSideEncryptionContractTests
             LastModifiedUtc = DateTimeOffset.Parse("2026-03-01T00:00:00Z"),
             ServerSideEncryption = new ObjectServerSideEncryptionInfo
             {
-                Algorithm = ObjectServerSideEncryptionAlgorithm.Kms,
+                Algorithm = ObjectServerSideEncryptionAlgorithm.KmsDsse,
                 KeyId = "key-123"
             }
         };
 
         var json = JsonSerializer.Serialize(payload, new JsonSerializerOptions(JsonSerializerDefaults.Web));
 
-        Assert.Contains("\"serverSideEncryption\":{\"algorithm\":\"Kms\",\"keyId\":\"key-123\"}", json, StringComparison.Ordinal);
+        Assert.Contains("\"serverSideEncryption\":{\"algorithm\":\"KmsDsse\",\"keyId\":\"key-123\"}", json, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -76,7 +76,7 @@ public sealed class ServerSideEncryptionContractTests
     {
         var settings = new ObjectServerSideEncryptionSettings
         {
-            Algorithm = ObjectServerSideEncryptionAlgorithm.Kms,
+            Algorithm = ObjectServerSideEncryptionAlgorithm.KmsDsse,
             KeyId = "kms-key-001",
             Context = new Dictionary<string, string>
             {

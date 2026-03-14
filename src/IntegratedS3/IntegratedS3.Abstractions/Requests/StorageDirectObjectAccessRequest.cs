@@ -15,4 +15,8 @@ public sealed class StorageDirectObjectAccessRequest
     public string? VersionId { get; init; }
 
     public string? ContentType { get; init; }
+
+    public string? ChecksumAlgorithm { get; init; }
+
+    public IReadOnlyDictionary<string, string>? Checksums { get; init; }
 }

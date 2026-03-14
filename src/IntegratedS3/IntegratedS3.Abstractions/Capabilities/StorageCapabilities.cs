@@ -36,6 +36,8 @@ public sealed class StorageCapabilities
 
     public StorageCapabilitySupport ServerSideEncryption { get; set; } = StorageCapabilitySupport.Unsupported;
 
+    public StorageServerSideEncryptionDescriptor ServerSideEncryptionDetails { get; set; } = new();
+
     public StorageCapabilitySupport Checksums { get; set; } = StorageCapabilitySupport.Unsupported;
 
     public StorageCapabilitySupport XmlErrors { get; set; } = StorageCapabilitySupport.Unsupported;

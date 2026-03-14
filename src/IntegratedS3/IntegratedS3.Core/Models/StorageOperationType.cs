@@ -4,6 +4,7 @@ public enum StorageOperationType
 {
     ListBuckets,
     CreateBucket,
+    GetBucketLocation,
     GetBucketVersioning,
     PutBucketVersioning,
     GetBucketCors,
