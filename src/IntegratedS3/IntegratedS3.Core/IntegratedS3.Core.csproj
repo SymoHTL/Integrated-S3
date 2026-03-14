@@ -9,4 +9,8 @@
     <ProjectReference Include="..\IntegratedS3.Abstractions\IntegratedS3.Abstractions.csproj" />
     <ProjectReference Include="..\IntegratedS3.Protocol\IntegratedS3.Protocol.csproj" />
   </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="IntegratedS3.AspNetCore" />
+  </ItemGroup>
 </Project>

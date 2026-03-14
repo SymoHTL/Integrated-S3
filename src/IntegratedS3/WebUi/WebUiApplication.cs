@@ -33,6 +33,8 @@ public static class WebUiApplication
                 : options.RoutePrefix;
         });
         builder.Services.AddDiskStorage(diskOptions);
+        builder.Services.AddHealthChecks()
+            .AddIntegratedS3BackendHealthCheck();
     }
 
     /// <summary>
@@ -57,6 +59,8 @@ public static class WebUiApplication
         if (app.Services.GetService<IAuthorizationHandlerProvider>() is not null) {
             app.UseAuthorization();
         }
+
+        app.MapIntegratedS3HealthEndpoints();
 
         app.MapGet("/", (IOptions<IntegratedS3Options> options) => TypedResults.Redirect(options.Value.RoutePrefix))
             .ExcludeFromDescription();

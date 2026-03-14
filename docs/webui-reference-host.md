@@ -13,6 +13,8 @@ Default local behavior:
 - the `http` launch profile listens on `http://localhost:5298`
 - `/` redirects to `/integrated-s3`
 - `/integrated-s3` returns the service document
+- `/health/live` exposes the process liveness endpoint
+- `/health/ready` exposes IntegratedS3 backend readiness through ASP.NET Core health checks
 - `/openapi/v1.json` is available in the Development environment
 
 ## Reference surface snapshot
@@ -23,6 +25,7 @@ The sample host currently demonstrates more than the service document alone:
 - S3-compatible bucket/object routing under `/integrated-s3/{**s3Path}` for the current supported surface, including multipart, tagging, versioning, and bucket-CORS configuration flows
 - `POST /integrated-s3/presign/object` for the current first-party proxy-mode object `GET` / `PUT` presign flow
 - bucket-aware browser-facing CORS handling on bucket/object routes, including unauthenticated preflight `OPTIONS` evaluation and actual-response `Access-Control-*` headers without global ASP.NET CORS middleware
+- ASP.NET Core liveness/readiness probes at `/health/live` and `/health/ready`, with readiness backed by the IntegratedS3 backend health monitor/probe services
 
 ## Default configuration
 
@@ -36,6 +39,21 @@ The sample host reads settings from `src\IntegratedS3\WebUi\appsettings.json`.
 
 By default, sample data is stored under `App_Data\IntegratedS3`. Runtime storage data is ignored by source control and excluded from build/publish outputs so local sample usage does not leak into release artifacts.
 
+## Health check wiring
+
+The reference host shows the supported ASP.NET Core integration path for backend health:
+
+```csharp
+builder.Services.AddIntegratedS3(builder.Configuration, ...);
+builder.Services.AddDiskStorage(diskOptions);
+builder.Services.AddHealthChecks()
+    .AddIntegratedS3BackendHealthCheck();
+
+app.MapIntegratedS3HealthEndpoints();
+```
+
+`/health/live` stays a process liveness probe, while `/health/ready` runs the IntegratedS3 backend readiness check. The readiness mapper treats both `Degraded` and `Unhealthy` results as HTTP `503` by default so hosts can use it directly for readiness probes.
+
 ## Quick smoke test
 
 After the host is running, these requests validate the reference surface without needing an S3 client:
@@ -45,6 +63,8 @@ Invoke-WebRequest http://localhost:5298/integrated-s3 | Select-Object -ExpandPro
 Invoke-WebRequest http://localhost:5298/integrated-s3/capabilities | Select-Object -ExpandProperty Content
 Invoke-WebRequest -Method Put http://localhost:5298/integrated-s3/buckets/demo-bucket
 Invoke-WebRequest http://localhost:5298/integrated-s3/buckets | Select-Object -ExpandProperty Content
+Invoke-WebRequest http://localhost:5298/health/live | Select-Object -ExpandProperty Content
+Invoke-WebRequest http://localhost:5298/health/ready | Select-Object -ExpandProperty Content
 ```
 
 ## Validation commands
