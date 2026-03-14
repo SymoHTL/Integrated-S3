@@ -204,6 +204,22 @@ public sealed class S3StorageServiceTests
     }
 
     [Fact]
+    public async Task GetBucketLocationAsync_ReturnsLocationConstraint_WhenClientReturnsLocation()
+    {
+        var fake = new FakeS3Client
+        {
+            BucketLocation = new S3BucketLocationEntry("eu-central-1")
+        };
+        var svc = BuildService(fake);
+
+        var result = await svc.GetBucketLocationAsync("my-bucket");
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal("my-bucket", result.Value!.BucketName);
+        Assert.Equal("eu-central-1", result.Value.LocationConstraint);
+    }
+
+    [Fact]
     public async Task GetBucketCorsAsync_ReturnsConfiguredRules()
     {
         var fake = new FakeS3Client
@@ -1207,6 +1223,10 @@ internal sealed class FakeS3Client : IS3StorageClient
     public bool HeadBucketReturnsNull { get; set; }
     public AmazonS3Exception? DeleteBucketException { get; set; }
 
+    // Location
+    public S3BucketLocationEntry BucketLocation { get; set; } = new(null);
+    public AmazonS3Exception? GetBucketLocationException { get; set; }
+
     // Versioning
     public BucketVersioningStatus VersioningStatus { get; set; } = BucketVersioningStatus.Disabled;
     public BucketVersioningStatus? SetVersioningStatus { get; private set; }
@@ -1289,6 +1309,15 @@ internal sealed class FakeS3Client : IS3StorageClient
     {
         if (DeleteBucketException is not null) throw DeleteBucketException;
         return Task.CompletedTask;
+    }
+
+    public Task<S3BucketLocationEntry> GetBucketLocationAsync(string bucketName, CancellationToken cancellationToken = default)
+    {
+        if (GetBucketLocationException is not null) {
+            throw GetBucketLocationException;
+        }
+
+        return Task.FromResult(BucketLocation);
     }
 
     public Task<S3VersioningEntry> GetBucketVersioningAsync(string bucketName, CancellationToken cancellationToken = default)

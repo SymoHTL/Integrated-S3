@@ -548,6 +548,31 @@ public sealed class IntegratedS3AwsSdkCompatibilityTests : IClassFixture<WebUiAp
     }
 
     [Fact]
+    public async Task AmazonS3Client_GetBucketLocation_WorksAgainstIntegratedS3()
+    {
+        const string accessKeyId = "aws-sdk-location-access";
+        const string secretAccessKey = "aws-sdk-location-secret";
+
+        await using var isolatedClient = await CreateAuthenticatedLoopbackClientAsync(accessKeyId, secretAccessKey);
+        using var s3Client = CreateS3Client(isolatedClient.BaseAddress!, accessKeyId, secretAccessKey);
+
+        const string bucketName = "aws-sdk-location-bucket";
+
+        Assert.Equal(HttpStatusCode.OK, (await s3Client.PutBucketAsync(new PutBucketRequest
+        {
+            BucketName = bucketName
+        })).HttpStatusCode);
+
+        var locationResponse = await s3Client.GetBucketLocationAsync(new GetBucketLocationRequest
+        {
+            BucketName = bucketName
+        });
+
+        Assert.Equal(HttpStatusCode.OK, locationResponse.HttpStatusCode);
+        Assert.Equal(string.Empty, locationResponse.Location?.ToString());
+    }
+
+    [Fact]
     public async Task AmazonS3Client_ListBuckets_WorksAgainstIntegratedS3()
     {
         const string accessKeyId = "aws-sdk-root-access";
@@ -1811,6 +1836,7 @@ public sealed class IntegratedS3AwsSdkCompatibilityTests : IClassFixture<WebUiAp
                 Core.Models.StorageOperationType.HeadBucket => "storage.read",
                 Core.Models.StorageOperationType.ListObjects => "storage.read",
                 Core.Models.StorageOperationType.GetObject => "storage.read",
+                Core.Models.StorageOperationType.GetBucketLocation => "storage.read",
                 Core.Models.StorageOperationType.GetBucketCors => "storage.read",
                 Core.Models.StorageOperationType.GetObjectTags => "storage.read",
                 Core.Models.StorageOperationType.HeadObject => "storage.read",
