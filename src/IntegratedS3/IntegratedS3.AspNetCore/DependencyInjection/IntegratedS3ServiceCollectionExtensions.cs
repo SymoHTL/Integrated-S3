@@ -75,6 +75,29 @@ public static class IntegratedS3ServiceCollectionExtensions
         return services.AddIntegratedS3CoreServices();
     }
 
+    public static IServiceCollection AddIntegratedS3Backend<TBackend>(this IServiceCollection services)
+        where TBackend : class, IStorageBackend
+    {
+        ArgumentNullException.ThrowIfNull(services);
+
+        services.AddSingleton<IStorageBackend, TBackend>();
+
+        return services.AddIntegratedS3CoreServices();
+    }
+
+    public static IServiceCollection AddIntegratedS3Backend<TBackend>(
+        this IServiceCollection services,
+        Func<IServiceProvider, TBackend> implementationFactory)
+        where TBackend : class, IStorageBackend
+    {
+        ArgumentNullException.ThrowIfNull(services);
+        ArgumentNullException.ThrowIfNull(implementationFactory);
+
+        services.AddSingleton<IStorageBackend>(serviceProvider => implementationFactory(serviceProvider));
+
+        return services.AddIntegratedS3CoreServices();
+    }
+
     public static IServiceCollection AddIntegratedS3Provider(this IServiceCollection services, string name, string kind, bool isPrimary = false, string? description = null)
     {
         ArgumentNullException.ThrowIfNull(services);

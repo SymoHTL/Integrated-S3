@@ -87,7 +87,7 @@ The repository has already moved beyond initial scaffolding and now contains a w
 - `IntegratedS3.AspNetCore` integration with:
   - `AddIntegratedS3(...)`
   - `MapIntegratedS3Endpoints(...)`
-  - combined configuration-binding + inline-configuration overloads plus `AddIntegratedS3Provider(...)` helpers for named/manual configured-provider metadata registration
+  - combined configuration-binding + inline-configuration overloads plus `AddIntegratedS3Provider(...)` helpers for named/manual configured-provider metadata registration and `AddIntegratedS3Backend(...)` helpers for custom backend DI activation
   - feature-group endpoint toggles for service, bucket, object, multipart, and admin surfaces
   - `IntegratedS3EndpointOptions` can now bind from `IntegratedS3:Endpoints`, and map-time overrides start from those configured defaults so hosts/tests can keep endpoint toggles aligned without manual re-wiring
   - first-class whole-route, per-feature, and explicit shared root/compatibility route-group configuration on endpoint mapping, including authorization/policy wiring
@@ -1243,14 +1243,13 @@ This section is the execution board for the remaining implementation backlog. As
 - Ready: now
 - Depends on: none for endpoint-grouping work; coordinate with Track C if presign endpoints/options are added
 - Status:
-  - `AddIntegratedS3(...)` now supports configuration binding plus inline overrides in the same call, and `AddIntegratedS3Provider(...)` adds named/manual configured-provider metadata without forcing direct list mutation
+  - `AddIntegratedS3(...)` now supports configuration binding plus inline overrides in the same call, `AddIntegratedS3Provider(...)` adds named/manual configured-provider metadata without forcing direct list mutation, and `AddIntegratedS3Backend(...)` now provides higher-level singleton DI registration for custom backend types or factories while still wiring the standard runtime descriptor/capability services
   - `MapIntegratedS3Endpoints(...)` now accepts endpoint options for service, bucket, object, multipart, and admin toggles plus whole-route, per-feature, and explicit shared root/compatibility route-group configuration callbacks for authorization/policy wiring
   - shared `GET /` and `/{**s3Path}` routes now use explicit `ConfigureRootRouteGroup` / `ConfigureCompatibilityRouteGroup` callbacks (or whole-route protection) instead of inheriting multiple feature-group callbacks onto one route
   - `WebUiApplication.ConfigurePipeline(...)` and the isolated test-host wiring can now forward endpoint-mapping options and conditionally enable `UseAuthorization()` alongside `UseAuthentication()`
   - `IntegratedS3EndpointOptions` now bind from `IntegratedS3:Endpoints`, and the map-time `MapIntegratedS3Endpoints(...)` overloads now start from configured endpoint defaults so host-configured toggles remain overrideable per host/test
 - Remaining scope:
   - evaluate whether common authorization conventions should also be exposed as configuration-bound host options in addition to the current map-time route-group callbacks
-  - decide whether custom `IStorageBackend` registration needs more DI sugar than direct service registration plus the new configured-provider helpers
   - revisit whether future endpoint surfaces should automatically grow matching per-feature route-group callbacks as they are added
   - preserve `CreateSlimBuilder(...)`, Minimal API, trimming, and AOT friendliness as any follow-up ergonomics polish lands
 

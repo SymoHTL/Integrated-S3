@@ -38,6 +38,28 @@ The sample host reads settings from `src\IntegratedS3\WebUi\appsettings.json`.
 
 By default, sample data is stored under `App_Data\IntegratedS3`. Runtime storage data is ignored by source control and excluded from build/publish outputs so local sample usage does not leak into release artifacts.
 
+## Custom backend registration
+
+Hosts that implement their own `IStorageBackend` can now use `AddIntegratedS3Backend(...)` instead of manually pairing `AddSingleton<IStorageBackend>(...)` with the rest of the IntegratedS3 runtime wiring.
+
+```csharp
+builder.Services.AddIntegratedS3(builder.Configuration);
+builder.Services.AddIntegratedS3Backend<MyCustomStorageBackend>();
+
+// Optional companion seams stay explicit.
+builder.Services.AddSingleton<IStorageObjectLocationResolver, MyCustomObjectLocationResolver>();
+```
+
+If the backend needs custom constructor arguments or named options, use the factory overload:
+
+```csharp
+builder.Services.AddIntegratedS3Backend(serviceProvider => new MyCustomStorageBackend(
+    serviceProvider.GetRequiredService<IOptions<MyCustomStorageOptions>>().Value,
+    serviceProvider.GetRequiredService<TimeProvider>()));
+```
+
+The helper keeps provider descriptors and reported capabilities backend-derived at runtime. Extra seams such as `IStorageObjectLocationResolver` and `IStoragePresignStrategy` remain explicit registrations so hosts can opt into them deliberately.
+
 ## Quick smoke test
 
 After the host is running, these requests validate the reference surface without needing an S3 client:
