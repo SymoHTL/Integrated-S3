@@ -4,15 +4,23 @@ public sealed class S3ListBucketResult
 {
     public required string Name { get; init; }
 
+    public bool IsV2 { get; init; } = true;
+
     public string? Prefix { get; init; }
 
     public string? Delimiter { get; init; }
+
+    public string? Marker { get; init; }
 
     public string? StartAfter { get; init; }
 
     public string? ContinuationToken { get; init; }
 
+    public string? NextMarker { get; init; }
+
     public string? NextContinuationToken { get; init; }
+
+    public string? EncodingType { get; init; }
 
     public int KeyCount { get; init; }
 
@@ -41,4 +49,6 @@ public sealed class S3ListBucketObject
     public DateTimeOffset LastModifiedUtc { get; init; }
 
     public string StorageClass { get; init; } = "STANDARD";
+
+    public S3BucketOwner? Owner { get; init; }
 }

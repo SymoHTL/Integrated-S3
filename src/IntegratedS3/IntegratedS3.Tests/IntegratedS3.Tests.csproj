@@ -21,11 +21,15 @@
 
   <ItemGroup>
     <ProjectReference Include="..\IntegratedS3.AspNetCore\IntegratedS3.AspNetCore.csproj" />
+    <ProjectReference Include="..\IntegratedS3.Benchmarks\IntegratedS3.Benchmarks.csproj" />
     <ProjectReference Include="..\IntegratedS3.Client\IntegratedS3.Client.csproj" />
     <ProjectReference Include="..\IntegratedS3.Core\IntegratedS3.Core.csproj" />
     <ProjectReference Include="..\IntegratedS3.EntityFramework\IntegratedS3.EntityFramework.csproj" />
     <ProjectReference Include="..\IntegratedS3.Provider.Disk\IntegratedS3.Provider.Disk.csproj" />
     <ProjectReference Include="..\IntegratedS3.Provider.S3\IntegratedS3.Provider.S3.csproj" />
     <ProjectReference Include="..\WebUi\WebUi.csproj" />
+    <ProjectReference Include="..\WebUi.MvcRazor\WebUi.MvcRazor.csproj" />
+    <ProjectReference Include="..\WebUi.BlazorWasm.Client\WebUi.BlazorWasm.Client.csproj" />
+    <ProjectReference Include="..\WebUi.BlazorWasm\WebUi.BlazorWasm.csproj" />
   </ItemGroup>
 </Project>

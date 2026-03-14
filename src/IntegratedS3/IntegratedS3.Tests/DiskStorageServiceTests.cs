@@ -89,6 +89,37 @@ public sealed class DiskStorageServiceTests
     }
 
     [Fact]
+    public async Task DeleteBucketAsync_ReturnsBucketNotEmpty_WhenBucketContainsObjects()
+    {
+        await using var fixture = new DiskStorageFixture();
+        var storageService = fixture.Services.GetRequiredService<IStorageBackend>();
+
+        Assert.True((await storageService.CreateBucketAsync(new CreateBucketRequest
+        {
+            BucketName = "non-empty-delete"
+        })).IsSuccess);
+
+        await using var uploadStream = new MemoryStream(Encoding.UTF8.GetBytes("still here"));
+        Assert.True((await storageService.PutObjectAsync(new PutObjectRequest
+        {
+            BucketName = "non-empty-delete",
+            Key = "docs/hello.txt",
+            Content = uploadStream,
+            ContentType = "text/plain"
+        })).IsSuccess);
+
+        var deleteBucket = await storageService.DeleteBucketAsync(new DeleteBucketRequest
+        {
+            BucketName = "non-empty-delete"
+        });
+
+        Assert.False(deleteBucket.IsSuccess);
+        Assert.Equal(StorageErrorCode.BucketNotEmpty, deleteBucket.Error!.Code);
+        Assert.Equal(409, deleteBucket.Error.SuggestedHttpStatusCode);
+        Assert.Contains("empty", deleteBucket.Error.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public async Task DiskStorage_ValidatesRequestedChecksumsOnPut()
     {
         await using var fixture = new DiskStorageFixture();
@@ -424,6 +455,24 @@ public sealed class DiskStorageServiceTests
     }
 
     [Fact]
+    public async Task DiskStorage_BucketLocation_ReturnsDefaultEmptyConstraint()
+    {
+        await using var fixture = new DiskStorageFixture();
+        var storageService = fixture.Services.GetRequiredService<IStorageBackend>();
+
+        Assert.True((await storageService.CreateBucketAsync(new CreateBucketRequest
+        {
+            BucketName = "bucket-location"
+        })).IsSuccess);
+
+        var location = await storageService.GetBucketLocationAsync("bucket-location");
+
+        Assert.True(location.IsSuccess);
+        Assert.Equal("bucket-location", location.Value!.BucketName);
+        Assert.Null(location.Value.LocationConstraint);
+    }
+
+    [Fact]
     public async Task DiskStorage_BucketCors_RoundTripsAndPreservesVersioningMetadata()
     {
         await using var fixture = new DiskStorageFixture();
@@ -641,6 +690,66 @@ public sealed class DiskStorageServiceTests
             Assert.Equal("keep me current", await reader.ReadToEndAsync());
             Assert.Equal(v2Put.Value!.VersionId, currentResponse.Object.VersionId);
         }
+    }
+
+    [Fact]
+    public async Task DiskStorage_DeleteMissingObject_IsIdempotentAndCreatesVersionedDeleteMarkerWhenNeeded()
+    {
+        await using var fixture = new DiskStorageFixture();
+        var storageService = fixture.Services.GetRequiredService<IStorageBackend>();
+
+        Assert.True((await storageService.CreateBucketAsync(new CreateBucketRequest
+        {
+            BucketName = "delete-missing"
+        })).IsSuccess);
+
+        var deleteMissing = await storageService.DeleteObjectAsync(new DeleteObjectRequest
+        {
+            BucketName = "delete-missing",
+            Key = "docs/missing.txt"
+        });
+
+        Assert.True(deleteMissing.IsSuccess);
+        Assert.False(deleteMissing.Value!.IsDeleteMarker);
+        Assert.Null(deleteMissing.Value.VersionId);
+
+        Assert.True((await storageService.CreateBucketAsync(new CreateBucketRequest
+        {
+            BucketName = "delete-missing-versioned",
+            EnableVersioning = true
+        })).IsSuccess);
+
+        var deleteVersionedMissing = await storageService.DeleteObjectAsync(new DeleteObjectRequest
+        {
+            BucketName = "delete-missing-versioned",
+            Key = "docs/missing.txt"
+        });
+
+        Assert.True(deleteVersionedMissing.IsSuccess);
+        Assert.True(deleteVersionedMissing.Value!.IsDeleteMarker);
+        var deleteMarkerVersionId = Assert.IsType<string>(deleteVersionedMissing.Value.VersionId);
+
+        var currentGet = await storageService.GetObjectAsync(new GetObjectRequest
+        {
+            BucketName = "delete-missing-versioned",
+            Key = "docs/missing.txt"
+        });
+
+        Assert.False(currentGet.IsSuccess);
+        Assert.Equal(StorageErrorCode.ObjectNotFound, currentGet.Error!.Code);
+        Assert.True(currentGet.Error.IsDeleteMarker);
+        Assert.Equal(deleteMarkerVersionId, currentGet.Error.VersionId);
+
+        var versions = await storageService.ListObjectVersionsAsync(new ListObjectVersionsRequest
+        {
+            BucketName = "delete-missing-versioned"
+        }).ToArrayAsync();
+
+        var deleteMarker = Assert.Single(versions);
+        Assert.Equal("docs/missing.txt", deleteMarker.Key);
+        Assert.Equal(deleteMarkerVersionId, deleteMarker.VersionId);
+        Assert.True(deleteMarker.IsDeleteMarker);
+        Assert.True(deleteMarker.IsLatest);
     }
 
     [Fact]
@@ -1284,7 +1393,7 @@ public sealed class DiskStorageServiceTests
         Assert.False(failedCopy.IsSuccess);
         Assert.Equal(IntegratedS3.Abstractions.Errors.StorageErrorCode.PreconditionFailed, failedCopy.Error!.Code);
 
-        var notModifiedCopy = await storageService.CopyObjectAsync(new CopyObjectRequest
+        var failedIfNoneMatchCopy = await storageService.CopyObjectAsync(new CopyObjectRequest
         {
             SourceBucketName = "source",
             SourceKey = "docs/source.txt",
@@ -1293,9 +1402,21 @@ public sealed class DiskStorageServiceTests
             SourceIfNoneMatchETag = $"\"{putResult.Value!.ETag}\""
         });
 
-        Assert.True(notModifiedCopy.IsSuccess);
-        Assert.Equal("source", notModifiedCopy.Value!.BucketName);
-        Assert.Equal("docs/source.txt", notModifiedCopy.Value.Key);
+        Assert.False(failedIfNoneMatchCopy.IsSuccess);
+        Assert.Equal(IntegratedS3.Abstractions.Errors.StorageErrorCode.PreconditionFailed, failedIfNoneMatchCopy.Error!.Code);
+
+        var failedIfModifiedSinceCopy = await storageService.CopyObjectAsync(new CopyObjectRequest
+        {
+            SourceBucketName = "source",
+            SourceKey = "docs/source.txt",
+            DestinationBucketName = "target",
+            DestinationKey = "docs/copied.txt",
+            SourceIfNoneMatchETag = "\"different\"",
+            SourceIfModifiedSinceUtc = putResult.Value.LastModifiedUtc.AddMinutes(5)
+        });
+
+        Assert.False(failedIfModifiedSinceCopy.IsSuccess);
+        Assert.Equal(IntegratedS3.Abstractions.Errors.StorageErrorCode.PreconditionFailed, failedIfModifiedSinceCopy.Error!.Code);
         Assert.False((await storageService.HeadObjectAsync(new HeadObjectRequest
         {
             BucketName = "target",
@@ -1534,6 +1655,39 @@ public sealed class DiskStorageServiceTests
 
         Assert.True(headObjectResult.IsSuccess);
         Assert.Equal("test", headObjectResult.Value!.Tags!["environment"]);
+    }
+
+    [Fact]
+    public async Task DiskStorage_PutObjectTags_RejectsInvalidTagSets()
+    {
+        await using var fixture = new DiskStorageFixture();
+        var storageService = fixture.Services.GetRequiredService<IStorageBackend>();
+        Assert.True((await storageService.CreateBucketAsync(new CreateBucketRequest
+        {
+            BucketName = "invalid-tags"
+        })).IsSuccess);
+
+        await using var uploadStream = new MemoryStream(Encoding.UTF8.GetBytes("tagged payload"));
+        Assert.True((await storageService.PutObjectAsync(new PutObjectRequest
+        {
+            BucketName = "invalid-tags",
+            Key = "docs/tagged.txt",
+            Content = uploadStream,
+            ContentType = "text/plain"
+        })).IsSuccess);
+
+        var putTagsResult = await storageService.PutObjectTagsAsync(new PutObjectTagsRequest
+        {
+            BucketName = "invalid-tags",
+            Key = "docs/tagged.txt",
+            Tags = Enumerable.Range(0, 11).ToDictionary(
+                static index => $"tag-{index}",
+                static index => $"value-{index}",
+                StringComparer.Ordinal)
+        });
+
+        Assert.False(putTagsResult.IsSuccess);
+        Assert.Equal(StorageErrorCode.InvalidTag, putTagsResult.Error!.Code);
     }
 
     [Fact]
@@ -2062,6 +2216,7 @@ public sealed class DiskStorageServiceTests
 
         var capabilities = await storageService.GetCapabilitiesAsync();
         Assert.Equal(IntegratedS3.Abstractions.Capabilities.StorageCapabilitySupport.Unsupported, capabilities.ServerSideEncryption);
+        Assert.Empty(capabilities.ServerSideEncryptionDetails.Variants);
 
         var providerMode = await storageService.GetProviderModeAsync();
         Assert.Equal(IntegratedS3.Abstractions.Models.StorageProviderMode.Hybrid, providerMode);

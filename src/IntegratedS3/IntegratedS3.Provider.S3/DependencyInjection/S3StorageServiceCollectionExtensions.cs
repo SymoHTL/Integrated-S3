@@ -44,7 +44,7 @@ public static class S3StorageServiceCollectionExtensions
             : options.Region.Trim();
 
         if (options.ServiceUrl is not null)
-            options.ServiceUrl = options.ServiceUrl.Trim();
+            options.ServiceUrl = string.IsNullOrWhiteSpace(options.ServiceUrl) ? null : options.ServiceUrl.Trim();
 
         if (options.AccessKey is not null)
             options.AccessKey = string.IsNullOrWhiteSpace(options.AccessKey) ? null : options.AccessKey.Trim();
