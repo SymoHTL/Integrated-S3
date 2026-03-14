@@ -1963,7 +1963,8 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
 
     private static IResult ToErrorResult(HttpContext httpContext, StorageError? error, string? resourceOverride = null)
     {
-        if (error is null) {
+        if (error is null)
+        {
             return ToErrorResult(httpContext, StatusCodes.Status500InternalServerError, "InternalError", "Storage operation failed.", resourceOverride);
         }
 
@@ -2005,7 +2006,8 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
     private static IResult ToCopyObjectResult(HttpContext httpContext, ObjectInfo @object, string? sourceVersionId)
     {
         ApplyObjectHeaders(httpContext.Response, @object);
-        if (!string.IsNullOrWhiteSpace(sourceVersionId)) {
+        if (!string.IsNullOrWhiteSpace(sourceVersionId))
+        {
             httpContext.Response.Headers[CopySourceVersionIdHeaderName] = sourceVersionId;
         }
 
