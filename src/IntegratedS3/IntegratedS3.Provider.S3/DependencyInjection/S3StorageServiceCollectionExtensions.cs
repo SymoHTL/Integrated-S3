@@ -4,8 +4,14 @@ using Microsoft.Extensions.DependencyInjection;
 
 namespace IntegratedS3.Provider.S3.DependencyInjection;
 
+/// <summary>
+/// DI helpers for registering the AWS SDK-backed S3 storage provider.
+/// </summary>
 public static class S3StorageServiceCollectionExtensions
 {
+    /// <summary>
+    /// Registers the S3 provider with explicit options.
+    /// </summary>
     public static IServiceCollection AddS3Storage(this IServiceCollection services, S3StorageOptions options)
     {
         ArgumentNullException.ThrowIfNull(services);
@@ -22,6 +28,9 @@ public static class S3StorageServiceCollectionExtensions
         return services;
     }
 
+    /// <summary>
+    /// Registers the S3 provider and allows callers to configure options in code.
+    /// </summary>
     public static IServiceCollection AddS3Storage(this IServiceCollection services, Action<S3StorageOptions> configure)
     {
         ArgumentNullException.ThrowIfNull(services);

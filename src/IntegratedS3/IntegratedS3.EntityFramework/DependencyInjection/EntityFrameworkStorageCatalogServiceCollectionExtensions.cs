@@ -8,8 +8,14 @@ using Microsoft.Extensions.DependencyInjection.Extensions;
 
 namespace IntegratedS3.Core.DependencyInjection;
 
+/// <summary>
+/// DI helpers for replacing the default catalog services with EF Core-backed implementations.
+/// </summary>
 public static class EntityFrameworkStorageCatalogServiceCollectionExtensions
 {
+    /// <summary>
+    /// Registers EF Core-backed catalog, object-state, and multipart-state services using default options.
+    /// </summary>
     public static IServiceCollection AddEntityFrameworkStorageCatalog<TDbContext>(this IServiceCollection services)
         where TDbContext : DbContext
     {
@@ -17,6 +23,9 @@ public static class EntityFrameworkStorageCatalogServiceCollectionExtensions
         return services.AddEntityFrameworkStorageCatalog<TDbContext>(static _ => { });
     }
 
+    /// <summary>
+    /// Registers EF Core-backed catalog, object-state, and multipart-state services and allows callers to configure the integration.
+    /// </summary>
     public static IServiceCollection AddEntityFrameworkStorageCatalog<TDbContext>(this IServiceCollection services, Action<EntityFrameworkCatalogOptions> configure)
         where TDbContext : DbContext
     {

@@ -1049,7 +1049,7 @@ public sealed class IntegratedS3ClientTransferTests(WebUiApplicationFactory fact
     }
 
     /// <summary>Client whose <see cref="IIntegratedS3Client.PresignObjectAsync"/> always throws, used to verify that
-    /// <see cref="IntegratedS3ClientTransferExtensions.DownloadToFileAsync"/> does not create the destination file
+    /// <see cref="IntegratedS3ClientTransferExtensions.DownloadToFileAsync(IIntegratedS3Client, HttpClient, string, string, string, int, string?, CancellationToken)"/> does not create the destination file
     /// when presigning fails before the file is opened.</summary>
     private sealed class FailingPresignClient : IIntegratedS3Client
     {

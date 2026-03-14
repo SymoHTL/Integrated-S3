@@ -11,6 +11,12 @@ It is intentionally **not** the final architecture container for the broader pla
 
 For the additional MVC/Razor and Blazor WebAssembly consumer samples, see `docs/web-consumer-samples.md`.
 
+For package-first onboarding and compatibility guidance, start with:
+
+- `docs\getting-started.md`
+- `docs\protocol-compatibility.md`
+- `docs\aot-trimming-guidance.md`
+
 ## Run locally
 
 ```powershell

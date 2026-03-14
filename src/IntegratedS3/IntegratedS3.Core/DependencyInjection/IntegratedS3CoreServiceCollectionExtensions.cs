@@ -6,14 +6,23 @@ using Microsoft.Extensions.DependencyInjection.Extensions;
 
 namespace IntegratedS3.Core.DependencyInjection;
 
+/// <summary>
+/// Core DI registrations for orchestration, authorization, presign, and health-monitoring services.
+/// </summary>
 public static class IntegratedS3CoreServiceCollectionExtensions
 {
+    /// <summary>
+    /// Registers the core service layer with default options.
+    /// </summary>
     public static IServiceCollection AddIntegratedS3Core(this IServiceCollection services)
     {
         ArgumentNullException.ThrowIfNull(services);
         return services.AddIntegratedS3Core(static _ => { });
     }
 
+    /// <summary>
+    /// Registers the core service layer and allows callers to configure orchestration options.
+    /// </summary>
     public static IServiceCollection AddIntegratedS3Core(this IServiceCollection services, Action<IntegratedS3CoreOptions> configure)
     {
         ArgumentNullException.ThrowIfNull(services);

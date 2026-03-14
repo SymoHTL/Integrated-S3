@@ -3,8 +3,14 @@ using Microsoft.Extensions.DependencyInjection;
 
 namespace IntegratedS3.Provider.Disk.DependencyInjection;
 
+/// <summary>
+/// DI helpers for registering the disk-backed storage provider.
+/// </summary>
 public static class DiskStorageServiceCollectionExtensions
 {
+    /// <summary>
+    /// Registers the disk-backed storage provider with explicit options.
+    /// </summary>
     public static IServiceCollection AddDiskStorage(this IServiceCollection services, DiskStorageOptions options)
     {
         ArgumentNullException.ThrowIfNull(services);
@@ -20,6 +26,9 @@ public static class DiskStorageServiceCollectionExtensions
         return services;
     }
 
+    /// <summary>
+    /// Registers the disk-backed storage provider and allows callers to configure the options in code.
+    /// </summary>
     public static IServiceCollection AddDiskStorage(this IServiceCollection services, Action<DiskStorageOptions> configure)
     {
         ArgumentNullException.ThrowIfNull(services);

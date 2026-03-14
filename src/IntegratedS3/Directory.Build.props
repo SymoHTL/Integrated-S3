@@ -4,5 +4,17 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <InvariantGlobalization>true</InvariantGlobalization>
+    <GenerateDocumentationFile Condition="'$(IsPackable)' != 'false'">true</GenerateDocumentationFile>
+    <PackageLicenseExpression Condition="'$(IsPackable)' != 'false'">BSD-3-Clause</PackageLicenseExpression>
+    <PackageProjectUrl Condition="'$(IsPackable)' != 'false'">https://github.com/SymoHTL/Intergrated-S3</PackageProjectUrl>
+    <PackageReadmeFile Condition="'$(IsPackable)' != 'false'">README.md</PackageReadmeFile>
+    <PackageTags Condition="'$(IsPackable)' != 'false'">IntegratedS3;S3;ASP.NET Core;storage;AOT;object-storage</PackageTags>
+    <PublishRepositoryUrl Condition="'$(IsPackable)' != 'false'">true</PublishRepositoryUrl>
+    <RepositoryType Condition="'$(IsPackable)' != 'false'">git</RepositoryType>
+    <RepositoryUrl Condition="'$(IsPackable)' != 'false'">https://github.com/SymoHTL/Intergrated-S3</RepositoryUrl>
   </PropertyGroup>
+
+  <ItemGroup Condition="'$(IsPackable)' != 'false'">
+    <None Include="$(MSBuildThisFileDirectory)..\..\README.md" Pack="true" PackagePath="\" Link="README.md" Visible="false" />
+  </ItemGroup>
 </Project>

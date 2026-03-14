@@ -3,11 +3,17 @@ using IntegratedS3.Core.Models;
 
 namespace IntegratedS3.Client;
 
+/// <summary>
+/// Default HTTP client for the IntegratedS3 presign endpoint.
+/// </summary>
 public sealed class IntegratedS3Client(HttpClient httpClient, string routePrefix = IntegratedS3ClientOptions.DefaultRoutePrefix) : IIntegratedS3Client
 {
     private readonly HttpClient _httpClient = httpClient ?? throw new ArgumentNullException(nameof(httpClient));
     private readonly string _routePrefix = IntegratedS3ClientPathUtilities.NormalizeRoutePrefix(routePrefix);
 
+    /// <summary>
+    /// Requests a presigned object operation from the configured route prefix.
+    /// </summary>
     public async ValueTask<StoragePresignedRequest> PresignObjectAsync(
         StoragePresignRequest request,
         CancellationToken cancellationToken = default)

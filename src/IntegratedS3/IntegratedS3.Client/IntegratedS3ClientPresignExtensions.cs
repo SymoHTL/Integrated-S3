@@ -3,7 +3,7 @@ using IntegratedS3.Core.Models;
 namespace IntegratedS3.Client;
 
 /// <summary>
-/// Convenience helpers for first-party object presign flows.
+/// Convenience helpers that construct <see cref="StoragePresignRequest"/> values for common object operations.
 /// </summary>
 /// <remarks>
 /// Overloads without a <c>preferredAccessMode</c> parameter intentionally keep access-mode selection
@@ -14,6 +14,9 @@ namespace IntegratedS3.Client;
 /// </remarks>
 public static class IntegratedS3ClientPresignExtensions
 {
+    /// <summary>
+    /// Presigns an object download using the deployment's default access mode.
+    /// </summary>
     public static ValueTask<StoragePresignedRequest> PresignGetObjectAsync(
         this IIntegratedS3Client client,
         string bucketName,
@@ -34,6 +37,9 @@ public static class IntegratedS3ClientPresignExtensions
         }, cancellationToken);
     }
 
+    /// <summary>
+    /// Presigns an object download while requesting a specific access mode.
+    /// </summary>
     public static ValueTask<StoragePresignedRequest> PresignGetObjectAsync(
         this IIntegratedS3Client client,
         string bucketName,
@@ -56,6 +62,9 @@ public static class IntegratedS3ClientPresignExtensions
         }, cancellationToken);
     }
 
+    /// <summary>
+    /// Presigns an object upload using the deployment's default access mode.
+    /// </summary>
     public static ValueTask<StoragePresignedRequest> PresignPutObjectAsync(
         this IIntegratedS3Client client,
         string bucketName,
@@ -76,6 +85,9 @@ public static class IntegratedS3ClientPresignExtensions
         }, cancellationToken);
     }
 
+    /// <summary>
+    /// Presigns an object upload while requesting a specific access mode.
+    /// </summary>
     public static ValueTask<StoragePresignedRequest> PresignPutObjectAsync(
         this IIntegratedS3Client client,
         string bucketName,
