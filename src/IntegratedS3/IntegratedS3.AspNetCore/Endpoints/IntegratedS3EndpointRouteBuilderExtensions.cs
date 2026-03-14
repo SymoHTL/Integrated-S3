@@ -1,4 +1,5 @@
 using System.Net;
+using System.Security.Cryptography;
 using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using System.Security.Claims;
@@ -60,6 +61,7 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
     private const string ChecksumSha1HeaderName = "x-amz-checksum-sha1";
     private const string ChecksumSha256HeaderName = "x-amz-checksum-sha256";
     private const string ChecksumTypeHeaderName = "x-amz-checksum-type";
+    private const string ContentMd5HeaderName = "Content-MD5";
     private const string DeleteMarkerHeaderName = "x-amz-delete-marker";
     private const string TaggingCountHeaderName = "x-amz-tagging-count";
     private const string VersionIdHeaderName = "x-amz-version-id";
@@ -2703,7 +2705,20 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
     {
         S3DeleteObjectsRequest deleteRequest;
         try {
-            deleteRequest = await S3XmlRequestReader.ReadDeleteObjectsRequestAsync(httpContext.Request.Body, cancellationToken);
+            if (!TryParseRequestChecksums(httpContext.Request, trailerHeaders: null, requireChecksumValueForDeclaredAlgorithm: true, out _, out var requestedChecksums, out var checksumErrorResult)) {
+                return checksumErrorResult!;
+            }
+
+            var contentMd5 = httpContext.Request.Headers[ContentMd5HeaderName].ToString();
+            await using var preparedBody = await PrepareRequestBodyAsync(httpContext.Request, cancellationToken);
+            var requestBody = await ReadRequestBodyBytesAsync(preparedBody.Content, cancellationToken);
+
+            if (!TryValidateDeleteObjectsRequestIntegrity(httpContext, bucketName, contentMd5, requestedChecksums, requestBody, out var integrityErrorResult)) {
+                return integrityErrorResult!;
+            }
+
+            using var requestBodyStream = new MemoryStream(requestBody, writable: false);
+            deleteRequest = await S3XmlRequestReader.ReadDeleteObjectsRequestAsync(requestBodyStream, cancellationToken);
         }
         catch (FormatException exception) {
             return ToErrorResult(httpContext, StatusCodes.Status400BadRequest, "MalformedXML", exception.Message, BuildObjectResource(bucketName, null), bucketName);
@@ -4778,6 +4793,15 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
         }
     }
 
+    private static async Task<byte[]> ReadRequestBodyBytesAsync(Stream content, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(content);
+
+        using var buffer = new MemoryStream();
+        await content.CopyToAsync(buffer, cancellationToken);
+        return buffer.ToArray();
+    }
+
     private static bool IsAwsChunkedContent(HttpRequest request)
     {
         if (!request.Headers.TryGetValue(HeaderNames.ContentEncoding, out var contentEncodingValues)) {
@@ -5503,6 +5527,104 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
         return true;
     }
 
+    private static bool TryValidateDeleteObjectsRequestIntegrity(
+        HttpContext httpContext,
+        string bucketName,
+        string? contentMd5,
+        IReadOnlyDictionary<string, string>? requestedChecksums,
+        byte[] requestBody,
+        out IResult? errorResult)
+    {
+        if (string.IsNullOrWhiteSpace(contentMd5) && (requestedChecksums is null || requestedChecksums.Count == 0)) {
+            errorResult = ToErrorResult(
+                httpContext,
+                StatusCodes.Status400BadRequest,
+                "InvalidRequest",
+                $"Missing required header for this request: {ContentMd5HeaderName}",
+                BuildObjectResource(bucketName, null),
+                bucketName);
+            return false;
+        }
+
+        var actualChecksums = ComputeDeleteObjectsRequestChecksums(requestBody);
+
+        if (!string.IsNullOrWhiteSpace(contentMd5)) {
+            var normalizedContentMd5 = contentMd5.Trim();
+            if (!IsValidMd5Digest(normalizedContentMd5)) {
+                errorResult = ToErrorResult(
+                    httpContext,
+                    StatusCodes.Status400BadRequest,
+                    "InvalidDigest",
+                    "The Content-MD5 you specified is not valid.",
+                    BuildObjectResource(bucketName, null),
+                    bucketName);
+                return false;
+            }
+
+            if (!string.Equals(normalizedContentMd5, actualChecksums["md5"], StringComparison.Ordinal)) {
+                errorResult = ToErrorResult(
+                    httpContext,
+                    StatusCodes.Status400BadRequest,
+                    "BadDigest",
+                    "The Content-MD5 you specified did not match what we received.",
+                    BuildObjectResource(bucketName, null),
+                    bucketName);
+                return false;
+            }
+        }
+
+        if (requestedChecksums is not null) {
+            foreach (var requestedChecksum in requestedChecksums) {
+                if (!actualChecksums.TryGetValue(requestedChecksum.Key, out var actualChecksum)
+                    || !string.Equals(requestedChecksum.Value, actualChecksum, StringComparison.Ordinal)) {
+                    errorResult = ToErrorResult(
+                        httpContext,
+                        StatusCodes.Status400BadRequest,
+                        "BadDigest",
+                        $"The supplied {requestedChecksum.Key.ToUpperInvariant()} checksum for the multi-delete request did not match what we received.",
+                        BuildObjectResource(bucketName, null),
+                        bucketName);
+                    return false;
+                }
+            }
+        }
+
+        errorResult = null;
+        return true;
+    }
+
+    private static IReadOnlyDictionary<string, string> ComputeDeleteObjectsRequestChecksums(ReadOnlySpan<byte> requestBody)
+    {
+        var crc32 = Crc32Accumulator.Create();
+        crc32.Append(requestBody);
+
+        var crc32c = Crc32Accumulator.CreateCastagnoli();
+        crc32c.Append(requestBody);
+
+        return new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["md5"] = Convert.ToBase64String(MD5.HashData(requestBody)),
+            ["sha256"] = Convert.ToBase64String(SHA256.HashData(requestBody)),
+            ["sha1"] = Convert.ToBase64String(SHA1.HashData(requestBody)),
+            ["crc32"] = Convert.ToBase64String(crc32.GetHashBytes()),
+            ["crc32c"] = Convert.ToBase64String(crc32c.GetHashBytes())
+        };
+    }
+
+    private static bool IsValidMd5Digest(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) {
+            return false;
+        }
+
+        try {
+            return Convert.FromBase64String(value).Length == 16;
+        }
+        catch (FormatException) {
+            return false;
+        }
+    }
+
     private static bool TryNormalizeChecksumAlgorithm(string? rawValue, out string? checksumAlgorithm)
     {
         if (string.IsNullOrWhiteSpace(rawValue)) {
@@ -6058,6 +6180,67 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
             if (File.Exists(tempFilePath)) {
                 File.Delete(tempFilePath);
             }
+        }
+    }
+
+    private struct Crc32Accumulator
+    {
+        private static readonly uint[] Crc32Table = CreateTable(0xEDB88320u);
+        private static readonly uint[] Crc32cTable = CreateTable(0x82F63B78u);
+
+        private readonly uint[] _table;
+        private uint _current;
+
+        public static Crc32Accumulator Create()
+        {
+            return new Crc32Accumulator(Crc32Table);
+        }
+
+        public static Crc32Accumulator CreateCastagnoli()
+        {
+            return new Crc32Accumulator(Crc32cTable);
+        }
+
+        private Crc32Accumulator(uint[] table)
+        {
+            _table = table;
+            _current = 0xFFFFFFFFu;
+        }
+
+        public void Append(ReadOnlySpan<byte> buffer)
+        {
+            foreach (var value in buffer) {
+                _current = (_current >> 8) ^ _table[(byte)(_current ^ value)];
+            }
+        }
+
+        public byte[] GetHashBytes()
+        {
+            var finalized = ~_current;
+            return
+            [
+                (byte)(finalized >> 24),
+                (byte)(finalized >> 16),
+                (byte)(finalized >> 8),
+                (byte)finalized
+            ];
+        }
+
+        private static uint[] CreateTable(uint polynomial)
+        {
+            var table = new uint[256];
+            for (uint i = 0; i < table.Length; i++) {
+                var value = i;
+                for (var bit = 0; bit < 8; bit++) {
+                    value = (value & 1) == 0
+                        ? value >> 1
+                        : polynomial ^ (value >> 1);
+                }
+
+                table[i] = value;
+            }
+
+            return table;
         }
     }
 

@@ -1776,16 +1776,16 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
         Assert.Empty(document.Root.S3Elements("NextContinuationToken"));
         Assert.Empty(document.Root.S3Elements("NextMarker"));
 
-    var listedObject = Assert.Single(document.Root.S3Elements("Contents"));
-    Assert.Equal("docs%2Fb%20file%282%29.txt", listedObject.S3Element("Key")?.Value);
-    Assert.False(string.IsNullOrWhiteSpace(listedObject.S3Element("Owner")?.S3Element("ID")?.Value));
+        var listedObject = Assert.Single(document.Root.S3Elements("Contents"));
+        Assert.Equal("docs%2Fb%20file%282%29.txt", listedObject.S3Element("Key")?.Value);
+        Assert.False(string.IsNullOrWhiteSpace(listedObject.S3Element("Owner")?.S3Element("ID")?.Value));
 
-    var secondPageResponse = await client.GetAsync(
-        $"/integrated-s3/{bucketName}?prefix={Uri.EscapeDataString("docs/")}&marker={Uri.EscapeDataString("docs/b file(2).txt")}&max-keys=10&encoding-type=url");
+        var secondPageResponse = await client.GetAsync(
+            $"/integrated-s3/{bucketName}?prefix={Uri.EscapeDataString("docs/")}&marker={Uri.EscapeDataString("docs/b file(2).txt")}&max-keys=10&encoding-type=url");
 
-    Assert.Equal(HttpStatusCode.OK, secondPageResponse.StatusCode);
-    var secondPageDocument = XDocument.Parse(await secondPageResponse.Content.ReadAsStringAsync());
-    Assert.Equal("docs%2Fc%20file%283%29.txt", Assert.Single(secondPageDocument.Root!.S3Elements("Contents")).S3Element("Key")?.Value);
+        Assert.Equal(HttpStatusCode.OK, secondPageResponse.StatusCode);
+        var secondPageDocument = XDocument.Parse(await secondPageResponse.Content.ReadAsStringAsync());
+        Assert.Equal("docs%2Fc%20file%283%29.txt", Assert.Single(secondPageDocument.Root!.S3Elements("Contents")).S3Element("Key")?.Value);
     }
 
     [Fact]
@@ -2051,6 +2051,7 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
         {
             Content = new StringContent(deleteBody, Encoding.UTF8, "application/xml")
         };
+        deleteRequest.Content.Headers.TryAddWithoutValidation("Content-MD5", ComputeContentMd5Base64(deleteBody));
 
         var deleteResponse = await client.SendAsync(deleteRequest);
 
@@ -2072,6 +2073,160 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
 
         var survivingHead = await client.SendAsync(new HttpRequestMessage(HttpMethod.Head, "/integrated-s3/buckets/batch-delete-bucket/objects/b.txt"));
         Assert.Equal(HttpStatusCode.OK, survivingHead.StatusCode);
+    }
+
+    [Fact]
+    public async Task S3CompatibleBatchDelete_WithoutIntegrityHeader_ReturnsInvalidRequest()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        await client.PutAsync("/integrated-s3/buckets/batch-delete-missing-md5-bucket", content: null);
+
+        const string deleteBody = """
+<Delete>
+  <Object><Key>a.txt</Key></Object>
+</Delete>
+""";
+
+        using var deleteRequest = new HttpRequestMessage(HttpMethod.Post, "/integrated-s3/batch-delete-missing-md5-bucket?delete")
+        {
+            Content = new StringContent(deleteBody, Encoding.UTF8, "application/xml")
+        };
+
+        var deleteResponse = await client.SendAsync(deleteRequest);
+
+        Assert.Equal(HttpStatusCode.BadRequest, deleteResponse.StatusCode);
+        Assert.Equal("application/xml", deleteResponse.Content.Headers.ContentType?.MediaType);
+
+        var errorDocument = XDocument.Parse(await deleteResponse.Content.ReadAsStringAsync());
+        Assert.Equal("InvalidRequest", GetRequiredElementValue(errorDocument, "Code"));
+        Assert.Equal("Missing required header for this request: Content-MD5", GetRequiredElementValue(errorDocument, "Message"));
+    }
+
+    [Fact]
+    public async Task S3CompatibleBatchDelete_WithInvalidContentMd5_ReturnsInvalidDigest()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        await client.PutAsync("/integrated-s3/buckets/batch-delete-invalid-md5-bucket", content: null);
+
+        const string deleteBody = """
+<Delete>
+  <Object><Key>a.txt</Key></Object>
+</Delete>
+""";
+
+        using var deleteRequest = new HttpRequestMessage(HttpMethod.Post, "/integrated-s3/batch-delete-invalid-md5-bucket?delete")
+        {
+            Content = new StringContent(deleteBody, Encoding.UTF8, "application/xml")
+        };
+        deleteRequest.Content.Headers.TryAddWithoutValidation("Content-MD5", "not-valid-base64");
+
+        var deleteResponse = await client.SendAsync(deleteRequest);
+
+        Assert.Equal(HttpStatusCode.BadRequest, deleteResponse.StatusCode);
+        Assert.Equal("application/xml", deleteResponse.Content.Headers.ContentType?.MediaType);
+
+        var errorDocument = XDocument.Parse(await deleteResponse.Content.ReadAsStringAsync());
+        Assert.Equal("InvalidDigest", GetRequiredElementValue(errorDocument, "Code"));
+        Assert.Equal("The Content-MD5 you specified is not valid.", GetRequiredElementValue(errorDocument, "Message"));
+    }
+
+    [Fact]
+    public async Task S3CompatibleBatchDelete_WithMismatchedContentMd5_ReturnsBadDigest()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        await client.PutAsync("/integrated-s3/buckets/batch-delete-bad-digest-bucket", content: null);
+
+        const string deleteBody = """
+<Delete>
+  <Object><Key>a.txt</Key></Object>
+</Delete>
+""";
+
+        using var deleteRequest = new HttpRequestMessage(HttpMethod.Post, "/integrated-s3/batch-delete-bad-digest-bucket?delete")
+        {
+            Content = new StringContent(deleteBody, Encoding.UTF8, "application/xml")
+        };
+        deleteRequest.Content.Headers.TryAddWithoutValidation("Content-MD5", ComputeContentMd5Base64("<Delete><Object><Key>different.txt</Key></Object></Delete>"));
+
+        var deleteResponse = await client.SendAsync(deleteRequest);
+
+        Assert.Equal(HttpStatusCode.BadRequest, deleteResponse.StatusCode);
+        Assert.Equal("application/xml", deleteResponse.Content.Headers.ContentType?.MediaType);
+
+        var errorDocument = XDocument.Parse(await deleteResponse.Content.ReadAsStringAsync());
+        Assert.Equal("BadDigest", GetRequiredElementValue(errorDocument, "Code"));
+        Assert.Equal("The Content-MD5 you specified did not match what we received.", GetRequiredElementValue(errorDocument, "Message"));
+    }
+
+    [Fact]
+    public async Task S3CompatibleBatchDelete_WithSha256ChecksumHeader_AllowsRequestWithoutContentMd5()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        await client.PutAsync("/integrated-s3/buckets/batch-delete-sha256-bucket", content: null);
+        await client.PutAsync("/integrated-s3/buckets/batch-delete-sha256-bucket/objects/a.txt", new StringContent("A", Encoding.UTF8, "text/plain"));
+
+        const string deleteBody = """
+<Delete>
+  <Object><Key>a.txt</Key></Object>
+</Delete>
+""";
+
+        using var deleteRequest = new HttpRequestMessage(HttpMethod.Post, "/integrated-s3/batch-delete-sha256-bucket?delete")
+        {
+            Content = new StringContent(deleteBody, Encoding.UTF8, "application/xml")
+        };
+        deleteRequest.Headers.TryAddWithoutValidation("x-amz-sdk-checksum-algorithm", "SHA256");
+        deleteRequest.Headers.TryAddWithoutValidation("x-amz-checksum-sha256", ComputeSha256Base64(deleteBody));
+
+        var deleteResponse = await client.SendAsync(deleteRequest);
+
+        Assert.Equal(HttpStatusCode.OK, deleteResponse.StatusCode);
+        Assert.Equal("application/xml", deleteResponse.Content.Headers.ContentType?.MediaType);
+
+        var deleteDocument = XDocument.Parse(await deleteResponse.Content.ReadAsStringAsync());
+        var deletedKey = Assert.Single(deleteDocument.Root!.S3Elements("Deleted")).S3Element("Key")?.Value;
+        Assert.Equal("a.txt", deletedKey);
+
+        var deletedHead = await client.SendAsync(new HttpRequestMessage(HttpMethod.Head, "/integrated-s3/buckets/batch-delete-sha256-bucket/objects/a.txt"));
+        Assert.Equal(HttpStatusCode.NotFound, deletedHead.StatusCode);
+    }
+
+    [Fact]
+    public async Task S3CompatibleBatchDelete_WithMoreThan1000Objects_ReturnsMalformedXml()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        await client.PutAsync("/integrated-s3/buckets/batch-delete-limit-bucket", content: null);
+
+        var deleteBodyBuilder = new StringBuilder();
+        deleteBodyBuilder.AppendLine("<Delete>");
+        for (var index = 0; index < 1001; index++) {
+            deleteBodyBuilder.Append("  <Object><Key>object-")
+                .Append(index.ToString(CultureInfo.InvariantCulture))
+                .AppendLine(".txt</Key></Object>");
+        }
+
+        deleteBodyBuilder.Append("</Delete>");
+        var deleteBody = deleteBodyBuilder.ToString();
+
+        using var deleteRequest = new HttpRequestMessage(HttpMethod.Post, "/integrated-s3/batch-delete-limit-bucket?delete")
+        {
+            Content = new StringContent(deleteBody, Encoding.UTF8, "application/xml")
+        };
+        deleteRequest.Content.Headers.TryAddWithoutValidation("Content-MD5", ComputeContentMd5Base64(deleteBody));
+
+        var deleteResponse = await client.SendAsync(deleteRequest);
+
+        Assert.Equal(HttpStatusCode.BadRequest, deleteResponse.StatusCode);
+        Assert.Equal("application/xml", deleteResponse.Content.Headers.ContentType?.MediaType);
+
+        var errorDocument = XDocument.Parse(await deleteResponse.Content.ReadAsStringAsync());
+        Assert.Equal("MalformedXML", GetRequiredElementValue(errorDocument, "Code"));
+        Assert.Contains("1000", GetRequiredElementValue(errorDocument, "Message"), StringComparison.Ordinal);
     }
 
     [Fact]
@@ -2102,6 +2257,7 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
         {
             Content = new StringContent(deleteBody, Encoding.UTF8, "application/xml")
         };
+        deleteRequest.Content.Headers.TryAddWithoutValidation("Content-MD5", ComputeContentMd5Base64(deleteBody));
 
         var deleteResponse = await client.SendAsync(deleteRequest);
         Assert.Equal(HttpStatusCode.OK, deleteResponse.StatusCode);
@@ -2751,10 +2907,10 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
         var document = XDocument.Parse(await response.Content.ReadAsStringAsync());
         Assert.Equal("url", GetRequiredElementValue(document, "EncodingType"));
         Assert.Equal("docs%2F", GetRequiredElementValue(document, "Prefix"));
-    var upload = Assert.Single(document.Root!.S3Elements("Upload"));
-    Assert.Equal("docs%2Ftest%20file%283%29.txt", upload.S3Element("Key")?.Value);
-    Assert.False(string.IsNullOrWhiteSpace(upload.S3Element("Owner")?.S3Element("ID")?.Value));
-    Assert.False(string.IsNullOrWhiteSpace(upload.S3Element("Initiator")?.S3Element("ID")?.Value));
+        var upload = Assert.Single(document.Root!.S3Elements("Upload"));
+        Assert.Equal("docs%2Ftest%20file%283%29.txt", upload.S3Element("Key")?.Value);
+        Assert.False(string.IsNullOrWhiteSpace(upload.S3Element("Owner")?.S3Element("ID")?.Value));
+        Assert.False(string.IsNullOrWhiteSpace(upload.S3Element("Initiator")?.S3Element("ID")?.Value));
     }
 
     [Fact]
@@ -5327,6 +5483,11 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
     private static string ComputeSha1Base64(string content)
     {
         return Convert.ToBase64String(SHA1.HashData(Encoding.UTF8.GetBytes(content)));
+    }
+
+    private static string ComputeContentMd5Base64(string content)
+    {
+        return Convert.ToBase64String(MD5.HashData(Encoding.UTF8.GetBytes(content)));
     }
 
     private static string ComputeMultipartSha1Base64(params string[] partChecksums)

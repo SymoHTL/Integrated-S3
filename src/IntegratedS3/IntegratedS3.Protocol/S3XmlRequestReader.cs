@@ -143,6 +143,10 @@ public static class S3XmlRequestReader
                 throw new FormatException("The delete request body must contain at least one 'Object' element.");
             }
 
+            if (objects.Length > 1000) {
+                throw new FormatException("The delete request body cannot contain more than 1000 'Object' elements.");
+            }
+
             var quietText = root.Elements().FirstOrDefault(static element => string.Equals(element.Name.LocalName, "Quiet", StringComparison.Ordinal))?.Value;
             var quiet = !string.IsNullOrWhiteSpace(quietText) && bool.TryParse(quietText, out var parsedQuiet) && parsedQuiet;
 
