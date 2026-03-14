@@ -727,6 +727,9 @@ public sealed class IntegratedS3CoreOrchestrationTests
         Assert.Equal(StorageReplicaRepairOrigin.AsyncReplication, outstandingRepair.Origin);
         Assert.Equal(StorageReplicaRepairStatus.Pending, outstandingRepair.Status);
         Assert.Equal(StorageOperationType.PutObject, outstandingRepair.Operation);
+        Assert.Equal(
+            StorageReplicaRepairDivergenceKind.Content | StorageReplicaRepairDivergenceKind.Metadata | StorageReplicaRepairDivergenceKind.Version,
+            outstandingRepair.DivergenceKinds);
         Assert.Equal(primaryBackend.Name, outstandingRepair.PrimaryBackendName);
         Assert.Equal(replicaBackend.Name, outstandingRepair.ReplicaBackendName);
         Assert.Equal("async-bucket", outstandingRepair.BucketName);
@@ -1172,6 +1175,9 @@ public sealed class IntegratedS3CoreOrchestrationTests
         Assert.Equal(StorageReplicaRepairOrigin.PartialWriteFailure, failedReplicaRepair.Origin);
         Assert.Equal(StorageReplicaRepairStatus.Failed, failedReplicaRepair.Status);
         Assert.Equal(StorageOperationType.PutObject, failedReplicaRepair.Operation);
+        Assert.Equal(
+            StorageReplicaRepairDivergenceKind.Content | StorageReplicaRepairDivergenceKind.Metadata | StorageReplicaRepairDivergenceKind.Version,
+            failedReplicaRepair.DivergenceKinds);
         Assert.Equal(1, failedReplicaRepair.AttemptCount);
         Assert.Equal(StorageErrorCode.ProviderUnavailable, failedReplicaRepair.LastErrorCode);
         Assert.NotNull(failedReplicaRepair.LastErrorMessage);
@@ -1266,6 +1272,167 @@ public sealed class IntegratedS3CoreOrchestrationTests
         Assert.Equal(1, remainingRepair.AttemptCount);
         Assert.Equal(StorageErrorCode.ProviderUnavailable, remainingRepair.LastErrorCode);
         Assert.Equal("Replica write failed.", remainingRepair.LastErrorMessage);
+    }
+
+    [Fact]
+    public async Task StorageReplicaRepairService_RepairsHostSeededReconciliationEntriesAcrossContentMetadataAndVersionDrift()
+    {
+        var primaryBackend = new InMemoryStorageBackend("primary-memory", isPrimary: true);
+        var replicaBackend = new InMemoryStorageBackend("replica-memory");
+
+        await using var fixture = new CoreStorageFixture(overrideCatalogStore: true, addDefaultDiskStorage: false, configureServices: services => {
+            services.AddSingleton<IStorageBackend>(primaryBackend);
+            services.AddSingleton<IStorageBackend>(replicaBackend);
+        });
+
+        var repairService = fixture.Services.GetRequiredService<IStorageReplicaRepairService>();
+
+        Assert.True((await primaryBackend.CreateBucketAsync(new CreateBucketRequest { BucketName = "content-bucket" })).IsSuccess);
+        Assert.True((await replicaBackend.CreateBucketAsync(new CreateBucketRequest { BucketName = "content-bucket" })).IsSuccess);
+
+        await using (var primaryContent = new MemoryStream(Encoding.UTF8.GetBytes("primary payload"))) {
+            Assert.True((await primaryBackend.PutObjectAsync(new PutObjectRequest
+            {
+                BucketName = "content-bucket",
+                Key = "docs/content.txt",
+                Content = primaryContent,
+                ContentType = "text/plain",
+                Metadata = new Dictionary<string, string>
+                {
+                    ["source"] = "primary"
+                }
+            })).IsSuccess);
+        }
+
+        await using (var staleContent = new MemoryStream(Encoding.UTF8.GetBytes("stale payload"))) {
+            Assert.True((await replicaBackend.PutObjectAsync(new PutObjectRequest
+            {
+                BucketName = "content-bucket",
+                Key = "docs/content.txt",
+                Content = staleContent,
+                ContentType = "text/plain",
+                Metadata = new Dictionary<string, string>
+                {
+                    ["source"] = "stale"
+                }
+            })).IsSuccess);
+        }
+
+        var contentRepair = CreateRepairEntry(
+            StorageReplicaRepairOrigin.Reconciliation,
+            StorageReplicaRepairStatus.Pending,
+            StorageOperationType.PutObject,
+            primaryBackend.Name,
+            replicaBackend.Name,
+            "content-bucket",
+            "docs/content.txt");
+        Assert.Equal(
+            StorageReplicaRepairDivergenceKind.Content | StorageReplicaRepairDivergenceKind.Metadata | StorageReplicaRepairDivergenceKind.Version,
+            contentRepair.DivergenceKinds);
+
+        var contentRepairError = await repairService.RepairAsync(contentRepair);
+        Assert.Null(contentRepairError);
+
+        var repairedObject = await replicaBackend.GetObjectAsync(new GetObjectRequest
+        {
+            BucketName = "content-bucket",
+            Key = "docs/content.txt"
+        });
+        Assert.True(repairedObject.IsSuccess);
+        await using (var repairedContent = repairedObject.Value!) {
+            Assert.Equal("primary payload", await ReadContentAsStringAsync(repairedContent.Content));
+        }
+
+        var repairedObjectHead = await replicaBackend.HeadObjectAsync(new HeadObjectRequest
+        {
+            BucketName = "content-bucket",
+            Key = "docs/content.txt"
+        });
+        Assert.True(repairedObjectHead.IsSuccess);
+        Assert.Equal("primary", repairedObjectHead.Value!.Metadata!["source"]);
+
+        Assert.True((await primaryBackend.CreateBucketAsync(new CreateBucketRequest { BucketName = "metadata-bucket" })).IsSuccess);
+        Assert.True((await replicaBackend.CreateBucketAsync(new CreateBucketRequest { BucketName = "metadata-bucket" })).IsSuccess);
+
+        primaryBackend.AddObject("metadata-bucket", "docs/tags.txt", "shared payload");
+        replicaBackend.AddObject("metadata-bucket", "docs/tags.txt", "shared payload");
+
+        Assert.True((await primaryBackend.PutObjectTagsAsync(new PutObjectTagsRequest
+        {
+            BucketName = "metadata-bucket",
+            Key = "docs/tags.txt",
+            Tags = new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["mode"] = "primary"
+            }
+        })).IsSuccess);
+        Assert.True((await replicaBackend.PutObjectTagsAsync(new PutObjectTagsRequest
+        {
+            BucketName = "metadata-bucket",
+            Key = "docs/tags.txt",
+            Tags = new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["mode"] = "stale"
+            }
+        })).IsSuccess);
+
+        var metadataRepair = CreateRepairEntry(
+            StorageReplicaRepairOrigin.Reconciliation,
+            StorageReplicaRepairStatus.Pending,
+            StorageOperationType.PutObjectTags,
+            primaryBackend.Name,
+            replicaBackend.Name,
+            "metadata-bucket",
+            "docs/tags.txt");
+        Assert.Equal(
+            StorageReplicaRepairDivergenceKind.Metadata | StorageReplicaRepairDivergenceKind.Version,
+            metadataRepair.DivergenceKinds);
+
+        var metadataRepairError = await repairService.RepairAsync(metadataRepair);
+        Assert.Null(metadataRepairError);
+
+        var repairedTags = await replicaBackend.GetObjectTagsAsync(new GetObjectTagsRequest
+        {
+            BucketName = "metadata-bucket",
+            Key = "docs/tags.txt"
+        });
+        Assert.True(repairedTags.IsSuccess);
+        Assert.Collection(
+            repairedTags.Value!.Tags,
+            tag => {
+                Assert.Equal("mode", tag.Key);
+                Assert.Equal("primary", tag.Value);
+            });
+
+        Assert.True((await primaryBackend.CreateBucketAsync(new CreateBucketRequest { BucketName = "version-bucket" })).IsSuccess);
+        Assert.True((await replicaBackend.CreateBucketAsync(new CreateBucketRequest { BucketName = "version-bucket" })).IsSuccess);
+        Assert.True((await primaryBackend.PutBucketVersioningAsync(new PutBucketVersioningRequest
+        {
+            BucketName = "version-bucket",
+            Status = BucketVersioningStatus.Enabled
+        })).IsSuccess);
+        Assert.True((await replicaBackend.PutBucketVersioningAsync(new PutBucketVersioningRequest
+        {
+            BucketName = "version-bucket",
+            Status = BucketVersioningStatus.Disabled
+        })).IsSuccess);
+
+        var versionRepair = CreateRepairEntry(
+            StorageReplicaRepairOrigin.Reconciliation,
+            StorageReplicaRepairStatus.Pending,
+            StorageOperationType.PutBucketVersioning,
+            primaryBackend.Name,
+            replicaBackend.Name,
+            "version-bucket",
+            objectKey: null);
+        Assert.Equal(StorageReplicaRepairDivergenceKind.Version, versionRepair.DivergenceKinds);
+
+        var versionRepairError = await repairService.RepairAsync(versionRepair);
+        Assert.Null(versionRepairError);
+
+        var repairedVersioning = await replicaBackend.GetBucketVersioningAsync("version-bucket");
+        Assert.True(repairedVersioning.IsSuccess);
+        Assert.Equal(BucketVersioningStatus.Enabled, repairedVersioning.Value!.Status);
     }
 
     [Fact]
@@ -1738,7 +1905,8 @@ public sealed class IntegratedS3CoreOrchestrationTests
         string? objectKey,
         string? versionId = null,
         int attemptCount = 0,
-        StorageError? lastError = null)
+        StorageError? lastError = null,
+        StorageReplicaRepairDivergenceKind? divergenceKinds = null)
     {
         var now = DateTimeOffset.UtcNow;
         return new StorageReplicaRepairEntry
@@ -1747,6 +1915,7 @@ public sealed class IntegratedS3CoreOrchestrationTests
             Origin = origin,
             Status = status,
             Operation = operation,
+            DivergenceKinds = divergenceKinds ?? StorageReplicaRepairEntry.GetDefaultDivergenceKinds(operation),
             PrimaryBackendName = primaryBackendName,
             ReplicaBackendName = replicaBackendName,
             BucketName = bucketName,

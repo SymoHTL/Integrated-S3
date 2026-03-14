@@ -13,6 +13,8 @@ public sealed record StorageReplicaRepairEntry
 
     public required StorageOperationType Operation { get; init; }
 
+    public StorageReplicaRepairDivergenceKind DivergenceKinds { get; init; }
+
     public required string PrimaryBackendName { get; init; }
 
     public required string ReplicaBackendName { get; init; }
@@ -32,4 +34,24 @@ public sealed record StorageReplicaRepairEntry
     public StorageErrorCode? LastErrorCode { get; init; }
 
     public string? LastErrorMessage { get; init; }
+
+    public static StorageReplicaRepairDivergenceKind GetDefaultDivergenceKinds(StorageOperationType operation)
+    {
+        return operation switch
+        {
+            StorageOperationType.CreateBucket or StorageOperationType.DeleteBucket
+                => StorageReplicaRepairDivergenceKind.Metadata | StorageReplicaRepairDivergenceKind.Version,
+            StorageOperationType.PutBucketVersioning
+                => StorageReplicaRepairDivergenceKind.Version,
+            StorageOperationType.PutBucketCors or StorageOperationType.DeleteBucketCors
+                => StorageReplicaRepairDivergenceKind.Metadata,
+            StorageOperationType.CopyObject or StorageOperationType.PutObject
+                => StorageReplicaRepairDivergenceKind.Content | StorageReplicaRepairDivergenceKind.Metadata | StorageReplicaRepairDivergenceKind.Version,
+            StorageOperationType.PutObjectTags or StorageOperationType.DeleteObjectTags
+                => StorageReplicaRepairDivergenceKind.Metadata | StorageReplicaRepairDivergenceKind.Version,
+            StorageOperationType.DeleteObject
+                => StorageReplicaRepairDivergenceKind.Content | StorageReplicaRepairDivergenceKind.Version,
+            _ => StorageReplicaRepairDivergenceKind.Metadata
+        };
+    }
 }

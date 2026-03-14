@@ -49,7 +49,7 @@ The repository has already moved beyond initial scaffolding and now contains a w
   - multipart orchestration over the primary backend with explicit unsupported behavior under both replicated write modes
   - current-version object-tag read/write orchestration with catalog refresh and write-through replication support
   - bucket CORS read/write/delete orchestration with authorization coverage and write-through replication support
-  - provider-agnostic replica-repair backlog/dispatcher seams that record async replica work, partial-write divergence, and failed-repair visibility without requiring a built-in always-on worker
+  - provider-agnostic replica-repair backlog/dispatcher seams that record async replica work, partial-write divergence, and failed-repair visibility without requiring a built-in always-on worker, plus explicit content/metadata/version divergence categories and a host-invokable `IStorageReplicaRepairService` for replaying stored repair entries
   - storage-aware authorization via an `IStorageService` decorator over orchestration
   - authorization-aware presign orchestration over provider-agnostic backend direct grants, delegated read-location resolution, and proxy fallback
   - `CatalogStorageObjectStateStore` — default `IStorageObjectStateStore` implementation that delegates to the registered `IStorageCatalogStore`
@@ -96,7 +96,7 @@ The repository has already moved beyond initial scaffolding and now contains a w
   - capability reporting on the HTTP metadata surface remains backend/Core-derived runtime metadata, not a full end-to-end HTTP-conformance report
   - `HttpContext.User` flow into Core authorization request context
   - provider-aware presign issuance via `POST /integrated-s3/presign/object`, with configurable signing-credential resolution and public-base-url fallback for proxy grants plus backend-direct/object-location seams for direct or delegated access
-  - read-only replica-repair backlog visibility via `GET /integrated-s3/admin/repairs`, including optional replica filtering on the admin surface
+  - read-only replica-repair backlog visibility via `GET /integrated-s3/admin/repairs`, including optional replica filtering plus per-entry divergence categories on the admin surface
   - source-generated JSON serialization
 - `IntegratedS3.Client` package with:
   - `IIntegratedS3Client` / `IntegratedS3Client` wrappers over the presign endpoint
@@ -976,6 +976,8 @@ Performance must be designed in from the start.
 
 These are optional host integrations around Core orchestration seams, not a commitment that reconciliation/repair must ship as a built-in always-on background-service architecture. Track F now exposes provider-agnostic divergence/backlog/dispatch seams so consumers can host replay/repair via `IHostedService`, external schedulers, or other operational tooling without being forced into a mandatory built-in hosted service.
 
+Hosts can also seed `StorageReplicaRepairEntry` values with `StorageReplicaRepairOrigin.Reconciliation` when they detect drift out-of-band (for example through checksum verification or periodic audits) and replay those entries through `IStorageReplicaRepairService`; the entry's `DivergenceKinds` flag stays provider-agnostic while still making content, metadata, and version repair intent explicit.
+
 - mirror replay
 - orphan detection
 - checksum verification
@@ -1127,6 +1129,7 @@ Status: **in progress / partially complete**
 - first health-aware provider selection is now implemented through an overrideable backend-health evaluator used by Core read orchestration
 - Core now also tracks dynamic backend-health snapshots, marks failover-triggering read failures as temporarily unhealthy, can optionally probe backends to restore healthy read preference without replacing existing evaluator overrides, and preflights required replicas before strict write-through primary mutation when they are unhealthy or not current
 - replica-write divergence is now surfaced through the repair backlog for both async replica dispatch and post-primary partial synchronous failures; multipart remains explicitly unsupported under both replicated write modes
+- repair entries now carry provider-agnostic divergence categories (`Content`, `Metadata`, `Version`), and Core now exposes `IStorageReplicaRepairService` so hosts can replay persisted backlog entries or host-seeded reconciliation findings without relying on the default in-process dispatcher
 - background reconciliation/repair execution is still scaffolded and optional-host-integrated rather than a required Core background-service model
 
 ### M6 — Versioning, tags, and checksums
@@ -1278,8 +1281,9 @@ This section is the execution board for the remaining implementation backlog. As
   - `WriteToPrimaryAsyncReplicas` is now implemented in Core for the current replicated-write surface by recording provider-agnostic `IStorageReplicaRepairBacklog` entries and dispatching through `IStorageReplicaRepairDispatcher`; the default in-process dispatch path is optional and durable replay remains a host concern
   - health-aware reads now combine `IStorageBackendHealthEvaluator`, dynamic snapshots, and optional `IStorageBackendHealthProbe` probing so recently unhealthy providers can be deprioritized and later reconsidered for read preference, while replicas with outstanding repairs are avoided by default unless explicitly configured otherwise
   - strict `WriteThroughAll` now preflights required replicas for health/currentness before mutating the primary, and post-primary partial failures are recorded as repair backlog entries instead of being rolled back or silently normalized
-  - the admin HTTP surface now exposes read-only repair-backlog visibility at `GET /integrated-s3/admin/repairs`, including optional `replicaBackend` filtering and route-group auth/endpoint-toggle coverage
-  - focused orchestration coverage now locks in async replica recording/dispatch, unhealthy-replica preflight, outstanding-repair read behavior, partial-write backlog semantics, failed-repair visibility, multi-replica dispatch-recording failure isolation, mixed replay success/failure, and backlog growth for only the replicas that remain stale
+  - repair entries now carry explicit provider-agnostic divergence categories (`Content`, `Metadata`, `Version`), and Core exposes `IStorageReplicaRepairService` so hosts can replay persisted entries or host-seeded `Reconciliation` findings without being tied to the optional in-process dispatcher
+  - the admin HTTP surface now exposes read-only repair-backlog visibility at `GET /integrated-s3/admin/repairs`, including optional `replicaBackend` filtering, per-entry divergence categories, and route-group auth/endpoint-toggle coverage
+  - focused orchestration coverage now locks in async replica recording/dispatch, unhealthy-replica preflight, outstanding-repair read behavior, partial-write backlog semantics, failed-repair visibility, multi-replica dispatch-recording failure isolation, mixed replay success/failure, backlog growth for only the replicas that remain stale, and host-invoked reconciliation repair across content, metadata, and version drift
 - Current semantics and boundaries:
   - replicas with outstanding repairs are treated as not current for strict write-through preflight and are excluded from replica-preferred reads by default, but that remains a tracked divergence signal rather than a blanket durability proof that every replica is fully caught up
   - unhealthy providers affect read routing today and repair backlog visibility is now exposed on the admin surface, but health state still does not imply automatic async replay completion, provider eviction, or topology mutation
@@ -1288,7 +1292,6 @@ This section is the execution board for the remaining implementation backlog. As
   - multipart remains explicitly unsupported under both replicated write modes
   - reconciliation/repair work in this track stays provider-agnostic and optional-host-integrated rather than locking the product into a mandatory built-in background-service architecture
 - Remaining scope:
-  - add richer reconciliation and divergence-repair semantics for content, metadata, and version drift beyond the current backlog/dispatcher scaffold
   - add optional host integrations such as mirror replay, orphan detection, checksum verification, multipart cleanup, index compaction, and expired-artifact cleanup without coupling providers or Core to a fixed hosting model
   - expand admin visibility beyond repair backlog into provider health, replica lag, and richer repair diagnostics without coupling providers to a fixed hosting model
   - broaden failure-semantics and multi-provider fault-injection coverage beyond the focused async-replication/backlog/read-policy scenarios already covered

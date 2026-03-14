@@ -3113,6 +3113,9 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
                 Assert.Equal("failed-repair", failedRepair.Id);
                 Assert.Equal(StorageReplicaRepairOrigin.PartialWriteFailure, failedRepair.Origin);
                 Assert.Equal(StorageReplicaRepairStatus.Failed, failedRepair.Status);
+                Assert.Equal(
+                    StorageReplicaRepairDivergenceKind.Content | StorageReplicaRepairDivergenceKind.Metadata | StorageReplicaRepairDivergenceKind.Version,
+                    failedRepair.DivergenceKinds);
                 Assert.Equal("replica-memory", failedRepair.ReplicaBackendName);
                 Assert.Equal(1, failedRepair.AttemptCount);
                 Assert.Equal(StorageErrorCode.ProviderUnavailable, failedRepair.LastErrorCode);
@@ -3122,6 +3125,9 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
                 Assert.Equal("pending-repair", pendingRepair.Id);
                 Assert.Equal(StorageReplicaRepairOrigin.AsyncReplication, pendingRepair.Origin);
                 Assert.Equal(StorageReplicaRepairStatus.Pending, pendingRepair.Status);
+                Assert.Equal(
+                    StorageReplicaRepairDivergenceKind.Content | StorageReplicaRepairDivergenceKind.Metadata | StorageReplicaRepairDivergenceKind.Version,
+                    pendingRepair.DivergenceKinds);
                 Assert.Equal("trailing-replica", pendingRepair.ReplicaBackendName);
                 Assert.Equal(0, pendingRepair.AttemptCount);
                 Assert.Null(pendingRepair.LastErrorCode);
@@ -3495,7 +3501,8 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
         DateTimeOffset createdAtUtc,
         string? versionId = null,
         int attemptCount = 0,
-        StorageError? lastError = null)
+        StorageError? lastError = null,
+        StorageReplicaRepairDivergenceKind? divergenceKinds = null)
     {
         return new StorageReplicaRepairEntry
         {
@@ -3503,6 +3510,7 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
             Origin = origin,
             Status = status,
             Operation = operation,
+            DivergenceKinds = divergenceKinds ?? StorageReplicaRepairEntry.GetDefaultDivergenceKinds(operation),
             PrimaryBackendName = primaryBackendName,
             ReplicaBackendName = replicaBackendName,
             BucketName = bucketName,
