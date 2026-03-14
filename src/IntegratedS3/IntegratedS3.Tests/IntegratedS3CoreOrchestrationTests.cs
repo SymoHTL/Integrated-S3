@@ -1,11 +1,12 @@
 using System.Collections.Concurrent;
-using System.Text;
 using System.Security.Claims;
+using System.Text;
 using IntegratedS3.Abstractions.Errors;
 using IntegratedS3.Abstractions.Models;
+using IntegratedS3.Abstractions.Observability;
+using IntegratedS3.Abstractions.Requests;
 using IntegratedS3.Abstractions.Responses;
 using IntegratedS3.Abstractions.Results;
-using IntegratedS3.Abstractions.Requests;
 using IntegratedS3.Abstractions.Services;
 using IntegratedS3.Core.DependencyInjection;
 using IntegratedS3.Core.Models;
@@ -14,8 +15,10 @@ using IntegratedS3.Core.Persistence;
 using IntegratedS3.Core.Services;
 using IntegratedS3.Provider.Disk;
 using IntegratedS3.Provider.Disk.DependencyInjection;
+using IntegratedS3.Tests.Infrastructure;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using Xunit;
 
 namespace IntegratedS3.Tests;
@@ -1452,6 +1455,82 @@ public sealed class IntegratedS3CoreOrchestrationTests
     }
 
     [Fact]
+    public async Task OrchestratedStorageService_DeleteMissingObject_InVersionedBucketCreatesDeleteMarkerAndCatalogEntry()
+    {
+        await using var fixture = new CoreStorageFixture();
+        var storageService = fixture.Services.GetRequiredService<IStorageService>();
+        var catalogStore = fixture.Services.GetRequiredService<IStorageCatalogStore>();
+
+        Assert.True((await storageService.CreateBucketAsync(new CreateBucketRequest
+        {
+            BucketName = "catalog-delete-marker",
+            EnableVersioning = true
+        })).IsSuccess);
+
+        var deleteMissing = await storageService.DeleteObjectAsync(new DeleteObjectRequest
+        {
+            BucketName = "catalog-delete-marker",
+            Key = "docs/missing.txt"
+        });
+
+        Assert.True(deleteMissing.IsSuccess);
+        Assert.True(deleteMissing.Value!.IsDeleteMarker);
+        var deleteMarkerVersionId = Assert.IsType<string>(deleteMissing.Value.VersionId);
+
+        var currentGet = await storageService.GetObjectAsync(new GetObjectRequest
+        {
+            BucketName = "catalog-delete-marker",
+            Key = "docs/missing.txt"
+        });
+
+        Assert.False(currentGet.IsSuccess);
+        Assert.Equal(StorageErrorCode.ObjectNotFound, currentGet.Error!.Code);
+        Assert.True(currentGet.Error.IsDeleteMarker);
+        Assert.Equal(deleteMarkerVersionId, currentGet.Error.VersionId);
+
+        var catalogObjects = await catalogStore.ListObjectsAsync("catalog-disk", "catalog-delete-marker");
+        var deleteMarker = Assert.Single(catalogObjects);
+        Assert.Equal("docs/missing.txt", deleteMarker.Key);
+        Assert.Equal(deleteMarkerVersionId, deleteMarker.VersionId);
+        Assert.True(deleteMarker.IsDeleteMarker);
+        Assert.True(deleteMarker.IsLatest);
+    }
+
+    [Fact]
+    public async Task OrchestratedStorageService_PutObjectTags_RejectsInvalidTagSets()
+    {
+        await using var fixture = new CoreStorageFixture();
+        var storageService = fixture.Services.GetRequiredService<IStorageService>();
+
+        Assert.True((await storageService.CreateBucketAsync(new CreateBucketRequest
+        {
+            BucketName = "catalog-invalid-tags"
+        })).IsSuccess);
+
+        await using var uploadStream = new MemoryStream(Encoding.UTF8.GetBytes("tagged payload"));
+        Assert.True((await storageService.PutObjectAsync(new PutObjectRequest
+        {
+            BucketName = "catalog-invalid-tags",
+            Key = "docs/tagged.txt",
+            Content = uploadStream,
+            ContentType = "text/plain"
+        })).IsSuccess);
+
+        var putTags = await storageService.PutObjectTagsAsync(new PutObjectTagsRequest
+        {
+            BucketName = "catalog-invalid-tags",
+            Key = "docs/tagged.txt",
+            Tags = Enumerable.Range(0, 11).ToDictionary(
+                static index => $"tag-{index}",
+                static index => $"value-{index}",
+                StringComparer.Ordinal)
+        });
+
+        Assert.False(putTags.IsSuccess);
+        Assert.Equal(StorageErrorCode.InvalidTag, putTags.Error!.Code);
+    }
+
+    [Fact]
     public async Task OrchestratedStorageService_WriteThroughAll_ReturnsFailureWhenReplicaWriteFails()
     {
         await using var fixture = new CoreStorageFixture(configureServices: services => {
@@ -1640,6 +1719,141 @@ public sealed class IntegratedS3CoreOrchestrationTests
         Assert.Equal(StorageErrorCode.UnsupportedCapability, initiateResult.Error!.Code);
     }
 
+    [Fact]
+    public async Task StorageOperations_EmitActivitiesAndMetricsWithProviderAndCorrelationTags()
+    {
+        using var observability = new TestObservabilityCollector();
+        await using var fixture = new CoreStorageFixture(configureServices: services => {
+            services.AddLogging(logging => {
+                logging.ClearProviders();
+                logging.SetMinimumLevel(LogLevel.Debug);
+                logging.AddProvider(observability);
+            });
+        });
+
+        var requestContextAccessor = fixture.Services.GetRequiredService<IIntegratedS3RequestContextAccessor>();
+        requestContextAccessor.Current = new IntegratedS3RequestContext
+        {
+            Principal = CreatePrincipal("storage.write"),
+            CorrelationId = "core-correlation-001",
+            RequestId = "core-request-001"
+        };
+
+        var storageService = fixture.Services.GetRequiredService<IStorageService>();
+        var result = await storageService.CreateBucketAsync(new CreateBucketRequest
+        {
+            BucketName = "telemetry-bucket"
+        });
+
+        Assert.True(result.IsSuccess);
+
+        var activity = Assert.Single(observability.Activities, candidate => string.Equals(candidate.OperationName, "IntegratedS3.Storage.CreateBucket", StringComparison.Ordinal));
+        Assert.Equal("core-correlation-001", activity.Tags[IntegratedS3Observability.Tags.CorrelationId]);
+        Assert.Equal("catalog-disk", activity.Tags[IntegratedS3Observability.Tags.Provider]);
+        Assert.Equal("catalog-disk", activity.Tags[IntegratedS3Observability.Tags.PrimaryProvider]);
+
+        var countMeasurement = Assert.Single(observability.Measurements, measurement =>
+            string.Equals(measurement.InstrumentName, IntegratedS3Observability.Metrics.StorageOperationCount, StringComparison.Ordinal)
+            && measurement.Tags.TryGetValue(IntegratedS3Observability.Tags.Operation, out var operation)
+            && string.Equals(operation, StorageOperationType.CreateBucket.ToString(), StringComparison.Ordinal)
+            && measurement.Tags.TryGetValue(IntegratedS3Observability.Tags.Result, out var resultTag)
+            && string.Equals(resultTag, "success", StringComparison.Ordinal));
+        Assert.Equal(1d, countMeasurement.Value);
+
+        Assert.Contains(observability.Logs, entry =>
+            entry.Level == LogLevel.Debug
+            && entry.CategoryName.EndsWith("AuthorizingStorageService", StringComparison.Ordinal)
+            && string.Equals(entry.State["CorrelationId"], "core-correlation-001", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task AuthorizationFailures_EmitMetricsAndStructuredLogs()
+    {
+        using var observability = new TestObservabilityCollector();
+        await using var fixture = new CoreStorageFixture(configureServices: services => {
+            services.AddLogging(logging => {
+                logging.ClearProviders();
+                logging.SetMinimumLevel(LogLevel.Debug);
+                logging.AddProvider(observability);
+            });
+            services.AddSingleton<IIntegratedS3AuthorizationService, ScopeBasedIntegratedS3AuthorizationService>();
+        });
+
+        var requestContextAccessor = fixture.Services.GetRequiredService<IIntegratedS3RequestContextAccessor>();
+        requestContextAccessor.Current = new IntegratedS3RequestContext
+        {
+            Principal = new ClaimsPrincipal(new ClaimsIdentity()),
+            CorrelationId = "authz-correlation-001",
+            RequestId = "authz-request-001"
+        };
+
+        var storageService = fixture.Services.GetRequiredService<IStorageService>();
+        var result = await storageService.CreateBucketAsync(new CreateBucketRequest
+        {
+            BucketName = "denied-bucket"
+        });
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(StorageErrorCode.AccessDenied, result.Error!.Code);
+
+        Assert.Contains(observability.Measurements, measurement =>
+            string.Equals(measurement.InstrumentName, IntegratedS3Observability.Metrics.StorageAuthorizationFailures, StringComparison.Ordinal)
+            && measurement.Tags.TryGetValue(IntegratedS3Observability.Tags.Operation, out var operation)
+            && string.Equals(operation, StorageOperationType.CreateBucket.ToString(), StringComparison.Ordinal)
+            && measurement.Tags.TryGetValue(IntegratedS3Observability.Tags.ErrorCode, out var errorCode)
+            && string.Equals(errorCode, StorageErrorCode.AccessDenied.ToString(), StringComparison.Ordinal));
+
+        Assert.Contains(observability.Logs, entry =>
+            entry.Level == LogLevel.Warning
+            && entry.CategoryName.EndsWith("AuthorizingStorageService", StringComparison.Ordinal)
+            && string.Equals(entry.State["CorrelationId"], "authz-correlation-001", StringComparison.Ordinal)
+            && entry.Message.Contains("authorization denied", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public async Task ReplicaRepairBacklog_ExposesBacklogSizeAndLagMetrics()
+    {
+        using var observability = new TestObservabilityCollector();
+        await using var fixture = new CoreStorageFixture(configureServices: services => {
+            services.AddLogging(logging => {
+                logging.ClearProviders();
+                logging.SetMinimumLevel(LogLevel.Debug);
+                logging.AddProvider(observability);
+            });
+        });
+
+        var backlog = fixture.Services.GetRequiredService<IStorageReplicaRepairBacklog>();
+        await backlog.AddAsync(new StorageReplicaRepairEntry
+        {
+            Id = Guid.NewGuid().ToString("N"),
+            Origin = StorageReplicaRepairOrigin.AsyncReplication,
+            Status = StorageReplicaRepairStatus.Pending,
+            Operation = StorageOperationType.PutObject,
+            PrimaryBackendName = "catalog-disk",
+            ReplicaBackendName = "replica-disk",
+            BucketName = "telemetry-bucket",
+            ObjectKey = "docs/lag.txt",
+            CreatedAtUtc = DateTimeOffset.UtcNow.AddMinutes(-3),
+            UpdatedAtUtc = DateTimeOffset.UtcNow.AddMinutes(-3)
+        });
+
+        observability.RecordObservableInstruments();
+
+        Assert.Contains(observability.Measurements, measurement =>
+            string.Equals(measurement.InstrumentName, IntegratedS3Observability.Metrics.ReplicaRepairBacklogSize, StringComparison.Ordinal)
+            && measurement.Tags.TryGetValue(IntegratedS3Observability.Tags.ReplicaBackend, out var replicaBackend)
+            && string.Equals(replicaBackend, "replica-disk", StringComparison.Ordinal)
+            && measurement.Tags.TryGetValue(IntegratedS3Observability.Tags.RepairStatus, out var repairStatus)
+            && string.Equals(repairStatus, StorageReplicaRepairStatus.Pending.ToString(), StringComparison.Ordinal)
+            && measurement.Value >= 1d);
+
+        Assert.Contains(observability.Measurements, measurement =>
+            string.Equals(measurement.InstrumentName, IntegratedS3Observability.Metrics.ReplicaRepairOldestAge, StringComparison.Ordinal)
+            && measurement.Tags.TryGetValue(IntegratedS3Observability.Tags.ReplicaBackend, out var replicaBackend)
+            && string.Equals(replicaBackend, "replica-disk", StringComparison.Ordinal)
+            && measurement.Value >= 150d);
+    }
+
     private sealed class CoreStorageFixture : IAsyncDisposable
     {
         public CoreStorageFixture(bool overrideCatalogStore = false, bool addDefaultDiskStorage = true, Action<IServiceCollection>? configureServices = null)
@@ -1773,6 +1987,7 @@ public sealed class IntegratedS3CoreOrchestrationTests
                 StorageOperationType.ListObjects => "storage.read",
                 StorageOperationType.GetObject => "storage.read",
                 StorageOperationType.PresignGetObject => "storage.read",
+                StorageOperationType.GetBucketLocation => "storage.read",
                 StorageOperationType.GetBucketCors => "storage.read",
                 StorageOperationType.GetObjectTags => "storage.read",
                 StorageOperationType.HeadObject => "storage.read",

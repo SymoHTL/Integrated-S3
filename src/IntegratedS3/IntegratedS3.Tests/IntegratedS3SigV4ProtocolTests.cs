@@ -64,6 +64,31 @@ public sealed class IntegratedS3SigV4ProtocolTests
     }
 
     [Fact]
+    public void CanonicalRequestBuilder_PreservesLiteralPlusSignsAndDuplicateRawQueryParameters()
+    {
+        var canonicalRequest = S3SigV4Signer.BuildCanonicalRequest(
+            "GET",
+            "/integrated-s3/demo-bucket/object.txt",
+            S3SigV4QueryStringParser.Parse("?x-id=GetObject+Test&x-id=GetObject%2BSecond&uploads"),
+            [
+                new KeyValuePair<string, string?>("host", "example.test")
+            ],
+            ["host"],
+            "UNSIGNED-PAYLOAD");
+
+        var expected = string.Join('\n', [
+            "GET",
+            "/integrated-s3/demo-bucket/object.txt",
+            "uploads=&x-id=GetObject%2BSecond&x-id=GetObject%2BTest",
+            "host:example.test\n",
+            "host",
+            "UNSIGNED-PAYLOAD"
+        ]);
+
+        Assert.Equal(expected, canonicalRequest.CanonicalRequest);
+    }
+
+    [Fact]
     public void Presigner_BuildsExpectedQueryParametersAndExpiry()
     {
         var signedAtUtc = new DateTimeOffset(2026, 3, 11, 18, 0, 0, TimeSpan.Zero);

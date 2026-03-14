@@ -68,7 +68,7 @@ internal static class S3ServerSideEncryptionMapper
         return new ObjectServerSideEncryptionInfo
         {
             Algorithm = algorithm.Value,
-            KeyId = algorithm == ObjectServerSideEncryptionAlgorithm.Kms && !string.IsNullOrWhiteSpace(keyId)
+            KeyId = SupportsKmsKeyId(algorithm.Value) && !string.IsNullOrWhiteSpace(keyId)
                 ? keyId
                 : null
         };
@@ -93,7 +93,10 @@ internal static class S3ServerSideEncryptionMapper
                 break;
 
             case ObjectServerSideEncryptionAlgorithm.Kms:
-                setMethod(ServerSideEncryptionMethod.AWSKMS);
+            case ObjectServerSideEncryptionAlgorithm.KmsDsse:
+                setMethod(settings.Algorithm == ObjectServerSideEncryptionAlgorithm.Kms
+                    ? ServerSideEncryptionMethod.AWSKMS
+                    : ServerSideEncryptionMethod.AWSKMSDSSE);
 
                 if (!string.IsNullOrWhiteSpace(settings.KeyId))
                     setKeyId(settings.KeyId);
@@ -119,7 +122,7 @@ internal static class S3ServerSideEncryptionMapper
         foreach (var (key, value) in context)
         {
             ArgumentException.ThrowIfNullOrWhiteSpace(key);
-            ArgumentNullException.ThrowIfNull(value);
+            ArgumentException.ThrowIfNullOrWhiteSpace(value);
             writer.WriteString(key, value);
         }
 
@@ -139,8 +142,12 @@ internal static class S3ServerSideEncryptionMapper
         {
             "AES256" => ObjectServerSideEncryptionAlgorithm.Aes256,
             "aws:kms" => ObjectServerSideEncryptionAlgorithm.Kms,
+            "aws:kms:dsse" => ObjectServerSideEncryptionAlgorithm.KmsDsse,
             _ => throw new S3ServerSideEncryptionNotSupportedException(
                 $"S3 object metadata reported unsupported server-side encryption algorithm '{value}'.")
         };
     }
+
+    private static bool SupportsKmsKeyId(ObjectServerSideEncryptionAlgorithm algorithm)
+        => algorithm is ObjectServerSideEncryptionAlgorithm.Kms or ObjectServerSideEncryptionAlgorithm.KmsDsse;
 }

@@ -102,6 +102,25 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
         }
     }
 
+    public async ValueTask<StorageResult<BucketLocationInfo>> GetBucketLocationAsync(string bucketName, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var entry = await _client.GetBucketLocationAsync(bucketName, cancellationToken).ConfigureAwait(false);
+            return StorageResult<BucketLocationInfo>.Success(new BucketLocationInfo
+            {
+                BucketName = bucketName,
+                LocationConstraint = string.IsNullOrWhiteSpace(entry.LocationConstraint)
+                    ? null
+                    : entry.LocationConstraint
+            });
+        }
+        catch (AmazonS3Exception ex)
+        {
+            return StorageResult<BucketLocationInfo>.Failure(S3ErrorTranslator.Translate(ex, Name, bucketName));
+        }
+    }
+
     public async ValueTask<StorageResult<BucketVersioningInfo>> GetBucketVersioningAsync(string bucketName, CancellationToken cancellationToken = default)
     {
         try
@@ -834,7 +853,7 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
             return null;
 
         return StorageError.Unsupported(
-            $"The S3 provider does not accept server-side encryption request settings for {operation} object reads in the current AES256/KMS slice. Read-time SSE headers are only used with customer-provided keys.",
+            $"The S3 provider does not accept managed server-side encryption request settings for {operation} object reads. Read-time SSE headers are only used with customer-provided keys.",
             bucketName,
             key);
     }
@@ -848,7 +867,7 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
             return null;
 
         return StorageError.Unsupported(
-            "The S3 provider does not support copy-source server-side encryption settings in the current AES256/KMS slice. Source-side SSE headers are only used with customer-provided keys.",
+            "The S3 provider does not support managed copy-source server-side encryption settings. Source-side SSE headers are only used with customer-provided keys.",
             bucketName,
             key);
     }
@@ -869,12 +888,33 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
                     bucketName,
                     key),
             ObjectServerSideEncryptionAlgorithm.Aes256 => null,
+            ObjectServerSideEncryptionAlgorithm.Kms or ObjectServerSideEncryptionAlgorithm.KmsDsse
+                when HasInvalidServerSideEncryptionContext(serverSideEncryption.Context)
+                => StorageError.Unsupported(
+                    "KMS-managed server-side encryption context keys and values must be non-empty strings in the native S3 provider.",
+                    bucketName,
+                    key),
+            ObjectServerSideEncryptionAlgorithm.KmsDsse => null,
             ObjectServerSideEncryptionAlgorithm.Kms => null,
             _ => StorageError.Unsupported(
                 $"Server-side encryption algorithm '{serverSideEncryption.Algorithm}' is not supported by the native S3 provider.",
                 bucketName,
                 key)
         };
+    }
+
+    private static bool HasInvalidServerSideEncryptionContext(IReadOnlyDictionary<string, string>? context)
+    {
+        if (context is null || context.Count == 0)
+            return false;
+
+        foreach (var (name, value) in context)
+        {
+            if (string.IsNullOrWhiteSpace(name) || string.IsNullOrWhiteSpace(value))
+                return true;
+        }
+
+        return false;
     }
 
     private static IReadOnlyDictionary<string, string>? MergeValueDictionaries(

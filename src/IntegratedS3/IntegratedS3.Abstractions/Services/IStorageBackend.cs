@@ -43,6 +43,9 @@ public interface IStorageBackend
 
     ValueTask<StorageResult<BucketInfo>> CreateBucketAsync(CreateBucketRequest request, CancellationToken cancellationToken = default);
 
+    ValueTask<StorageResult<BucketLocationInfo>> GetBucketLocationAsync(string bucketName, CancellationToken cancellationToken = default)
+        => ValueTask.FromResult(StorageResult<BucketLocationInfo>.Failure(StorageError.Unsupported("Bucket location is not implemented by this storage backend.", bucketName)));
+
     ValueTask<StorageResult<BucketVersioningInfo>> GetBucketVersioningAsync(string bucketName, CancellationToken cancellationToken = default);
 
     ValueTask<StorageResult<BucketVersioningInfo>> PutBucketVersioningAsync(PutBucketVersioningRequest request, CancellationToken cancellationToken = default);
