@@ -3,6 +3,7 @@ using Amazon.Runtime;
 using Amazon.S3;
 using Amazon.S3.Model;
 using IntegratedS3.Abstractions.Models;
+using System.Globalization;
 
 namespace IntegratedS3.Provider.S3.Internal;
 
@@ -250,6 +251,11 @@ internal sealed class AwsS3StorageClient : IS3StorageClient
                 LastModifiedUtc: ToDateTimeOffset(response.LastModified),
                 Metadata: BuildMetadataDictionary(response.Metadata),
                 VersionId: response.VersionId,
+                CacheControl: response.CacheControl,
+                ContentDisposition: response.ContentDisposition,
+                ContentEncoding: response.ContentEncoding,
+                ContentLanguage: response.ContentLanguage,
+                ExpiresUtc: ParseExpiresString(response.ExpiresString),
                 ServerSideEncryption: S3ServerSideEncryptionMapper.ToInfo(
                     response.ServerSideEncryptionMethod,
                     response.ServerSideEncryptionKeyManagementServiceKeyId));
@@ -333,6 +339,11 @@ internal sealed class AwsS3StorageClient : IS3StorageClient
             LastModifiedUtc: ToDateTimeOffset(response.LastModified),
             Metadata: BuildMetadataDictionary(response.Metadata),
             VersionId: response.VersionId,
+            CacheControl: response.Headers.CacheControl,
+            ContentDisposition: response.Headers.ContentDisposition,
+            ContentEncoding: response.Headers.ContentEncoding,
+            ContentLanguage: GetHeaderValue(response.Headers, "Content-Language"),
+            ExpiresUtc: ParseExpiresString(response.ExpiresString),
             ServerSideEncryption: S3ServerSideEncryptionMapper.ToInfo(
                 response.ServerSideEncryptionMethod,
                 response.ServerSideEncryptionKeyManagementServiceKeyId));
@@ -349,6 +360,11 @@ internal sealed class AwsS3StorageClient : IS3StorageClient
         Stream content,
         long? contentLength,
         string? contentType,
+        string? cacheControl,
+        string? contentDisposition,
+        string? contentEncoding,
+        string? contentLanguage,
+        DateTimeOffset? expiresUtc,
         IReadOnlyDictionary<string, string>? metadata,
         IReadOnlyDictionary<string, string>? checksums,
         ObjectServerSideEncryptionSettings? serverSideEncryption,
@@ -365,6 +381,8 @@ internal sealed class AwsS3StorageClient : IS3StorageClient
 
         if (contentLength.HasValue)
             request.Headers.ContentLength = contentLength.Value;
+
+        ApplyStandardObjectHeaders(request.Headers, cacheControl, contentDisposition, contentEncoding, contentLanguage, expiresUtc);
 
         if (metadata is not null)
         {
@@ -391,6 +409,11 @@ internal sealed class AwsS3StorageClient : IS3StorageClient
                 response.ChecksumCRC64NVME,
                 response.ChecksumSHA1,
                 response.ChecksumSHA256),
+            CacheControl: cacheControl,
+            ContentDisposition: contentDisposition,
+            ContentEncoding: contentEncoding,
+            ContentLanguage: contentLanguage,
+            ExpiresUtc: expiresUtc,
             ServerSideEncryption: S3ServerSideEncryptionMapper.ToInfo(
                 response.ServerSideEncryptionMethod,
                 response.ServerSideEncryptionKeyManagementServiceKeyId));
@@ -431,6 +454,14 @@ internal sealed class AwsS3StorageClient : IS3StorageClient
         string? sourceIfNoneMatchETag,
         DateTimeOffset? sourceIfModifiedSinceUtc,
         DateTimeOffset? sourceIfUnmodifiedSinceUtc,
+        CopyObjectMetadataDirective metadataDirective,
+        string? contentType,
+        string? cacheControl,
+        string? contentDisposition,
+        string? contentEncoding,
+        string? contentLanguage,
+        DateTimeOffset? expiresUtc,
+        IReadOnlyDictionary<string, string>? metadata,
         bool overwriteIfExists,
         ObjectServerSideEncryptionSettings? destinationServerSideEncryption,
         CancellationToken cancellationToken = default)
@@ -455,6 +486,22 @@ internal sealed class AwsS3StorageClient : IS3StorageClient
         if (!overwriteIfExists)
             request.IfNoneMatch = "*";
 
+        request.MetadataDirective = metadataDirective == CopyObjectMetadataDirective.Replace
+            ? S3MetadataDirective.REPLACE
+            : S3MetadataDirective.COPY;
+
+        if (metadataDirective == CopyObjectMetadataDirective.Replace)
+        {
+            request.ContentType = contentType;
+            ApplyStandardObjectHeaders(request.Headers, cacheControl, contentDisposition, contentEncoding, contentLanguage, expiresUtc);
+
+            if (metadata is not null)
+            {
+                foreach (var (name, value) in metadata)
+                    request.Metadata[name] = value;
+            }
+        }
+
         S3ServerSideEncryptionMapper.ApplyTo(request, destinationServerSideEncryption);
 
         var response = await _s3.CopyObjectAsync(request, cancellationToken).ConfigureAwait(false);
@@ -462,11 +509,11 @@ internal sealed class AwsS3StorageClient : IS3StorageClient
         return new S3ObjectEntry(
             Key: destinationKey,
             ContentLength: 0,
-            ContentType: null,
+            ContentType: metadataDirective == CopyObjectMetadataDirective.Replace ? contentType : null,
             ETag: response.ETag,
             LastModifiedUtc: string.IsNullOrEmpty(response.LastModified) ? DateTimeOffset.UtcNow
                 : DateTime.TryParse(response.LastModified, out var dt) ? new DateTimeOffset(dt, TimeSpan.Zero) : DateTimeOffset.UtcNow,
-            Metadata: null,
+            Metadata: metadataDirective == CopyObjectMetadataDirective.Replace ? metadata : null,
             VersionId: response.VersionId,
             Checksums: BuildChecksums(
                 response.ChecksumCRC32,
@@ -474,6 +521,11 @@ internal sealed class AwsS3StorageClient : IS3StorageClient
                 response.ChecksumCRC64NVME,
                 response.ChecksumSHA1,
                 response.ChecksumSHA256),
+            CacheControl: metadataDirective == CopyObjectMetadataDirective.Replace ? cacheControl : null,
+            ContentDisposition: metadataDirective == CopyObjectMetadataDirective.Replace ? contentDisposition : null,
+            ContentEncoding: metadataDirective == CopyObjectMetadataDirective.Replace ? contentEncoding : null,
+            ContentLanguage: metadataDirective == CopyObjectMetadataDirective.Replace ? contentLanguage : null,
+            ExpiresUtc: metadataDirective == CopyObjectMetadataDirective.Replace ? expiresUtc : null,
             ServerSideEncryption: S3ServerSideEncryptionMapper.ToInfo(
                 response.ServerSideEncryptionMethod,
                 response.ServerSideEncryptionKeyManagementServiceKeyId));
@@ -483,6 +535,11 @@ internal sealed class AwsS3StorageClient : IS3StorageClient
         string bucketName,
         string key,
         string? contentType,
+        string? cacheControl,
+        string? contentDisposition,
+        string? contentEncoding,
+        string? contentLanguage,
+        DateTimeOffset? expiresUtc,
         IReadOnlyDictionary<string, string>? metadata,
         string? checksumAlgorithm,
         ObjectServerSideEncryptionSettings? serverSideEncryption,
@@ -494,6 +551,8 @@ internal sealed class AwsS3StorageClient : IS3StorageClient
             Key = key,
             ContentType = contentType
         };
+
+        ApplyStandardObjectHeaders(request.Headers, cacheControl, contentDisposition, contentEncoding, contentLanguage, expiresUtc);
 
         if (metadata is not null)
         {
@@ -724,6 +783,20 @@ internal sealed class AwsS3StorageClient : IS3StorageClient
     private static DateTimeOffset ToDateTimeOffset(DateTime? value)
         => value.HasValue ? new DateTimeOffset(DateTime.SpecifyKind(value.Value, DateTimeKind.Utc)) : DateTimeOffset.UtcNow;
 
+    private static DateTimeOffset? ParseExpiresString(string? rawValue)
+    {
+        if (string.IsNullOrWhiteSpace(rawValue))
+            return null;
+
+        return DateTimeOffset.TryParse(
+            rawValue,
+            CultureInfo.InvariantCulture,
+            DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal,
+            out var parsedValue)
+            ? parsedValue
+            : null;
+    }
+
     private static IReadOnlyDictionary<string, string>? BuildMetadataDictionary(MetadataCollection? metadata)
     {
         if (metadata is null || metadata.Count == 0)
@@ -761,6 +834,29 @@ internal sealed class AwsS3StorageClient : IS3StorageClient
 
         checksums ??= new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         checksums[algorithm] = value;
+    }
+
+    private static void ApplyStandardObjectHeaders(
+        HeadersCollection headers,
+        string? cacheControl,
+        string? contentDisposition,
+        string? contentEncoding,
+        string? contentLanguage,
+        DateTimeOffset? expiresUtc)
+    {
+        headers.CacheControl = cacheControl;
+        headers.ContentDisposition = contentDisposition;
+        headers.ContentEncoding = contentEncoding;
+        headers["Content-Language"] = contentLanguage;
+        headers.Expires = expiresUtc?.UtcDateTime;
+    }
+
+    private static string? GetHeaderValue(HeadersCollection headers, string headerName)
+    {
+        var value = headers[headerName];
+        return string.IsNullOrWhiteSpace(value)
+            ? null
+            : value;
     }
 
     private static void ApplyChecksumHeaders(PutObjectRequest request, string? checksumAlgorithm, IReadOnlyDictionary<string, string>? checksums)

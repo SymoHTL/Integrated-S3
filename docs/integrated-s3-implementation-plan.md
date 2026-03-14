@@ -1252,7 +1252,7 @@ This section is the execution board for the remaining implementation backlog. As
 
 ### Track E — S3 protocol fidelity and edge-case hardening
 
-- Packages: `IntegratedS3.AspNetCore`, `IntegratedS3.Protocol`, `IntegratedS3.Provider.Disk`, `IntegratedS3.Tests`
+- Packages: `IntegratedS3.Abstractions`, `IntegratedS3.AspNetCore`, `IntegratedS3.Core`, `IntegratedS3.Provider.Disk`, `IntegratedS3.Provider.S3`, `IntegratedS3.EntityFramework`, `IntegratedS3.Protocol`, `IntegratedS3.Tests`
 - Ready: now
 - Depends on: coordinate with Tracks B and C as parity and client-surface hardening follow-ons land
 - Status update:
@@ -1262,8 +1262,9 @@ This section is the execution board for the remaining implementation backlog. As
   - bucket/object-compatible subresource validation now uses an explicit supported-matrix for bucket `?versioning`, `?cors`, `?uploads`, and `?versions` plus object `?tagging`, `?versionId`, and multipart workflows, rejects remaining unsupported single subresources with consistent `NotImplemented` responses, and returns explicit unsupported-combination results for invalid mixed query sets
   - focused HTTP coverage now locks in that SigV4 presign query parameters such as `X-Amz-*` and `x-id` continue to be ignored during bucket/object subresource validation for the currently supported paths
   - protocol/conformance coverage now locks in canonical empty-value subresource signing plus presigned bucket-versioning and historical-version reads on the S3-compatible route
+  - standard object-header parity now covers `x-amz-meta-*`, `Cache-Control`, `Content-Disposition`, `Content-Encoding`, `Content-Language`, `Expires`, multipart-initiation header persistence, and `x-amz-metadata-directive` copy replacement semantics across the current HTTP, disk, S3-provider, and persisted-state surfaces; the sample-host-only `x-integrateds3-meta-*` prefix remains accepted/emitted for compatibility
 - Remaining scope:
-  - next: harden conditional precedence, checksum/header behavior, and canonical-request edge cases now that the bucket/object subresource matrix is explicit on the S3-compatible HTTP surface
+  - next: harden conditional precedence, canonical-request, and remaining checksum/delete-marker/versioning edge cases now that the bucket/object subresource matrix and standard object-header parity are explicit on the S3-compatible HTTP surface
   - continue versioning/tagging/delete-marker parity work for the remaining advanced edge cases
   - keep `aws-chunked`, presigned-query, and virtual-hosted-style compatibility tightening against real client behavior
   - decide whether multipart `encoding-type=url` and further multipart-listing edge semantics should be implemented next or remain explicitly unsupported for now
@@ -1454,7 +1455,7 @@ Status note (March 2026): current Track H validation covers checklist items 5, 6
 
 ## Recommended Next Execution Slices
 
-Track A's contract slice, Track B's native S3 copy/multipart/checksum/delegated-read slice, and Track C's first direct/delegated presign-client slice are now in place, so the best next execution step is to harden the already-landed provider and protocol surfaces rather than reopen shared abstractions. In parallel, Track E can keep closing the remaining S3-compatible edge cases, Track H can expand conformance/fault-injection/publish/benchmark validation around those paths, while Track D mostly shifts to lower-priority follow-up ergonomics after the new toggle/authorization slice.
+Track A's contract slice, Track B's native S3 copy/multipart/checksum/delegated-read slice, Track C's first direct/delegated presign-client slice, and Track E's multipart-listing plus standard object-header parity slice are now in place, so the best next execution step is to harden the already-landed provider and protocol surfaces rather than reopen shared abstractions. In parallel, Track E can keep closing the remaining S3-compatible edge cases, Track H can expand conformance/fault-injection/publish/benchmark validation around those paths, while Track D mostly shifts to lower-priority follow-up ergonomics after the new toggle/authorization slice.
 
 Why these should come next:
 
@@ -1466,7 +1467,7 @@ Why these should come next:
 
 Recommended dependency-aware order:
 
-1. execute Track E to harden remaining bucket/object subresource, conditional-precedence, checksum/header, and delete-marker/versioning edge cases on the S3-compatible surface
+1. execute Track E to harden remaining conditional-precedence, canonical-request, checksum, and delete-marker/versioning edge cases on the S3-compatible surface
 2. execute Track H in parallel to expand conformance, fault-injection, local-endpoint coverage, benchmark baselines, and publish verification around the current Track B / E / G slices
 3. execute Track B in parallel to harden the landed native S3 copy/multipart/checksum/SSE/delegated-read slice against local S3-compatible endpoints and decide whether backend-direct presign should complement the current resolver path
 4. continue Track C in parallel with larger-object and checksum-aware client ergonomics now that direct/delegated read paths, typed transfer helpers, and resume-aware file downloads are already shipped
@@ -1477,7 +1478,7 @@ Recommended dependency-aware order:
 
 Given the current implementation state, the first parallel batch should be:
 
-1. Track E — close the remaining bucket/object subresource, conditional-precedence, checksum/header, and delete-marker/versioning edge cases on the S3-compatible HTTP surface
+1. Track E — close the remaining conditional-precedence, canonical-request, checksum, and delete-marker/versioning edge cases on the S3-compatible HTTP surface
 2. Track H — add local S3-compatible integration coverage, broader conformance/fault-injection cases, benchmark baselines, and publish automation around the already-landed provider/protocol slices
 3. Track B — harden the landed native S3 copy/multipart/checksum/SSE/delegated-read slice against local S3-compatible endpoints and evaluate whether backend-direct presign should complement the current resolver path in `IntegratedS3.Provider.S3`
 4. Track C follow-up — harden larger-object and checksum-aware client transfer flows on top of the current proxy/direct/delegated presign surface

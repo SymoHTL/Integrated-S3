@@ -97,6 +97,59 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
     }
 
     [Fact]
+    public async Task S3CompatibleObjectRoutes_RoundTripStandardHeadersAndMetadata()
+    {
+        using var client = await _factory.CreateClientAsync();
+        var expiresUtc = new DateTimeOffset(2026, 3, 14, 15, 0, 0, TimeSpan.Zero);
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync("/integrated-s3/buckets/standard-header-bucket", content: null)).StatusCode);
+
+        using var uploadRequest = new HttpRequestMessage(HttpMethod.Put, "/integrated-s3/standard-header-bucket/docs/headers.txt")
+        {
+            Content = new StringContent("standard headers payload", Encoding.UTF8, "text/plain")
+        };
+        uploadRequest.Headers.CacheControl = CacheControlHeaderValue.Parse("no-store");
+        uploadRequest.Content.Headers.ContentDisposition = new ContentDispositionHeaderValue("attachment")
+        {
+            FileName = "headers.txt"
+        };
+        uploadRequest.Content.Headers.ContentEncoding.Add("identity");
+        uploadRequest.Content.Headers.ContentLanguage.Add("en-US");
+        uploadRequest.Content.Headers.Expires = expiresUtc;
+        uploadRequest.Headers.TryAddWithoutValidation("x-amz-meta-author", "copilot");
+        uploadRequest.Headers.TryAddWithoutValidation("x-amz-meta-origin", "s3-compatible");
+
+        var uploadResponse = await client.SendAsync(uploadRequest);
+        Assert.Equal(HttpStatusCode.OK, uploadResponse.StatusCode);
+
+        using var headRequest = new HttpRequestMessage(HttpMethod.Head, "/integrated-s3/standard-header-bucket/docs/headers.txt");
+        var headResponse = await client.SendAsync(headRequest);
+        Assert.Equal(HttpStatusCode.OK, headResponse.StatusCode);
+        Assert.Equal("copilot", Assert.Single(headResponse.Headers.GetValues("x-amz-meta-author")));
+        Assert.Equal("copilot", Assert.Single(headResponse.Headers.GetValues("x-integrateds3-meta-author")));
+        Assert.Equal("s3-compatible", Assert.Single(headResponse.Headers.GetValues("x-amz-meta-origin")));
+        Assert.Equal("no-store", headResponse.Headers.CacheControl?.ToString());
+        Assert.Equal("attachment", headResponse.Content.Headers.ContentDisposition?.DispositionType);
+        Assert.Equal("headers.txt", headResponse.Content.Headers.ContentDisposition?.FileName?.Trim('"'));
+        Assert.Contains("identity", headResponse.Content.Headers.ContentEncoding);
+        Assert.Contains("en-US", headResponse.Content.Headers.ContentLanguage);
+        Assert.Equal(expiresUtc, headResponse.Content.Headers.Expires);
+        Assert.Equal("text/plain", headResponse.Content.Headers.ContentType?.MediaType);
+
+        var downloadResponse = await client.GetAsync("/integrated-s3/standard-header-bucket/docs/headers.txt");
+        Assert.Equal(HttpStatusCode.OK, downloadResponse.StatusCode);
+        Assert.Equal("copilot", Assert.Single(downloadResponse.Headers.GetValues("x-amz-meta-author")));
+        Assert.Equal("copilot", Assert.Single(downloadResponse.Headers.GetValues("x-integrateds3-meta-author")));
+        Assert.Equal("no-store", downloadResponse.Headers.CacheControl?.ToString());
+        Assert.Equal("attachment", downloadResponse.Content.Headers.ContentDisposition?.DispositionType);
+        Assert.Equal("headers.txt", downloadResponse.Content.Headers.ContentDisposition?.FileName?.Trim('"'));
+        Assert.Contains("identity", downloadResponse.Content.Headers.ContentEncoding);
+        Assert.Contains("en-US", downloadResponse.Content.Headers.ContentLanguage);
+        Assert.Equal(expiresUtc, downloadResponse.Content.Headers.Expires);
+        Assert.Equal("standard headers payload", await downloadResponse.Content.ReadAsStringAsync());
+    }
+
+    [Fact]
     public async Task PutObject_WithChecksumHeaders_ValidatesPayloadAndEmitsCurrentVersionHeaders()
     {
         using var client = await _factory.CreateClientAsync();
@@ -1323,6 +1376,79 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
     }
 
     [Fact]
+    public async Task S3CompatibleCopyObject_WithMetadataDirectiveReplace_ReplacesHeadersAndMetadata()
+    {
+        using var client = await _factory.CreateClientAsync();
+        var replacementExpiresUtc = new DateTimeOffset(2026, 3, 14, 16, 0, 0, TimeSpan.Zero);
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync("/integrated-s3/buckets/copy-replace-source", content: null)).StatusCode);
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync("/integrated-s3/buckets/copy-replace-target", content: null)).StatusCode);
+
+        using var sourceUploadRequest = new HttpRequestMessage(HttpMethod.Put, "/integrated-s3/copy-replace-source/docs/source.txt")
+        {
+            Content = new StringContent("copy me", Encoding.UTF8, "text/plain")
+        };
+        sourceUploadRequest.Headers.CacheControl = CacheControlHeaderValue.Parse("public, max-age=60");
+        sourceUploadRequest.Content.Headers.ContentDisposition = new ContentDispositionHeaderValue("attachment")
+        {
+            FileName = "source.txt"
+        };
+        sourceUploadRequest.Content.Headers.ContentEncoding.Add("identity");
+        sourceUploadRequest.Content.Headers.ContentLanguage.Add("de-DE");
+        sourceUploadRequest.Content.Headers.Expires = replacementExpiresUtc.AddHours(-1);
+        sourceUploadRequest.Headers.TryAddWithoutValidation("x-amz-meta-origin", "source");
+        sourceUploadRequest.Headers.TryAddWithoutValidation("x-amz-meta-source-only", "keep-me");
+
+        var sourceUploadResponse = await client.SendAsync(sourceUploadRequest);
+        Assert.Equal(HttpStatusCode.OK, sourceUploadResponse.StatusCode);
+
+        using var copyRequest = new HttpRequestMessage(HttpMethod.Put, "/integrated-s3/copy-replace-target/docs/copied.txt")
+        {
+            Content = new ByteArrayContent([])
+        };
+        copyRequest.Headers.TryAddWithoutValidation("x-amz-copy-source", "/copy-replace-source/docs/source.txt");
+        copyRequest.Headers.TryAddWithoutValidation("x-amz-metadata-directive", "REPLACE");
+        copyRequest.Headers.TryAddWithoutValidation("Cache-Control", "no-store");
+        copyRequest.Content.Headers.ContentType = new MediaTypeHeaderValue("text/markdown");
+        copyRequest.Content.Headers.ContentDisposition = new ContentDispositionHeaderValue("inline")
+        {
+            FileName = "copied.txt"
+        };
+        copyRequest.Content.Headers.ContentEncoding.Add("identity");
+        copyRequest.Content.Headers.ContentLanguage.Add("en-US");
+        copyRequest.Content.Headers.Expires = replacementExpiresUtc;
+        copyRequest.Headers.TryAddWithoutValidation("x-amz-meta-origin", "replaced");
+
+        var copyResponse = await client.SendAsync(copyRequest);
+        Assert.Equal(HttpStatusCode.OK, copyResponse.StatusCode);
+
+        using var headRequest = new HttpRequestMessage(HttpMethod.Head, "/integrated-s3/copy-replace-target/docs/copied.txt");
+        var headResponse = await client.SendAsync(headRequest);
+        Assert.Equal(HttpStatusCode.OK, headResponse.StatusCode);
+        Assert.Equal("replaced", Assert.Single(headResponse.Headers.GetValues("x-amz-meta-origin")));
+        Assert.False(headResponse.Headers.Contains("x-amz-meta-source-only"));
+        Assert.Equal("no-store", headResponse.Headers.CacheControl?.ToString());
+        Assert.Equal("inline", headResponse.Content.Headers.ContentDisposition?.DispositionType);
+        Assert.Equal("copied.txt", headResponse.Content.Headers.ContentDisposition?.FileName?.Trim('"'));
+        Assert.Contains("identity", headResponse.Content.Headers.ContentEncoding);
+        Assert.Contains("en-US", headResponse.Content.Headers.ContentLanguage);
+        Assert.Equal(replacementExpiresUtc, headResponse.Content.Headers.Expires);
+        Assert.Equal("text/markdown", headResponse.Content.Headers.ContentType?.MediaType);
+
+        var downloadResponse = await client.GetAsync("/integrated-s3/copy-replace-target/docs/copied.txt");
+        Assert.Equal(HttpStatusCode.OK, downloadResponse.StatusCode);
+        Assert.Equal("replaced", Assert.Single(downloadResponse.Headers.GetValues("x-amz-meta-origin")));
+        Assert.False(downloadResponse.Headers.Contains("x-amz-meta-source-only"));
+        Assert.Equal("no-store", downloadResponse.Headers.CacheControl?.ToString());
+        Assert.Equal("inline", downloadResponse.Content.Headers.ContentDisposition?.DispositionType);
+        Assert.Equal("copied.txt", downloadResponse.Content.Headers.ContentDisposition?.FileName?.Trim('"'));
+        Assert.Contains("identity", downloadResponse.Content.Headers.ContentEncoding);
+        Assert.Contains("en-US", downloadResponse.Content.Headers.ContentLanguage);
+        Assert.Equal(replacementExpiresUtc, downloadResponse.Content.Headers.Expires);
+        Assert.Equal("copy me", await downloadResponse.Content.ReadAsStringAsync());
+    }
+
+    [Fact]
     public async Task PutObject_WithCopySourcePreconditionHeader_ReturnsPreconditionFailed()
     {
         using var client = await _factory.CreateClientAsync();
@@ -2067,12 +2193,24 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
     public async Task S3CompatibleMultipartUpload_RoundTripsXmlWorkflow()
     {
         using var client = await _factory.CreateClientAsync();
+        var expiresUtc = new DateTimeOffset(2026, 3, 14, 17, 0, 0, TimeSpan.Zero);
 
         await client.PutAsync("/integrated-s3/buckets/multipart-bucket", content: null);
 
-        using var initiateRequest = new HttpRequestMessage(HttpMethod.Post, "/integrated-s3/multipart-bucket/docs/multipart.txt?uploads");
-        initiateRequest.Headers.Add("x-integrateds3-meta-origin", "http-test");
-        initiateRequest.Headers.TryAddWithoutValidation("Content-Type", "text/plain");
+        using var initiateRequest = new HttpRequestMessage(HttpMethod.Post, "/integrated-s3/multipart-bucket/docs/multipart.txt?uploads")
+        {
+            Content = new ByteArrayContent([])
+        };
+        initiateRequest.Headers.TryAddWithoutValidation("x-amz-meta-origin", "http-test");
+        initiateRequest.Headers.TryAddWithoutValidation("Cache-Control", "no-store");
+        initiateRequest.Content.Headers.ContentType = new MediaTypeHeaderValue("text/plain");
+        initiateRequest.Content.Headers.ContentDisposition = new ContentDispositionHeaderValue("attachment")
+        {
+            FileName = "multipart.txt"
+        };
+        initiateRequest.Content.Headers.ContentEncoding.Add("identity");
+        initiateRequest.Content.Headers.ContentLanguage.Add("en-US");
+        initiateRequest.Content.Headers.Expires = expiresUtc;
 
         var initiateResponse = await client.SendAsync(initiateRequest);
         Assert.Equal(HttpStatusCode.OK, initiateResponse.StatusCode);
@@ -2122,9 +2260,16 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
         Assert.Equal("multipart-bucket", GetRequiredElementValue(completeDocument, "Bucket"));
         Assert.Equal("docs/multipart.txt", GetRequiredElementValue(completeDocument, "Key"));
 
-        var downloadResponse = await client.GetAsync("/integrated-s3/buckets/multipart-bucket/objects/docs/multipart.txt");
+        var downloadResponse = await client.GetAsync("/integrated-s3/multipart-bucket/docs/multipart.txt");
         Assert.Equal(HttpStatusCode.OK, downloadResponse.StatusCode);
+        Assert.Equal("http-test", Assert.Single(downloadResponse.Headers.GetValues("x-amz-meta-origin")));
         Assert.Equal("http-test", Assert.Single(downloadResponse.Headers.GetValues("x-integrateds3-meta-origin")));
+        Assert.Equal("no-store", downloadResponse.Headers.CacheControl?.ToString());
+        Assert.Equal("attachment", downloadResponse.Content.Headers.ContentDisposition?.DispositionType);
+        Assert.Equal("multipart.txt", downloadResponse.Content.Headers.ContentDisposition?.FileName?.Trim('"'));
+        Assert.Contains("identity", downloadResponse.Content.Headers.ContentEncoding);
+        Assert.Contains("en-US", downloadResponse.Content.Headers.ContentLanguage);
+        Assert.Equal(expiresUtc, downloadResponse.Content.Headers.Expires);
         var multipartChecksum = Assert.Single(downloadResponse.Headers.GetValues("x-amz-checksum-sha256"));
         Assert.False(string.IsNullOrWhiteSpace(multipartChecksum));
         Assert.Equal("hello world", await downloadResponse.Content.ReadAsStringAsync());
