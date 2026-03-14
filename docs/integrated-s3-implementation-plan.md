@@ -1166,9 +1166,9 @@ Status: **in progress / partially complete**
 Status: **in progress / partially complete**
 
 - conformance coverage now includes version-aware presigned reads, mixed bucket-subresource rejection, multipart `encoding-type=url` rejection, and additional AWS SDK compatibility cases
-- build/test/self-contained publish validation plus the current AOT warning posture are now automated through `.github\workflows\trackh-publish-aot-ci.yml` and `eng\Invoke-AotPublishValidation.ps1`
-- `docs/webui-reference-host.md` now captures the current reference-host surface and validation commands
-- benchmark baselines and additional sample consumers remain pending
+- build/test/self-contained publish validation remains scriptable through the standard `dotnet` commands plus `eng\Invoke-AotPublishValidation.ps1`, but the repository currently has no checked-in `.github\workflows\` automation; restoring CI validation is tracked in [#15](https://github.com/SymoHTL/Intergrated-S3/issues/15)
+- `docs/webui-reference-host.md` now captures the current reference-host surface and validation commands, while broader secure/composed host guidance is tracked in [#19](https://github.com/SymoHTL/Intergrated-S3/issues/19)
+- benchmark baselines and additional sample consumers remain pending ([#14](https://github.com/SymoHTL/Intergrated-S3/issues/14), [#13](https://github.com/SymoHTL/Intergrated-S3/issues/13))
 
 ## Remaining Implementation Work by Parallel Track
 
@@ -1325,20 +1325,19 @@ This section is the execution board for the remaining implementation backlog. As
   - `IntegratedS3SigV4ConformanceTests` now cover presigned bucket-versioning reads, presigned historical-version reads, and presigned expiry/clock-skew XML error behavior, while `IntegratedS3SigV4ProtocolTests` lock in canonical empty-value subresource signing.
   - `IntegratedS3HttpEndpointsTests` now cover unsupported mixed bucket subresources and multipart `encoding-type=url` rejection, and `IntegratedS3AwsSdkCompatibilityTests` now include version-id-aware metadata/read coverage.
   - `IntegratedS3CoreOrchestrationTests` now cover provider-unavailable read failover, no failover on not-found, unhealthy snapshot expiry recovery, probe-timeout handling, async replica recording/dispatch, unhealthy-replica preflight, outstanding-repair read policy, partial-write backlog semantics, failed-repair visibility, multi-replica dispatch-recording failure isolation, mixed replay success/failure, and backlog growth for replicas that remain stale.
-  - `src\IntegratedS3\WebUi` now has a dedicated reference-host guide in `docs/webui-reference-host.md`, with local sample storage kept under `App_Data` and excluded from build/publish outputs.
-  - CI automation now lives in `.github\workflows\trackh-publish-aot-ci.yml`, and `eng\Invoke-AotPublishValidation.ps1` enforces the current self-contained publish warning posture without depending on exact line numbers.
-- Verification status (March 2026):
-  - `dotnet build src\IntegratedS3\IntegratedS3.slnx` passed in the current Track E/H worktree.
-  - `dotnet test src\IntegratedS3\IntegratedS3.slnx` passed in the current Track E/H worktree.
-  - `dotnet publish -c Release --self-contained src\IntegratedS3\WebUi\WebUi.csproj` passed in the current Track E/H worktree, and `eng\Invoke-AotPublishValidation.ps1` now tracks the remaining Minimal API / trimming-sensitive warning posture without depending on exact line numbers.
-- Remaining scope:
-  - extend conformance beyond the current versioned-read, presigned-expiry/clock-skew, and AWS SDK version-id coverage into the remaining protocol edge cases and broader client-compatibility scenarios
-  - extend fault-injection beyond the current unhealthy-provider, async-replication/backlog, partial-write-through, and newly added multi-replica replay coverage into broader repair/reconciliation scenarios
-  - add structured logs, metrics, traces, correlation IDs, provider tags, auth-failure visibility, mirror-lag visibility, and reconciliation-backlog visibility
-  - benchmark the hot paths called out in this plan and track throughput, latency, allocation, and provider-breakdown baselines
-  - keep the new trimming/AOT publish automation in CI aligned with the supported host surface and reduce or document the remaining publish warnings alongside benchmark baselines
-  - add the planned MVC/Razor and Blazor WebAssembly sample consumers
-  - finish package polish items such as XML docs, onboarding docs, versioned protocol compatibility guidance, and any analyzers/diagnostics worth shipping
+  - `src\IntegratedS3\WebUi` now has a dedicated reference-host guide in `docs/webui-reference-host.md`, with local sample storage kept under `App_Data` and excluded from build/publish outputs; broader secure/composed host guidance is tracked in [#19](https://github.com/SymoHTL/Intergrated-S3/issues/19).
+  - `eng\Invoke-AotPublishValidation.ps1` is checked in, but the repository currently has no `.github\workflows\` directory; restoring checked-in build/test/publish validation is tracked in [#15](https://github.com/SymoHTL/Intergrated-S3/issues/15).
+  - Verification status (March 2026):
+    - the March 2026 downstream audit re-ran `dotnet test src\IntegratedS3\IntegratedS3.slnx` successfully (`357/357` passing).
+    - the March 2026 downstream audit re-ran `dotnet publish -c Release --self-contained src\IntegratedS3\WebUi\WebUi.csproj` successfully; publish still surfaced 12 AOT/trimming warnings now tracked in [#15](https://github.com/SymoHTL/Intergrated-S3/issues/15).
+  - Remaining scope:
+  - extend conformance beyond the current versioned-read, presigned-expiry/clock-skew, and AWS SDK version-id coverage into the remaining protocol edge cases and broader client-compatibility scenarios ([#30](https://github.com/SymoHTL/Intergrated-S3/issues/30))
+  - extend fault-injection beyond the current unhealthy-provider, async-replication/backlog, partial-write-through, and newly added multi-replica replay coverage into broader repair/reconciliation scenarios ([#9](https://github.com/SymoHTL/Intergrated-S3/issues/9))
+  - add structured logs, metrics, traces, correlation IDs, provider tags, auth-failure visibility, mirror-lag visibility, and reconciliation-backlog visibility ([#17](https://github.com/SymoHTL/Intergrated-S3/issues/17))
+  - benchmark the hot paths called out in this plan and track throughput, latency, allocation, and provider-breakdown baselines ([#14](https://github.com/SymoHTL/Intergrated-S3/issues/14))
+  - keep the new trimming/AOT publish automation in CI aligned with the supported host surface and reduce or document the remaining publish warnings alongside benchmark baselines ([#15](https://github.com/SymoHTL/Intergrated-S3/issues/15))
+  - add the planned MVC/Razor and Blazor WebAssembly sample consumers ([#13](https://github.com/SymoHTL/Intergrated-S3/issues/13))
+  - finish package polish items such as XML docs, onboarding docs, versioned protocol compatibility guidance, and any analyzers/diagnostics worth shipping ([#18](https://github.com/SymoHTL/Intergrated-S3/issues/18))
 - Next recommended steps:
   - triage the remaining observed IL2026/IL3050 native AOT warnings in `IntegratedS3.AspNetCore` / `WebUi` and decide whether they should be eliminated further, annotated more precisely, or explicitly documented for consumers
   - extend conformance and protocol hardening into conditional-precedence, checksum/header, and delete-marker/versioning edge cases now that the current subresource/presign gaps are covered
@@ -1481,6 +1480,58 @@ Given the current implementation state, the first parallel batch should be:
 2. Track H — add local S3-compatible integration coverage, broader conformance/fault-injection cases, benchmark baselines, and publish automation around the already-landed provider/protocol slices
 3. Track B — harden the landed native S3 copy/multipart/checksum/SSE/delegated-read slice against local S3-compatible endpoints and evaluate whether backend-direct presign should complement the current resolver path in `IntegratedS3.Provider.S3`
 4. Track C follow-up — harden larger-object and checksum-aware client transfer flows on top of the current proxy/direct/delegated presign surface
+
+### March 2026 audit-backed GitHub issue backlog
+
+A March 2026 audit of code, tests, and docs created GitHub issues [#1](https://github.com/SymoHTL/Intergrated-S3/issues/1) through [#40](https://github.com/SymoHTL/Intergrated-S3/issues/40) to track every currently validated missing/problematic S3 and downstream feature. The audits re-ran `dotnet test src\IntegratedS3\IntegratedS3.slnx` and `dotnet publish -c Release --self-contained src\IntegratedS3\WebUi\WebUi.csproj`; tests passed, publish succeeded, and the publish output still surfaced 12 AOT/trimming warnings now tracked in [#15](https://github.com/SymoHTL/Intergrated-S3/issues/15).
+
+- Track B:
+  - [#20](https://github.com/SymoHTL/Intergrated-S3/issues/20) backend-direct native S3 presign support
+  - [#21](https://github.com/SymoHTL/Intergrated-S3/issues/21) local S3-compatible endpoint hardening
+- Track C:
+  - [#1](https://github.com/SymoHTL/Intergrated-S3/issues/1) first-party client direct/delegated default behavior
+  - [#2](https://github.com/SymoHTL/Intergrated-S3/issues/2) `AddIntegratedS3Client` / `IHttpClientFactory` integration
+  - [#3](https://github.com/SymoHTL/Intergrated-S3/issues/3) larger-object and checksum-aware transfer hardening
+- Track D:
+  - [#4](https://github.com/SymoHTL/Intergrated-S3/issues/4) custom backend DI sugar
+  - [#5](https://github.com/SymoHTL/Intergrated-S3/issues/5) configuration-bound authorization conventions
+  - [#6](https://github.com/SymoHTL/Intergrated-S3/issues/6) future endpoint route-group callback behavior
+- Track E:
+  - [#22](https://github.com/SymoHTL/Intergrated-S3/issues/22) multipart-listing parity
+  - [#23](https://github.com/SymoHTL/Intergrated-S3/issues/23) conditional/checksum/canonical-request hardening
+  - [#24](https://github.com/SymoHTL/Intergrated-S3/issues/24) `aws-chunked`, presigned-query, and virtual-hosted-style compatibility
+  - [#25](https://github.com/SymoHTL/Intergrated-S3/issues/25) versioning/tagging/delete-marker parity
+  - [#31](https://github.com/SymoHTL/Intergrated-S3/issues/31) bucket/object subresource matrix hardening
+  - [#32](https://github.com/SymoHTL/Intergrated-S3/issues/32) canonical S3 XML namespace parity
+  - [#33](https://github.com/SymoHTL/Intergrated-S3/issues/33) `BucketNotEmpty` delete-bucket semantics
+  - [#34](https://github.com/SymoHTL/Intergrated-S3/issues/34) multi-delete integrity and object-count limits
+  - [#35](https://github.com/SymoHTL/Intergrated-S3/issues/35) object and multipart list API parity
+  - [#36](https://github.com/SymoHTL/Intergrated-S3/issues/36) `ListParts`
+  - [#37](https://github.com/SymoHTL/Intergrated-S3/issues/37) `UploadPartCopy`
+  - [#38](https://github.com/SymoHTL/Intergrated-S3/issues/38) standard object header parity
+  - [#39](https://github.com/SymoHTL/Intergrated-S3/issues/39) upload/copy/multipart tagging-header parity
+- Track F:
+  - [#7](https://github.com/SymoHTL/Intergrated-S3/issues/7) admin health, lag, and repair diagnostics
+  - [#8](https://github.com/SymoHTL/Intergrated-S3/issues/8) ASP.NET Core health-check integration
+  - [#9](https://github.com/SymoHTL/Intergrated-S3/issues/9) broader multi-provider fault-injection coverage
+  - [#10](https://github.com/SymoHTL/Intergrated-S3/issues/10) multipart support for replicated write modes
+  - [#11](https://github.com/SymoHTL/Intergrated-S3/issues/11) optional maintenance/replay host integrations
+  - [#12](https://github.com/SymoHTL/Intergrated-S3/issues/12) richer reconciliation and divergence-repair semantics
+- Track G:
+  - [#26](https://github.com/SymoHTL/Intergrated-S3/issues/26) ACL/policy-compatible behavior
+  - [#27](https://github.com/SymoHTL/Intergrated-S3/issues/27) broader server-side-encryption variants
+  - [#28](https://github.com/SymoHTL/Intergrated-S3/issues/28) remaining S3/browser CORS conformance hardening
+  - [#29](https://github.com/SymoHTL/Intergrated-S3/issues/29) object lock, retention, and legal hold
+  - [#40](https://github.com/SymoHTL/Intergrated-S3/issues/40) next bucket-subresource surface expansion
+- Track H:
+  - [#13](https://github.com/SymoHTL/Intergrated-S3/issues/13) MVC/Razor and Blazor WebAssembly sample consumers
+  - [#14](https://github.com/SymoHTL/Intergrated-S3/issues/14) benchmark baselines
+  - [#15](https://github.com/SymoHTL/Intergrated-S3/issues/15) checked-in CI publish validation plus AOT warning posture
+  - [#16](https://github.com/SymoHTL/Intergrated-S3/issues/16) `IntegratedS3.Testing` contract harness
+  - [#17](https://github.com/SymoHTL/Intergrated-S3/issues/17) structured observability
+  - [#18](https://github.com/SymoHTL/Intergrated-S3/issues/18) package polish and onboarding docs
+  - [#19](https://github.com/SymoHTL/Intergrated-S3/issues/19) secure reference-host composition docs
+  - [#30](https://github.com/SymoHTL/Intergrated-S3/issues/30) broader protocol/client conformance
 
 ### Fleet-ready agent decomposition (March 2026)
 
