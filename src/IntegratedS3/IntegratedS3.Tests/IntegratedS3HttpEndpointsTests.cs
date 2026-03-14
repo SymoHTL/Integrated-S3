@@ -1114,6 +1114,104 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
     }
 
     [Fact]
+    public async Task S3CompatibleListMultipartUploads_WithEncodingTypeUrl_EncodesMultipartResponseFields()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        const string bucketName = "multipart-encoding-bucket";
+        const string prefix = "docs/reports & more/";
+        const string key = "docs/reports & more/(draft).txt";
+        const string nestedKey = "docs/reports & more/nested/file.txt";
+        const string nestedPrefix = "docs/reports & more/nested/";
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync($"/integrated-s3/buckets/{bucketName}", content: null)).StatusCode);
+
+        async Task<string> InitiateMultipartUploadAsync(string objectKey)
+        {
+            using var initiateRequest = new HttpRequestMessage(HttpMethod.Post, $"/integrated-s3/{bucketName}/{objectKey}?uploads");
+            initiateRequest.Headers.TryAddWithoutValidation("Content-Type", "text/plain");
+
+            var initiateResponse = await client.SendAsync(initiateRequest);
+            Assert.Equal(HttpStatusCode.OK, initiateResponse.StatusCode);
+
+            var initiateDocument = XDocument.Parse(await initiateResponse.Content.ReadAsStringAsync());
+            return GetRequiredElementValue(initiateDocument, "UploadId");
+        }
+
+        var firstUploadId = await InitiateMultipartUploadAsync(key);
+        await Task.Delay(2);
+        var secondUploadId = await InitiateMultipartUploadAsync(key);
+        await Task.Delay(2);
+        await InitiateMultipartUploadAsync(nestedKey);
+
+        var firstPageResponse = await client.GetAsync(
+            $"/integrated-s3/{bucketName}?uploads&prefix={Uri.EscapeDataString(prefix)}&delimiter=%2F&max-uploads=2&encoding-type=url");
+        Assert.Equal(HttpStatusCode.OK, firstPageResponse.StatusCode);
+
+        var firstPageDocument = XDocument.Parse(await firstPageResponse.Content.ReadAsStringAsync());
+        Assert.Equal("url", GetRequiredElementValue(firstPageDocument, "EncodingType"));
+        Assert.Equal(string.Empty, GetRequiredElementValue(firstPageDocument, "KeyMarker"));
+        Assert.Equal(string.Empty, GetRequiredElementValue(firstPageDocument, "UploadIdMarker"));
+        Assert.Equal(Uri.EscapeDataString(prefix), GetRequiredElementValue(firstPageDocument, "Prefix"));
+        Assert.Equal(Uri.EscapeDataString("/"), GetRequiredElementValue(firstPageDocument, "Delimiter"));
+        Assert.Equal(Uri.EscapeDataString(key), GetRequiredElementValue(firstPageDocument, "NextKeyMarker"));
+        Assert.Equal(secondUploadId, GetRequiredElementValue(firstPageDocument, "NextUploadIdMarker"));
+
+        var firstPageUploads = firstPageDocument.Root!.Elements("Upload").ToArray();
+        Assert.Collection(
+            firstPageUploads,
+            upload => {
+                Assert.Equal(Uri.EscapeDataString(key), upload.Element("Key")?.Value);
+                Assert.Equal(firstUploadId, upload.Element("UploadId")?.Value);
+            },
+            upload => {
+                Assert.Equal(Uri.EscapeDataString(key), upload.Element("Key")?.Value);
+                Assert.Equal(secondUploadId, upload.Element("UploadId")?.Value);
+            });
+
+        var secondPageResponse = await client.GetAsync(
+            $"/integrated-s3/{bucketName}?uploads&prefix={Uri.EscapeDataString(prefix)}&delimiter=%2F&key-marker={Uri.EscapeDataString(key)}&upload-id-marker={Uri.EscapeDataString(secondUploadId)}&encoding-type=url");
+        Assert.Equal(HttpStatusCode.OK, secondPageResponse.StatusCode);
+
+        var secondPageDocument = XDocument.Parse(await secondPageResponse.Content.ReadAsStringAsync());
+        Assert.Equal(Uri.EscapeDataString(key), GetRequiredElementValue(secondPageDocument, "KeyMarker"));
+        Assert.Equal(secondUploadId, GetRequiredElementValue(secondPageDocument, "UploadIdMarker"));
+        var commonPrefix = Assert.Single(secondPageDocument.Root!.Elements("CommonPrefixes"));
+        Assert.Equal(Uri.EscapeDataString(nestedPrefix), commonPrefix.Element("Prefix")?.Value);
+    }
+
+    [Fact]
+    public async Task S3CompatibleListMultipartUploads_IgnoresUploadIdMarkerWithoutKeyMarker()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        const string bucketName = "multipart-ignore-upload-id-marker-bucket";
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync($"/integrated-s3/buckets/{bucketName}", content: null)).StatusCode);
+
+        async Task<string> InitiateMultipartUploadAsync(string objectKey)
+        {
+            using var initiateRequest = new HttpRequestMessage(HttpMethod.Post, $"/integrated-s3/{bucketName}/{objectKey}?uploads");
+            initiateRequest.Headers.TryAddWithoutValidation("Content-Type", "text/plain");
+
+            var initiateResponse = await client.SendAsync(initiateRequest);
+            Assert.Equal(HttpStatusCode.OK, initiateResponse.StatusCode);
+
+            var initiateDocument = XDocument.Parse(await initiateResponse.Content.ReadAsStringAsync());
+            return GetRequiredElementValue(initiateDocument, "UploadId");
+        }
+
+        await InitiateMultipartUploadAsync("docs/alpha.txt");
+        await InitiateMultipartUploadAsync("docs/beta.txt");
+
+        var response = await client.GetAsync($"/integrated-s3/{bucketName}?uploads&upload-id-marker={Uri.EscapeDataString("ignored-upload-id")}");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        var document = XDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal(string.Empty, GetRequiredElementValue(document, "KeyMarker"));
+        Assert.Equal(string.Empty, GetRequiredElementValue(document, "UploadIdMarker"));
+        Assert.Equal(2, document.Root!.Elements("Upload").Count());
+    }
+
+    [Fact]
     public async Task DuplicateBucketCreate_ReturnsXmlErrorConflict()
     {
         using var client = await _factory.CreateClientAsync();
@@ -2129,15 +2227,51 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
     }
 
     [Fact]
-    public async Task S3CompatibleListMultipartUploads_UnsupportedQueryParameter_ReturnsNotImplemented()
+    public async Task S3CompatibleListMultipartUploads_UnsupportedEncodingType_ReturnsInvalidArgument()
     {
         using var client = await _factory.CreateClientAsync();
 
         await client.PutAsync("/integrated-s3/buckets/multipart-subresource-bucket", content: null);
 
-        var response = await client.GetAsync("/integrated-s3/multipart-subresource-bucket?uploads&encoding-type=url");
+        var response = await client.GetAsync("/integrated-s3/multipart-subresource-bucket?uploads&encoding-type=base64");
 
-        await AssertNotImplementedResponseAsync(response);
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal("application/xml", response.Content.Headers.ContentType?.MediaType);
+        var errorDocument = XDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal("InvalidArgument", GetRequiredElementValue(errorDocument, "Code"));
+        Assert.Contains("encoding-type", GetRequiredElementValue(errorDocument, "Message"), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task S3CompatibleListMultipartUploads_MaxUploadsAboveLimit_ReturnsInvalidArgument()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        await client.PutAsync("/integrated-s3/buckets/multipart-max-uploads-bucket", content: null);
+
+        var response = await client.GetAsync("/integrated-s3/multipart-max-uploads-bucket?uploads&max-uploads=1001");
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal("application/xml", response.Content.Headers.ContentType?.MediaType);
+        var errorDocument = XDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal("InvalidArgument", GetRequiredElementValue(errorDocument, "Code"));
+        Assert.Contains("max-uploads", GetRequiredElementValue(errorDocument, "Message"), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task S3CompatibleListMultipartUploads_NonIntegerMaxUploads_ReturnsInvalidArgument()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        await client.PutAsync("/integrated-s3/buckets/multipart-max-uploads-parse-bucket", content: null);
+
+        var response = await client.GetAsync("/integrated-s3/multipart-max-uploads-parse-bucket?uploads&max-uploads=abc");
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal("application/xml", response.Content.Headers.ContentType?.MediaType);
+        var errorDocument = XDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal("InvalidArgument", GetRequiredElementValue(errorDocument, "Code"));
+        Assert.Contains("max-uploads", GetRequiredElementValue(errorDocument, "Message"), StringComparison.Ordinal);
     }
 
     [Theory]

@@ -841,7 +841,7 @@ Status:
 
 The current HTTP surface is real and useful, but it still has some clearly bounded fidelity gaps that should be treated as deliberate backlog rather than invisible debt:
 
-- multipart upload support now covers initiate/upload-part/complete/abort plus bucket-level `GET ?uploads` listing/discovery for the current disk/Core/HTTP surface, but broader parity such as `encoding-type=url`, deeper client-compat edge cases, and richer multipart subresource hardening is still pending
+- multipart upload support now covers initiate/upload-part/complete/abort plus bucket-level `GET ?uploads` listing/discovery for the current disk/Core/HTTP surface, including `encoding-type=url` response encoding plus explicit multipart marker/limit validation on the S3-compatible route; deeper client-compat edge cases and richer multipart subresource hardening are still pending
 - object tagging now covers current and archived object versions on the currently supported surface, including S3-compatible delete-tagging; broader S3 tagging edge-case behavior is still pending
 - only the currently supported bucket subresources are implemented; unsupported S3 bucket/object subresources intentionally return `NotImplemented`
 - S3-compatible bucket listing now covers both `list-type=2` and the current `?versions` subresource, while additional subresource combinations are still pending
@@ -1271,7 +1271,7 @@ This section is the execution board for the remaining implementation backlog. As
 - Status update:
   - bucket-level multipart listing/discovery (`GET ?uploads`) is now implemented end-to-end for the current disk/Core/HTTP surface
   - the new slice adds provider/service contracts for multipart listing, platform-managed multipart-state enumeration via `IStorageMultipartStateStore`, disk-provider sidecar fallback enumeration, S3-compatible `ListMultipartUploadsResult` XML output, delimiter/common-prefix handling, marker pagination (`key-marker` / `upload-id-marker`), and multipart feature-toggle enforcement on the bucket route
-  - focused coverage now locks in empty listings, completed/aborted upload exclusion, platform-managed multipart-state enumeration, virtual-hosted-style HTTP behavior, feature-toggle blocking, and AWS SDK `ListMultipartUploadsAsync` compatibility for the current supported surface
+  - focused coverage now locks in empty listings, completed/aborted upload exclusion, platform-managed multipart-state enumeration, virtual-hosted-style HTTP behavior, feature-toggle blocking, AWS SDK `ListMultipartUploadsAsync` compatibility for the current supported surface, and explicit multipart `encoding-type=url` / ignored lone `upload-id-marker` / `max-uploads` guardrail behavior
   - bucket/object-compatible subresource validation now uses an explicit supported-matrix for bucket `?versioning`, `?cors`, `?uploads`, and `?versions` plus object `?tagging`, `?versionId`, and multipart workflows, rejects remaining unsupported single subresources with consistent `NotImplemented` responses, and returns explicit unsupported-combination results for invalid mixed query sets
   - focused HTTP coverage now locks in that SigV4 presign query parameters such as `X-Amz-*` and `x-id` continue to be ignored during bucket/object subresource validation for the currently supported paths
   - protocol/conformance coverage now locks in canonical empty-value subresource signing plus presigned bucket-versioning and historical-version reads on the S3-compatible route
@@ -1280,7 +1280,7 @@ This section is the execution board for the remaining implementation backlog. As
   - next: harden conditional precedence, checksum/header behavior, and canonical-request edge cases now that the bucket/object subresource matrix is explicit on the S3-compatible HTTP surface
   - continue versioning/tagging/delete-marker parity work for the remaining advanced edge cases
   - keep `aws-chunked`, presigned-query, and virtual-hosted-style compatibility tightening against real client behavior
-  - decide whether multipart `encoding-type=url` and further multipart-listing edge semantics should be implemented next or remain explicitly unsupported for now
+  - continue tightening deeper multipart-listing/client-compat edge semantics beyond the now-supported `encoding-type=url`, ignored lone `upload-id-marker`, and explicit `max-uploads` validation behavior
 
 ### Track F — Multi-backend async replication, health, and reconciliation
 
@@ -1345,6 +1345,7 @@ This section is the execution board for the remaining implementation backlog. As
 - Depends on: can scaffold immediately; full coverage expands as the remaining Tracks B through G hardening slices land
 - Status update:
   - `IntegratedS3SigV4ConformanceTests` now cover presigned bucket-versioning reads, presigned historical-version reads, and presigned expiry/clock-skew XML error behavior, while `IntegratedS3SigV4ProtocolTests` lock in canonical empty-value subresource signing.
+  - `IntegratedS3HttpEndpointsTests` now cover unsupported mixed bucket subresources plus multipart `encoding-type=url` response encoding, ignored lone `upload-id-marker`, invalid `encoding-type`, and explicit multipart `max-uploads` validation, and `IntegratedS3AwsSdkCompatibilityTests` now include version-id-aware metadata/read coverage.
   - `IntegratedS3HttpEndpointsTests` now cover unsupported mixed bucket subresources, multipart `encoding-type=url` rejection, and S3-compatible copy-source `versionId` handling for historical versions plus current/explicit delete-marker failures.
   - `IntegratedS3AwsSdkCompatibilityTests` now include version-id-aware metadata/read coverage plus `CopyObject.SourceVersionId` historical-copy and delete-marker compatibility coverage.
   - `IntegratedS3CoreOrchestrationTests` now cover provider-unavailable read failover, no failover on not-found, unhealthy snapshot expiry recovery, probe-timeout handling, async replica recording/dispatch, unhealthy-replica preflight, outstanding-repair read policy, partial-write backlog semantics, failed-repair visibility, multi-replica dispatch-recording failure isolation, mixed replay success/failure, and backlog growth for replicas that remain stale.

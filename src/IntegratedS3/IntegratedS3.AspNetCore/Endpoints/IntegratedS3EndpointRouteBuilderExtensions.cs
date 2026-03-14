@@ -66,6 +66,7 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
     private const string KeyMarkerQueryParameterName = "key-marker";
     private const string VersionIdMarkerQueryParameterName = "version-id-marker";
     private const string UploadIdMarkerQueryParameterName = "upload-id-marker";
+    private const string EncodingTypeQueryParameterName = "encoding-type";
     private const string UploadsQueryParameterName = "uploads";
     private const string UploadIdQueryParameterName = "uploadId";
     private const string PartNumberQueryParameterName = "partNumber";
@@ -90,8 +91,9 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
     private static readonly HashSet<string> BucketCorsQueryParameters = CreateQueryParameterSet(CorsQueryParameterName);
     private static readonly HashSet<string> BucketVersioningQueryParameters = CreateQueryParameterSet(VersioningQueryParameterName);
     private static readonly HashSet<string> BucketVersionListingQueryParameters = CreateQueryParameterSet(VersionsQueryParameterName, PrefixQueryParameterName, DelimiterQueryParameterName, MaxKeysQueryParameterName, KeyMarkerQueryParameterName, VersionIdMarkerQueryParameterName);
-    private static readonly HashSet<string> BucketMultipartUploadsQueryParameters = CreateQueryParameterSet(UploadsQueryParameterName, PrefixQueryParameterName, DelimiterQueryParameterName, MaxUploadsQueryParameterName, KeyMarkerQueryParameterName, UploadIdMarkerQueryParameterName);
+    private static readonly HashSet<string> BucketMultipartUploadsQueryParameters = CreateQueryParameterSet(UploadsQueryParameterName, PrefixQueryParameterName, DelimiterQueryParameterName, MaxUploadsQueryParameterName, KeyMarkerQueryParameterName, UploadIdMarkerQueryParameterName, EncodingTypeQueryParameterName);
     private static readonly HashSet<string> BucketDeleteQueryParameters = CreateQueryParameterSet(DeleteQueryParameterName);
+    private static readonly HashSet<string> KnownBucketQueryParameters = CreateQueryParameterSet(ListTypeQueryParameterName, PrefixQueryParameterName, DelimiterQueryParameterName, StartAfterQueryParameterName, MaxKeysQueryParameterName, ContinuationTokenQueryParameterName, CorsQueryParameterName, VersioningQueryParameterName, VersionsQueryParameterName, KeyMarkerQueryParameterName, VersionIdMarkerQueryParameterName, MaxUploadsQueryParameterName, UploadIdMarkerQueryParameterName, EncodingTypeQueryParameterName, UploadsQueryParameterName, DeleteQueryParameterName);
     private static readonly HashSet<string> KnownBucketQueryParameters = CreateQueryParameterSet(ListTypeQueryParameterName, PrefixQueryParameterName, DelimiterQueryParameterName, StartAfterQueryParameterName, MaxKeysQueryParameterName, ContinuationTokenQueryParameterName, LocationQueryParameterName, CorsQueryParameterName, VersioningQueryParameterName, VersionsQueryParameterName, KeyMarkerQueryParameterName, VersionIdMarkerQueryParameterName, MaxUploadsQueryParameterName, UploadIdMarkerQueryParameterName, UploadsQueryParameterName, DeleteQueryParameterName);
     private static readonly HashSet<string> ObjectVersionQueryParameters = CreateQueryParameterSet(VersionIdQueryParameterName);
     private static readonly HashSet<string> ObjectTaggingQueryParameters = CreateQueryParameterSet(TaggingQueryParameterName, VersionIdQueryParameterName);
@@ -1094,7 +1096,6 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
                 ParseDelimiter(httpContext.Request),
                 ParseKeyMarker(httpContext.Request),
                 ParseUploadIdMarker(httpContext.Request),
-                ParseMaxUploads(httpContext.Request),
                 httpContext,
                 requestContextAccessor,
                 storageService,
@@ -1754,23 +1755,31 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
         string? delimiter,
         string? keyMarker,
         string? uploadIdMarker,
-        int? maxUploads,
         HttpContext httpContext,
         IIntegratedS3RequestContextAccessor requestContextAccessor,
         IStorageService storageService,
         CancellationToken cancellationToken)
     {
         try {
+            var encodingType = ParseMultipartUploadsEncodingType(httpContext.Request);
+            var maxUploads = ParseMaxUploads(httpContext.Request);
+
             return await ExecuteWithRequestContextAsync(httpContext, requestContextAccessor, async innerCancellationToken => {
                 var bucketResult = await storageService.HeadBucketAsync(bucketName, innerCancellationToken);
                 if (!bucketResult.IsSuccess) {
                     return ToErrorResult(httpContext, bucketResult.Error, resourceOverride: BuildObjectResource(bucketName, null));
                 }
 
-                if (maxUploads is <= 0) {
-                    return ToErrorResult(httpContext, StatusCodes.Status400BadRequest, "InvalidArgument", "max-uploads must be greater than zero.", BuildObjectResource(bucketName, null), bucketName);
+                if (maxUploads is <= 0 or > 1000) {
+                    return ToErrorResult(httpContext, StatusCodes.Status400BadRequest, "InvalidArgument", "max-uploads must be between 1 and 1000.", BuildObjectResource(bucketName, null), bucketName);
                 }
 
+                var normalizedKeyMarker = string.IsNullOrWhiteSpace(keyMarker)
+                    ? null
+                    : keyMarker;
+                var normalizedUploadIdMarker = normalizedKeyMarker is null || string.IsNullOrWhiteSpace(uploadIdMarker)
+                    ? null
+                    : uploadIdMarker;
                 var requestedPageSize = maxUploads ?? 1000;
 
                 try {
@@ -1779,16 +1788,17 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
                         BucketName = bucketName,
                         Prefix = prefix,
                         Delimiter = delimiter,
-                        KeyMarker = keyMarker,
-                        UploadIdMarker = uploadIdMarker
+                        KeyMarker = normalizedKeyMarker,
+                        UploadIdMarker = normalizedUploadIdMarker
                     }, innerCancellationToken).ToArrayAsync(innerCancellationToken);
 
                     var response = BuildListMultipartUploadsResult(
                         bucketName,
                         prefix,
                         delimiter,
-                        keyMarker,
-                        uploadIdMarker,
+                        normalizedKeyMarker,
+                        normalizedUploadIdMarker,
+                        encodingType,
                         requestedPageSize,
                         uploads);
 
@@ -2329,6 +2339,22 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
             : null;
     }
 
+    private static string? ParseMultipartUploadsEncodingType(HttpRequest request)
+    {
+        if (!request.Query.TryGetValue(EncodingTypeQueryParameterName, out var values)) {
+            return null;
+        }
+
+        var encodingType = values.ToString();
+        if (string.IsNullOrWhiteSpace(encodingType)) {
+            return null;
+        }
+
+        return string.Equals(encodingType, "url", StringComparison.Ordinal)
+            ? "url"
+            : throw new ArgumentException("The encoding-type query parameter must be 'url' when specified for multipart upload listing.", EncodingTypeQueryParameterName);
+    }
+
     private static S3ListBucketResult BuildListBucketResult(
         string bucketName,
         string? prefix,
@@ -2511,6 +2537,7 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
         string? delimiter,
         string? keyMarker,
         string? uploadIdMarker,
+        string? encodingType,
         int maxUploads,
         IReadOnlyList<MultipartUploadInfo> uploads)
     {
@@ -2565,6 +2592,7 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
             Delimiter = normalizedDelimiter,
             KeyMarker = keyMarker,
             UploadIdMarker = uploadIdMarker,
+            EncodingType = encodingType,
             NextKeyMarker = isTruncated ? page[^1].NextKeyMarker : null,
             NextUploadIdMarker = isTruncated ? page[^1].NextUploadIdMarker : null,
             MaxUploads = maxUploads,
