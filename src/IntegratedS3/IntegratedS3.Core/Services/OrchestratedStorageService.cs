@@ -1,12 +1,15 @@
+using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using IntegratedS3.Abstractions.Errors;
 using IntegratedS3.Abstractions.Models;
+using IntegratedS3.Abstractions.Observability;
 using IntegratedS3.Abstractions.Requests;
 using IntegratedS3.Abstractions.Responses;
 using IntegratedS3.Abstractions.Results;
 using IntegratedS3.Abstractions.Services;
 using IntegratedS3.Core.Models;
 using IntegratedS3.Core.Options;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
 namespace IntegratedS3.Core.Services;
@@ -18,7 +21,8 @@ internal sealed class OrchestratedStorageService(
     StorageBackendHealthMonitor backendHealthMonitor,
     IStorageReplicaRepairBacklog replicaRepairBacklog,
     IStorageReplicaRepairDispatcher replicaRepairDispatcher,
-    TimeProvider timeProvider) : IStorageService
+    TimeProvider timeProvider,
+    ILogger<OrchestratedStorageService> logger) : IStorageService
 {
     private readonly IStorageBackend[] _backends = backends.ToArray();
     private readonly Lazy<IStorageBackend> _primaryBackend = new(() => ResolvePrimaryBackend(backends.ToArray()));
@@ -34,7 +38,7 @@ internal sealed class OrchestratedStorageService(
 
     public async ValueTask<StorageResult<BucketInfo>> CreateBucketAsync(CreateBucketRequest request, CancellationToken cancellationToken = default)
     {
-        var backend = _primaryBackend.Value;
+        var backend = GetPrimaryBackend();
         var strictReplicationError = await GetStrictReplicaWritePreflightErrorAsync(backend, request.BucketName, objectKey: null, versionId: null, cancellationToken: cancellationToken);
         if (strictReplicationError is not null) {
             return StorageResult<BucketInfo>.Failure(strictReplicationError);
@@ -62,9 +66,19 @@ internal sealed class OrchestratedStorageService(
         return result;
     }
 
+    public async ValueTask<StorageResult<BucketLocationInfo>> GetBucketLocationAsync(string bucketName, CancellationToken cancellationToken = default)
+    {
+        return await ExecuteReadAsync(
+            StorageOperationType.GetBucketLocation,
+            (backend, ct) => backend.GetBucketLocationAsync(bucketName, ct),
+            onSuccess: null,
+            cancellationToken);
+    }
+
     public async ValueTask<StorageResult<BucketVersioningInfo>> GetBucketVersioningAsync(string bucketName, CancellationToken cancellationToken = default)
     {
         return await ExecuteReadAsync(
+            StorageOperationType.GetBucketVersioning,
             (backend, ct) => backend.GetBucketVersioningAsync(bucketName, ct),
             onSuccess: null,
             cancellationToken);
@@ -72,7 +86,7 @@ internal sealed class OrchestratedStorageService(
 
     public async ValueTask<StorageResult<BucketVersioningInfo>> PutBucketVersioningAsync(PutBucketVersioningRequest request, CancellationToken cancellationToken = default)
     {
-        var backend = _primaryBackend.Value;
+        var backend = GetPrimaryBackend();
         var strictReplicationError = await GetStrictReplicaWritePreflightErrorAsync(backend, request.BucketName, objectKey: null, versionId: null, cancellationToken: cancellationToken);
         if (strictReplicationError is not null) {
             return StorageResult<BucketVersioningInfo>.Failure(strictReplicationError);
@@ -103,6 +117,7 @@ internal sealed class OrchestratedStorageService(
     public async ValueTask<StorageResult<BucketCorsConfiguration>> GetBucketCorsAsync(string bucketName, CancellationToken cancellationToken = default)
     {
         return await ExecuteReadAsync(
+            StorageOperationType.GetBucketCors,
             (backend, ct) => backend.GetBucketCorsAsync(bucketName, ct),
             onSuccess: null,
             cancellationToken);
@@ -110,7 +125,7 @@ internal sealed class OrchestratedStorageService(
 
     public async ValueTask<StorageResult<BucketCorsConfiguration>> PutBucketCorsAsync(PutBucketCorsRequest request, CancellationToken cancellationToken = default)
     {
-        var backend = _primaryBackend.Value;
+        var backend = GetPrimaryBackend();
         var strictReplicationError = await GetStrictReplicaWritePreflightErrorAsync(backend, request.BucketName, objectKey: null, versionId: null, cancellationToken: cancellationToken);
         if (strictReplicationError is not null) {
             return StorageResult<BucketCorsConfiguration>.Failure(strictReplicationError);
@@ -142,7 +157,7 @@ internal sealed class OrchestratedStorageService(
 
     public async ValueTask<StorageResult> DeleteBucketCorsAsync(DeleteBucketCorsRequest request, CancellationToken cancellationToken = default)
     {
-        var backend = _primaryBackend.Value;
+        var backend = GetPrimaryBackend();
         var strictReplicationError = await GetStrictReplicaWritePreflightErrorAsync(backend, request.BucketName, objectKey: null, versionId: null, cancellationToken: cancellationToken);
         if (strictReplicationError is not null) {
             return StorageResult.Failure(strictReplicationError);
@@ -171,6 +186,7 @@ internal sealed class OrchestratedStorageService(
     public async ValueTask<StorageResult<BucketInfo>> HeadBucketAsync(string bucketName, CancellationToken cancellationToken = default)
     {
         return await ExecuteReadAsync(
+            StorageOperationType.HeadBucket,
             (backend, ct) => backend.HeadBucketAsync(bucketName, ct),
             async (backend, result, ct) => {
                 if (result.Value is not null) {
@@ -182,7 +198,7 @@ internal sealed class OrchestratedStorageService(
 
     public async ValueTask<StorageResult> DeleteBucketAsync(DeleteBucketRequest request, CancellationToken cancellationToken = default)
     {
-        var backend = _primaryBackend.Value;
+        var backend = GetPrimaryBackend();
         var strictReplicationError = await GetStrictReplicaWritePreflightErrorAsync(backend, request.BucketName, objectKey: null, versionId: null, cancellationToken: cancellationToken);
         if (strictReplicationError is not null) {
             return StorageResult.Failure(strictReplicationError);
@@ -239,6 +255,7 @@ internal sealed class OrchestratedStorageService(
     public async ValueTask<StorageResult<GetObjectResponse>> GetObjectAsync(GetObjectRequest request, CancellationToken cancellationToken = default)
     {
         return await ExecuteReadAsync(
+            StorageOperationType.GetObject,
             (backend, ct) => backend.GetObjectAsync(request, ct),
             onSuccess: null,
             cancellationToken);
@@ -247,6 +264,7 @@ internal sealed class OrchestratedStorageService(
     public async ValueTask<StorageResult<ObjectTagSet>> GetObjectTagsAsync(GetObjectTagsRequest request, CancellationToken cancellationToken = default)
     {
         return await ExecuteReadAsync(
+            StorageOperationType.GetObjectTags,
             (backend, ct) => backend.GetObjectTagsAsync(request, ct),
             onSuccess: null,
             cancellationToken);
@@ -254,7 +272,7 @@ internal sealed class OrchestratedStorageService(
 
     public async ValueTask<StorageResult<ObjectInfo>> CopyObjectAsync(CopyObjectRequest request, CancellationToken cancellationToken = default)
     {
-        var backend = _primaryBackend.Value;
+        var backend = GetPrimaryBackend();
         var strictReplicationError = await GetStrictReplicaWritePreflightErrorAsync(backend, request.DestinationBucketName, request.DestinationKey, versionId: null, cancellationToken: cancellationToken);
         if (strictReplicationError is not null) {
             return StorageResult<ObjectInfo>.Failure(strictReplicationError);
@@ -295,7 +313,7 @@ internal sealed class OrchestratedStorageService(
 
     public async ValueTask<StorageResult<ObjectInfo>> PutObjectAsync(PutObjectRequest request, CancellationToken cancellationToken = default)
     {
-        var backend = _primaryBackend.Value;
+        var backend = GetPrimaryBackend();
         var strictReplicationError = await GetStrictReplicaWritePreflightErrorAsync(backend, request.BucketName, request.Key, versionId: null, cancellationToken: cancellationToken);
         if (strictReplicationError is not null) {
             return StorageResult<ObjectInfo>.Failure(strictReplicationError);
@@ -357,7 +375,7 @@ internal sealed class OrchestratedStorageService(
 
     public async ValueTask<StorageResult<ObjectTagSet>> PutObjectTagsAsync(PutObjectTagsRequest request, CancellationToken cancellationToken = default)
     {
-        var backend = _primaryBackend.Value;
+        var backend = GetPrimaryBackend();
         var strictReplicationError = await GetStrictReplicaWritePreflightErrorAsync(backend, request.BucketName, request.Key, request.VersionId, cancellationToken: cancellationToken);
         if (strictReplicationError is not null) {
             return StorageResult<ObjectTagSet>.Failure(strictReplicationError);
@@ -394,7 +412,7 @@ internal sealed class OrchestratedStorageService(
 
     public async ValueTask<StorageResult<ObjectTagSet>> DeleteObjectTagsAsync(DeleteObjectTagsRequest request, CancellationToken cancellationToken = default)
     {
-        var backend = _primaryBackend.Value;
+        var backend = GetPrimaryBackend();
         var strictReplicationError = await GetStrictReplicaWritePreflightErrorAsync(backend, request.BucketName, request.Key, request.VersionId, cancellationToken: cancellationToken);
         if (strictReplicationError is not null) {
             return StorageResult<ObjectTagSet>.Failure(strictReplicationError);
@@ -430,7 +448,7 @@ internal sealed class OrchestratedStorageService(
 
     public async ValueTask<StorageResult<MultipartUploadInfo>> InitiateMultipartUploadAsync(InitiateMultipartUploadRequest request, CancellationToken cancellationToken = default)
     {
-        var backend = _primaryBackend.Value;
+        var backend = GetPrimaryBackend();
         var replicationError = GetMultipartReplicationError(backend, request.BucketName, request.Key);
         if (replicationError is not null) {
             return StorageResult<MultipartUploadInfo>.Failure(replicationError);
@@ -443,7 +461,7 @@ internal sealed class OrchestratedStorageService(
 
     public async ValueTask<StorageResult<MultipartUploadPart>> UploadMultipartPartAsync(UploadMultipartPartRequest request, CancellationToken cancellationToken = default)
     {
-        var backend = _primaryBackend.Value;
+        var backend = GetPrimaryBackend();
         var replicationError = GetMultipartReplicationError(backend, request.BucketName, request.Key);
         if (replicationError is not null) {
             return StorageResult<MultipartUploadPart>.Failure(replicationError);
@@ -456,7 +474,7 @@ internal sealed class OrchestratedStorageService(
 
     public async ValueTask<StorageResult<ObjectInfo>> CompleteMultipartUploadAsync(CompleteMultipartUploadRequest request, CancellationToken cancellationToken = default)
     {
-        var backend = _primaryBackend.Value;
+        var backend = GetPrimaryBackend();
         var replicationError = GetMultipartReplicationError(backend, request.BucketName, request.Key);
         if (replicationError is not null) {
             return StorageResult<ObjectInfo>.Failure(replicationError);
@@ -473,7 +491,7 @@ internal sealed class OrchestratedStorageService(
 
     public async ValueTask<StorageResult> AbortMultipartUploadAsync(AbortMultipartUploadRequest request, CancellationToken cancellationToken = default)
     {
-        var backend = _primaryBackend.Value;
+        var backend = GetPrimaryBackend();
         var replicationError = GetMultipartReplicationError(backend, request.BucketName, request.Key);
         if (replicationError is not null) {
             return StorageResult.Failure(replicationError);
@@ -487,6 +505,7 @@ internal sealed class OrchestratedStorageService(
     public async ValueTask<StorageResult<ObjectInfo>> HeadObjectAsync(HeadObjectRequest request, CancellationToken cancellationToken = default)
     {
         return await ExecuteReadAsync(
+            StorageOperationType.HeadObject,
             (backend, ct) => backend.HeadObjectAsync(request, ct),
             async (backend, result, ct) => {
                 if (result.Value is not null) {
@@ -498,7 +517,7 @@ internal sealed class OrchestratedStorageService(
 
     public async ValueTask<StorageResult<DeleteObjectResult>> DeleteObjectAsync(DeleteObjectRequest request, CancellationToken cancellationToken = default)
     {
-        var backend = _primaryBackend.Value;
+        var backend = GetPrimaryBackend();
         var strictReplicationError = await GetStrictReplicaWritePreflightErrorAsync(backend, request.BucketName, request.Key, request.VersionId, cancellationToken: cancellationToken);
         if (strictReplicationError is not null) {
             return StorageResult<DeleteObjectResult>.Failure(strictReplicationError);
@@ -543,9 +562,27 @@ internal sealed class OrchestratedStorageService(
             ?? throw new InvalidOperationException("No storage backends have been registered.");
     }
 
+    private IStorageBackend GetPrimaryBackend()
+    {
+        var backend = _primaryBackend.Value;
+        SetProviderTags(backend);
+        return backend;
+    }
+
+    private void SetProviderTags(IStorageBackend backend)
+    {
+        IntegratedS3CoreTelemetry.SetProvider(
+            Activity.Current,
+            backend.Name,
+            backend.Kind,
+            ReferenceEquals(backend, _primaryBackend.Value));
+    }
+
     private async ValueTask<IStorageBackend> SelectReadBackendAsync(CancellationToken cancellationToken)
     {
-        return (await GetOrderedReadBackendsAsync(cancellationToken))[0];
+        var backend = (await GetOrderedReadBackendsAsync(cancellationToken))[0];
+        SetProviderTags(backend);
+        return backend;
     }
 
     private async ValueTask<IReadOnlyList<IStorageBackend>> GetOrderedReadBackendsAsync(CancellationToken cancellationToken)
@@ -562,6 +599,9 @@ internal sealed class OrchestratedStorageService(
             var hasOutstandingRepairs = !ReferenceEquals(backend, primaryBackend)
                 && await replicaRepairBacklog.HasOutstandingRepairsAsync(backend.Name, cancellationToken);
             if (hasOutstandingRepairs && !allowReadsFromReplicasWithOutstandingRepairs) {
+                logger.LogInformation(
+                    "Skipping replica provider {Provider} for reads because outstanding repairs are pending.",
+                    backend.Name);
                 continue;
             }
 
@@ -580,6 +620,7 @@ internal sealed class OrchestratedStorageService(
     }
 
     private async ValueTask<StorageResult<T>> ExecuteReadAsync<T>(
+        StorageOperationType storageOperation,
         Func<IStorageBackend, CancellationToken, ValueTask<StorageResult<T>>> operation,
         Func<IStorageBackend, StorageResult<T>, CancellationToken, ValueTask>? onSuccess,
         CancellationToken cancellationToken)
@@ -590,6 +631,7 @@ internal sealed class OrchestratedStorageService(
             var result = await operation(backend, cancellationToken);
             if (result.IsSuccess) {
                 backendHealthMonitor.ReportSuccess(backend);
+                SetProviderTags(backend);
                 if (onSuccess is not null) {
                     await onSuccess(backend, result, cancellationToken);
                 }
@@ -600,8 +642,19 @@ internal sealed class OrchestratedStorageService(
             backendHealthMonitor.ReportFailure(backend, result.Error);
             lastFailure = result;
             if (!ShouldFailoverRead(result.Error)) {
+                logger.LogWarning(
+                    "Read operation {StorageOperation} failed on provider {Provider} with {ErrorCode}.",
+                    storageOperation,
+                    backend.Name,
+                    result.Error?.Code);
                 return result;
             }
+
+            logger.LogWarning(
+                "Read operation {StorageOperation} failed on provider {Provider} with {ErrorCode} and will fail over.",
+                storageOperation,
+                backend.Name,
+                result.Error?.Code);
         }
 
         return lastFailure ?? StorageResult<T>.Failure(new StorageError
@@ -628,6 +681,9 @@ internal sealed class OrchestratedStorageService(
             if (options.Value.Replication.RequireHealthyReplicasForWriteThrough) {
                 var healthStatus = await backendHealthMonitor.GetStatusAsync(replicaBackend, cancellationToken);
                 if (healthStatus == StorageBackendHealthStatus.Unhealthy) {
+                    logger.LogWarning(
+                        "Blocking strict write-through because replica provider {ReplicaProvider} is unhealthy.",
+                        replicaBackend.Name);
                     return CreateUnhealthyReplicaWriteError(replicaBackend, bucketName, objectKey, versionId);
                 }
             }
@@ -641,9 +697,17 @@ internal sealed class OrchestratedStorageService(
                 continue;
             }
 
-            return outstandingRepairs.Any(entry => entry.Status == StorageReplicaRepairStatus.Failed)
-                ? CreateIncompleteReplicaWriteError(replicaBackend, bucketName, objectKey, versionId)
-                : CreateStaleReplicaWriteError(replicaBackend, bucketName, objectKey, versionId);
+            if (outstandingRepairs.Any(entry => entry.Status == StorageReplicaRepairStatus.Failed)) {
+                logger.LogWarning(
+                    "Blocking strict write-through because replica provider {ReplicaProvider} has failed outstanding repairs.",
+                    replicaBackend.Name);
+                return CreateIncompleteReplicaWriteError(replicaBackend, bucketName, objectKey, versionId);
+            }
+
+            logger.LogWarning(
+                "Blocking strict write-through because replica provider {ReplicaProvider} has pending outstanding repairs.",
+                replicaBackend.Name);
+            return CreateStaleReplicaWriteError(replicaBackend, bucketName, objectKey, versionId);
         }
 
         return null;
@@ -705,6 +769,12 @@ internal sealed class OrchestratedStorageService(
                 continue;
             }
 
+            logger.LogWarning(
+                "Write-through replication for {StorageOperation} failed on replica provider {ReplicaProvider}. ErrorCode {ErrorCode}.",
+                operation,
+                replicaBackend.Name,
+                replicaError.Code);
+
             await RecordWriteThroughFailureAsync(
                 operation,
                 primaryBackend.Name,
@@ -746,12 +816,34 @@ internal sealed class OrchestratedStorageService(
 
             try {
                 if (await replicaRepairBacklog.HasOutstandingRepairsAsync(replicaBackend.Name, cancellationToken)) {
+                    logger.LogInformation(
+                        "Queuing async replica repair for {StorageOperation} on {ReplicaProvider} because outstanding repairs already exist.",
+                        operation,
+                        replicaBackend.Name);
+                    IntegratedS3CoreTelemetry.AddReplicaEvent(
+                        Activity.Current,
+                        "replica-repair-queued-existing-backlog",
+                        operation,
+                        replicaBackend.Name,
+                        repairEntry.Origin,
+                        repairEntry.Status);
                     await replicaRepairBacklog.AddAsync(repairEntry, cancellationToken);
                     continue;
                 }
 
                 var healthStatus = await backendHealthMonitor.GetStatusAsync(replicaBackend, cancellationToken);
                 if (healthStatus == StorageBackendHealthStatus.Unhealthy) {
+                    logger.LogInformation(
+                        "Queuing async replica repair for {StorageOperation} on {ReplicaProvider} because the replica is unhealthy.",
+                        operation,
+                        replicaBackend.Name);
+                    IntegratedS3CoreTelemetry.AddReplicaEvent(
+                        Activity.Current,
+                        "replica-repair-queued-unhealthy",
+                        operation,
+                        replicaBackend.Name,
+                        repairEntry.Origin,
+                        repairEntry.Status);
                     await replicaRepairBacklog.AddAsync(repairEntry, cancellationToken);
                     continue;
                 }
@@ -765,6 +857,10 @@ internal sealed class OrchestratedStorageService(
                 throw;
             }
             catch (Exception ex) {
+                logger.LogError(
+                    ex,
+                    "Failed to track async replica repair for provider {ReplicaProvider}.",
+                    replicaBackend.Name);
                 trackingError ??= CreateAsyncReplicationTrackingError(replicaBackend, ex, bucketName, objectKey, versionId);
             }
         }
@@ -796,6 +892,14 @@ internal sealed class OrchestratedStorageService(
                 attemptCount: index == failedReplicaIndex ? 1 : 0,
                 lastError: index == failedReplicaIndex ? error : null);
 
+            IntegratedS3CoreTelemetry.AddReplicaEvent(
+                Activity.Current,
+                "replica-repair-recorded-write-through-failure",
+                operation,
+                replicaBackend.Name,
+                repairEntry.Origin,
+                repairEntry.Status,
+                index == failedReplicaIndex ? error : null);
             await replicaRepairBacklog.AddAsync(repairEntry, CancellationToken.None);
         }
     }
@@ -823,6 +927,20 @@ internal sealed class OrchestratedStorageService(
                 objectKey,
                 versionId,
                 attemptCount,
+                error);
+            logger.LogInformation(
+                "Recording replica backlog for {StorageOperation} on {ReplicaProvider}. Origin {Origin}. Status {Status}.",
+                operation,
+                replicaBackend.Name,
+                origin,
+                status);
+            IntegratedS3CoreTelemetry.AddReplicaEvent(
+                Activity.Current,
+                "replica-repair-recorded-backlog",
+                operation,
+                replicaBackend.Name,
+                origin,
+                status,
                 error);
             await replicaRepairBacklog.AddAsync(repairEntry, CancellationToken.None);
         }
@@ -1654,3 +1772,4 @@ internal sealed class OrchestratedStorageService(
 
     private readonly record struct ReadBackendCandidate(IStorageBackend Backend, StorageBackendHealthStatus HealthStatus, bool HasOutstandingRepairs);
 }
+

@@ -22,6 +22,11 @@ internal sealed class IntegratedS3HttpPresignStrategy(
 {
     private const string HostHeaderName = "host";
     private const string ContentTypeHeaderName = "content-type";
+    private const string SdkChecksumAlgorithmHeaderName = "x-amz-sdk-checksum-algorithm";
+    private const string ChecksumCrc32HeaderName = "x-amz-checksum-crc32";
+    private const string ChecksumCrc32cHeaderName = "x-amz-checksum-crc32c";
+    private const string ChecksumSha1HeaderName = "x-amz-checksum-sha1";
+    private const string ChecksumSha256HeaderName = "x-amz-checksum-sha256";
     private readonly IStorageBackend[] _backends = backends.ToArray();
     private readonly IStorageObjectLocationResolver[] _locationResolvers = locationResolvers.ToArray();
 
@@ -136,7 +141,9 @@ internal sealed class IntegratedS3HttpPresignStrategy(
                 Key = request.Key,
                 ExpiresInSeconds = request.ExpiresInSeconds,
                 VersionId = request.VersionId,
-                ContentType = request.ContentType
+                ContentType = request.ContentType,
+                ChecksumAlgorithm = request.ChecksumAlgorithm,
+                Checksums = request.Checksums
             },
             cancellationToken);
 
@@ -278,6 +285,24 @@ internal sealed class IntegratedS3HttpPresignStrategy(
             headers.Add(new KeyValuePair<string, string?>(ContentTypeHeaderName, request.ContentType));
         }
 
+        if (request.Operation == StoragePresignOperation.PutObject
+            && !string.IsNullOrWhiteSpace(request.ChecksumAlgorithm)
+            && ToS3ChecksumAlgorithmValue(request.ChecksumAlgorithm) is { } checksumAlgorithmValue) {
+            headers.Add(new KeyValuePair<string, string?>(SdkChecksumAlgorithmHeaderName, checksumAlgorithmValue));
+        }
+
+        if (request.Operation == StoragePresignOperation.PutObject
+            && request.Checksums is not null) {
+            foreach (var checksum in request.Checksums) {
+                if (string.IsNullOrWhiteSpace(checksum.Value)
+                    || ResolveChecksumHeaderName(checksum.Key) is not { } headerName) {
+                    continue;
+                }
+
+                headers.Add(new KeyValuePair<string, string?>(headerName, checksum.Value));
+            }
+        }
+
         return headers;
     }
 
@@ -294,18 +319,71 @@ internal sealed class IntegratedS3HttpPresignStrategy(
     private static IReadOnlyList<StoragePresignedHeader> BuildResponseHeaders(StoragePresignRequest request)
     {
         if (request.Operation == StoragePresignOperation.PutObject
-            && !string.IsNullOrWhiteSpace(request.ContentType)) {
-            return
-            [
-                new StoragePresignedHeader
+            && (!string.IsNullOrWhiteSpace(request.ContentType)
+                || !string.IsNullOrWhiteSpace(request.ChecksumAlgorithm)
+                || request.Checksums is not null)) {
+            var headers = new List<StoragePresignedHeader>();
+
+            if (!string.IsNullOrWhiteSpace(request.ContentType)) {
+                headers.Add(new StoragePresignedHeader
                 {
                     Name = "Content-Type",
                     Value = request.ContentType
+                });
+            }
+
+            if (!string.IsNullOrWhiteSpace(request.ChecksumAlgorithm)
+                && ToS3ChecksumAlgorithmValue(request.ChecksumAlgorithm) is { } checksumAlgorithmValue) {
+                headers.Add(new StoragePresignedHeader
+                {
+                    Name = SdkChecksumAlgorithmHeaderName,
+                    Value = checksumAlgorithmValue
+                });
+            }
+
+            if (request.Checksums is not null) {
+                foreach (var checksum in request.Checksums) {
+                    if (string.IsNullOrWhiteSpace(checksum.Value)
+                        || ResolveChecksumHeaderName(checksum.Key) is not { } headerName) {
+                        continue;
+                    }
+
+                    headers.Add(new StoragePresignedHeader
+                    {
+                        Name = headerName,
+                        Value = checksum.Value
+                    });
                 }
-            ];
+            }
+
+            return headers;
         }
 
         return [];
+    }
+
+    private static string? ResolveChecksumHeaderName(string? checksumAlgorithm)
+    {
+        return checksumAlgorithm switch
+        {
+            "crc32" => ChecksumCrc32HeaderName,
+            "crc32c" => ChecksumCrc32cHeaderName,
+            "sha1" => ChecksumSha1HeaderName,
+            "sha256" => ChecksumSha256HeaderName,
+            _ => null
+        };
+    }
+
+    private static string? ToS3ChecksumAlgorithmValue(string? checksumAlgorithm)
+    {
+        return checksumAlgorithm switch
+        {
+            "sha256" => "SHA256",
+            "sha1" => "SHA1",
+            "crc32" => "CRC32",
+            "crc32c" => "CRC32C",
+            _ => null
+        };
     }
 
     private static string ResolveMethod(StoragePresignOperation operation)
