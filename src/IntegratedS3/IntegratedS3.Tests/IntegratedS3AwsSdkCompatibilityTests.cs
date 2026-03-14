@@ -88,6 +88,44 @@ public sealed class IntegratedS3AwsSdkCompatibilityTests : IClassFixture<WebUiAp
     }
 
     [Fact]
+    public async Task AmazonS3Client_PathStyleAwsChunkedPutObject_WorksAgainstIntegratedS3()
+    {
+        const string accessKeyId = "aws-sdk-chunked-access";
+        const string secretAccessKey = "aws-sdk-chunked-secret";
+
+        await using var isolatedClient = await CreateAuthenticatedLoopbackClientAsync(accessKeyId, secretAccessKey);
+        using var s3Client = CreateS3Client(isolatedClient.BaseAddress!, accessKeyId, secretAccessKey);
+
+        const string bucketName = "aws-sdk-chunked-bucket";
+        const string objectKey = "docs/chunked.txt";
+        const string payload = "hello from chunked amazon sdk";
+
+        Assert.Equal(HttpStatusCode.OK, (await s3Client.PutBucketAsync(new PutBucketRequest
+        {
+            BucketName = bucketName
+        })).HttpStatusCode);
+
+        var putObjectResponse = await s3Client.PutObjectAsync(new PutObjectRequest
+        {
+            BucketName = bucketName,
+            Key = objectKey,
+            ContentBody = payload,
+            ContentType = "text/plain",
+            UseChunkEncoding = true
+        });
+        Assert.Equal(HttpStatusCode.OK, putObjectResponse.HttpStatusCode);
+
+        var getObjectResponse = await s3Client.GetObjectAsync(new GetObjectRequest
+        {
+            BucketName = bucketName,
+            Key = objectKey
+        });
+        Assert.Equal(HttpStatusCode.OK, getObjectResponse.HttpStatusCode);
+        using var reader = new StreamReader(getObjectResponse.ResponseStream);
+        Assert.Equal(payload, await reader.ReadToEndAsync());
+    }
+
+    [Fact]
     public async Task AmazonS3Client_LegacyAndFetchOwnerListApis_WorkAgainstIntegratedS3()
     {
         const string accessKeyId = "aws-sdk-legacy-list-access";
@@ -617,6 +655,74 @@ public sealed class IntegratedS3AwsSdkCompatibilityTests : IClassFixture<WebUiAp
     }
 
     [Fact]
+    public async Task AmazonS3Client_VirtualHostedStyleSdkGeneratedPresignedUrls_WithSignedContentType_CanUploadAndDownloadObjects()
+    {
+        const string accessKeyId = "aws-sdk-virtual-presign-content-type-access";
+        const string secretAccessKey = "aws-sdk-virtual-presign-content-type-secret";
+        const string contentType = "text/plain";
+
+        await using var isolatedClient = await CreateAuthenticatedLoopbackClientAsync(
+            accessKeyId,
+            secretAccessKey,
+            options => {
+                options.EnableVirtualHostedStyleAddressing = true;
+                options.VirtualHostedStyleHostSuffixes = ["localhost"];
+            });
+
+        using var s3Client = CreateS3Client(isolatedClient.BaseAddress!, accessKeyId, secretAccessKey, forcePathStyle: false, hostOverride: "localhost");
+
+        const string bucketName = "aws-sdk-virtual-presign-content-type-bucket";
+        const string objectKey = "docs/virtual-presigned-content-type.txt";
+        const string payload = "uploaded via virtual hosted sdk presign with content type";
+
+        Assert.Equal(HttpStatusCode.OK, (await s3Client.PutBucketAsync(new PutBucketRequest
+        {
+            BucketName = bucketName
+        })).HttpStatusCode);
+
+        var presignedPutUrl = s3Client.GetPreSignedURL(new GetPreSignedUrlRequest
+        {
+            BucketName = bucketName,
+            Key = objectKey,
+            Verb = HttpVerb.PUT,
+            Protocol = Amazon.S3.Protocol.HTTP,
+            Expires = DateTime.UtcNow.AddMinutes(5),
+            ContentType = contentType
+        });
+
+        using (var presignedPutRequest = new HttpRequestMessage(HttpMethod.Put, presignedPutUrl)
+        {
+            Content = new ByteArrayContent(Encoding.UTF8.GetBytes(payload))
+        }) {
+            presignedPutRequest.Content.Headers.ContentType = new MediaTypeHeaderValue(contentType);
+            var presignedPutResponse = await isolatedClient.Client.SendAsync(presignedPutRequest);
+            Assert.Equal(HttpStatusCode.OK, presignedPutResponse.StatusCode);
+        }
+
+        var metadataResponse = await s3Client.GetObjectMetadataAsync(new GetObjectMetadataRequest
+        {
+            BucketName = bucketName,
+            Key = objectKey
+        });
+        Assert.Equal(HttpStatusCode.OK, metadataResponse.HttpStatusCode);
+        Assert.Equal(contentType, metadataResponse.Headers.ContentType);
+
+        var presignedGetUrl = s3Client.GetPreSignedURL(new GetPreSignedUrlRequest
+        {
+            BucketName = bucketName,
+            Key = objectKey,
+            Verb = HttpVerb.GET,
+            Protocol = Amazon.S3.Protocol.HTTP,
+            Expires = DateTime.UtcNow.AddMinutes(5)
+        });
+
+        using var presignedGetRequest = new HttpRequestMessage(HttpMethod.Get, presignedGetUrl);
+        var presignedGetResponse = await isolatedClient.Client.SendAsync(presignedGetRequest);
+        Assert.Equal(HttpStatusCode.OK, presignedGetResponse.StatusCode);
+        Assert.Equal(payload, await presignedGetResponse.Content.ReadAsStringAsync());
+    }
+
+    [Fact]
     public async Task AmazonS3Client_GetObjectAndMetadata_WithVersionId_ReadHistoricalVersions()
     {
         const string accessKeyId = "aws-sdk-version-read-access";
@@ -801,6 +907,51 @@ public sealed class IntegratedS3AwsSdkCompatibilityTests : IClassFixture<WebUiAp
         using (var reader = new StreamReader(getObjectResponse.ResponseStream)) {
             Assert.Equal(payload, await reader.ReadToEndAsync());
         }
+    }
+
+    [Fact]
+    public async Task AmazonS3Client_VirtualHostedStyleAwsChunkedPutObject_WorksAgainstIntegratedS3()
+    {
+        const string accessKeyId = "aws-sdk-virtual-chunked-access";
+        const string secretAccessKey = "aws-sdk-virtual-chunked-secret";
+
+        await using var isolatedClient = await CreateAuthenticatedLoopbackClientAsync(
+            accessKeyId,
+            secretAccessKey,
+            options => {
+                options.EnableVirtualHostedStyleAddressing = true;
+                options.VirtualHostedStyleHostSuffixes = ["localhost"];
+            });
+
+        using var s3Client = CreateS3Client(isolatedClient.BaseAddress!, accessKeyId, secretAccessKey, forcePathStyle: false, hostOverride: "localhost");
+
+        const string bucketName = "aws-sdk-virtual-chunked-bucket";
+        const string objectKey = "docs/virtual-chunked.txt";
+        const string payload = "hello from virtual hosted chunked sdk";
+
+        Assert.Equal(HttpStatusCode.OK, (await s3Client.PutBucketAsync(new PutBucketRequest
+        {
+            BucketName = bucketName
+        })).HttpStatusCode);
+
+        var putObjectResponse = await s3Client.PutObjectAsync(new PutObjectRequest
+        {
+            BucketName = bucketName,
+            Key = objectKey,
+            ContentBody = payload,
+            ContentType = "text/plain",
+            UseChunkEncoding = true
+        });
+        Assert.Equal(HttpStatusCode.OK, putObjectResponse.HttpStatusCode);
+
+        var getObjectResponse = await s3Client.GetObjectAsync(new GetObjectRequest
+        {
+            BucketName = bucketName,
+            Key = objectKey
+        });
+        Assert.Equal(HttpStatusCode.OK, getObjectResponse.HttpStatusCode);
+        using var reader = new StreamReader(getObjectResponse.ResponseStream);
+        Assert.Equal(payload, await reader.ReadToEndAsync());
     }
 
     [Fact]

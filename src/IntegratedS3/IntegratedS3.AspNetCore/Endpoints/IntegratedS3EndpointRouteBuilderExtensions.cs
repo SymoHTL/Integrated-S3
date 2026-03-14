@@ -990,7 +990,7 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
                         : ToErrorResult(httpContext, copyResult.Error, resourceOverride: BuildObjectResource(bucketName, key));
                 }
 
-                if (!TryParseRequestChecksums(request, requireChecksumValueForDeclaredAlgorithm: true, out _, out var requestedChecksums, out var checksumErrorResult)) {
+                if (!TryParseRequestChecksums(request, preparedBody.TrailerHeaders, requireChecksumValueForDeclaredAlgorithm: true, out _, out var requestedChecksums, out var checksumErrorResult)) {
                     return checksumErrorResult!;
                 }
 
@@ -1688,7 +1688,7 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
     {
         try {
             return await ExecuteWithRequestContextAsync(httpContext, requestContextAccessor, async innerCancellationToken => {
-                if (!TryParseRequestChecksums(httpContext.Request, requireChecksumValueForDeclaredAlgorithm: false, out var checksumAlgorithm, out _, out var checksumErrorResult)) {
+                if (!TryParseRequestChecksums(httpContext.Request, trailerHeaders: null, requireChecksumValueForDeclaredAlgorithm: false, out var checksumAlgorithm, out _, out var checksumErrorResult)) {
                     return checksumErrorResult!;
                 }
 
@@ -1755,12 +1755,12 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
         }
 
         try {
-            if (!TryParseRequestChecksums(httpContext.Request, requireChecksumValueForDeclaredAlgorithm: false, out var checksumAlgorithm, out var requestedChecksums, out var checksumErrorResult)) {
-                return checksumErrorResult!;
-            }
-
             var preparedBody = await PrepareRequestBodyAsync(httpContext.Request, cancellationToken);
             try {
+                if (!TryParseRequestChecksums(httpContext.Request, preparedBody.TrailerHeaders, requireChecksumValueForDeclaredAlgorithm: false, out var checksumAlgorithm, out var requestedChecksums, out var checksumErrorResult)) {
+                    return checksumErrorResult!;
+                }
+
                 return await ExecuteWithRequestContextAsync(httpContext, requestContextAccessor, async innerCancellationToken => {
                     var result = await storageService.UploadMultipartPartAsync(new UploadMultipartPartRequest
                     {
@@ -2860,9 +2860,9 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
             Bucket = bucketName,
             Prefix = prefix,
             Delimiter = normalizedDelimiter,
-            EncodingType = encodingType,
             KeyMarker = keyMarker,
             UploadIdMarker = uploadIdMarker,
+            EncodingType = encodingType,
             NextKeyMarker = isTruncated ? page[^1].NextKeyMarker : null,
             NextUploadIdMarker = isTruncated ? page[^1].NextUploadIdMarker : null,
             MaxUploads = maxUploads,
@@ -3257,20 +3257,21 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
     private static async Task<PreparedRequestBody> PrepareRequestBodyAsync(HttpRequest request, CancellationToken cancellationToken)
     {
         if (!IsAwsChunkedContent(request)) {
-            return new PreparedRequestBody(request.Body, request.ContentLength, tempFilePath: null);
+            return new PreparedRequestBody(request.Body, request.ContentLength, tempFilePath: null, trailerHeaders: null);
         }
 
         var tempFilePath = Path.Combine(Path.GetTempPath(), $"integrateds3-aws-chunked-{Guid.NewGuid():N}.tmp");
+        var trailerHeaders = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         try {
             await using (var tempWriteStream = new FileStream(tempFilePath, FileMode.CreateNew, FileAccess.Write, FileShare.None, 81920, FileOptions.Asynchronous | FileOptions.SequentialScan)) {
-                await CopyAwsChunkedContentToAsync(request.Body, tempWriteStream, cancellationToken);
+                await CopyAwsChunkedContentToAsync(request.Body, tempWriteStream, trailerHeaders, cancellationToken);
                 await tempWriteStream.FlushAsync(cancellationToken);
             }
 
             var decodedLength = TryParseDecodedContentLength(request.Headers["x-amz-decoded-content-length"].ToString());
             var tempReadStream = new FileStream(tempFilePath, FileMode.Open, FileAccess.Read, FileShare.Read, 81920, FileOptions.Asynchronous | FileOptions.SequentialScan);
             var contentLength = decodedLength ?? tempReadStream.Length;
-            return new PreparedRequestBody(tempReadStream, contentLength, tempFilePath);
+            return new PreparedRequestBody(tempReadStream, contentLength, tempFilePath, trailerHeaders);
         }
         catch {
             if (File.Exists(tempFilePath)) {
@@ -3304,7 +3305,7 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
             : null;
     }
 
-    private static async Task CopyAwsChunkedContentToAsync(Stream source, Stream destination, CancellationToken cancellationToken)
+    private static async Task CopyAwsChunkedContentToAsync(Stream source, Stream destination, Dictionary<string, string> trailerHeaders, CancellationToken cancellationToken)
     {
         while (true) {
             var chunkHeader = await ReadLineAsync(source, cancellationToken)
@@ -3316,7 +3317,7 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
             }
 
             if (chunkLength == 0) {
-                await ConsumeChunkTrailersAsync(source, cancellationToken);
+                await ConsumeChunkTrailersAsync(source, trailerHeaders, cancellationToken);
                 return;
             }
 
@@ -3348,7 +3349,7 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
         }
     }
 
-    private static async Task ConsumeChunkTrailersAsync(Stream source, CancellationToken cancellationToken)
+    private static async Task ConsumeChunkTrailersAsync(Stream source, Dictionary<string, string> trailerHeaders, CancellationToken cancellationToken)
     {
         while (true) {
             var trailerLine = await ReadLineAsync(source, cancellationToken)
@@ -3356,6 +3357,19 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
             if (trailerLine.Length == 0) {
                 return;
             }
+
+            var separatorIndex = trailerLine.IndexOf(':');
+            if (separatorIndex <= 0) {
+                throw new FormatException("The aws-chunked request body contains an invalid trailer header.");
+            }
+
+            var trailerName = trailerLine[..separatorIndex].Trim();
+            var trailerValue = trailerLine[(separatorIndex + 1)..].Trim();
+            if (trailerName.Length == 0) {
+                throw new FormatException("The aws-chunked request body contains an invalid trailer header.");
+            }
+
+            trailerHeaders[trailerName] = trailerValue;
         }
     }
 
@@ -3809,6 +3823,7 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
 
     private static bool TryParseRequestChecksums(
         HttpRequest request,
+        IReadOnlyDictionary<string, string>? trailerHeaders,
         bool requireChecksumValueForDeclaredAlgorithm,
         out string? checksumAlgorithm,
         out IReadOnlyDictionary<string, string>? checksums,
@@ -3821,22 +3836,22 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
 
         var parsedChecksums = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
-        var checksumSha256 = request.Headers[ChecksumSha256HeaderName].ToString();
+        var checksumSha256 = GetRequestHeaderValue(request, trailerHeaders, ChecksumSha256HeaderName);
         if (!string.IsNullOrWhiteSpace(checksumSha256)) {
             parsedChecksums["sha256"] = checksumSha256.Trim();
         }
 
-        var checksumSha1 = request.Headers[ChecksumSha1HeaderName].ToString();
+        var checksumSha1 = GetRequestHeaderValue(request, trailerHeaders, ChecksumSha1HeaderName);
         if (!string.IsNullOrWhiteSpace(checksumSha1)) {
             parsedChecksums["sha1"] = checksumSha1.Trim();
         }
 
-        var checksumCrc32 = request.Headers[ChecksumCrc32HeaderName].ToString();
+        var checksumCrc32 = GetRequestHeaderValue(request, trailerHeaders, ChecksumCrc32HeaderName);
         if (!string.IsNullOrWhiteSpace(checksumCrc32)) {
             parsedChecksums["crc32"] = checksumCrc32.Trim();
         }
 
-        var checksumCrc32c = request.Headers[ChecksumCrc32cHeaderName].ToString();
+        var checksumCrc32c = GetRequestHeaderValue(request, trailerHeaders, ChecksumCrc32cHeaderName);
         if (!string.IsNullOrWhiteSpace(checksumCrc32c)) {
             parsedChecksums["crc32c"] = checksumCrc32c.Trim();
         }
@@ -3913,6 +3928,22 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
         checksums = parsedChecksums;
         errorResult = null;
         return true;
+    }
+
+    private static string GetRequestHeaderValue(HttpRequest request, IReadOnlyDictionary<string, string>? trailerHeaders, string headerName)
+    {
+        var requestHeaderValue = request.Headers[headerName].ToString();
+        if (!string.IsNullOrWhiteSpace(requestHeaderValue)) {
+            return requestHeaderValue;
+        }
+
+        if (trailerHeaders is not null
+            && trailerHeaders.TryGetValue(headerName, out var trailerHeaderValue)
+            && !string.IsNullOrWhiteSpace(trailerHeaderValue)) {
+            return trailerHeaderValue;
+        }
+
+        return string.Empty;
     }
 
     private static bool TryGetRequestChecksumAlgorithm(HttpRequest request, out string? checksumAlgorithm, out IResult? errorResult)
@@ -4407,11 +4438,13 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
         }
     }
 
-    private sealed class PreparedRequestBody(Stream content, long? contentLength, string? tempFilePath) : IAsyncDisposable
+    private sealed class PreparedRequestBody(Stream content, long? contentLength, string? tempFilePath, IReadOnlyDictionary<string, string>? trailerHeaders) : IAsyncDisposable
     {
         public Stream Content { get; } = content;
 
         public long? ContentLength { get; } = contentLength;
+
+        public IReadOnlyDictionary<string, string>? TrailerHeaders { get; } = trailerHeaders;
 
         public async ValueTask DisposeAsync()
         {
