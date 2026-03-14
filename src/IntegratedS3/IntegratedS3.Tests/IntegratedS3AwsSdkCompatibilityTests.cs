@@ -862,6 +862,107 @@ public sealed class IntegratedS3AwsSdkCompatibilityTests : IClassFixture<WebUiAp
     }
 
     [Fact]
+    public async Task AmazonS3Client_CopyPart_WithRangeAndPreconditions_WorksAgainstIntegratedS3()
+    {
+        const string accessKeyId = "aws-sdk-copy-part-access";
+        const string secretAccessKey = "aws-sdk-copy-part-secret";
+
+        await using var isolatedClient = await CreateAuthenticatedLoopbackClientAsync(accessKeyId, secretAccessKey);
+        using var s3Client = CreateS3Client(isolatedClient.BaseAddress!, accessKeyId, secretAccessKey);
+
+        const string bucketName = "aws-sdk-copy-part-bucket";
+        const string sourceKey = "docs/source.txt";
+        const string targetKey = "docs/copied.txt";
+
+        Assert.Equal(HttpStatusCode.OK, (await s3Client.PutBucketAsync(new PutBucketRequest
+        {
+            BucketName = bucketName
+        })).HttpStatusCode);
+
+        var putResponse = await s3Client.PutObjectAsync(new PutObjectRequest
+        {
+            BucketName = bucketName,
+            Key = sourceKey,
+            ContentBody = "0123456789",
+            ContentType = "text/plain",
+            UseChunkEncoding = false
+        });
+        Assert.Equal(HttpStatusCode.OK, putResponse.HttpStatusCode);
+
+        var sourceMetadata = await s3Client.GetObjectMetadataAsync(new GetObjectMetadataRequest
+        {
+            BucketName = bucketName,
+            Key = sourceKey
+        });
+        Assert.Equal(HttpStatusCode.OK, sourceMetadata.HttpStatusCode);
+
+        var initiateResponse = await s3Client.InitiateMultipartUploadAsync(new InitiateMultipartUploadRequest
+        {
+            BucketName = bucketName,
+            Key = targetKey,
+            ContentType = "text/plain",
+            ChecksumAlgorithm = ChecksumAlgorithm.SHA256
+        });
+        Assert.Equal(HttpStatusCode.OK, initiateResponse.HttpStatusCode);
+
+        var copyPartResponse = await s3Client.CopyPartAsync(new CopyPartRequest
+        {
+            DestinationBucket = bucketName,
+            DestinationKey = targetKey,
+            UploadId = initiateResponse.UploadId,
+            PartNumber = 1,
+            SourceBucket = bucketName,
+            SourceKey = sourceKey,
+            FirstByte = 2,
+            LastByte = 6,
+            ETagToMatch =
+            [
+                sourceMetadata.ETag
+            ]
+        });
+        Assert.Equal(HttpStatusCode.OK, copyPartResponse.HttpStatusCode);
+        Assert.Equal(1, copyPartResponse.PartNumber);
+        Assert.False(string.IsNullOrWhiteSpace(copyPartResponse.ETag));
+        Assert.False(string.IsNullOrWhiteSpace(copyPartResponse.ChecksumSHA256));
+
+        var failedCopyException = await Assert.ThrowsAsync<AmazonS3Exception>(() => s3Client.CopyPartAsync(new CopyPartRequest
+        {
+            DestinationBucket = bucketName,
+            DestinationKey = targetKey,
+            UploadId = initiateResponse.UploadId,
+            PartNumber = 2,
+            SourceBucket = bucketName,
+            SourceKey = sourceKey,
+            ETagToMatch =
+            [
+                "\"different\""
+            ]
+        }));
+        Assert.Equal(HttpStatusCode.PreconditionFailed, failedCopyException.StatusCode);
+
+        var completeResponse = await s3Client.CompleteMultipartUploadAsync(new CompleteMultipartUploadRequest
+        {
+            BucketName = bucketName,
+            Key = targetKey,
+            UploadId = initiateResponse.UploadId,
+            PartETags =
+            [
+                new PartETag(copyPartResponse.PartNumber.GetValueOrDefault(1), copyPartResponse.ETag)
+            ]
+        });
+        Assert.Equal(HttpStatusCode.OK, completeResponse.HttpStatusCode);
+
+        var getObjectResponse = await s3Client.GetObjectAsync(new GetObjectRequest
+        {
+            BucketName = bucketName,
+            Key = targetKey
+        });
+        Assert.Equal(HttpStatusCode.OK, getObjectResponse.HttpStatusCode);
+        using var reader = new StreamReader(getObjectResponse.ResponseStream);
+        Assert.Equal("23456", await reader.ReadToEndAsync());
+    }
+
+    [Fact]
     public async Task AmazonS3Client_ListMultipartUploads_RespectsMarkersAndCommonPrefixes()
     {
         const string accessKeyId = "aws-sdk-multipart-list-access";

@@ -2131,6 +2131,99 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
     }
 
     [Fact]
+    public async Task S3CompatibleMultipartUpload_WithCopySourceRange_ReturnsCopyPartXmlAndCompletesObject()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        const string bucketName = "multipart-copy-range-bucket";
+        const string sourceKey = "docs/source.txt";
+        const string targetKey = "docs/copied.txt";
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync($"/integrated-s3/buckets/{bucketName}", content: null)).StatusCode);
+
+        var sourceUploadResponse = await client.PutAsync(
+            $"/integrated-s3/buckets/{bucketName}/objects/{sourceKey}",
+            new StringContent("0123456789", Encoding.UTF8, "text/plain"));
+        Assert.Equal(HttpStatusCode.OK, sourceUploadResponse.StatusCode);
+        var sourceObject = await sourceUploadResponse.Content.ReadFromJsonAsync<ObjectInfo>(JsonOptions);
+
+        using var initiateRequest = new HttpRequestMessage(HttpMethod.Post, $"/integrated-s3/{bucketName}/{targetKey}?uploads");
+        initiateRequest.Headers.TryAddWithoutValidation("x-amz-sdk-checksum-algorithm", "SHA256");
+
+        var initiateResponse = await client.SendAsync(initiateRequest);
+        Assert.Equal(HttpStatusCode.OK, initiateResponse.StatusCode);
+
+        var initiateDocument = XDocument.Parse(await initiateResponse.Content.ReadAsStringAsync());
+        var uploadId = GetRequiredElementValue(initiateDocument, "UploadId");
+
+        using var copyPartRequest = new HttpRequestMessage(HttpMethod.Put, $"/integrated-s3/{bucketName}/{targetKey}?partNumber=1&uploadId={Uri.EscapeDataString(uploadId)}");
+        copyPartRequest.Headers.TryAddWithoutValidation("x-amz-copy-source", $"/{bucketName}/{sourceKey}");
+        copyPartRequest.Headers.TryAddWithoutValidation("x-amz-copy-source-range", "bytes=2-6");
+        copyPartRequest.Headers.TryAddWithoutValidation("x-amz-copy-source-if-match", $"\"{sourceObject!.ETag}\"");
+
+        var copyPartResponse = await client.SendAsync(copyPartRequest);
+        Assert.Equal(HttpStatusCode.OK, copyPartResponse.StatusCode);
+        Assert.Equal("application/xml", copyPartResponse.Content.Headers.ContentType?.MediaType);
+
+        var copyPartDocument = XDocument.Parse(await copyPartResponse.Content.ReadAsStringAsync());
+        Assert.Equal("CopyPartResult", copyPartDocument.Root?.Name.LocalName);
+        var partEtag = GetRequiredElementValue(copyPartDocument, "ETag");
+        var partChecksum = GetRequiredElementValue(copyPartDocument, "ChecksumSHA256");
+        Assert.Equal(partChecksum, Assert.Single(copyPartResponse.Headers.GetValues("x-amz-checksum-sha256")));
+
+        var completeBody = $"""
+<CompleteMultipartUpload>
+    <Part>
+        <PartNumber>1</PartNumber>
+        <ETag>{partEtag}</ETag>
+    </Part>
+</CompleteMultipartUpload>
+""";
+
+        using var completeRequest = new HttpRequestMessage(HttpMethod.Post, $"/integrated-s3/{bucketName}/{targetKey}?uploadId={Uri.EscapeDataString(uploadId)}")
+        {
+            Content = new StringContent(completeBody, Encoding.UTF8, "application/xml")
+        };
+
+        var completeResponse = await client.SendAsync(completeRequest);
+        Assert.Equal(HttpStatusCode.OK, completeResponse.StatusCode);
+
+        var downloadedResponse = await client.GetAsync($"/integrated-s3/buckets/{bucketName}/objects/{targetKey}");
+        Assert.Equal(HttpStatusCode.OK, downloadedResponse.StatusCode);
+        Assert.Equal("23456", await downloadedResponse.Content.ReadAsStringAsync());
+    }
+
+    [Fact]
+    public async Task S3CompatibleMultipartUpload_UploadPartCopy_WithFailedPrecondition_ReturnsPreconditionFailed()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        const string bucketName = "multipart-copy-precondition-bucket";
+        const string sourceKey = "docs/source.txt";
+        const string targetKey = "docs/copied.txt";
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync($"/integrated-s3/buckets/{bucketName}", content: null)).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await client.PutAsync(
+            $"/integrated-s3/buckets/{bucketName}/objects/{sourceKey}",
+            new StringContent("0123456789", Encoding.UTF8, "text/plain"))).StatusCode);
+
+        var initiateResponse = await client.SendAsync(new HttpRequestMessage(HttpMethod.Post, $"/integrated-s3/{bucketName}/{targetKey}?uploads"));
+        Assert.Equal(HttpStatusCode.OK, initiateResponse.StatusCode);
+        var initiateDocument = XDocument.Parse(await initiateResponse.Content.ReadAsStringAsync());
+        var uploadId = GetRequiredElementValue(initiateDocument, "UploadId");
+
+        using var failedCopyRequest = new HttpRequestMessage(HttpMethod.Put, $"/integrated-s3/{bucketName}/{targetKey}?partNumber=1&uploadId={Uri.EscapeDataString(uploadId)}");
+        failedCopyRequest.Headers.TryAddWithoutValidation("x-amz-copy-source", $"/{bucketName}/{sourceKey}");
+        failedCopyRequest.Headers.TryAddWithoutValidation("x-amz-copy-source-if-match", "\"different\"");
+
+        var failedCopyResponse = await client.SendAsync(failedCopyRequest);
+        Assert.Equal(HttpStatusCode.PreconditionFailed, failedCopyResponse.StatusCode);
+        Assert.Equal("application/xml", failedCopyResponse.Content.Headers.ContentType?.MediaType);
+        var errorDocument = XDocument.Parse(await failedCopyResponse.Content.ReadAsStringAsync());
+        Assert.Equal("PreconditionFailed", GetRequiredElementValue(errorDocument, "Code"));
+    }
+
+    [Fact]
     public async Task S3CompatibleMultipartUpload_WithChecksumHeaders_EmitsCompositeChecksumHeaders()
     {
         using var client = await _factory.CreateClientAsync();

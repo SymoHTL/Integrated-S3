@@ -35,6 +35,7 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
     private const string CopySourceIfNoneMatchHeaderName = "x-amz-copy-source-if-none-match";
     private const string CopySourceIfModifiedSinceHeaderName = "x-amz-copy-source-if-modified-since";
     private const string CopySourceIfUnmodifiedSinceHeaderName = "x-amz-copy-source-if-unmodified-since";
+    private const string CopySourceRangeHeaderName = "x-amz-copy-source-range";
     private const string ServerSideEncryptionHeaderPrefix = "x-amz-server-side-encryption";
     private const string CopySourceServerSideEncryptionHeaderPrefix = "x-amz-copy-source-server-side-encryption";
     private const string ServerSideEncryptionHeaderName = "x-amz-server-side-encryption";
@@ -1522,6 +1523,54 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
         }
 
         try {
+            if (TryGetCopySource(httpContext.Request, out var copySource, out var copySourceError)) {
+                if (copySourceError is not null) {
+                    return ToErrorResult(httpContext, StatusCodes.Status400BadRequest, "InvalidArgument", copySourceError, BuildObjectResource(bucketName, key), bucketName, key);
+                }
+
+                var unsupportedChecksumHeaderName = FindPresentRequestChecksumHeader(httpContext.Request);
+                if (!string.IsNullOrWhiteSpace(unsupportedChecksumHeaderName)) {
+                    return ToErrorResult(
+                        httpContext,
+                        StatusCodes.Status400BadRequest,
+                        "InvalidRequest",
+                        $"The '{unsupportedChecksumHeaderName}' header is not supported for UploadPartCopy requests.",
+                        BuildObjectResource(bucketName, key),
+                        bucketName,
+                        key);
+                }
+
+                ObjectRange? copySourceRange;
+                try {
+                    copySourceRange = ParseCopySourceRangeHeader(httpContext.Request.Headers[CopySourceRangeHeaderName].ToString());
+                }
+                catch (FormatException exception) {
+                    return ToErrorResult(httpContext, StatusCodes.Status400BadRequest, "InvalidArgument", exception.Message, BuildObjectResource(bucketName, key), bucketName, key);
+                }
+
+                return await ExecuteWithRequestContextAsync(httpContext, requestContextAccessor, async innerCancellationToken => {
+                    var result = await storageService.UploadMultipartPartAsync(new UploadMultipartPartRequest
+                    {
+                        BucketName = bucketName,
+                        Key = key,
+                        UploadId = uploadId!,
+                        PartNumber = partNumber!.Value,
+                        CopySourceBucketName = copySource!.BucketName,
+                        CopySourceKey = copySource.Key,
+                        CopySourceVersionId = copySource.VersionId,
+                        CopySourceIfMatchETag = httpContext.Request.Headers[CopySourceIfMatchHeaderName].ToString(),
+                        CopySourceIfNoneMatchETag = httpContext.Request.Headers[CopySourceIfNoneMatchHeaderName].ToString(),
+                        CopySourceIfModifiedSinceUtc = ParseOptionalHttpDateHeader(httpContext.Request.Headers[CopySourceIfModifiedSinceHeaderName].ToString()),
+                        CopySourceIfUnmodifiedSinceUtc = ParseOptionalHttpDateHeader(httpContext.Request.Headers[CopySourceIfUnmodifiedSinceHeaderName].ToString()),
+                        CopySourceRange = copySourceRange
+                    }, innerCancellationToken);
+
+                    return result.IsSuccess
+                        ? ToCopyMultipartPartResult(httpContext, result.Value!)
+                        : ToErrorResult(httpContext, result.Error, resourceOverride: BuildObjectResource(bucketName, key));
+                }, cancellationToken);
+            }
+
             if (!TryParseRequestChecksums(httpContext.Request, requireChecksumValueForDeclaredAlgorithm: false, out var checksumAlgorithm, out var requestedChecksums, out var checksumErrorResult)) {
                 return checksumErrorResult!;
             }
@@ -1996,6 +2045,29 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
                 Key = key
             }),
             statusCode,
+            XmlContentType);
+    }
+
+    private static IResult ToCopyMultipartPartResult(HttpContext httpContext, MultipartUploadPart part)
+    {
+        ApplyChecksumHeaders(httpContext.Response, part.Checksums);
+
+        if (!string.IsNullOrWhiteSpace(part.CopySourceVersionId)) {
+            httpContext.Response.Headers["x-amz-copy-source-version-id"] = part.CopySourceVersionId;
+        }
+
+        return new XmlContentResult(
+            S3XmlResponseWriter.WriteCopyPartResult(new S3CopyObjectResult
+            {
+                ETag = part.ETag,
+                LastModifiedUtc = part.LastModifiedUtc,
+                ChecksumCrc32 = GetChecksumValue(part.Checksums, "crc32"),
+                ChecksumCrc32c = GetChecksumValue(part.Checksums, "crc32c"),
+                ChecksumSha1 = GetChecksumValue(part.Checksums, "sha1"),
+                ChecksumSha256 = GetChecksumValue(part.Checksums, "sha256"),
+                ChecksumType = GetChecksumType(part.Checksums)
+            }),
+            StatusCodes.Status200OK,
             XmlContentType);
     }
 
@@ -2816,6 +2888,20 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
         };
     }
 
+    private static ObjectRange? ParseCopySourceRangeHeader(string? rangeHeader)
+    {
+        var range = ParseRangeHeader(rangeHeader);
+        if (range is null) {
+            return null;
+        }
+
+        if (!range.Start.HasValue || !range.End.HasValue) {
+            throw new FormatException($"The '{CopySourceRangeHeaderName}' header must use the form bytes=first-last.");
+        }
+
+        return range;
+    }
+
     private static bool TryGetCopySource(HttpRequest request, out CopySourceReference? copySource, out string? error)
     {
         var rawValue = request.Headers[CopySourceHeaderName].ToString();
@@ -2835,6 +2921,35 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
             error = exception.Message;
             return true;
         }
+    }
+
+    private static string? FindPresentRequestChecksumHeader(HttpRequest request)
+    {
+        if (request.Headers.ContainsKey(SdkChecksumAlgorithmHeaderName)) {
+            return SdkChecksumAlgorithmHeaderName;
+        }
+
+        if (request.Headers.ContainsKey(ChecksumAlgorithmHeaderName)) {
+            return ChecksumAlgorithmHeaderName;
+        }
+
+        if (request.Headers.ContainsKey(ChecksumCrc32HeaderName)) {
+            return ChecksumCrc32HeaderName;
+        }
+
+        if (request.Headers.ContainsKey(ChecksumCrc32cHeaderName)) {
+            return ChecksumCrc32cHeaderName;
+        }
+
+        if (request.Headers.ContainsKey(ChecksumSha1HeaderName)) {
+            return ChecksumSha1HeaderName;
+        }
+
+        if (request.Headers.ContainsKey(ChecksumSha256HeaderName)) {
+            return ChecksumSha256HeaderName;
+        }
+
+        return null;
     }
 
     private static async Task<PreparedRequestBody> PrepareRequestBodyAsync(HttpRequest request, CancellationToken cancellationToken)

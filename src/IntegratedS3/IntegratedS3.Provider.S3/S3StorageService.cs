@@ -679,22 +679,49 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
 
         try
         {
-            var part = await _client.UploadMultipartPartAsync(
-                request.BucketName,
-                request.Key,
-                request.UploadId,
-                request.PartNumber,
-                request.Content,
-                request.ContentLength,
-                request.ChecksumAlgorithm,
-                request.Checksums,
-                cancellationToken).ConfigureAwait(false);
+            MultipartUploadPart part;
+            if (!string.IsNullOrWhiteSpace(request.CopySourceBucketName)
+                && !string.IsNullOrWhiteSpace(request.CopySourceKey))
+            {
+                part = await _client.CopyMultipartPartAsync(
+                    request.BucketName,
+                    request.Key,
+                    request.UploadId,
+                    request.PartNumber,
+                    request.CopySourceBucketName,
+                    request.CopySourceKey,
+                    request.CopySourceVersionId,
+                    request.CopySourceRange,
+                    request.CopySourceIfMatchETag,
+                    request.CopySourceIfNoneMatchETag,
+                    request.CopySourceIfModifiedSinceUtc,
+                    request.CopySourceIfUnmodifiedSinceUtc,
+                    cancellationToken).ConfigureAwait(false);
+            }
+            else
+            {
+                ArgumentNullException.ThrowIfNull(request.Content);
+
+                part = await _client.UploadMultipartPartAsync(
+                    request.BucketName,
+                    request.Key,
+                    request.UploadId,
+                    request.PartNumber,
+                    request.Content,
+                    request.ContentLength,
+                    request.ChecksumAlgorithm,
+                    request.Checksums,
+                    cancellationToken).ConfigureAwait(false);
+            }
 
             return StorageResult<MultipartUploadPart>.Success(part);
         }
         catch (AmazonS3Exception ex)
         {
-            return StorageResult<MultipartUploadPart>.Failure(S3ErrorTranslator.Translate(ex, Name, request.BucketName, request.Key));
+            return StorageResult<MultipartUploadPart>.Failure(
+                !string.IsNullOrWhiteSpace(request.CopySourceBucketName) && !string.IsNullOrWhiteSpace(request.CopySourceKey)
+                    ? TranslateCopyMultipartPartError(ex, request)
+                    : S3ErrorTranslator.Translate(ex, Name, request.BucketName, request.Key));
         }
     }
 
@@ -808,6 +835,26 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
         }
 
         return S3ErrorTranslator.Translate(exception, Name, request.DestinationBucketName, request.DestinationKey);
+    }
+
+    private StorageError TranslateCopyMultipartPartError(AmazonS3Exception exception, UploadMultipartPartRequest request)
+    {
+        var sourceBucketName = request.CopySourceBucketName!;
+        var sourceKey = request.CopySourceKey!;
+
+        if (string.Equals(exception.ErrorCode, "NoSuchKey", StringComparison.OrdinalIgnoreCase))
+        {
+            return S3ErrorTranslator.Translate(exception, Name, sourceBucketName, sourceKey);
+        }
+
+        if (string.Equals(exception.ErrorCode, "PreconditionFailed", StringComparison.OrdinalIgnoreCase)
+            || (int)exception.StatusCode == 412
+            || string.Equals(exception.ErrorCode, "InvalidRequest", StringComparison.OrdinalIgnoreCase))
+        {
+            return S3ErrorTranslator.Translate(exception, Name, sourceBucketName, sourceKey);
+        }
+
+        return S3ErrorTranslator.Translate(exception, Name, request.BucketName, request.Key);
     }
 
     private static S3ObjectEntry MergeObjectEntries(S3ObjectEntry preferred, S3ObjectEntry fallback)

@@ -1738,6 +1738,86 @@ public sealed class DiskStorageServiceTests
     }
 
     [Fact]
+    public async Task DiskStorage_MultipartUpload_CanCopyPartRangeWithPreconditions()
+    {
+        await using var fixture = new DiskStorageFixture();
+        var storageService = fixture.Services.GetRequiredService<IStorageBackend>();
+        await storageService.CreateBucketAsync(new CreateBucketRequest { BucketName = "multipart-copy" });
+
+        var sourcePut = await storageService.PutObjectAsync(new PutObjectRequest
+        {
+            BucketName = "multipart-copy",
+            Key = "docs/source.txt",
+            Content = new MemoryStream(Encoding.UTF8.GetBytes("0123456789")),
+            ContentType = "text/plain"
+        });
+        Assert.True(sourcePut.IsSuccess);
+
+        var initiateResult = await storageService.InitiateMultipartUploadAsync(new InitiateMultipartUploadRequest
+        {
+            BucketName = "multipart-copy",
+            Key = "docs/copied.txt",
+            ContentType = "text/plain",
+            ChecksumAlgorithm = "SHA256"
+        });
+        Assert.True(initiateResult.IsSuccess);
+
+        var copiedPart = await storageService.UploadMultipartPartAsync(new UploadMultipartPartRequest
+        {
+            BucketName = "multipart-copy",
+            Key = "docs/copied.txt",
+            UploadId = initiateResult.Value!.UploadId,
+            PartNumber = 1,
+            CopySourceBucketName = "multipart-copy",
+            CopySourceKey = "docs/source.txt",
+            CopySourceIfMatchETag = sourcePut.Value!.ETag,
+            CopySourceRange = new ObjectRange
+            {
+                Start = 2,
+                End = 6
+            }
+        });
+
+        Assert.True(copiedPart.IsSuccess);
+        Assert.False(string.IsNullOrWhiteSpace(copiedPart.Value!.Checksums!["sha256"]));
+
+        var failedPart = await storageService.UploadMultipartPartAsync(new UploadMultipartPartRequest
+        {
+            BucketName = "multipart-copy",
+            Key = "docs/copied.txt",
+            UploadId = initiateResult.Value.UploadId,
+            PartNumber = 2,
+            CopySourceBucketName = "multipart-copy",
+            CopySourceKey = "docs/source.txt",
+            CopySourceIfMatchETag = "\"different\""
+        });
+
+        Assert.False(failedPart.IsSuccess);
+        Assert.Equal(IntegratedS3.Abstractions.Errors.StorageErrorCode.PreconditionFailed, failedPart.Error!.Code);
+
+        var completeResult = await storageService.CompleteMultipartUploadAsync(new CompleteMultipartUploadRequest
+        {
+            BucketName = "multipart-copy",
+            Key = "docs/copied.txt",
+            UploadId = initiateResult.Value.UploadId,
+            Parts = [copiedPart.Value]
+        });
+
+        Assert.True(completeResult.IsSuccess);
+
+        var getResult = await storageService.GetObjectAsync(new GetObjectRequest
+        {
+            BucketName = "multipart-copy",
+            Key = "docs/copied.txt"
+        });
+
+        Assert.True(getResult.IsSuccess);
+        await using var response = getResult.Value!;
+        using var reader = new StreamReader(response.Content, Encoding.UTF8);
+        Assert.Equal("23456", await reader.ReadToEndAsync());
+    }
+
+    [Fact]
     public async Task DiskStorage_MultipartUpload_CanBeAborted()
     {
         await using var fixture = new DiskStorageFixture();

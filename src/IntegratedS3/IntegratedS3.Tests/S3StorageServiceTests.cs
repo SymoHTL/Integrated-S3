@@ -1039,6 +1039,59 @@ public sealed class S3StorageServiceTests
     }
 
     [Fact]
+    public async Task UploadMultipartPartAsync_WithCopySource_UsesCopyPartClientMethod()
+    {
+        var partChecksums = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["sha256"] = "copy-part-checksum"
+        };
+        var lastModified = new DateTimeOffset(2025, 8, 1, 13, 30, 0, TimeSpan.Zero);
+        var fake = new FakeS3Client
+        {
+            CopyMultipartPartResult = new MultipartUploadPart
+            {
+                PartNumber = 2,
+                ETag = "\"copy-part-etag\"",
+                ContentLength = 5,
+                LastModifiedUtc = lastModified,
+                Checksums = partChecksums,
+                CopySourceVersionId = "source-v1"
+            }
+        };
+
+        var svc = BuildService(fake);
+        var result = await svc.UploadMultipartPartAsync(new UploadMultipartPartRequest
+        {
+            BucketName = "b",
+            Key = "target.txt",
+            UploadId = "upload-123",
+            PartNumber = 2,
+            CopySourceBucketName = "source-bucket",
+            CopySourceKey = "source.txt",
+            CopySourceVersionId = "source-v1",
+            CopySourceIfMatchETag = "\"source-etag\"",
+            CopySourceRange = new ObjectRange
+            {
+                Start = 2,
+                End = 6
+            }
+        });
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal("\"copy-part-etag\"", result.Value!.ETag);
+        Assert.Equal("copy-part-checksum", result.Value.Checksums!["sha256"]);
+        Assert.Equal("source-v1", result.Value.CopySourceVersionId);
+
+        var copyRequest = Assert.IsType<UploadMultipartPartRequest>(fake.LastCopyMultipartPartRequest);
+        Assert.Equal("source-bucket", copyRequest.CopySourceBucketName);
+        Assert.Equal("source.txt", copyRequest.CopySourceKey);
+        Assert.Equal("source-v1", copyRequest.CopySourceVersionId);
+        Assert.Equal("\"source-etag\"", copyRequest.CopySourceIfMatchETag);
+        Assert.Equal(2, copyRequest.CopySourceRange!.Start);
+        Assert.Equal(6, copyRequest.CopySourceRange.End);
+    }
+
+    [Fact]
     public async Task CompleteMultipartUploadAsync_ReturnsCompletedObjectInfo_WithChecksums()
     {
         var checksums = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
@@ -1263,7 +1316,9 @@ internal sealed class FakeS3Client : IS3StorageClient
     public AmazonS3Exception? InitiateMultipartUploadException { get; set; }
     public ObjectServerSideEncryptionSettings? LastInitiateMultipartUploadServerSideEncryption { get; private set; }
     public MultipartUploadPart? UploadMultipartPartResult { get; set; }
+    public MultipartUploadPart? CopyMultipartPartResult { get; set; }
     public AmazonS3Exception? UploadMultipartPartException { get; set; }
+    public UploadMultipartPartRequest? LastCopyMultipartPartRequest { get; private set; }
     public S3ObjectEntry? CompleteMultipartUploadResult { get; set; }
     public AmazonS3Exception? CompleteMultipartUploadException { get; set; }
     public AmazonS3Exception? AbortMultipartUploadException { get; set; }
@@ -1482,6 +1537,49 @@ internal sealed class FakeS3Client : IS3StorageClient
             ContentLength = contentLength ?? 0,
             LastModifiedUtc = DateTimeOffset.UtcNow,
             Checksums = checksums
+        });
+    }
+
+    public Task<MultipartUploadPart> CopyMultipartPartAsync(
+        string bucketName,
+        string key,
+        string uploadId,
+        int partNumber,
+        string sourceBucketName,
+        string sourceKey,
+        string? sourceVersionId,
+        ObjectRange? sourceRange,
+        string? sourceIfMatchETag,
+        string? sourceIfNoneMatchETag,
+        DateTimeOffset? sourceIfModifiedSinceUtc,
+        DateTimeOffset? sourceIfUnmodifiedSinceUtc,
+        CancellationToken cancellationToken = default)
+    {
+        if (UploadMultipartPartException is not null) throw UploadMultipartPartException;
+
+        LastCopyMultipartPartRequest = new UploadMultipartPartRequest
+        {
+            BucketName = bucketName,
+            Key = key,
+            UploadId = uploadId,
+            PartNumber = partNumber,
+            CopySourceBucketName = sourceBucketName,
+            CopySourceKey = sourceKey,
+            CopySourceVersionId = sourceVersionId,
+            CopySourceRange = sourceRange,
+            CopySourceIfMatchETag = sourceIfMatchETag,
+            CopySourceIfNoneMatchETag = sourceIfNoneMatchETag,
+            CopySourceIfModifiedSinceUtc = sourceIfModifiedSinceUtc,
+            CopySourceIfUnmodifiedSinceUtc = sourceIfUnmodifiedSinceUtc
+        };
+
+        return Task.FromResult(CopyMultipartPartResult ?? new MultipartUploadPart
+        {
+            PartNumber = partNumber,
+            ETag = "\"copy-part-etag\"",
+            ContentLength = sourceRange is { Start: long start, End: long end } ? end - start + 1 : 0,
+            LastModifiedUtc = DateTimeOffset.UtcNow,
+            CopySourceVersionId = sourceVersionId
         });
     }
 
