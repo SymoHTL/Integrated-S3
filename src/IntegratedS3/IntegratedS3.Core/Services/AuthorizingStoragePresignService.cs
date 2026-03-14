@@ -1,13 +1,18 @@
+using System.Diagnostics;
 using System.Security.Claims;
 using IntegratedS3.Abstractions.Errors;
+using IntegratedS3.Abstractions.Observability;
 using IntegratedS3.Abstractions.Results;
 using IntegratedS3.Core.Models;
+using Microsoft.Extensions.Logging;
 
 namespace IntegratedS3.Core.Services;
 
 internal sealed class AuthorizingStoragePresignService(
     IIntegratedS3AuthorizationService authorizationService,
-    IStoragePresignStrategy strategy) : IStoragePresignService
+    IStoragePresignStrategy strategy,
+    IIntegratedS3RequestContextAccessor requestContextAccessor,
+    ILogger<AuthorizingStoragePresignService> logger) : IStoragePresignService
 {
     public async ValueTask<StorageResult<StoragePresignedRequest>> PresignObjectAsync(
         ClaimsPrincipal principal,
@@ -18,18 +23,64 @@ internal sealed class AuthorizingStoragePresignService(
         ArgumentNullException.ThrowIfNull(request);
         cancellationToken.ThrowIfCancellationRequested();
 
-        ValidateRequest(request);
+        var authorizationRequest = CreateAuthorizationRequest(request);
+        var existing = requestContextAccessor.Current;
+        var requestContext = new IntegratedS3RequestContext
+        {
+            Principal = principal,
+            CorrelationId = existing?.CorrelationId,
+            RequestId = existing?.RequestId
+        };
+        using var scope = IntegratedS3CoreTelemetry.BeginOperationScope(logger, authorizationRequest, requestContext);
+        using var activity = IntegratedS3CoreTelemetry.StartOperationActivity(authorizationRequest, requestContext);
+        var startedAt = Stopwatch.GetTimestamp();
 
-        var authorizationResult = await authorizationService.AuthorizeAsync(
-            principal,
-            CreateAuthorizationRequest(request),
-            cancellationToken);
+        try {
+            ValidateRequest(request);
 
-        if (!authorizationResult.IsSuccess) {
-            return StorageResult<StoragePresignedRequest>.Failure(authorizationResult.Error ?? CreateAccessDeniedError(request));
+            var authorizationResult = await authorizationService.AuthorizeAsync(
+                principal,
+                authorizationRequest,
+                cancellationToken);
+
+            if (!authorizationResult.IsSuccess) {
+                var error = authorizationResult.Error ?? CreateAccessDeniedError(request);
+                IntegratedS3CoreTelemetry.RecordAuthorizationFailure(authorizationRequest, error);
+                IntegratedS3CoreTelemetry.MarkFailure(activity, error);
+                IntegratedS3CoreTelemetry.RecordStorageOperation(authorizationRequest, StorageResult.Failure(error), Stopwatch.GetElapsedTime(startedAt));
+                logger.LogWarning(
+                    "IntegratedS3 presign authorization denied for {Operation}. ErrorCode {ErrorCode}.",
+                    authorizationRequest.Operation,
+                    error.Code);
+                return StorageResult<StoragePresignedRequest>.Failure(error);
+            }
+
+            var result = await strategy.PresignObjectAsync(principal, request, cancellationToken);
+            if (!result.IsSuccess) {
+                IntegratedS3CoreTelemetry.MarkFailure(activity, result.Error);
+                logger.LogWarning(
+                    "IntegratedS3 presign operation {Operation} failed with {ErrorCode}.",
+                    authorizationRequest.Operation,
+                    result.Error?.Code);
+            }
+            else {
+                activity?.SetTag(IntegratedS3Observability.Tags.Result, "success");
+                logger.LogDebug("IntegratedS3 presign operation {Operation} completed successfully.", authorizationRequest.Operation);
+            }
+
+            IntegratedS3CoreTelemetry.RecordStorageOperation(authorizationRequest, result, Stopwatch.GetElapsedTime(startedAt));
+            return result;
         }
-
-        return await strategy.PresignObjectAsync(principal, request, cancellationToken);
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) {
+            IntegratedS3CoreTelemetry.MarkCancelled(activity);
+            throw;
+        }
+        catch (Exception exception) {
+            IntegratedS3CoreTelemetry.MarkFailure(activity, "UnhandledException", exception.Message);
+            IntegratedS3CoreTelemetry.RecordStorageOperationFailure(authorizationRequest, "UnhandledException", Stopwatch.GetElapsedTime(startedAt));
+            logger.LogError(exception, "IntegratedS3 presign operation {Operation} failed unexpectedly.", authorizationRequest.Operation);
+            throw;
+        }
     }
 
     private static StorageAuthorizationRequest CreateAuthorizationRequest(StoragePresignRequest request)

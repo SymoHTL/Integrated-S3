@@ -33,14 +33,15 @@ internal sealed class BucketCorsRuntimeService(
             return null;
         }
 
-        var rule = FindMatchingRule(configurationResult.Value, origin, method);
-        if (rule is null) {
+        var match = FindMatchingRule(configurationResult.Value, origin, method);
+        if (match is null) {
             return null;
         }
 
         return new BucketCorsActualResponse(
-            origin.Trim(),
-            NormalizeHeaderList(rule.ExposeHeaders));
+            match.Value.AllowOrigin,
+            match.Value.AllowCredentials,
+            NormalizeHeaderList(match.Value.Rule.ExposeHeaders));
     }
 
     public async ValueTask<StorageResult<BucketCorsPreflightResponse?>> GetPreflightResponseAsync(
@@ -66,17 +67,18 @@ internal sealed class BucketCorsRuntimeService(
         }
 
         var normalizedRequestedHeaders = NormalizeHeaderList(requestedHeaders);
-        var rule = FindMatchingRule(configurationResult.Value!, origin, method, normalizedRequestedHeaders);
-        if (rule is null) {
+        var match = FindMatchingRule(configurationResult.Value!, origin, method, normalizedRequestedHeaders);
+        if (match is null) {
             return StorageResult<BucketCorsPreflightResponse?>.Success(null);
         }
 
         return StorageResult<BucketCorsPreflightResponse?>.Success(new BucketCorsPreflightResponse(
-            origin.Trim(),
+            match.Value.AllowOrigin,
+            match.Value.AllowCredentials,
             requestedMethod.Trim().ToUpperInvariant(),
             normalizedRequestedHeaders,
-            NormalizeHeaderList(rule.ExposeHeaders),
-            rule.MaxAgeSeconds));
+            NormalizeHeaderList(match.Value.Rule.ExposeHeaders),
+            match.Value.Rule.MaxAgeSeconds));
     }
 
     private async ValueTask<StorageResult<BucketCorsConfiguration>> GetBucketCorsAsync(string bucketName, CancellationToken cancellationToken)
@@ -125,14 +127,15 @@ internal sealed class BucketCorsRuntimeService(
             .ToArray();
     }
 
-    private BucketCorsRule? FindMatchingRule(
+    private BucketCorsRuleMatch? FindMatchingRule(
         BucketCorsConfiguration configuration,
         string origin,
         BucketCorsMethod method,
         IReadOnlyList<string>? requestedHeaders = null)
     {
         foreach (var rule in configuration.Rules) {
-            if (!MatchesAnyPattern(rule.AllowedOrigins, origin, StringComparison.OrdinalIgnoreCase)) {
+            var matchedOriginPattern = FindMatchingPattern(rule.AllowedOrigins, origin, StringComparison.OrdinalIgnoreCase);
+            if (matchedOriginPattern is null) {
                 continue;
             }
 
@@ -144,7 +147,10 @@ internal sealed class BucketCorsRuntimeService(
                 continue;
             }
 
-            return rule;
+            var allowOrigin = matchedOriginPattern == "*"
+                ? "*"
+                : origin.Trim();
+            return new BucketCorsRuleMatch(rule, allowOrigin, allowOrigin != "*");
         }
 
         return null;
@@ -178,6 +184,17 @@ internal sealed class BucketCorsRuntimeService(
         }
 
         return false;
+    }
+
+    private static string? FindMatchingPattern(IReadOnlyList<string> patterns, string candidate, StringComparison comparison)
+    {
+        for (var index = 0; index < patterns.Count; index++) {
+            if (MatchesPattern(patterns[index], candidate, comparison)) {
+                return patterns[index];
+            }
+        }
+
+        return null;
     }
 
     private static bool MatchesPattern(string pattern, string candidate, StringComparison comparison)
@@ -304,15 +321,18 @@ internal sealed class BucketCorsRuntimeService(
         return error?.Code is StorageErrorCode.ProviderUnavailable or StorageErrorCode.Throttled;
     }
 
+    private readonly record struct BucketCorsRuleMatch(BucketCorsRule Rule, string AllowOrigin, bool AllowCredentials);
     private readonly record struct ReadBackendCandidate(IStorageBackend Backend, StorageBackendHealthStatus HealthStatus);
 }
 
 internal sealed record BucketCorsActualResponse(
     string AllowOrigin,
+    bool AllowCredentials,
     IReadOnlyList<string> ExposeHeaders);
 
 internal sealed record BucketCorsPreflightResponse(
     string AllowOrigin,
+    bool AllowCredentials,
     string AllowMethod,
     IReadOnlyList<string> AllowHeaders,
     IReadOnlyList<string> ExposeHeaders,
