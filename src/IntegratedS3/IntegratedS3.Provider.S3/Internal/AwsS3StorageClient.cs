@@ -70,6 +70,13 @@ internal sealed class AwsS3StorageClient : IS3StorageClient
         await _s3.DeleteBucketAsync(request, cancellationToken).ConfigureAwait(false);
     }
 
+    public async Task<S3BucketLocationEntry> GetBucketLocationAsync(string bucketName, CancellationToken cancellationToken = default)
+    {
+        var request = new GetBucketLocationRequest { BucketName = bucketName };
+        var response = await _s3.GetBucketLocationAsync(request, cancellationToken).ConfigureAwait(false);
+        return new S3BucketLocationEntry(response.Location?.Value);
+    }
+
     // -------------------------------------------------------------------------
     // Bucket versioning
     // -------------------------------------------------------------------------

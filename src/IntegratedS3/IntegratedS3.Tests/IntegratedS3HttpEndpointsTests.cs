@@ -297,6 +297,22 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
     }
 
     [Fact]
+    public async Task S3CompatibleBucketLocation_ReturnsXmlPayload()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync("/integrated-s3/buckets/location-config-bucket", content: null)).StatusCode);
+
+        var locationResponse = await client.GetAsync("/integrated-s3/location-config-bucket?location");
+        Assert.Equal(HttpStatusCode.OK, locationResponse.StatusCode);
+        Assert.Equal("application/xml", locationResponse.Content.Headers.ContentType?.MediaType);
+
+        var locationDocument = XDocument.Parse(await locationResponse.Content.ReadAsStringAsync());
+        Assert.Equal("LocationConstraint", locationDocument.Root?.Name.LocalName);
+        Assert.Equal(string.Empty, locationDocument.Root?.Value);
+    }
+
+    [Fact]
     public async Task S3CompatibleBucketCors_RoundTripsXmlPayload()
     {
         using var client = await _factory.CreateClientAsync();
@@ -3508,6 +3524,7 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
                 StorageOperationType.ListObjects => "storage.read",
                 StorageOperationType.GetObject => "storage.read",
                 StorageOperationType.PresignGetObject => "storage.read",
+                StorageOperationType.GetBucketLocation => "storage.read",
                 StorageOperationType.GetBucketCors => "storage.read",
                 StorageOperationType.GetObjectTags => "storage.read",
                 StorageOperationType.HeadObject => "storage.read",
@@ -3583,6 +3600,8 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
         public IAsyncEnumerable<BucketInfo> ListBucketsAsync(CancellationToken cancellationToken = default) => throw new NotSupportedException();
 
         public ValueTask<StorageResult<BucketInfo>> CreateBucketAsync(CreateBucketRequest request, CancellationToken cancellationToken = default) => throw new NotSupportedException();
+
+        public ValueTask<StorageResult<BucketLocationInfo>> GetBucketLocationAsync(string bucketName, CancellationToken cancellationToken = default) => throw new NotSupportedException();
 
         public ValueTask<StorageResult<BucketVersioningInfo>> GetBucketVersioningAsync(string bucketName, CancellationToken cancellationToken = default) => throw new NotSupportedException();
 

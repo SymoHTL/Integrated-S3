@@ -150,6 +150,22 @@ internal sealed class DiskStorageService(
         });
     }
 
+    public ValueTask<StorageResult<BucketLocationInfo>> GetBucketLocationAsync(string bucketName, CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+
+        var bucketPath = GetBucketPath(bucketName);
+        if (!Directory.Exists(bucketPath)) {
+            return ValueTask.FromResult(StorageResult<BucketLocationInfo>.Failure(BucketNotFound(bucketName)));
+        }
+
+        return ValueTask.FromResult(StorageResult<BucketLocationInfo>.Success(new BucketLocationInfo
+        {
+            BucketName = bucketName,
+            LocationConstraint = null
+        }));
+    }
+
     public async ValueTask<StorageResult<BucketVersioningInfo>> GetBucketVersioningAsync(string bucketName, CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();

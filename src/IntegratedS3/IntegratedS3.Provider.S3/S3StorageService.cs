@@ -102,6 +102,25 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
         }
     }
 
+    public async ValueTask<StorageResult<BucketLocationInfo>> GetBucketLocationAsync(string bucketName, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var entry = await _client.GetBucketLocationAsync(bucketName, cancellationToken).ConfigureAwait(false);
+            return StorageResult<BucketLocationInfo>.Success(new BucketLocationInfo
+            {
+                BucketName = bucketName,
+                LocationConstraint = string.IsNullOrWhiteSpace(entry.LocationConstraint)
+                    ? null
+                    : entry.LocationConstraint
+            });
+        }
+        catch (AmazonS3Exception ex)
+        {
+            return StorageResult<BucketLocationInfo>.Failure(S3ErrorTranslator.Translate(ex, Name, bucketName));
+        }
+    }
+
     public async ValueTask<StorageResult<BucketVersioningInfo>> GetBucketVersioningAsync(string bucketName, CancellationToken cancellationToken = default)
     {
         try

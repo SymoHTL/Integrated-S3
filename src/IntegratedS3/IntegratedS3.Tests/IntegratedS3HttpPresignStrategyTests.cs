@@ -948,6 +948,12 @@ public sealed class IntegratedS3HttpPresignStrategyTests
 
         public ValueTask<StorageResult<BucketInfo>> CreateBucketAsync(CreateBucketRequest request, CancellationToken cancellationToken = default) => UnexpectedAsync<BucketInfo>();
 
+        public ValueTask<StorageResult<BucketLocationInfo>> GetBucketLocationAsync(string bucketName, CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return ValueTask.FromResult(StorageResult<BucketLocationInfo>.Failure(StorageError.Unsupported("Bucket location is not used in presign strategy tests.", bucketName)));
+        }
+
         public ValueTask<StorageResult<BucketVersioningInfo>> GetBucketVersioningAsync(string bucketName, CancellationToken cancellationToken = default) => UnexpectedAsync<BucketVersioningInfo>();
 
         public ValueTask<StorageResult<BucketVersioningInfo>> PutBucketVersioningAsync(PutBucketVersioningRequest request, CancellationToken cancellationToken = default) => UnexpectedAsync<BucketVersioningInfo>();

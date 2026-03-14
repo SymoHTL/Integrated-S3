@@ -36,6 +36,15 @@ internal sealed class AuthorizingStorageService(
         }, innerCancellationToken => inner.CreateBucketAsync(request, innerCancellationToken), cancellationToken);
     }
 
+    public ValueTask<StorageResult<BucketLocationInfo>> GetBucketLocationAsync(string bucketName, CancellationToken cancellationToken = default)
+    {
+        return ExecuteAuthorizedAsync(new StorageAuthorizationRequest
+        {
+            Operation = StorageOperationType.GetBucketLocation,
+            BucketName = bucketName
+        }, innerCancellationToken => inner.GetBucketLocationAsync(bucketName, innerCancellationToken), cancellationToken);
+    }
+
     public ValueTask<StorageResult<BucketVersioningInfo>> GetBucketVersioningAsync(string bucketName, CancellationToken cancellationToken = default)
     {
         return ExecuteAuthorizedAsync(new StorageAuthorizationRequest

@@ -455,6 +455,24 @@ public sealed class DiskStorageServiceTests
     }
 
     [Fact]
+    public async Task DiskStorage_BucketLocation_ReturnsDefaultEmptyConstraint()
+    {
+        await using var fixture = new DiskStorageFixture();
+        var storageService = fixture.Services.GetRequiredService<IStorageBackend>();
+
+        Assert.True((await storageService.CreateBucketAsync(new CreateBucketRequest
+        {
+            BucketName = "bucket-location"
+        })).IsSuccess);
+
+        var location = await storageService.GetBucketLocationAsync("bucket-location");
+
+        Assert.True(location.IsSuccess);
+        Assert.Equal("bucket-location", location.Value!.BucketName);
+        Assert.Null(location.Value.LocationConstraint);
+    }
+
+    [Fact]
     public async Task DiskStorage_BucketCors_RoundTripsAndPreservesVersioningMetadata()
     {
         await using var fixture = new DiskStorageFixture();

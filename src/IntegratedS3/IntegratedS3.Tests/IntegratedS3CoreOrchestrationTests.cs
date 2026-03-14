@@ -1911,6 +1911,7 @@ public sealed class IntegratedS3CoreOrchestrationTests
                 StorageOperationType.ListObjects => "storage.read",
                 StorageOperationType.GetObject => "storage.read",
                 StorageOperationType.PresignGetObject => "storage.read",
+                StorageOperationType.GetBucketLocation => "storage.read",
                 StorageOperationType.GetBucketCors => "storage.read",
                 StorageOperationType.GetObjectTags => "storage.read",
                 StorageOperationType.HeadObject => "storage.read",
