@@ -296,11 +296,11 @@ internal sealed class DiskStorageService(
         if (Directory.EnumerateFileSystemEntries(bucketPath).Any(static path => !IsBucketMetadataFile(path))) {
             return ValueTask.FromResult(StorageResult.Failure(new StorageError
             {
-                Code = StorageErrorCode.PreconditionFailed,
+                Code = StorageErrorCode.BucketNotEmpty,
                 Message = $"Bucket '{request.BucketName}' must be empty before it can be deleted.",
                 BucketName = request.BucketName,
                 ProviderName = options.ProviderName,
-                SuggestedHttpStatusCode = 412
+                SuggestedHttpStatusCode = 409
             }));
         }
 

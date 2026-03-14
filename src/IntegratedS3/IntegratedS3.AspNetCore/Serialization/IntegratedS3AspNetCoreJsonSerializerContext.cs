@@ -9,6 +9,7 @@ using Microsoft.AspNetCore.Mvc;
 namespace IntegratedS3.AspNetCore.Serialization;
 
 [JsonSerializable(typeof(ProblemDetails))]
+[JsonSerializable(typeof(Dictionary<string, string>))]
 [JsonSerializable(typeof(BucketInfo))]
 [JsonSerializable(typeof(BucketInfo[]))]
 [JsonSerializable(typeof(ObjectInfo))]

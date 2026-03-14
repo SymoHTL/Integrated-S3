@@ -1115,6 +1115,28 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
     }
 
     [Fact]
+    public async Task DeleteNonEmptyBucket_S3CompatibleRoute_ReturnsBucketNotEmptyConflict()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync("/integrated-s3/buckets/non-empty-delete-bucket", content: null)).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await client.PutAsync(
+            "/integrated-s3/buckets/non-empty-delete-bucket/objects/docs/hello.txt",
+            new StringContent("hello", Encoding.UTF8, "text/plain"))).StatusCode);
+
+        var deleteResponse = await client.DeleteAsync("/integrated-s3/non-empty-delete-bucket");
+
+        Assert.Equal(HttpStatusCode.Conflict, deleteResponse.StatusCode);
+        Assert.Equal("application/xml", deleteResponse.Content.Headers.ContentType?.MediaType);
+
+        var errorDocument = XDocument.Parse(await deleteResponse.Content.ReadAsStringAsync());
+        Assert.Equal("Error", errorDocument.Root?.Name.LocalName);
+        Assert.Equal("BucketNotEmpty", GetRequiredElementValue(errorDocument, "Code"));
+        Assert.Contains("empty", GetRequiredElementValue(errorDocument, "Message"), StringComparison.OrdinalIgnoreCase);
+        Assert.Equal("/non-empty-delete-bucket", GetRequiredElementValue(errorDocument, "Resource"));
+    }
+
+    [Fact]
     public async Task ServiceDocument_AdvertisesDiskProviderCapabilities()
     {
         using var client = await _factory.CreateClientAsync();

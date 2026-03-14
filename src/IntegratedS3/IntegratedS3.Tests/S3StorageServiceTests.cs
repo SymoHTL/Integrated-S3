@@ -145,7 +145,7 @@ public sealed class S3StorageServiceTests
     // --- DeleteBucketAsync ---
 
     [Fact]
-    public async Task DeleteBucketAsync_TranslatesBucketNotEmptyException_ToPreconditionFailed()
+    public async Task DeleteBucketAsync_TranslatesBucketNotEmptyException_ToBucketNotEmpty()
     {
         var fake = new FakeS3Client();
         fake.DeleteBucketException = new AmazonS3Exception(
@@ -155,7 +155,8 @@ public sealed class S3StorageServiceTests
         var result = await svc.DeleteBucketAsync(new DeleteBucketRequest { BucketName = "my-bucket" });
 
         Assert.False(result.IsSuccess);
-        Assert.Equal(StorageErrorCode.PreconditionFailed, result.Error!.Code);
+        Assert.Equal(StorageErrorCode.BucketNotEmpty, result.Error!.Code);
+        Assert.Equal(409, result.Error.SuggestedHttpStatusCode);
     }
 
     // --- Bucket versioning ---
