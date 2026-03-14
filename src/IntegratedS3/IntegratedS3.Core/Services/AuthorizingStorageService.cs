@@ -235,7 +235,10 @@ internal sealed class AuthorizingStorageService(
         {
             Operation = StorageOperationType.UploadMultipartPart,
             BucketName = request.BucketName,
-            Key = request.Key
+            Key = request.Key,
+            SourceBucketName = request.CopySourceBucketName,
+            SourceKey = request.CopySourceKey,
+            VersionId = request.CopySourceVersionId
         }, innerCancellationToken => inner.UploadMultipartPartAsync(request, innerCancellationToken), cancellationToken);
     }
 

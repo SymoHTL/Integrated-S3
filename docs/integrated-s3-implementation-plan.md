@@ -17,7 +17,7 @@ The repository has already moved beyond initial scaffolding and now contains a w
   - `PutObjectAsync` streaming upload with content-type, custom metadata headers, and native checksum request/response mapping
   - `DeleteObjectAsync` returning delete-marker status and version ID
   - `CopyObjectAsync` via native SDK copy with source preconditions, overwrite guarding, checksum surfacing, and follow-up metadata enrichment
-  - multipart upload lifecycle (`InitiateMultipartUploadAsync`, `UploadMultipartPartAsync`, `CompleteMultipartUploadAsync`, `AbortMultipartUploadAsync`) plus provider-native multipart upload listing via the AWS SDK
+  - multipart upload lifecycle (`InitiateMultipartUploadAsync`, `UploadMultipartPartAsync`, `CompleteMultipartUploadAsync`, `AbortMultipartUploadAsync`), including native `UploadPartCopy` with copy-source range/preconditions and checksum-aware part responses, plus provider-native multipart upload listing via the AWS SDK
   - `GetObjectTagsAsync`, `PutObjectTagsAsync`, `DeleteObjectTagsAsync` via AWS tagging API
   - `GetBucketVersioningAsync` and `PutBucketVersioningAsync` via native SDK versioning API
   - `GetBucketCorsAsync`, `PutBucketCorsAsync`, and `DeleteBucketCorsAsync` via native SDK bucket CORS APIs
@@ -113,7 +113,7 @@ The repository has already moved beyond initial scaffolding and now contains a w
   - bucket endpoints
   - object endpoints with metadata-header round-tripping, pagination, range, conditional, copy, and multipart behavior
   - S3-compatible XML list-buckets, list-objects-v2, batch-delete, error, and copy-object responses for the currently supported surface area
-  - S3-compatible multipart initiate/part-upload/complete/abort flows plus bucket-level `GET ?uploads` listing/discovery for the currently supported surface area
+  - S3-compatible multipart initiate/part-upload/UploadPartCopy/complete/abort flows plus bucket-level `GET ?uploads` listing/discovery for the currently supported surface area
   - S3-compatible object tagging via `GET` / `PUT ?tagging` for current and archived versions on the currently supported surface
   - S3-compatible bucket versioning configuration via `GET` / `PUT ?versioning`
   - S3-compatible bucket CORS configuration via `GET` / `PUT` / `DELETE ?cors`
@@ -1295,17 +1295,19 @@ This section is the execution board for the remaining implementation backlog. As
   - standard object-header parity now covers `x-amz-meta-*`, `Cache-Control`, `Content-Disposition`, `Content-Encoding`, `Content-Language`, `Expires`, multipart-initiation header persistence, and `x-amz-metadata-directive` copy replacement semantics across the current HTTP, disk, S3-provider, and persisted-state surfaces; the sample-host-only `x-integrateds3-meta-*` prefix remains accepted/emitted for compatibility
   - presigned-query authentication now keeps host-only presigned URLs valid when a client also sends an unsigned `x-amz-content-sha256` header, which matches common SDK/browser request behavior
   - AWS SDK compatibility coverage now locks in path-style `aws-chunked` PUT uploads, virtual-hosted-style `aws-chunked` PUT uploads, and virtual-hosted-style presigned PUT uploads that sign `content-type`
-  - copy-object source conditionals now return S3-style `412 PreconditionFailed` responses for `x-amz-copy-source-if-none-match` / `x-amz-copy-source-if-modified-since` failures while preserving the existing `if-match` / `if-unmodified-since` precedence behavior
-  - direct write validation now rejects ambiguous multi-checksum `x-amz-checksum-*` request header combinations instead of accepting them silently on the current S3-compatible write surface
-  - SigV4 request canonicalization now parses the raw query string so signed literal `+` values and duplicate query parameters survive canonical-request construction, with focused protocol plus HTTP conformance coverage
+  - UploadPartCopy is now implemented end-to-end for the current disk/native-S3/Core/HTTP surface, including richer multipart-part request contracts, source range and source-precondition handling, checksum-aware `CopyPartResult` responses, and AWS SDK compatibility coverage
   - continued versioning/tagging/delete-marker hardening now makes simple deletes idempotent for missing keys, creates current delete markers for missing keys in versioned buckets, emits `x-amz-tagging-count` on successful current and historical object reads, validates documented object-tag limits as `InvalidTag`, and returns `NoSuchVersion` for explicit missing-version entries inside `POST ?delete`
   - non-empty bucket deletion now preserves S3-compatible `BucketNotEmpty` / `409 Conflict` semantics across the disk provider, native S3 translation path, and S3-compatible HTTP DeleteBucket surface, with focused regression coverage at each layer
+  - copy-object source conditionals now return S3-style `412 PreconditionFailed` responses for `x-amz-copy-source-if-none-match` / `x-amz-copy-source-if-modified-since` failures while preserving the existing `if-match` / `if-unmodified-since` precedence behavior
+  - UploadPartCopy is now implemented end-to-end for the current disk/native-S3/Core/HTTP surface, including richer multipart-part request contracts, source range and source-precondition handling, checksum-aware `CopyPartResult` responses, and AWS SDK compatibility coverage
+  - direct write validation now rejects ambiguous multi-checksum `x-amz-checksum-*` request header combinations instead of accepting them silently on the current S3-compatible write surface
+  - SigV4 request canonicalization now parses the raw query string so signed literal `+` values and duplicate query parameters survive canonical-request construction, with focused protocol plus HTTP conformance coverage
 - Remaining scope:
-  - next: continue versioning/tagging/delete-marker parity work for the remaining advanced edge cases now that the current conditional, checksum-header validation, raw-query SigV4, standard object-header, and multipart listing gaps are covered
+  - next: continue versioning/tagging/delete-marker parity work for the remaining advanced edge cases now that the current conditional, UploadPartCopy, checksum-header validation, raw-query SigV4, standard object-header, and multipart listing gaps are covered
   - remaining versioning/tagging parity gaps are now narrowed to deliberately unsupported or not-yet-modeled semantics such as broader S3 tag-character validation and whether single-object explicit missing-version operations should surface a dedicated `NoSuchVersion` contract instead of the current generic not-found behavior
   - keep `aws-chunked`, presigned-query, checksum-override, and virtual-hosted-style compatibility tightening against real client behavior beyond the now-covered PUT/presign routing flows
   - temporary-session SigV4 credentials plus trailer-backed `aws-chunked` checksum/signature flows are still not modeled end-to-end on the current HTTP surface, so they should continue to be treated as unsupported compatibility gaps for now
-  - continue tightening deeper multipart-listing/client-compat edge semantics beyond the now-supported `encoding-type=url`, ignored lone `upload-id-marker`, explicit `max-uploads` validation behavior, and the newly landed `ListParts` XML/provider surface, including whether optional `ListParts` owner/initiator fields should be implemented next or remain explicitly unsupported for now
+  - continue tightening deeper multipart-listing plus UploadPartCopy client-compat edge semantics beyond the now-supported `encoding-type=url`, ignored lone `upload-id-marker`, explicit `max-uploads` validation behavior, and the newly landed `ListParts` XML/provider surface, including whether optional `ListParts` owner/initiator fields should be implemented next or remain explicitly unsupported for now
 
 ### Track F — Multi-backend async replication, health, and reconciliation
 

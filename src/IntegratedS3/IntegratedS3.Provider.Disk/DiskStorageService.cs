@@ -967,7 +967,6 @@ internal sealed class DiskStorageService(
     public async ValueTask<StorageResult<MultipartUploadPart>> UploadMultipartPartAsync(UploadMultipartPartRequest request, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(request);
-        ArgumentNullException.ThrowIfNull(request.Content);
 
         if (request.PartNumber <= 0) {
             return StorageResult<MultipartUploadPart>.Failure(MultipartConflict(
@@ -1013,28 +1012,94 @@ internal sealed class DiskStorageService(
                 request.Key));
         }
 
-        if (!string.IsNullOrWhiteSpace(uploadChecksumAlgorithm)
-            && !TryGetChecksumValue(request.Checksums, uploadChecksumAlgorithm, out _)) {
-            return StorageResult<MultipartUploadPart>.Failure(MultipartInvalidRequest(
-                $"The supplied part is missing the '{uploadChecksumAlgorithm.ToUpperInvariant()}' checksum required by multipart upload '{request.UploadId}'.",
-                request.BucketName,
-                request.Key));
-        }
-
         Directory.CreateDirectory(GetMultipartPartsDirectoryPath(uploadDirectoryPath));
 
         var partPath = GetMultipartPartPath(uploadDirectoryPath, request.PartNumber);
         var tempPartPath = $"{partPath}.{Guid.NewGuid():N}.tmp";
-        try {
-            await using (var tempStream = new FileStream(tempPartPath, FileMode.CreateNew, FileAccess.Write, FileShare.None, 81920, FileOptions.Asynchronous | FileOptions.SequentialScan)) {
-                await request.Content.CopyToAsync(tempStream, cancellationToken);
+        if (HasCopySource(request)) {
+            if (!string.IsNullOrWhiteSpace(request.ChecksumAlgorithm)
+                || request.Checksums is { Count: > 0 }) {
+                return StorageResult<MultipartUploadPart>.Failure(MultipartInvalidRequest(
+                    "Checksum request headers are not supported for UploadPartCopy requests.",
+                    request.BucketName,
+                    request.Key));
             }
 
-            File.Move(tempPartPath, partPath, overwrite: true);
+            var copyResult = await ResolveStoredObjectAsync(request.CopySourceBucketName!, request.CopySourceKey!, request.CopySourceVersionId, cancellationToken);
+            if (!copyResult.IsSuccess) {
+                return StorageResult<MultipartUploadPart>.Failure(copyResult.Error!);
+            }
+
+            var sourceObject = copyResult.Value!;
+            if (sourceObject.IsDeleteMarker) {
+                if (request.CopySourceVersionId is not null) {
+                    return StorageResult<MultipartUploadPart>.Failure(MultipartInvalidRequest(
+                        $"The source object version '{request.CopySourceVersionId}' cannot be used as an UploadPartCopy source because it is a delete marker.",
+                        request.CopySourceBucketName!,
+                        request.CopySourceKey!));
+                }
+
+                return StorageResult<MultipartUploadPart>.Failure(ObjectNotFound(request.CopySourceBucketName!, request.CopySourceKey!, request.CopySourceVersionId));
+            }
+
+            if (string.IsNullOrWhiteSpace(sourceObject.ContentPath)) {
+                return StorageResult<MultipartUploadPart>.Failure(ObjectNotFound(request.CopySourceBucketName!, request.CopySourceKey!, request.CopySourceVersionId));
+            }
+
+            var sourceInfo = await CreateObjectInfoAsync(request.CopySourceBucketName!, request.CopySourceKey!, sourceObject.ContentPath, sourceObject.Metadata, cancellationToken);
+            var preconditionFailure = EvaluateMultipartCopyPreconditions(request, sourceInfo);
+            if (preconditionFailure is not null) {
+                return StorageResult<MultipartUploadPart>.Failure(preconditionFailure);
+            }
+
+            var sourceFileInfo = new FileInfo(sourceObject.ContentPath);
+            var normalizedRange = NormalizeRange(request.CopySourceRange, sourceFileInfo.Length, request.CopySourceBucketName!, request.CopySourceKey!, out var rangeError);
+            if (rangeError is not null) {
+                return StorageResult<MultipartUploadPart>.Failure(rangeError);
+            }
+
+            try {
+                await using (var sourceStream = new FileStream(sourceObject.ContentPath, FileMode.Open, FileAccess.Read, FileShare.Read, 81920, FileOptions.Asynchronous | FileOptions.SequentialScan))
+                await using (var tempStream = new FileStream(tempPartPath, FileMode.CreateNew, FileAccess.Write, FileShare.None, 81920, FileOptions.Asynchronous | FileOptions.SequentialScan)) {
+                    if (normalizedRange is { Start: long start, End: long end }) {
+                        sourceStream.Seek(start, SeekOrigin.Begin);
+                        await CopyRangeAsync(sourceStream, tempStream, end - start + 1, cancellationToken);
+                    }
+                    else {
+                        await sourceStream.CopyToAsync(tempStream, cancellationToken);
+                    }
+                }
+
+                File.Move(tempPartPath, partPath, overwrite: true);
+            }
+            finally {
+                if (File.Exists(tempPartPath)) {
+                    File.Delete(tempPartPath);
+                }
+            }
         }
-        finally {
-            if (File.Exists(tempPartPath)) {
-                File.Delete(tempPartPath);
+        else {
+            ArgumentNullException.ThrowIfNull(request.Content);
+
+            if (!string.IsNullOrWhiteSpace(uploadChecksumAlgorithm)
+                && !TryGetChecksumValue(request.Checksums, uploadChecksumAlgorithm, out _)) {
+                return StorageResult<MultipartUploadPart>.Failure(MultipartInvalidRequest(
+                    $"The supplied part is missing the '{uploadChecksumAlgorithm.ToUpperInvariant()}' checksum required by multipart upload '{request.UploadId}'.",
+                    request.BucketName,
+                    request.Key));
+            }
+
+            try {
+                await using (var tempStream = new FileStream(tempPartPath, FileMode.CreateNew, FileAccess.Write, FileShare.None, 81920, FileOptions.Asynchronous | FileOptions.SequentialScan)) {
+                    await request.Content.CopyToAsync(tempStream, cancellationToken);
+                }
+
+                File.Move(tempPartPath, partPath, overwrite: true);
+            }
+            finally {
+                if (File.Exists(tempPartPath)) {
+                    File.Delete(tempPartPath);
+                }
             }
         }
 
@@ -1051,7 +1116,8 @@ internal sealed class DiskStorageService(
             ETag = BuildETag(partInfo),
             ContentLength = partInfo.Length,
             LastModifiedUtc = partInfo.LastWriteTimeUtc,
-            Checksums = CreateMultipartPartResponseChecksums(actualChecksums, uploadChecksumAlgorithm, request.Checksums)
+            Checksums = CreateMultipartPartResponseChecksums(actualChecksums, uploadChecksumAlgorithm, request.Checksums),
+            CopySourceVersionId = request.CopySourceVersionId
         });
     }
 
@@ -3183,6 +3249,81 @@ internal sealed class DiskStorageService(
     private static bool WasModifiedAfter(DateTimeOffset lastModifiedUtc, DateTimeOffset comparisonUtc)
     {
         return TruncateToWholeSeconds(lastModifiedUtc) > TruncateToWholeSeconds(comparisonUtc);
+    }
+
+    private static bool HasCopySource(UploadMultipartPartRequest request)
+    {
+        return !string.IsNullOrWhiteSpace(request.CopySourceBucketName)
+            && !string.IsNullOrWhiteSpace(request.CopySourceKey);
+    }
+
+    private static StorageError? EvaluateMultipartCopyPreconditions(UploadMultipartPartRequest request, ObjectInfo sourceInfo)
+    {
+        if (!MatchesIfMatch(request.CopySourceIfMatchETag, sourceInfo.ETag)) {
+            return new StorageError
+            {
+                Code = StorageErrorCode.PreconditionFailed,
+                Message = $"The source object '{sourceInfo.Key}' does not match the supplied copy If-Match precondition.",
+                BucketName = sourceInfo.BucketName,
+                ObjectKey = sourceInfo.Key,
+                SuggestedHttpStatusCode = 412
+            };
+        }
+
+        if (ShouldEvaluateIfUnmodifiedSince(request.CopySourceIfMatchETag, sourceInfo.ETag)
+            && request.CopySourceIfUnmodifiedSinceUtc is { } ifUnmodifiedSinceUtc
+            && WasModifiedAfter(sourceInfo.LastModifiedUtc, ifUnmodifiedSinceUtc)) {
+            return new StorageError
+            {
+                Code = StorageErrorCode.PreconditionFailed,
+                Message = $"The source object '{sourceInfo.Key}' was modified after the supplied copy If-Unmodified-Since precondition.",
+                BucketName = sourceInfo.BucketName,
+                ObjectKey = sourceInfo.Key,
+                SuggestedHttpStatusCode = 412
+            };
+        }
+
+        if (MatchesAnyETag(request.CopySourceIfNoneMatchETag, sourceInfo.ETag)) {
+            return new StorageError
+            {
+                Code = StorageErrorCode.PreconditionFailed,
+                Message = $"The source object '{sourceInfo.Key}' matched the supplied copy If-None-Match precondition.",
+                BucketName = sourceInfo.BucketName,
+                ObjectKey = sourceInfo.Key,
+                SuggestedHttpStatusCode = 412
+            };
+        }
+
+        if (string.IsNullOrWhiteSpace(request.CopySourceIfNoneMatchETag)
+            && request.CopySourceIfModifiedSinceUtc is { } ifModifiedSinceUtc
+            && !WasModifiedAfter(sourceInfo.LastModifiedUtc, ifModifiedSinceUtc)) {
+            return new StorageError
+            {
+                Code = StorageErrorCode.PreconditionFailed,
+                Message = $"The source object '{sourceInfo.Key}' did not satisfy the supplied copy If-Modified-Since precondition.",
+                BucketName = sourceInfo.BucketName,
+                ObjectKey = sourceInfo.Key,
+                SuggestedHttpStatusCode = 412
+            };
+        }
+
+        return null;
+    }
+
+    private static async Task CopyRangeAsync(Stream source, Stream destination, long bytesToCopy, CancellationToken cancellationToken)
+    {
+        var remaining = bytesToCopy;
+        var buffer = new byte[81920];
+        while (remaining > 0) {
+            var readLength = (int)Math.Min(buffer.Length, remaining);
+            var bytesRead = await source.ReadAsync(buffer.AsMemory(0, readLength), cancellationToken);
+            if (bytesRead == 0) {
+                throw new EndOfStreamException("The source object ended before the requested copy range could be read.");
+            }
+
+            await destination.WriteAsync(buffer.AsMemory(0, bytesRead), cancellationToken);
+            remaining -= bytesRead;
+        }
     }
 
     private static DateTimeOffset TruncateToWholeSeconds(DateTimeOffset value)

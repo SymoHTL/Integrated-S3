@@ -147,6 +147,21 @@ internal interface IS3StorageClient : IDisposable
         IReadOnlyDictionary<string, string>? checksums,
         CancellationToken cancellationToken = default);
 
+    Task<MultipartUploadPart> CopyMultipartPartAsync(
+        string bucketName,
+        string key,
+        string uploadId,
+        int partNumber,
+        string sourceBucketName,
+        string sourceKey,
+        string? sourceVersionId,
+        ObjectRange? sourceRange,
+        string? sourceIfMatchETag,
+        string? sourceIfNoneMatchETag,
+        DateTimeOffset? sourceIfModifiedSinceUtc,
+        DateTimeOffset? sourceIfUnmodifiedSinceUtc,
+        CancellationToken cancellationToken = default);
+
     Task<S3ObjectEntry> CompleteMultipartUploadAsync(
         string bucketName,
         string key,

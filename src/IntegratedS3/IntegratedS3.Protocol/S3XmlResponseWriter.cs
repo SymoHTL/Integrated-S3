@@ -137,13 +137,25 @@ public static class S3XmlResponseWriter
     public static string WriteCopyObjectResult(S3CopyObjectResult response)
     {
         ArgumentNullException.ThrowIfNull(response);
+        return WriteCopyResultCore("CopyObjectResult", response);
+    }
+
+    public static string WriteCopyPartResult(S3CopyObjectResult response)
+    {
+        ArgumentNullException.ThrowIfNull(response);
+        return WriteCopyResultCore("CopyPartResult", response);
+    }
+
+    private static string WriteCopyResultCore(string rootElementName, S3CopyObjectResult response)
+    {
+        ArgumentNullException.ThrowIfNull(response);
 
         var builder = new StringBuilder();
         using var stringWriter = new StringWriter(builder, CultureInfo.InvariantCulture);
         using var xmlWriter = XmlWriter.Create(stringWriter, CreateSettings());
 
         xmlWriter.WriteStartDocument();
-        xmlWriter.WriteStartElement("CopyObjectResult");
+        xmlWriter.WriteStartElement(rootElementName);
         xmlWriter.WriteElementString("LastModified", FormatTimestamp(response.LastModifiedUtc));
         xmlWriter.WriteElementString("ETag", QuoteETag(response.ETag));
 
