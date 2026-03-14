@@ -1046,16 +1046,26 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
         Assert.Equal("docs/alpha.txt", GetRequiredElementValue(firstPageDocument, "NextKeyMarker"));
         Assert.Equal(secondUploadId, GetRequiredElementValue(firstPageDocument, "NextUploadIdMarker"));
 
+        static void AssertUploadIdentity(XElement upload)
+        {
+            var initiator = Assert.IsType<XElement>(upload.Element("Initiator"));
+            var owner = Assert.IsType<XElement>(upload.Element("Owner"));
+            Assert.False(string.IsNullOrWhiteSpace(initiator.Element("ID")?.Value));
+            Assert.Equal(initiator.Element("ID")?.Value, owner.Element("ID")?.Value);
+        }
+
         var firstPageUploads = firstPageDocument.Root!.Elements("Upload").ToArray();
         Assert.Collection(
             firstPageUploads,
             upload => {
                 Assert.Equal("docs/alpha.txt", upload.Element("Key")?.Value);
                 Assert.Equal(firstUploadId, upload.Element("UploadId")?.Value);
+                AssertUploadIdentity(upload);
             },
             upload => {
                 Assert.Equal("docs/alpha.txt", upload.Element("Key")?.Value);
                 Assert.Equal(secondUploadId, upload.Element("UploadId")?.Value);
+                AssertUploadIdentity(upload);
             });
         Assert.Empty(firstPageDocument.Root!.Elements("CommonPrefixes"));
 
@@ -1360,6 +1370,56 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
     }
 
     [Fact]
+    public async Task S3CompatibleBucketRoute_ListObjectsV1_WithMarkerAndEncodingType_ReturnsLegacyXmlPayload()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        const string bucketName = "legacy-list-bucket";
+
+        static string EncodeObjectPath(string key)
+        {
+            return string.Join('/', key.Split('/').Select(Uri.EscapeDataString));
+        }
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync($"/integrated-s3/buckets/{bucketName}", content: null)).StatusCode);
+        foreach (var key in new[]
+                 {
+                     "docs/a file(1).txt",
+                     "docs/b file(2).txt",
+                     "docs/c file(3).txt"
+                 }) {
+            Assert.Equal(
+                HttpStatusCode.OK,
+                (await client.PutAsync(
+                    $"/integrated-s3/buckets/{bucketName}/objects/{EncodeObjectPath(key)}",
+                    new StringContent(key, Encoding.UTF8, "text/plain"))).StatusCode);
+        }
+
+        var response = await client.GetAsync(
+            $"/integrated-s3/{bucketName}?prefix={Uri.EscapeDataString("docs/")}&marker={Uri.EscapeDataString("docs/a file(1).txt")}&max-keys=1&encoding-type=url");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal("application/xml", response.Content.Headers.ContentType?.MediaType);
+
+        var document = XDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal("ListBucketResult", document.Root?.Name.LocalName);
+        Assert.Equal(bucketName, GetRequiredElementValue(document, "Name"));
+        Assert.Equal("docs%2F", GetRequiredElementValue(document, "Prefix"));
+        Assert.Equal("docs%2Fa%20file%281%29.txt", GetRequiredElementValue(document, "Marker"));
+        Assert.Equal("url", GetRequiredElementValue(document, "EncodingType"));
+        Assert.Equal("1", GetRequiredElementValue(document, "MaxKeys"));
+        Assert.Equal("true", GetRequiredElementValue(document, "IsTruncated"));
+        Assert.Empty(document.Root!.Elements("KeyCount"));
+        Assert.Empty(document.Root.Elements("ContinuationToken"));
+        Assert.Empty(document.Root.Elements("NextContinuationToken"));
+        Assert.Empty(document.Root.Elements("NextMarker"));
+
+        var listedObject = Assert.Single(document.Root.Elements("Contents"));
+        Assert.Equal("docs%2Fb%20file%282%29.txt", listedObject.Element("Key")?.Value);
+        Assert.False(string.IsNullOrWhiteSpace(listedObject.Element("Owner")?.Element("ID")?.Value));
+    }
+
+    [Fact]
     public async Task S3CompatibleBucketRoute_ListType2_ReturnsXmlPayload()
     {
         using var client = await _factory.CreateClientAsync();
@@ -1386,6 +1446,40 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
         Assert.Collection(contents,
             static key => Assert.Equal("a.txt", key),
             static key => Assert.Equal("b.txt", key));
+        Assert.All(document.Root.Elements("Contents"), static content => Assert.Null(content.Element("Owner")));
+    }
+
+    [Fact]
+    public async Task S3CompatibleBucketRoute_ListType2_WithFetchOwnerAndEncodingType_ReturnsOwnerMetadata()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        const string bucketName = "fetch-owner-list-bucket";
+
+        static string EncodeObjectPath(string key)
+        {
+            return string.Join('/', key.Split('/').Select(Uri.EscapeDataString));
+        }
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync($"/integrated-s3/buckets/{bucketName}", content: null)).StatusCode);
+        Assert.Equal(
+            HttpStatusCode.OK,
+            (await client.PutAsync(
+                $"/integrated-s3/buckets/{bucketName}/objects/{EncodeObjectPath("docs/fetch owner(1).txt")}",
+                new StringContent("owner", Encoding.UTF8, "text/plain"))).StatusCode);
+
+        var response = await client.GetAsync(
+            $"/integrated-s3/{bucketName}?list-type=2&prefix={Uri.EscapeDataString("docs/")}&fetch-owner=true&encoding-type=url");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var document = XDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal("url", GetRequiredElementValue(document, "EncodingType"));
+        Assert.Equal("docs%2F", GetRequiredElementValue(document, "Prefix"));
+        Assert.Equal("1", GetRequiredElementValue(document, "KeyCount"));
+
+        var listedObject = Assert.Single(document.Root!.Elements("Contents"));
+        Assert.Equal("docs%2Ffetch%20owner%281%29.txt", listedObject.Element("Key")?.Value);
+        Assert.False(string.IsNullOrWhiteSpace(listedObject.Element("Owner")?.Element("ID")?.Value));
     }
 
     [Fact]
@@ -1949,15 +2043,37 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
     }
 
     [Fact]
-    public async Task S3CompatibleListMultipartUploads_UnsupportedQueryParameter_ReturnsNotImplemented()
+    public async Task S3CompatibleListMultipartUploads_WithEncodingType_ReturnsEncodedKeys()
     {
         using var client = await _factory.CreateClientAsync();
 
-        await client.PutAsync("/integrated-s3/buckets/multipart-subresource-bucket", content: null);
+        const string bucketName = "multipart-subresource-bucket";
+        const string objectKey = "docs/test file(3).txt";
 
-        var response = await client.GetAsync("/integrated-s3/multipart-subresource-bucket?uploads&encoding-type=url");
+        static string EncodeObjectPath(string key)
+        {
+            return string.Join('/', key.Split('/').Select(Uri.EscapeDataString));
+        }
 
-        await AssertNotImplementedResponseAsync(response);
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync($"/integrated-s3/buckets/{bucketName}", content: null)).StatusCode);
+
+        using (var initiateRequest = new HttpRequestMessage(HttpMethod.Post, $"/integrated-s3/{bucketName}/{EncodeObjectPath(objectKey)}?uploads")) {
+            initiateRequest.Headers.TryAddWithoutValidation("Content-Type", "text/plain");
+            Assert.Equal(HttpStatusCode.OK, (await client.SendAsync(initiateRequest)).StatusCode);
+        }
+
+        var response = await client.GetAsync($"/integrated-s3/{bucketName}?uploads&prefix={Uri.EscapeDataString("docs/")}&encoding-type=url");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal("application/xml", response.Content.Headers.ContentType?.MediaType);
+
+        var document = XDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal("url", GetRequiredElementValue(document, "EncodingType"));
+        Assert.Equal("docs%2F", GetRequiredElementValue(document, "Prefix"));
+        var upload = Assert.Single(document.Root!.Elements("Upload"));
+        Assert.Equal("docs%2Ftest%20file%283%29.txt", upload.Element("Key")?.Value);
+        Assert.False(string.IsNullOrWhiteSpace(upload.Element("Owner")?.Element("ID")?.Value));
+        Assert.False(string.IsNullOrWhiteSpace(upload.Element("Initiator")?.Element("ID")?.Value));
     }
 
     [Theory]

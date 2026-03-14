@@ -77,6 +77,7 @@ public sealed class IntegratedS3AwsSdkCompatibilityTests : IClassFixture<WebUiAp
         Assert.Equal(System.Net.HttpStatusCode.OK, listObjectsResponse.HttpStatusCode);
         var listedObject = Assert.Single(listObjectsResponse.S3Objects);
         Assert.Equal(objectKey, listedObject.Key);
+        Assert.Null(listedObject.Owner);
 
         var deleteObjectResponse = await s3Client.DeleteObjectAsync(new DeleteObjectRequest
         {
@@ -84,6 +85,66 @@ public sealed class IntegratedS3AwsSdkCompatibilityTests : IClassFixture<WebUiAp
             Key = objectKey
         });
         Assert.Equal(System.Net.HttpStatusCode.NoContent, deleteObjectResponse.HttpStatusCode);
+    }
+
+    [Fact]
+    public async Task AmazonS3Client_LegacyAndFetchOwnerListApis_WorkAgainstIntegratedS3()
+    {
+        const string accessKeyId = "aws-sdk-legacy-list-access";
+        const string secretAccessKey = "aws-sdk-legacy-list-secret";
+
+        await using var isolatedClient = await CreateAuthenticatedLoopbackClientAsync(accessKeyId, secretAccessKey);
+        using var s3Client = CreateS3Client(isolatedClient.BaseAddress!, accessKeyId, secretAccessKey);
+
+        const string bucketName = "aws-sdk-legacy-list-bucket";
+
+        Assert.Equal(HttpStatusCode.OK, (await s3Client.PutBucketAsync(new PutBucketRequest
+        {
+            BucketName = bucketName
+        })).HttpStatusCode);
+
+        foreach (var key in new[]
+                 {
+                     "docs/a.txt",
+                     "docs/b.txt",
+                     "docs/c.txt"
+                 }) {
+            Assert.Equal(HttpStatusCode.OK, (await s3Client.PutObjectAsync(new PutObjectRequest
+            {
+                BucketName = bucketName,
+                Key = key,
+                ContentBody = key,
+                ContentType = "text/plain",
+                UseChunkEncoding = false
+            })).HttpStatusCode);
+        }
+
+        var legacyResponse = await s3Client.ListObjectsAsync(new ListObjectsRequest
+        {
+            BucketName = bucketName,
+            Prefix = "docs/",
+            Marker = "docs/a.txt",
+            MaxKeys = 1
+        });
+
+        Assert.Equal(HttpStatusCode.OK, legacyResponse.HttpStatusCode);
+        Assert.True(legacyResponse.IsTruncated);
+        var legacyObject = Assert.Single(legacyResponse.S3Objects);
+        Assert.Equal("docs/b.txt", legacyObject.Key);
+        Assert.NotNull(legacyObject.Owner);
+
+        var v2Response = await s3Client.ListObjectsV2Async(new ListObjectsV2Request
+        {
+            BucketName = bucketName,
+            Prefix = "docs/",
+            FetchOwner = true,
+            MaxKeys = 1
+        });
+
+        Assert.Equal(HttpStatusCode.OK, v2Response.HttpStatusCode);
+        var v2Object = Assert.Single(v2Response.S3Objects);
+        Assert.Equal("docs/a.txt", v2Object.Key);
+        Assert.NotNull(v2Object.Owner);
     }
 
     [Fact]
@@ -911,8 +972,12 @@ public sealed class IntegratedS3AwsSdkCompatibilityTests : IClassFixture<WebUiAp
         Assert.Equal(2, firstPage.MultipartUploads.Count);
         Assert.Equal("docs/alpha.txt", firstPage.MultipartUploads[0].Key);
         Assert.Equal(firstUploadId, firstPage.MultipartUploads[0].UploadId);
+        Assert.NotNull(firstPage.MultipartUploads[0].Owner);
+        Assert.NotNull(firstPage.MultipartUploads[0].Initiator);
         Assert.Equal("docs/alpha.txt", firstPage.MultipartUploads[1].Key);
         Assert.Equal(secondUploadId, firstPage.MultipartUploads[1].UploadId);
+        Assert.NotNull(firstPage.MultipartUploads[1].Owner);
+        Assert.NotNull(firstPage.MultipartUploads[1].Initiator);
         Assert.True(firstPage.CommonPrefixes is null || firstPage.CommonPrefixes.Count == 0);
 
         var secondPage = await s3Client.ListMultipartUploadsAsync(new ListMultipartUploadsRequest
