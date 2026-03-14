@@ -23,9 +23,11 @@ The sample host currently demonstrates more than the service document alone:
 
 - JSON convenience routes under `/integrated-s3`, including service, capability, bucket, and object operations
 - S3-compatible bucket/object routing under `/integrated-s3/{**s3Path}` for the current supported surface, including multipart, tagging, versioning, and bucket-CORS configuration flows
-- `POST /integrated-s3/presign/object` for the current first-party proxy-mode object `GET` / `PUT` presign flow
+- `POST /integrated-s3/presign/object` for first-party object `GET` / `PUT` presign flows, with explicit opt-in `Direct` / `Delegated` access-mode hints and proxy-mode as the default when no preference is sent
 - bucket-aware browser-facing CORS handling on bucket/object routes, including unauthenticated preflight `OPTIONS` evaluation and actual-response `Access-Control-*` headers without global ASP.NET CORS middleware
 - ASP.NET Core liveness/readiness probes at `/health/live` and `/health/ready`, with readiness backed by the IntegratedS3 backend health monitor/probe services
+
+The service document may report provider `ObjectLocation` defaults for host inspection or UX, but the first-party presign and transfer helpers do not apply those defaults implicitly. Callers that want `Direct` or `Delegated` access should send `PreferredAccessMode` / `preferredAccessMode` explicitly; omitting it keeps proxy streaming through the IntegratedS3 host as the stable default.
 
 ## Default configuration
 
@@ -53,6 +55,27 @@ app.MapIntegratedS3HealthEndpoints();
 ```
 
 `/health/live` stays a process liveness probe, while `/health/ready` runs the IntegratedS3 backend readiness check. The readiness mapper treats both `Degraded` and `Unhealthy` results as HTTP `503` by default so hosts can use it directly for readiness probes.
+## Custom backend registration
+
+Hosts that implement their own `IStorageBackend` can now use `AddIntegratedS3Backend(...)` instead of manually pairing `AddSingleton<IStorageBackend>(...)` with the rest of the IntegratedS3 runtime wiring.
+
+```csharp
+builder.Services.AddIntegratedS3(builder.Configuration);
+builder.Services.AddIntegratedS3Backend<MyCustomStorageBackend>();
+
+// Optional companion seams stay explicit.
+builder.Services.AddSingleton<IStorageObjectLocationResolver, MyCustomObjectLocationResolver>();
+```
+
+If the backend needs custom constructor arguments or named options, use the factory overload:
+
+```csharp
+builder.Services.AddIntegratedS3Backend(serviceProvider => new MyCustomStorageBackend(
+    serviceProvider.GetRequiredService<IOptions<MyCustomStorageOptions>>().Value,
+    serviceProvider.GetRequiredService<TimeProvider>()));
+```
+
+The helper keeps provider descriptors and reported capabilities backend-derived at runtime. Extra seams such as `IStorageObjectLocationResolver` and `IStoragePresignStrategy` remain explicit registrations so hosts can opt into them deliberately.
 
 ## Quick smoke test
 
@@ -61,6 +84,7 @@ After the host is running, these requests validate the reference surface without
 ```powershell
 Invoke-WebRequest http://localhost:5298/integrated-s3 | Select-Object -ExpandProperty Content
 Invoke-WebRequest http://localhost:5298/integrated-s3/capabilities | Select-Object -ExpandProperty Content
+Invoke-WebRequest http://localhost:5298/integrated-s3/admin/diagnostics | Select-Object -ExpandProperty Content
 Invoke-WebRequest -Method Put http://localhost:5298/integrated-s3/buckets/demo-bucket
 Invoke-WebRequest http://localhost:5298/integrated-s3/buckets | Select-Object -ExpandProperty Content
 Invoke-WebRequest http://localhost:5298/health/live | Select-Object -ExpandProperty Content
@@ -85,6 +109,16 @@ Treat the publish step as the trimming/AOT validation pass for the reference hos
 
 - use `CreateIsolatedClientAsync(...)` for isolated in-process HTTP tests with temp storage and per-test builder overrides
 - use `CreateLoopbackIsolatedClientAsync(...)` when real loopback networking is required, such as AWS SDK compatibility scenarios
+
+## Endpoint route-group customization
+
+`WebUiApplication.ConfigurePipeline(...)` forwards `Action<IntegratedS3EndpointOptions>` into `MapIntegratedS3Endpoints(...)`, so sample hosts and tests can apply authorization or policy conventions at map time.
+
+- use `ConfigureRouteGroup` for the whole `/integrated-s3` surface
+- use `ConfigureRootRouteGroup` or `ConfigureCompatibilityRouteGroup` when a shared route can serve multiple features at once
+- use `SetFeatureRouteGroupConfiguration(IntegratedS3EndpointFeature.<Feature>, ...)` for per-feature route-group callbacks; the current `ConfigureBucketRouteGroup`, `ConfigureObjectRouteGroup`, and similar properties remain convenience wrappers for the built-in features
+
+Future endpoint surfaces should follow the enum-based feature callback pattern instead of inventing a separate configuration style, so host/test customization stays predictable as the HTTP surface grows.
 
 ## Scope guardrails
 
