@@ -693,6 +693,66 @@ public sealed class DiskStorageServiceTests
     }
 
     [Fact]
+    public async Task DiskStorage_DeleteMissingObject_IsIdempotentAndCreatesVersionedDeleteMarkerWhenNeeded()
+    {
+        await using var fixture = new DiskStorageFixture();
+        var storageService = fixture.Services.GetRequiredService<IStorageBackend>();
+
+        Assert.True((await storageService.CreateBucketAsync(new CreateBucketRequest
+        {
+            BucketName = "delete-missing"
+        })).IsSuccess);
+
+        var deleteMissing = await storageService.DeleteObjectAsync(new DeleteObjectRequest
+        {
+            BucketName = "delete-missing",
+            Key = "docs/missing.txt"
+        });
+
+        Assert.True(deleteMissing.IsSuccess);
+        Assert.False(deleteMissing.Value!.IsDeleteMarker);
+        Assert.Null(deleteMissing.Value.VersionId);
+
+        Assert.True((await storageService.CreateBucketAsync(new CreateBucketRequest
+        {
+            BucketName = "delete-missing-versioned",
+            EnableVersioning = true
+        })).IsSuccess);
+
+        var deleteVersionedMissing = await storageService.DeleteObjectAsync(new DeleteObjectRequest
+        {
+            BucketName = "delete-missing-versioned",
+            Key = "docs/missing.txt"
+        });
+
+        Assert.True(deleteVersionedMissing.IsSuccess);
+        Assert.True(deleteVersionedMissing.Value!.IsDeleteMarker);
+        var deleteMarkerVersionId = Assert.IsType<string>(deleteVersionedMissing.Value.VersionId);
+
+        var currentGet = await storageService.GetObjectAsync(new GetObjectRequest
+        {
+            BucketName = "delete-missing-versioned",
+            Key = "docs/missing.txt"
+        });
+
+        Assert.False(currentGet.IsSuccess);
+        Assert.Equal(StorageErrorCode.ObjectNotFound, currentGet.Error!.Code);
+        Assert.True(currentGet.Error.IsDeleteMarker);
+        Assert.Equal(deleteMarkerVersionId, currentGet.Error.VersionId);
+
+        var versions = await storageService.ListObjectVersionsAsync(new ListObjectVersionsRequest
+        {
+            BucketName = "delete-missing-versioned"
+        }).ToArrayAsync();
+
+        var deleteMarker = Assert.Single(versions);
+        Assert.Equal("docs/missing.txt", deleteMarker.Key);
+        Assert.Equal(deleteMarkerVersionId, deleteMarker.VersionId);
+        Assert.True(deleteMarker.IsDeleteMarker);
+        Assert.True(deleteMarker.IsLatest);
+    }
+
+    [Fact]
     public async Task DiskStorage_VersionedDelete_CreatesDeleteMarkerAndListsVersions()
     {
         await using var fixture = new DiskStorageFixture();
@@ -1583,6 +1643,39 @@ public sealed class DiskStorageServiceTests
 
         Assert.True(headObjectResult.IsSuccess);
         Assert.Equal("test", headObjectResult.Value!.Tags!["environment"]);
+    }
+
+    [Fact]
+    public async Task DiskStorage_PutObjectTags_RejectsInvalidTagSets()
+    {
+        await using var fixture = new DiskStorageFixture();
+        var storageService = fixture.Services.GetRequiredService<IStorageBackend>();
+        Assert.True((await storageService.CreateBucketAsync(new CreateBucketRequest
+        {
+            BucketName = "invalid-tags"
+        })).IsSuccess);
+
+        await using var uploadStream = new MemoryStream(Encoding.UTF8.GetBytes("tagged payload"));
+        Assert.True((await storageService.PutObjectAsync(new PutObjectRequest
+        {
+            BucketName = "invalid-tags",
+            Key = "docs/tagged.txt",
+            Content = uploadStream,
+            ContentType = "text/plain"
+        })).IsSuccess);
+
+        var putTagsResult = await storageService.PutObjectTagsAsync(new PutObjectTagsRequest
+        {
+            BucketName = "invalid-tags",
+            Key = "docs/tagged.txt",
+            Tags = Enumerable.Range(0, 11).ToDictionary(
+                static index => $"tag-{index}",
+                static index => $"value-{index}",
+                StringComparer.Ordinal)
+        });
+
+        Assert.False(putTagsResult.IsSuccess);
+        Assert.Equal(StorageErrorCode.InvalidTag, putTagsResult.Error!.Code);
     }
 
     [Fact]

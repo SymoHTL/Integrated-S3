@@ -49,6 +49,7 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
     private const string ChecksumSha256HeaderName = "x-amz-checksum-sha256";
     private const string ChecksumTypeHeaderName = "x-amz-checksum-type";
     private const string DeleteMarkerHeaderName = "x-amz-delete-marker";
+    private const string TaggingCountHeaderName = "x-amz-tagging-count";
     private const string VersionIdHeaderName = "x-amz-version-id";
     private const string XmlContentType = "application/xml";
     private const string ListTypeQueryParameterName = "list-type";
@@ -999,6 +1000,7 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
 
                 var objectInfo = result.Value!;
                 ApplyObjectHeaders(httpContext.Response, objectInfo);
+                ApplyObjectTaggingCountHeader(httpContext.Response, objectInfo);
                 httpContext.Response.Headers.AcceptRanges = "bytes";
 
                 if (!MatchesIfMatch(httpContext.Request.Headers.IfMatch.ToString(), objectInfo.ETag)) {
@@ -1470,6 +1472,14 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
             return ToErrorResult(httpContext, StatusCodes.Status400BadRequest, "MalformedXML", exception.Message, BuildObjectResource(bucketName, key), bucketName, key);
         }
 
+        var requestedTags = requestBody.TagSet
+            .Select(static tag => new KeyValuePair<string, string>(tag.Key, tag.Value))
+            .ToArray();
+        var tagValidationError = ObjectTagValidation.Validate(requestedTags);
+        if (tagValidationError is not null) {
+            return ToErrorResult(httpContext, StatusCodes.Status400BadRequest, "InvalidTag", tagValidationError, BuildObjectResource(bucketName, key), bucketName, key);
+        }
+
         try {
             return await ExecuteWithRequestContextAsync(httpContext, requestContextAccessor, async innerCancellationToken => {
                 var result = await storageService.PutObjectTagsAsync(new PutObjectTagsRequest
@@ -1477,7 +1487,7 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
                     BucketName = bucketName,
                     Key = key,
                     VersionId = ParseVersionId(httpContext.Request),
-                    Tags = requestBody.TagSet.ToDictionary(static tag => tag.Key, static tag => tag.Value, StringComparer.Ordinal)
+                    Tags = requestedTags.ToDictionary(static tag => tag.Key, static tag => tag.Value, StringComparer.Ordinal)
                 }, innerCancellationToken);
 
                 if (result.IsSuccess && result.Value is not null) {
@@ -1968,7 +1978,7 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
                         VersionId = objectIdentifier.VersionId
                     }, innerCancellationToken);
 
-                    if (result.IsSuccess || result.Error?.Code == StorageErrorCode.ObjectNotFound) {
+                    if (result.IsSuccess || (result.Error?.Code == StorageErrorCode.ObjectNotFound && string.IsNullOrWhiteSpace(objectIdentifier.VersionId))) {
                         if (!deleteRequest.Quiet) {
                             deleted.Add(new S3DeletedObjectResult
                             {
@@ -1986,8 +1996,12 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
                     {
                         Key = objectIdentifier.Key,
                         VersionId = objectIdentifier.VersionId,
-                        Code = ToS3ErrorCode(result.Error!.Code),
-                        Message = result.Error.Message
+                        Code = result.Error?.Code == StorageErrorCode.ObjectNotFound && !string.IsNullOrWhiteSpace(objectIdentifier.VersionId)
+                            ? "NoSuchVersion"
+                            : ToS3ErrorCode(result.Error!.Code),
+                        Message = result.Error?.Code == StorageErrorCode.ObjectNotFound && !string.IsNullOrWhiteSpace(objectIdentifier.VersionId)
+                            ? "The specified version does not exist."
+                            : result.Error!.Message
                     });
                 }
 
@@ -2128,6 +2142,7 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
             StorageErrorCode.BucketNotFound => StatusCodes.Status404NotFound,
             StorageErrorCode.CorsConfigurationNotFound => StatusCodes.Status404NotFound,
             StorageErrorCode.AccessDenied => StatusCodes.Status403Forbidden,
+            StorageErrorCode.InvalidTag => StatusCodes.Status400BadRequest,
             StorageErrorCode.InvalidChecksum => StatusCodes.Status400BadRequest,
             StorageErrorCode.InvalidRange => StatusCodes.Status416RangeNotSatisfiable,
             StorageErrorCode.PreconditionFailed => StatusCodes.Status412PreconditionFailed,
@@ -2152,6 +2167,7 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
             StorageErrorCode.BucketNotFound => "NoSuchBucket",
             StorageErrorCode.CorsConfigurationNotFound => "NoSuchCORSConfiguration",
             StorageErrorCode.AccessDenied => "AccessDenied",
+            StorageErrorCode.InvalidTag => "InvalidTag",
             StorageErrorCode.InvalidChecksum => "BadDigest",
             StorageErrorCode.InvalidRange => "InvalidRange",
             StorageErrorCode.PreconditionFailed => "PreconditionFailed",
@@ -3757,6 +3773,13 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
         }
     }
 
+    private static void ApplyObjectTaggingCountHeader(HttpResponse httpResponse, ObjectInfo objectInfo)
+    {
+        if (objectInfo.Tags is { Count: > 0 } tags) {
+            httpResponse.Headers[TaggingCountHeaderName] = tags.Count.ToString(CultureInfo.InvariantCulture);
+        }
+    }
+
     private static void ApplyObjectIdentityHeaders(HttpResponse httpResponse, ObjectInfo objectInfo)
     {
         if (!string.IsNullOrWhiteSpace(objectInfo.ETag)) {
@@ -4028,6 +4051,7 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
             await using var response = objectResponse;
 
             ApplyObjectHeaders(httpContext.Response, response.Object);
+            ApplyObjectTaggingCountHeader(httpContext.Response, response.Object);
             httpContext.Response.Headers.AcceptRanges = "bytes";
 
             if (response.IsNotModified) {

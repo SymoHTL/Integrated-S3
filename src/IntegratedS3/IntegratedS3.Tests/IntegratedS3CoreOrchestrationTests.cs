@@ -1455,6 +1455,82 @@ public sealed class IntegratedS3CoreOrchestrationTests
     }
 
     [Fact]
+    public async Task OrchestratedStorageService_DeleteMissingObject_InVersionedBucketCreatesDeleteMarkerAndCatalogEntry()
+    {
+        await using var fixture = new CoreStorageFixture();
+        var storageService = fixture.Services.GetRequiredService<IStorageService>();
+        var catalogStore = fixture.Services.GetRequiredService<IStorageCatalogStore>();
+
+        Assert.True((await storageService.CreateBucketAsync(new CreateBucketRequest
+        {
+            BucketName = "catalog-delete-marker",
+            EnableVersioning = true
+        })).IsSuccess);
+
+        var deleteMissing = await storageService.DeleteObjectAsync(new DeleteObjectRequest
+        {
+            BucketName = "catalog-delete-marker",
+            Key = "docs/missing.txt"
+        });
+
+        Assert.True(deleteMissing.IsSuccess);
+        Assert.True(deleteMissing.Value!.IsDeleteMarker);
+        var deleteMarkerVersionId = Assert.IsType<string>(deleteMissing.Value.VersionId);
+
+        var currentGet = await storageService.GetObjectAsync(new GetObjectRequest
+        {
+            BucketName = "catalog-delete-marker",
+            Key = "docs/missing.txt"
+        });
+
+        Assert.False(currentGet.IsSuccess);
+        Assert.Equal(StorageErrorCode.ObjectNotFound, currentGet.Error!.Code);
+        Assert.True(currentGet.Error.IsDeleteMarker);
+        Assert.Equal(deleteMarkerVersionId, currentGet.Error.VersionId);
+
+        var catalogObjects = await catalogStore.ListObjectsAsync("catalog-disk", "catalog-delete-marker");
+        var deleteMarker = Assert.Single(catalogObjects);
+        Assert.Equal("docs/missing.txt", deleteMarker.Key);
+        Assert.Equal(deleteMarkerVersionId, deleteMarker.VersionId);
+        Assert.True(deleteMarker.IsDeleteMarker);
+        Assert.True(deleteMarker.IsLatest);
+    }
+
+    [Fact]
+    public async Task OrchestratedStorageService_PutObjectTags_RejectsInvalidTagSets()
+    {
+        await using var fixture = new CoreStorageFixture();
+        var storageService = fixture.Services.GetRequiredService<IStorageService>();
+
+        Assert.True((await storageService.CreateBucketAsync(new CreateBucketRequest
+        {
+            BucketName = "catalog-invalid-tags"
+        })).IsSuccess);
+
+        await using var uploadStream = new MemoryStream(Encoding.UTF8.GetBytes("tagged payload"));
+        Assert.True((await storageService.PutObjectAsync(new PutObjectRequest
+        {
+            BucketName = "catalog-invalid-tags",
+            Key = "docs/tagged.txt",
+            Content = uploadStream,
+            ContentType = "text/plain"
+        })).IsSuccess);
+
+        var putTags = await storageService.PutObjectTagsAsync(new PutObjectTagsRequest
+        {
+            BucketName = "catalog-invalid-tags",
+            Key = "docs/tagged.txt",
+            Tags = Enumerable.Range(0, 11).ToDictionary(
+                static index => $"tag-{index}",
+                static index => $"value-{index}",
+                StringComparer.Ordinal)
+        });
+
+        Assert.False(putTags.IsSuccess);
+        Assert.Equal(StorageErrorCode.InvalidTag, putTags.Error!.Code);
+    }
+
+    [Fact]
     public async Task OrchestratedStorageService_WriteThroughAll_ReturnsFailureWhenReplicaWriteFails()
     {
         await using var fixture = new CoreStorageFixture(configureServices: services => {

@@ -765,6 +765,11 @@ internal sealed class DiskStorageService(
         IReadOnlyDictionary<string, string>? tags,
         CancellationToken cancellationToken)
     {
+        var tagValidationError = ObjectTagValidation.Validate(tags);
+        if (tagValidationError is not null) {
+            return StorageResult<ObjectTagSet>.Failure(InvalidTag(tagValidationError, bucketName, key));
+        }
+
         var storedObjectResult = await ResolveStoredObjectAsync(bucketName, key, versionId, cancellationToken);
         if (!storedObjectResult.IsSuccess) {
             return StorageResult<ObjectTagSet>.Failure(storedObjectResult.Error!);
@@ -1154,6 +1159,11 @@ internal sealed class DiskStorageService(
     {
         cancellationToken.ThrowIfCancellationRequested();
 
+        var bucketPath = GetBucketPath(request.BucketName);
+        if (!Directory.Exists(bucketPath)) {
+            return StorageResult<DeleteObjectResult>.Failure(BucketNotFound(request.BucketName));
+        }
+
         var filePath = GetObjectPath(request.BucketName, request.Key);
         var versioningEnabled = await IsVersioningEnabledAsync(request.BucketName, cancellationToken);
 
@@ -1200,7 +1210,23 @@ internal sealed class DiskStorageService(
         }
 
         if (!await HasCurrentVersionStateAsync(request.BucketName, request.Key, cancellationToken)) {
-            return StorageResult<DeleteObjectResult>.Failure(ObjectNotFound(request.BucketName, request.Key));
+            if (versioningEnabled && !request.BypassDeleteMarkerCreation) {
+                var deleteMarker = await CreateCurrentDeleteMarkerAsync(request.BucketName, request.Key, cancellationToken);
+                return StorageResult<DeleteObjectResult>.Success(new DeleteObjectResult
+                {
+                    BucketName = request.BucketName,
+                    Key = request.Key,
+                    VersionId = deleteMarker.VersionId,
+                    IsDeleteMarker = true,
+                    CurrentObject = deleteMarker
+                });
+            }
+
+            return StorageResult<DeleteObjectResult>.Success(new DeleteObjectResult
+            {
+                BucketName = request.BucketName,
+                Key = request.Key
+            });
         }
 
         if (versioningEnabled && !request.BypassDeleteMarkerCreation) {
@@ -2486,6 +2512,11 @@ internal sealed class DiskStorageService(
     private static async Task WriteMetadataAsync(string objectPath, DiskObjectMetadata metadata, CancellationToken cancellationToken)
     {
         var metadataPath = GetMetadataPath(objectPath);
+        var metadataDirectory = Path.GetDirectoryName(metadataPath);
+        if (!string.IsNullOrWhiteSpace(metadataDirectory)) {
+            Directory.CreateDirectory(metadataDirectory);
+        }
+
         var tempMetadataPath = $"{metadataPath}.{Guid.NewGuid():N}.tmp";
         try {
             await using (var stream = new FileStream(tempMetadataPath, FileMode.CreateNew, FileAccess.Write, FileShare.None, 4096, FileOptions.Asynchronous | FileOptions.SequentialScan)) {
@@ -2869,6 +2900,19 @@ internal sealed class DiskStorageService(
             BucketName = bucketName,
             ObjectKey = objectKey,
             SuggestedHttpStatusCode = 416
+        };
+    }
+
+    private StorageError InvalidTag(string message, string bucketName, string objectKey)
+    {
+        return new StorageError
+        {
+            Code = StorageErrorCode.InvalidTag,
+            Message = message,
+            BucketName = bucketName,
+            ObjectKey = objectKey,
+            ProviderName = options.ProviderName,
+            SuggestedHttpStatusCode = 400
         };
     }
 

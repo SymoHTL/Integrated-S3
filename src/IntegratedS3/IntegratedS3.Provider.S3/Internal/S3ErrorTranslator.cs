@@ -43,6 +43,12 @@ internal static class S3ErrorTranslator
                      ? $"The supplied checksum for object '{objectKey}' in bucket '{bucketName}' did not match the received payload."
                      : ex.Message),
 
+            "InvalidTag" =>
+                (StorageErrorCode.InvalidTag,
+                 !string.IsNullOrEmpty(objectKey)
+                     ? $"One or more tags supplied for object '{objectKey}' in bucket '{bucketName}' were invalid."
+                     : ex.Message),
+
             "AccessDenied" =>
                 (StorageErrorCode.AccessDenied,
                  $"Access denied for bucket '{bucketName}': {ex.Message}"),

@@ -7,6 +7,7 @@ public enum StorageErrorCode
     BucketNotFound,
     CorsConfigurationNotFound,
     AccessDenied,
+    InvalidTag,
     InvalidChecksum,
     InvalidRange,
     PreconditionFailed,

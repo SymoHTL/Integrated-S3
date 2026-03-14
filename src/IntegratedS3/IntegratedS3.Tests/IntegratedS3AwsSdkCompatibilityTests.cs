@@ -194,6 +194,72 @@ public sealed class IntegratedS3AwsSdkCompatibilityTests : IClassFixture<WebUiAp
     }
 
     [Fact]
+    public async Task AmazonS3Client_DeleteMissingObjects_IsIdempotentAndCreatesVersionedDeleteMarkers()
+    {
+        const string accessKeyId = "aws-sdk-delete-missing-access";
+        const string secretAccessKey = "aws-sdk-delete-missing-secret";
+
+        await using var isolatedClient = await CreateAuthenticatedLoopbackClientAsync(accessKeyId, secretAccessKey);
+        using var s3Client = CreateS3Client(isolatedClient.BaseAddress!, accessKeyId, secretAccessKey);
+
+        const string unversionedBucket = "aws-sdk-delete-missing";
+        const string versionedBucket = "aws-sdk-delete-missing-versioned";
+        const string objectKey = "docs/missing.txt";
+
+        Assert.Equal(HttpStatusCode.OK, (await s3Client.PutBucketAsync(new PutBucketRequest
+        {
+            BucketName = unversionedBucket
+        })).HttpStatusCode);
+
+        var deleteMissing = await s3Client.DeleteObjectAsync(new DeleteObjectRequest
+        {
+            BucketName = unversionedBucket,
+            Key = objectKey
+        });
+
+        Assert.Equal(HttpStatusCode.NoContent, deleteMissing.HttpStatusCode);
+        Assert.Null(deleteMissing.VersionId);
+        Assert.True(string.IsNullOrEmpty(deleteMissing.DeleteMarker));
+
+        Assert.Equal(HttpStatusCode.OK, (await s3Client.PutBucketAsync(new PutBucketRequest
+        {
+            BucketName = versionedBucket
+        })).HttpStatusCode);
+
+        Assert.Equal(HttpStatusCode.OK, (await s3Client.PutBucketVersioningAsync(new PutBucketVersioningRequest
+        {
+            BucketName = versionedBucket,
+            VersioningConfig = new S3BucketVersioningConfig
+            {
+                Status = VersionStatus.Enabled
+            }
+        })).HttpStatusCode);
+
+        var deleteVersionedMissing = await s3Client.DeleteObjectAsync(new DeleteObjectRequest
+        {
+            BucketName = versionedBucket,
+            Key = objectKey
+        });
+
+        Assert.Equal(HttpStatusCode.NoContent, deleteVersionedMissing.HttpStatusCode);
+        Assert.Equal("true", deleteVersionedMissing.DeleteMarker);
+        Assert.False(string.IsNullOrWhiteSpace(deleteVersionedMissing.VersionId));
+
+        var versionsResponse = await s3Client.ListVersionsAsync(new ListVersionsRequest
+        {
+            BucketName = versionedBucket,
+            Prefix = objectKey
+        });
+
+        Assert.Equal(HttpStatusCode.OK, versionsResponse.HttpStatusCode);
+        var deleteMarker = Assert.Single(versionsResponse.Versions);
+        Assert.Equal(objectKey, deleteMarker.Key);
+        Assert.Equal(deleteVersionedMissing.VersionId, deleteMarker.VersionId);
+        Assert.True(deleteMarker.IsDeleteMarker);
+        Assert.True(deleteMarker.IsLatest);
+    }
+
+    [Fact]
     public async Task AmazonS3Client_PutObject_WithSha1Checksum_ExposesSdkChecksumFieldsAgainstIntegratedS3()
     {
         const string accessKeyId = "aws-sdk-sha1-access";
@@ -1867,6 +1933,50 @@ public sealed class IntegratedS3AwsSdkCompatibilityTests : IClassFixture<WebUiAp
         Assert.Equal(HttpStatusCode.OK, clearedHistoricalTags.HttpStatusCode);
         Assert.Equal(v1Put.VersionId, clearedHistoricalTags.VersionId);
         Assert.True(clearedHistoricalTags.Tagging is null || clearedHistoricalTags.Tagging.Count == 0);
+    }
+
+    [Fact]
+    public async Task AmazonS3Client_PutObjectTagging_RejectsInvalidTagSets()
+    {
+        const string accessKeyId = "aws-sdk-invalid-tagging-access";
+        const string secretAccessKey = "aws-sdk-invalid-tagging-secret";
+
+        await using var isolatedClient = await CreateAuthenticatedLoopbackClientAsync(accessKeyId, secretAccessKey);
+        using var s3Client = CreateS3Client(isolatedClient.BaseAddress!, accessKeyId, secretAccessKey);
+
+        const string bucketName = "aws-sdk-invalid-tagging-bucket";
+        const string objectKey = "docs/tagged.txt";
+
+        Assert.Equal(HttpStatusCode.OK, (await s3Client.PutBucketAsync(new PutBucketRequest
+        {
+            BucketName = bucketName
+        })).HttpStatusCode);
+
+        Assert.Equal(HttpStatusCode.OK, (await s3Client.PutObjectAsync(new PutObjectRequest
+        {
+            BucketName = bucketName,
+            Key = objectKey,
+            ContentBody = "tag me",
+            ContentType = "text/plain",
+            UseChunkEncoding = false
+        })).HttpStatusCode);
+
+        var exception = await Assert.ThrowsAsync<AmazonS3Exception>(() => s3Client.PutObjectTaggingAsync(new PutObjectTaggingRequest
+        {
+            BucketName = bucketName,
+            Key = objectKey,
+            Tagging = new Tagging
+            {
+                TagSet = Enumerable.Range(0, 11).Select(index => new Tag
+                {
+                    Key = $"tag-{index}",
+                    Value = $"value-{index}"
+                }).ToList()
+            }
+        }));
+
+        Assert.Equal(HttpStatusCode.BadRequest, exception.StatusCode);
+        Assert.Equal("InvalidTag", exception.ErrorCode);
     }
 
     private Task<WebUiApplicationFactory.IsolatedWebUiClient> CreateAuthenticatedLoopbackClientAsync(

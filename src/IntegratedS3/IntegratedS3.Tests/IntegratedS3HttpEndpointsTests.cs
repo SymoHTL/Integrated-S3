@@ -138,8 +138,16 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
         var getVersionedObjectResponse = await client.GetAsync($"/integrated-s3/versioned-bucket/docs/versioned.txt?versionId={Uri.EscapeDataString(versionId)}");
         Assert.Equal(HttpStatusCode.OK, getVersionedObjectResponse.StatusCode);
         Assert.Equal(checksum, Assert.Single(getVersionedObjectResponse.Headers.GetValues("x-amz-checksum-sha256")));
+        Assert.Equal("1", Assert.Single(getVersionedObjectResponse.Headers.GetValues("x-amz-tagging-count")));
         Assert.Equal(versionId, Assert.Single(getVersionedObjectResponse.Headers.GetValues("x-amz-version-id")));
         Assert.Equal(payload, await getVersionedObjectResponse.Content.ReadAsStringAsync());
+
+        using var headVersionedObjectRequest = new HttpRequestMessage(HttpMethod.Head, $"/integrated-s3/versioned-bucket/docs/versioned.txt?versionId={Uri.EscapeDataString(versionId)}");
+        var headVersionedObjectResponse = await client.SendAsync(headVersionedObjectRequest);
+        Assert.Equal(HttpStatusCode.OK, headVersionedObjectResponse.StatusCode);
+        Assert.Equal(checksum, Assert.Single(headVersionedObjectResponse.Headers.GetValues("x-amz-checksum-sha256")));
+        Assert.Equal("1", Assert.Single(headVersionedObjectResponse.Headers.GetValues("x-amz-tagging-count")));
+        Assert.Equal(versionId, Assert.Single(headVersionedObjectResponse.Headers.GetValues("x-amz-version-id")));
 
         var getTaggingResponse = await client.GetAsync($"/integrated-s3/versioned-bucket/docs/versioned.txt?tagging&versionId={Uri.EscapeDataString(versionId)}");
         Assert.Equal(HttpStatusCode.OK, getTaggingResponse.StatusCode);
@@ -1673,6 +1681,40 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
     }
 
     [Fact]
+    public async Task S3CompatibleDeleteMissingObjects_AreIdempotentAndVersionedDeletesCreateDeleteMarkers()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        await client.PutAsync("/integrated-s3/buckets/delete-missing-bucket", content: null);
+
+        var deleteMissingResponse = await client.DeleteAsync("/integrated-s3/delete-missing-bucket/docs/missing.txt");
+        Assert.Equal(HttpStatusCode.NoContent, deleteMissingResponse.StatusCode);
+        Assert.False(deleteMissingResponse.Headers.Contains("x-amz-delete-marker"));
+        Assert.False(deleteMissingResponse.Headers.Contains("x-amz-version-id"));
+
+        await client.PutAsync("/integrated-s3/buckets/delete-missing-versioned-bucket", content: null);
+        await EnableBucketVersioningAsync(client, "delete-missing-versioned-bucket");
+
+        var deleteVersionedResponse = await client.DeleteAsync("/integrated-s3/delete-missing-versioned-bucket/docs/missing.txt");
+        Assert.Equal(HttpStatusCode.NoContent, deleteVersionedResponse.StatusCode);
+        Assert.Equal("true", Assert.Single(deleteVersionedResponse.Headers.GetValues("x-amz-delete-marker")));
+        var deleteMarkerVersionId = Assert.Single(deleteVersionedResponse.Headers.GetValues("x-amz-version-id"));
+
+        var currentGetResponse = await client.GetAsync("/integrated-s3/delete-missing-versioned-bucket/docs/missing.txt");
+        Assert.Equal(HttpStatusCode.NotFound, currentGetResponse.StatusCode);
+        Assert.Equal("true", Assert.Single(currentGetResponse.Headers.GetValues("x-amz-delete-marker")));
+        Assert.Equal(deleteMarkerVersionId, Assert.Single(currentGetResponse.Headers.GetValues("x-amz-version-id")));
+
+        var versionsResponse = await client.GetAsync("/integrated-s3/delete-missing-versioned-bucket?versions");
+        Assert.Equal(HttpStatusCode.OK, versionsResponse.StatusCode);
+        var versionsDocument = XDocument.Parse(await versionsResponse.Content.ReadAsStringAsync());
+        var deleteMarker = Assert.Single(versionsDocument.Root!.Elements("DeleteMarker"));
+        Assert.Equal("docs/missing.txt", deleteMarker.Element("Key")?.Value);
+        Assert.Equal(deleteMarkerVersionId, deleteMarker.Element("VersionId")?.Value);
+        Assert.Equal("true", deleteMarker.Element("IsLatest")?.Value);
+    }
+
+    [Fact]
     public async Task S3CompatibleBatchDelete_ReturnsXmlDeleteResultAndDeletesObjects()
     {
         using var client = await _factory.CreateClientAsync();
@@ -1713,6 +1755,49 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
 
         var survivingHead = await client.SendAsync(new HttpRequestMessage(HttpMethod.Head, "/integrated-s3/buckets/batch-delete-bucket/objects/b.txt"));
         Assert.Equal(HttpStatusCode.OK, survivingHead.StatusCode);
+    }
+
+    [Fact]
+    public async Task S3CompatibleBatchDelete_ReturnsNoSuchVersionForExplicitMissingVersions()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        await client.PutAsync("/integrated-s3/buckets/batch-delete-versions-bucket", content: null);
+        await EnableBucketVersioningAsync(client, "batch-delete-versions-bucket");
+
+        using var putObjectRequest = new HttpRequestMessage(HttpMethod.Put, "/integrated-s3/batch-delete-versions-bucket/docs/history.txt")
+        {
+            Content = new StringContent("version one", Encoding.UTF8, "text/plain")
+        };
+
+        var putObjectResponse = await client.SendAsync(putObjectRequest);
+        Assert.Equal(HttpStatusCode.OK, putObjectResponse.StatusCode);
+        var versionId = Assert.Single(putObjectResponse.Headers.GetValues("x-amz-version-id"));
+
+        var deleteBody = $"""
+<Delete>
+  <Object><Key>docs/history.txt</Key><VersionId>{versionId}</VersionId></Object>
+  <Object><Key>docs/history.txt</Key><VersionId>missing-version</VersionId></Object>
+</Delete>
+""";
+
+        using var deleteRequest = new HttpRequestMessage(HttpMethod.Post, "/integrated-s3/batch-delete-versions-bucket?delete")
+        {
+            Content = new StringContent(deleteBody, Encoding.UTF8, "application/xml")
+        };
+
+        var deleteResponse = await client.SendAsync(deleteRequest);
+        Assert.Equal(HttpStatusCode.OK, deleteResponse.StatusCode);
+
+        var deleteDocument = XDocument.Parse(await deleteResponse.Content.ReadAsStringAsync());
+        var deleted = Assert.Single(deleteDocument.Root!.Elements("Deleted"));
+        Assert.Equal("docs/history.txt", deleted.Element("Key")?.Value);
+        Assert.Equal(versionId, deleted.Element("VersionId")?.Value);
+
+        var error = Assert.Single(deleteDocument.Root.Elements("Error"));
+        Assert.Equal("docs/history.txt", error.Element("Key")?.Value);
+        Assert.Equal("missing-version", error.Element("VersionId")?.Value);
+        Assert.Equal("NoSuchVersion", error.Element("Code")?.Value);
     }
 
     [Fact]
@@ -1757,8 +1842,45 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
         Assert.Equal("test", tags["environment"]);
         Assert.Equal("copilot", tags["owner"]);
 
+        var getObjectResponse = await client.GetAsync("/integrated-s3/buckets/tagging-bucket/objects/docs/tagged.txt");
+        Assert.Equal(HttpStatusCode.OK, getObjectResponse.StatusCode);
+        Assert.Equal("2", Assert.Single(getObjectResponse.Headers.GetValues("x-amz-tagging-count")));
+
         var headObjectResponse = await client.SendAsync(new HttpRequestMessage(HttpMethod.Head, "/integrated-s3/buckets/tagging-bucket/objects/docs/tagged.txt"));
         Assert.Equal(HttpStatusCode.OK, headObjectResponse.StatusCode);
+        Assert.Equal("2", Assert.Single(headObjectResponse.Headers.GetValues("x-amz-tagging-count")));
+    }
+
+    [Fact]
+    public async Task S3CompatibleObjectTagging_RejectsInvalidTagSets()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        await client.PutAsync("/integrated-s3/buckets/invalid-tagging-bucket", content: null);
+        await client.PutAsync(
+            "/integrated-s3/buckets/invalid-tagging-bucket/objects/docs/tagged.txt",
+            new StringContent("hello tags", Encoding.UTF8, "text/plain"));
+
+        var tagSet = string.Join(Environment.NewLine, Enumerable.Range(0, 11).Select(index =>
+            $"    <Tag><Key>tag-{index}</Key><Value>value-{index}</Value></Tag>"));
+        var taggingBody = $"""
+<Tagging>
+  <TagSet>
+{tagSet}
+  </TagSet>
+</Tagging>
+""";
+
+        using var putTaggingRequest = new HttpRequestMessage(HttpMethod.Put, "/integrated-s3/invalid-tagging-bucket/docs/tagged.txt?tagging")
+        {
+            Content = new StringContent(taggingBody, Encoding.UTF8, "application/xml")
+        };
+
+        var putTaggingResponse = await client.SendAsync(putTaggingRequest);
+        Assert.Equal(HttpStatusCode.BadRequest, putTaggingResponse.StatusCode);
+
+        var errorDocument = XDocument.Parse(await putTaggingResponse.Content.ReadAsStringAsync());
+        Assert.Equal("InvalidTag", GetRequiredElementValue(errorDocument, "Code"));
     }
 
     [Fact]
