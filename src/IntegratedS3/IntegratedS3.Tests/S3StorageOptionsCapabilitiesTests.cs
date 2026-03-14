@@ -25,6 +25,7 @@ public sealed class S3StorageOptionsCapabilitiesTests
 
         Assert.Equal(StorageCapabilitySupport.Native, caps.PathStyleAddressing);
         Assert.Equal(StorageCapabilitySupport.Unsupported, caps.VirtualHostedStyleAddressing);
+        Assert.Equal(StorageCapabilitySupport.Native, caps.ObjectLock);
     }
 
     [Fact]
@@ -70,6 +71,7 @@ public sealed class S3StorageOptionsCapabilitiesTests
 
         Assert.Equal(StorageCapabilitySupport.Native, caps.PathStyleAddressing);
         Assert.Equal(StorageCapabilitySupport.Unsupported, caps.VirtualHostedStyleAddressing);
+        Assert.Equal(StorageCapabilitySupport.Native, caps.ObjectLock);
     }
 
     [Fact]

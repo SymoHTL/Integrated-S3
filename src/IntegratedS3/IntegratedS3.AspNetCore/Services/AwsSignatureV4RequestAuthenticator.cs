@@ -1,6 +1,8 @@
 using System.Diagnostics;
 using System.Globalization;
 using System.Security.Claims;
+using System.Security.Cryptography;
+using System.Text;
 using IntegratedS3.Abstractions.Observability;
 using IntegratedS3.Protocol;
 using Microsoft.AspNetCore.Http;
@@ -16,6 +18,8 @@ internal sealed class AwsSignatureV4RequestAuthenticator(
     private const string Algorithm = "AWS4-HMAC-SHA256";
     private const string AwsContentSha256HeaderName = "x-amz-content-sha256";
     private const string AwsDateHeaderName = "x-amz-date";
+    private const string AwsSecurityTokenHeaderName = "x-amz-security-token";
+    private const string AwsSecurityTokenQueryKey = "X-Amz-Security-Token";
     private const string PresignedSignatureQueryKey = "X-Amz-Signature";
     private const string UnsignedPayload = "UNSIGNED-PAYLOAD";
     private const string EmptyPayloadSha256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
@@ -32,7 +36,7 @@ internal sealed class AwsSignatureV4RequestAuthenticator(
 
         var correlationId = IntegratedS3AspNetCoreTelemetry.GetOrCreateCorrelationId(httpContext);
         var authorizationHeader = httpContext.Request.Headers.Authorization.ToString();
-        if (S3SigV4RequestParser.TryParseAuthorizationHeader(authorizationHeader, out var headerAuthorization, out var headerError)) {
+        if (S3SigV4RequestParser.TryParseAuthorizationHeader(authorizationHeader, EnumerateHeaders(httpContext.Request), out var headerAuthorization, out var headerError)) {
             using var activity = StartAuthenticationActivity(httpContext, correlationId, "sigv4-header", headerAuthorization?.CredentialScope.AccessKeyId);
             var result = ValidateHeaderAuthorization(httpContext, settings, headerAuthorization, headerError);
             ObserveAuthenticationResult(httpContext, activity, "sigv4-header", headerAuthorization?.CredentialScope.AccessKeyId, result);
@@ -121,6 +125,10 @@ internal sealed class AwsSignatureV4RequestAuthenticator(
             return IntegratedS3RequestAuthenticationResult.Failure("AuthorizationHeaderMalformed", "The authorization header must sign the 'host' header.", statusCode: 400);
         }
 
+        if (!TryValidateHeaderSecurityToken(authorization, credential!, out var securityTokenErrorCode, out var securityTokenError, out statusCode)) {
+            return IntegratedS3RequestAuthenticationResult.Failure(securityTokenErrorCode!, securityTokenError!, statusCode);
+        }
+
         if (!TryParseHeaderTimestamp(httpContext.Request.Headers[AwsDateHeaderName].ToString(), out var requestTimestampUtc)) {
             return IntegratedS3RequestAuthenticationResult.Failure("AccessDenied", "The request must include a valid x-amz-date header.");
         }
@@ -139,7 +147,7 @@ internal sealed class AwsSignatureV4RequestAuthenticator(
 
         var stringToSign = S3SigV4Signer.BuildStringToSign(authorization.Algorithm, requestTimestampUtc, authorization.CredentialScope, canonicalRequest!.CanonicalRequestHashHex);
         var expectedSignature = S3SigV4Signer.ComputeSignature(credential!.SecretAccessKey, authorization.CredentialScope, stringToSign);
-        if (!string.Equals(expectedSignature, authorization.Signature, StringComparison.OrdinalIgnoreCase)) {
+        if (!FixedTimeEqualsOrdinalIgnoreCase(expectedSignature, authorization.Signature)) {
             return IntegratedS3RequestAuthenticationResult.Failure("SignatureDoesNotMatch", "The request signature we calculated does not match the signature you provided.");
         }
 
@@ -181,6 +189,10 @@ internal sealed class AwsSignatureV4RequestAuthenticator(
             return IntegratedS3RequestAuthenticationResult.Failure("AuthorizationQueryParametersError", "The presigned request must sign the 'host' header.", statusCode: 400);
         }
 
+        if (!TryValidatePresignedSecurityToken(presignedRequest, credential!, out var securityTokenErrorCode, out var securityTokenError, out statusCode)) {
+            return IntegratedS3RequestAuthenticationResult.Failure(securityTokenErrorCode!, securityTokenError!, statusCode);
+        }
+
         if (!TryResolvePayloadHash(httpContext.Request, isPresigned: true, signedHeaders: presignedRequest.SignedHeaders, out var payloadHash, out var payloadHashError, out statusCode)) {
             return IntegratedS3RequestAuthenticationResult.Failure("InvalidRequest", payloadHashError!, statusCode);
         }
@@ -191,11 +203,86 @@ internal sealed class AwsSignatureV4RequestAuthenticator(
 
         var stringToSign = S3SigV4Signer.BuildStringToSign(presignedRequest.Algorithm, presignedRequest.SignedAtUtc, presignedRequest.CredentialScope, canonicalRequest!.CanonicalRequestHashHex);
         var expectedSignature = S3SigV4Signer.ComputeSignature(credential!.SecretAccessKey, presignedRequest.CredentialScope, stringToSign);
-        if (!string.Equals(expectedSignature, presignedRequest.Signature, StringComparison.OrdinalIgnoreCase)) {
+        if (!FixedTimeEqualsOrdinalIgnoreCase(expectedSignature, presignedRequest.Signature)) {
             return IntegratedS3RequestAuthenticationResult.Failure("SignatureDoesNotMatch", "The presigned request signature does not match the expected signature.");
         }
 
         return IntegratedS3RequestAuthenticationResult.Success(CreatePrincipal(credential));
+    }
+
+    private static bool TryValidateHeaderSecurityToken(
+        S3SigV4AuthorizationHeader authorization,
+        IntegratedS3AccessKeyCredential credential,
+        out string? errorCode,
+        out string? error,
+        out int statusCode)
+    {
+        if (string.IsNullOrWhiteSpace(credential.SessionToken)) {
+            errorCode = null;
+            error = null;
+            statusCode = 200;
+            return true;
+        }
+
+        if (!authorization.SignedHeaders.Contains(AwsSecurityTokenHeaderName, StringComparer.Ordinal)) {
+            errorCode = "AuthorizationHeaderMalformed";
+            error = $"The authorization header must sign the '{AwsSecurityTokenHeaderName}' header when temporary credentials are used.";
+            statusCode = 400;
+            return false;
+        }
+
+        if (string.IsNullOrWhiteSpace(authorization.SecurityToken)) {
+            errorCode = "AuthorizationHeaderMalformed";
+            error = $"The request must include the {AwsSecurityTokenHeaderName} header when temporary credentials are used.";
+            statusCode = 400;
+            return false;
+        }
+
+        if (!FixedTimeEqualsOrdinal(credential.SessionToken, authorization.SecurityToken)) {
+            errorCode = "AccessDenied";
+            error = $"The provided {AwsSecurityTokenHeaderName} is invalid.";
+            statusCode = 403;
+            return false;
+        }
+
+        errorCode = null;
+        error = null;
+        statusCode = 200;
+        return true;
+    }
+
+    private static bool TryValidatePresignedSecurityToken(
+        S3SigV4PresignedRequest presignedRequest,
+        IntegratedS3AccessKeyCredential credential,
+        out string? errorCode,
+        out string? error,
+        out int statusCode)
+    {
+        if (string.IsNullOrWhiteSpace(credential.SessionToken)) {
+            errorCode = null;
+            error = null;
+            statusCode = 200;
+            return true;
+        }
+
+        if (string.IsNullOrWhiteSpace(presignedRequest.SecurityToken)) {
+            errorCode = "AuthorizationQueryParametersError";
+            error = $"The presigned request must include {AwsSecurityTokenQueryKey} when temporary credentials are used.";
+            statusCode = 400;
+            return false;
+        }
+
+        if (!FixedTimeEqualsOrdinal(credential.SessionToken, presignedRequest.SecurityToken)) {
+            errorCode = "AccessDenied";
+            error = $"The provided {AwsSecurityTokenQueryKey} is invalid.";
+            statusCode = 403;
+            return false;
+        }
+
+        errorCode = null;
+        error = null;
+        statusCode = 200;
+        return true;
     }
 
     private static ClaimsPrincipal CreatePrincipal(IntegratedS3AccessKeyCredential credential)
@@ -216,6 +303,18 @@ internal sealed class AwsSignatureV4RequestAuthenticator(
     {
         credential = settings.AccessKeyCredentials.FirstOrDefault(candidate => string.Equals(candidate.AccessKeyId, accessKeyId, StringComparison.Ordinal));
         return credential is not null;
+    }
+
+    private static bool FixedTimeEqualsOrdinal(string expected, string actual)
+    {
+        return CryptographicOperations.FixedTimeEquals(
+            Encoding.UTF8.GetBytes(expected),
+            Encoding.UTF8.GetBytes(actual));
+    }
+
+    private static bool FixedTimeEqualsOrdinalIgnoreCase(string expected, string actual)
+    {
+        return FixedTimeEqualsOrdinal(expected.ToUpperInvariant(), actual.ToUpperInvariant());
     }
 
     private static bool TryValidateCredentialScope(S3SigV4CredentialScope credentialScope, IntegratedS3Options settings, out string? error, out int statusCode)
@@ -364,5 +463,10 @@ internal sealed class AwsSignatureV4RequestAuthenticator(
     private static IEnumerable<KeyValuePair<string, string?>> EnumerateQueryParameters(HttpRequest request)
     {
         return S3SigV4QueryStringParser.Parse(request.QueryString.Value);
+    }
+
+    private static IEnumerable<KeyValuePair<string, string?>> EnumerateHeaders(HttpRequest request)
+    {
+        return request.Headers.Select(static header => new KeyValuePair<string, string?>(header.Key, header.Value.ToString()));
     }
 }

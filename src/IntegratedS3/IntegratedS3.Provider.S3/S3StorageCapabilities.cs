@@ -27,7 +27,7 @@ public static class S3StorageCapabilities
         BatchDelete = StorageCapabilitySupport.Unsupported,
         AccessControl = StorageCapabilitySupport.Unsupported,
         Cors = StorageCapabilitySupport.Native,
-        ObjectLock = StorageCapabilitySupport.Unsupported,
+        ObjectLock = StorageCapabilitySupport.Native,
         ServerSideEncryption = StorageCapabilitySupport.Native,
         ServerSideEncryptionDetails = CreateServerSideEncryptionDescriptor(),
         Checksums = StorageCapabilitySupport.Native,

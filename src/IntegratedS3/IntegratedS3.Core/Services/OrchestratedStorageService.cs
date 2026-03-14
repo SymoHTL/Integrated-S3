@@ -183,6 +183,75 @@ internal sealed class OrchestratedStorageService(
         return result;
     }
 
+    public async ValueTask<StorageResult<BucketDefaultEncryptionConfiguration>> GetBucketDefaultEncryptionAsync(string bucketName, CancellationToken cancellationToken = default)
+    {
+        return await ExecuteReadAsync(
+            StorageOperationType.GetBucketDefaultEncryption,
+            (backend, ct) => backend.GetBucketDefaultEncryptionAsync(bucketName, ct),
+            onSuccess: null,
+            cancellationToken);
+    }
+
+    public async ValueTask<StorageResult<BucketDefaultEncryptionConfiguration>> PutBucketDefaultEncryptionAsync(PutBucketDefaultEncryptionRequest request, CancellationToken cancellationToken = default)
+    {
+        var backend = GetPrimaryBackend();
+        var strictReplicationError = await GetStrictReplicaWritePreflightErrorAsync(backend, request.BucketName, objectKey: null, versionId: null, cancellationToken: cancellationToken);
+        if (strictReplicationError is not null) {
+            return StorageResult<BucketDefaultEncryptionConfiguration>.Failure(strictReplicationError);
+        }
+
+        var result = await backend.PutBucketDefaultEncryptionAsync(request, cancellationToken);
+        ObserveResult(backend, result);
+        if (result.IsSuccess && result.Value is not null) {
+            var replicationError = await ApplyReplicaWritePolicyAsync(
+                StorageOperationType.PutBucketDefaultEncryption,
+                backend,
+                request.BucketName,
+                objectKey: null,
+                versionId: null,
+                writeThroughOperation: (replicaBackend, ct) => WriteReplicaPutBucketDefaultEncryptionAsync(replicaBackend, new PutBucketDefaultEncryptionRequest
+                {
+                    BucketName = request.BucketName,
+                    Rule = CloneBucketDefaultEncryptionRule(request.Rule)
+                }, ct),
+                asyncOperation: (replicaBackend, ct) => RepairReplicaBucketDefaultEncryptionAsync(backend, replicaBackend, request.BucketName, ct),
+                CancellationToken.None);
+            if (replicationError is not null) {
+                return StorageResult<BucketDefaultEncryptionConfiguration>.Failure(replicationError);
+            }
+        }
+
+        return result;
+    }
+
+    public async ValueTask<StorageResult> DeleteBucketDefaultEncryptionAsync(DeleteBucketDefaultEncryptionRequest request, CancellationToken cancellationToken = default)
+    {
+        var backend = GetPrimaryBackend();
+        var strictReplicationError = await GetStrictReplicaWritePreflightErrorAsync(backend, request.BucketName, objectKey: null, versionId: null, cancellationToken: cancellationToken);
+        if (strictReplicationError is not null) {
+            return StorageResult.Failure(strictReplicationError);
+        }
+
+        var result = await backend.DeleteBucketDefaultEncryptionAsync(request, cancellationToken);
+        ObserveResult(backend, result);
+        if (result.IsSuccess) {
+            var replicationError = await ApplyReplicaWritePolicyAsync(
+                StorageOperationType.DeleteBucketDefaultEncryption,
+                backend,
+                request.BucketName,
+                objectKey: null,
+                versionId: null,
+                writeThroughOperation: (replicaBackend, ct) => WriteReplicaDeleteBucketDefaultEncryptionAsync(replicaBackend, request, ct),
+                asyncOperation: (replicaBackend, ct) => RepairReplicaBucketDefaultEncryptionAsync(backend, replicaBackend, request.BucketName, ct),
+                CancellationToken.None);
+            if (replicationError is not null) {
+                return StorageResult.Failure(replicationError);
+            }
+        }
+
+        return result;
+    }
+
     public async ValueTask<StorageResult<BucketInfo>> HeadBucketAsync(string bucketName, CancellationToken cancellationToken = default)
     {
         return await ExecuteReadAsync(
@@ -252,11 +321,37 @@ internal sealed class OrchestratedStorageService(
         }
     }
 
+    public async IAsyncEnumerable<MultipartUploadPart> ListMultipartPartsAsync(ListMultipartPartsRequest request, [EnumeratorCancellation] CancellationToken cancellationToken = default)
+    {
+        var backend = await SelectReadBackendAsync(cancellationToken);
+        await foreach (var part in backend.ListMultipartPartsAsync(request, cancellationToken).WithCancellation(cancellationToken)) {
+            yield return part;
+        }
+    }
+
     public async ValueTask<StorageResult<GetObjectResponse>> GetObjectAsync(GetObjectRequest request, CancellationToken cancellationToken = default)
     {
         return await ExecuteReadAsync(
             StorageOperationType.GetObject,
             (backend, ct) => backend.GetObjectAsync(request, ct),
+            onSuccess: null,
+            cancellationToken);
+    }
+
+    public async ValueTask<StorageResult<ObjectRetentionInfo>> GetObjectRetentionAsync(GetObjectRetentionRequest request, CancellationToken cancellationToken = default)
+    {
+        return await ExecuteReadAsync(
+            StorageOperationType.GetObject,
+            (backend, ct) => backend.GetObjectRetentionAsync(request, ct),
+            onSuccess: null,
+            cancellationToken);
+    }
+
+    public async ValueTask<StorageResult<ObjectLegalHoldInfo>> GetObjectLegalHoldAsync(GetObjectLegalHoldRequest request, CancellationToken cancellationToken = default)
+    {
+        return await ExecuteReadAsync(
+            StorageOperationType.GetObject,
+            (backend, ct) => backend.GetObjectLegalHoldAsync(request, ct),
             onSuccess: null,
             cancellationToken);
     }
@@ -468,6 +563,19 @@ internal sealed class OrchestratedStorageService(
         }
 
         var result = await backend.UploadMultipartPartAsync(request, cancellationToken);
+        ObserveResult(backend, result);
+        return result;
+    }
+
+    public async ValueTask<StorageResult<MultipartUploadPart>> UploadPartCopyAsync(UploadPartCopyRequest request, CancellationToken cancellationToken = default)
+    {
+        var backend = GetPrimaryBackend();
+        var replicationError = GetMultipartReplicationError(backend, request.BucketName, request.Key);
+        if (replicationError is not null) {
+            return StorageResult<MultipartUploadPart>.Failure(replicationError);
+        }
+
+        var result = await backend.UploadPartCopyAsync(request, cancellationToken);
         ObserveResult(backend, result);
         return result;
     }
@@ -1177,6 +1285,54 @@ internal sealed class OrchestratedStorageService(
         return primaryCorsResult.Error ?? CreatePrimaryReplicationSourceError(primaryBackend, bucketName, objectKey: null, versionId: null, message: "Primary bucket CORS configuration could not be resolved for replica repair.");
     }
 
+    private async ValueTask<StorageError?> WriteReplicaPutBucketDefaultEncryptionAsync(IStorageBackend replicaBackend, PutBucketDefaultEncryptionRequest request, CancellationToken cancellationToken)
+    {
+        var replicaResult = await replicaBackend.PutBucketDefaultEncryptionAsync(request, cancellationToken);
+        ObserveResult(replicaBackend, replicaResult);
+        if (!replicaResult.IsSuccess || replicaResult.Value is null) {
+            return replicaResult.Error ?? CreateReplicaOperationError(replicaBackend, request.BucketName, objectKey: null, versionId: null, message: "Replica bucket default encryption update did not return configuration metadata.");
+        }
+
+        return null;
+    }
+
+    private async ValueTask<StorageError?> WriteReplicaDeleteBucketDefaultEncryptionAsync(IStorageBackend replicaBackend, DeleteBucketDefaultEncryptionRequest request, CancellationToken cancellationToken)
+    {
+        var replicaResult = await replicaBackend.DeleteBucketDefaultEncryptionAsync(request, cancellationToken);
+        ObserveResult(replicaBackend, replicaResult);
+        if (!replicaResult.IsSuccess && replicaResult.Error?.Code is not (StorageErrorCode.BucketEncryptionConfigurationNotFound or StorageErrorCode.BucketNotFound)) {
+            return replicaResult.Error ?? CreateReplicaOperationError(replicaBackend, request.BucketName, objectKey: null, versionId: null, message: "Replica bucket default encryption delete did not succeed.");
+        }
+
+        return null;
+    }
+
+    private async ValueTask<StorageError?> RepairReplicaBucketDefaultEncryptionAsync(
+        IStorageBackend primaryBackend,
+        IStorageBackend replicaBackend,
+        string bucketName,
+        CancellationToken cancellationToken)
+    {
+        var primaryEncryptionResult = await primaryBackend.GetBucketDefaultEncryptionAsync(bucketName, cancellationToken);
+        ObserveResult(primaryBackend, primaryEncryptionResult);
+        if (primaryEncryptionResult.IsSuccess && primaryEncryptionResult.Value is not null) {
+            return await WriteReplicaPutBucketDefaultEncryptionAsync(replicaBackend, new PutBucketDefaultEncryptionRequest
+            {
+                BucketName = bucketName,
+                Rule = CloneBucketDefaultEncryptionRule(primaryEncryptionResult.Value.Rule)
+            }, cancellationToken);
+        }
+
+        if (primaryEncryptionResult.Error?.Code == StorageErrorCode.BucketEncryptionConfigurationNotFound) {
+            return await WriteReplicaDeleteBucketDefaultEncryptionAsync(replicaBackend, new DeleteBucketDefaultEncryptionRequest
+            {
+                BucketName = bucketName
+            }, cancellationToken);
+        }
+
+        return primaryEncryptionResult.Error ?? CreatePrimaryReplicationSourceError(primaryBackend, bucketName, objectKey: null, versionId: null, message: "Primary bucket default encryption configuration could not be resolved for replica repair.");
+    }
+
     private ValueTask<StorageError?> WriteReplicaBufferedObjectAsync(IStorageBackend replicaBackend, PutObjectRequest request, string tempFilePath, CancellationToken cancellationToken)
     {
         return WriteReplicaBufferedObjectAsync(
@@ -1550,6 +1706,15 @@ internal sealed class OrchestratedStorageService(
     private static IReadOnlyList<BucketCorsRule> CloneCorsRules(IReadOnlyList<BucketCorsRule> rules)
     {
         return rules.Select(CloneCorsRule).ToArray();
+    }
+
+    private static BucketDefaultEncryptionRule CloneBucketDefaultEncryptionRule(BucketDefaultEncryptionRule rule)
+    {
+        return new BucketDefaultEncryptionRule
+        {
+            Algorithm = rule.Algorithm,
+            KeyId = rule.KeyId
+        };
     }
 
     private static BucketCorsRule CloneCorsRule(BucketCorsRule rule)

@@ -9,7 +9,7 @@ internal sealed class InMemoryStorageAuthorizationCompatibilityService(Orchestra
     : IStorageAuthorizationCompatibilityService
 {
     private readonly ConcurrentDictionary<string, BucketCompatibilityState> _bucketStates = new(StringComparer.Ordinal);
-    private readonly ConcurrentDictionary<ObjectCompatibilityKey, StorageCannedAcl> _objectAcls = new();
+    private readonly ConcurrentDictionary<ObjectCompatibilityKey, ObjectAclCompatibilityState> _objectAcls = new();
 
     public ValueTask RecordBucketCreatedAsync(string bucketName, CancellationToken cancellationToken = default)
     {
@@ -43,7 +43,7 @@ internal sealed class InMemoryStorageAuthorizationCompatibilityService(Orchestra
         ArgumentException.ThrowIfNullOrWhiteSpace(key);
         cancellationToken.ThrowIfCancellationRequested();
 
-        _objectAcls[new ObjectCompatibilityKey(bucketName, key)] = StorageCannedAcl.Private;
+        _objectAcls[new ObjectCompatibilityKey(bucketName, key)] = CreateObjectAclState(StorageCannedAcl.Private);
         return ValueTask.CompletedTask;
     }
 
@@ -96,7 +96,20 @@ internal sealed class InMemoryStorageAuthorizationCompatibilityService(Orchestra
             return StorageResult<StorageCannedAcl>.Failure(exists.Error!);
         }
 
-        return StorageResult<StorageCannedAcl>.Success(GetObjectAclValue(bucketName, key));
+        return StorageResult<StorageCannedAcl>.Success(GetObjectAclStateValue(bucketName, key).CannedAcl);
+    }
+
+    public async ValueTask<StorageResult<ObjectAclCompatibilityState>> GetObjectAclStateAsync(string bucketName, string key, CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(bucketName);
+        ArgumentException.ThrowIfNullOrWhiteSpace(key);
+
+        var exists = await EnsureObjectExistsAsync(bucketName, key, cancellationToken);
+        if (!exists.IsSuccess) {
+            return StorageResult<ObjectAclCompatibilityState>.Failure(exists.Error!);
+        }
+
+        return StorageResult<ObjectAclCompatibilityState>.Success(GetObjectAclStateValue(bucketName, key));
     }
 
     public async ValueTask<StorageResult> PutObjectAclAsync(PutObjectAclCompatibilityRequest request, CancellationToken cancellationToken = default)
@@ -108,7 +121,7 @@ internal sealed class InMemoryStorageAuthorizationCompatibilityService(Orchestra
             return exists;
         }
 
-        _objectAcls[new ObjectCompatibilityKey(request.BucketName, request.Key)] = request.CannedAcl;
+        _objectAcls[new ObjectCompatibilityKey(request.BucketName, request.Key)] = request.Acl ?? CreateObjectAclState(request.CannedAcl);
         return StorageResult.Success();
     }
 
@@ -185,7 +198,7 @@ internal sealed class InMemoryStorageAuthorizationCompatibilityService(Orchestra
                     return ValueTask.FromResult(false);
                 }
 
-                return ValueTask.FromResult(GetObjectAclValue(request.BucketName, request.Key) == StorageCannedAcl.PublicRead);
+                return ValueTask.FromResult(GetObjectAclStateValue(request.BucketName, request.Key).CannedAcl == StorageCannedAcl.PublicRead);
             default:
                 return ValueTask.FromResult(false);
         }
@@ -219,14 +232,23 @@ internal sealed class InMemoryStorageAuthorizationCompatibilityService(Orchestra
             : new BucketCompatibilityState(StorageCannedAcl.Private, null);
     }
 
-    private StorageCannedAcl GetObjectAclValue(string bucketName, string key)
+    private ObjectAclCompatibilityState GetObjectAclStateValue(string bucketName, string key)
     {
-        return _objectAcls.TryGetValue(new ObjectCompatibilityKey(bucketName, key), out var cannedAcl)
-            ? cannedAcl
-            : StorageCannedAcl.Private;
+        return _objectAcls.TryGetValue(new ObjectCompatibilityKey(bucketName, key), out var acl)
+            ? acl
+            : CreateObjectAclState(StorageCannedAcl.Private);
     }
 
     private readonly record struct ObjectCompatibilityKey(string BucketName, string Key);
 
     private sealed record BucketCompatibilityState(StorageCannedAcl BucketAcl, BucketPolicyCompatibilityDocument? Policy);
+
+    private static ObjectAclCompatibilityState CreateObjectAclState(StorageCannedAcl cannedAcl)
+    {
+        return new ObjectAclCompatibilityState
+        {
+            CannedAcl = cannedAcl,
+            AdditionalGrants = []
+        };
+    }
 }

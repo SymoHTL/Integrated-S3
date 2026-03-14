@@ -34,6 +34,45 @@ public static class S3XmlRequestReader
         }
     }
 
+    public static async Task<S3BucketEncryptionConfiguration> ReadBucketEncryptionConfigurationAsync(Stream content, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(content);
+
+        using var reader = new StreamReader(content, leaveOpen: true);
+        var xml = await reader.ReadToEndAsync(cancellationToken);
+        if (string.IsNullOrWhiteSpace(xml)) {
+            throw new FormatException("The bucket encryption request body is required.");
+        }
+
+        try {
+            var document = XDocument.Parse(xml, LoadOptions.None);
+            var root = document.Root;
+            if (root is null || !string.Equals(root.Name.LocalName, "ServerSideEncryptionConfiguration", StringComparison.Ordinal)) {
+                throw new FormatException("The bucket encryption request body must contain a root 'ServerSideEncryptionConfiguration' element.");
+            }
+
+            var rules = root.Elements()
+                .Where(static element => string.Equals(element.Name.LocalName, "Rule", StringComparison.Ordinal))
+                .Select(ParseBucketEncryptionRule)
+                .ToArray();
+
+            if (rules.Length == 0) {
+                throw new FormatException("The bucket encryption request body must contain at least one 'Rule' element.");
+            }
+
+            return new S3BucketEncryptionConfiguration
+            {
+                Rules = rules
+            };
+        }
+        catch (FormatException) {
+            throw;
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException) {
+            throw new FormatException("The bucket encryption request body is not valid XML.", exception);
+        }
+    }
+
     public static async Task<S3CorsConfiguration> ReadCorsConfigurationAsync(Stream content, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(content);
@@ -254,6 +293,97 @@ public static class S3XmlRequestReader
         catch (Exception exception) when (exception is not OperationCanceledException) {
             throw new FormatException("The ACL request body is not valid XML.", exception);
         }
+    }
+
+    private static S3BucketEncryptionRule ParseBucketEncryptionRule(XElement element)
+    {
+        var defaultEncryptionElement = GetSingleRequiredChild(
+            element,
+            "ApplyServerSideEncryptionByDefault",
+            "Each bucket encryption rule must contain an 'ApplyServerSideEncryptionByDefault' element.",
+            "Each bucket encryption rule must not contain multiple 'ApplyServerSideEncryptionByDefault' elements.");
+
+        var sseAlgorithm = GetSingleRequiredChildValue(
+            defaultEncryptionElement,
+            "SSEAlgorithm",
+            "Each bucket encryption rule must contain a non-empty 'SSEAlgorithm' element.",
+            "Each bucket encryption rule must not contain multiple 'SSEAlgorithm' elements.");
+
+        var kmsMasterKeyId = GetSingleOptionalChildValue(
+            defaultEncryptionElement,
+            "KMSMasterKeyID",
+            "Each bucket encryption rule must not contain multiple 'KMSMasterKeyID' elements.");
+
+        var bucketKeyEnabledText = GetSingleOptionalChildValue(
+            element,
+            "BucketKeyEnabled",
+            "Each bucket encryption rule must not contain multiple 'BucketKeyEnabled' elements.");
+
+        bool? bucketKeyEnabled = null;
+        if (bucketKeyEnabledText is not null) {
+            if (!bool.TryParse(bucketKeyEnabledText, out var parsedBucketKeyEnabled)) {
+                throw new FormatException("The 'BucketKeyEnabled' element must be 'true' or 'false'.");
+            }
+
+            bucketKeyEnabled = parsedBucketKeyEnabled;
+        }
+
+        return new S3BucketEncryptionRule
+        {
+            DefaultEncryption = new S3BucketEncryptionByDefault
+            {
+                SseAlgorithm = sseAlgorithm,
+                KmsMasterKeyId = kmsMasterKeyId
+            },
+            BucketKeyEnabled = bucketKeyEnabled
+        };
+    }
+
+    private static XElement GetSingleRequiredChild(
+        XElement parent,
+        string childName,
+        string missingMessage,
+        string duplicateMessage)
+    {
+        var matchingElements = parent.Elements()
+            .Where(element => string.Equals(element.Name.LocalName, childName, StringComparison.Ordinal))
+            .ToArray();
+
+        return matchingElements.Length switch
+        {
+            1 => matchingElements[0],
+            0 => throw new FormatException(missingMessage),
+            _ => throw new FormatException(duplicateMessage)
+        };
+    }
+
+    private static string GetSingleRequiredChildValue(
+        XElement parent,
+        string childName,
+        string missingMessage,
+        string duplicateMessage)
+    {
+        var value = GetSingleOptionalChildValue(parent, childName, duplicateMessage);
+        return string.IsNullOrWhiteSpace(value)
+            ? throw new FormatException(missingMessage)
+            : value;
+    }
+
+    private static string? GetSingleOptionalChildValue(
+        XElement parent,
+        string childName,
+        string duplicateMessage)
+    {
+        var matchingElements = parent.Elements()
+            .Where(element => string.Equals(element.Name.LocalName, childName, StringComparison.Ordinal))
+            .ToArray();
+
+        return matchingElements.Length switch
+        {
+            0 => null,
+            1 => matchingElements[0].Value,
+            _ => throw new FormatException(duplicateMessage)
+        };
     }
 
     private static S3CompleteMultipartUploadPart ParseCompleteMultipartUploadPart(XElement element)

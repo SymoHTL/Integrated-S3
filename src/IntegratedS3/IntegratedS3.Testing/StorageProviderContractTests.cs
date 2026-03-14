@@ -66,7 +66,8 @@ public abstract class StorageProviderContractTests
         }));
 
         const string payload = "hello integrated s3";
-        var expectedChecksum = ChecksumTestAlgorithms.ComputeSha256Base64(payload);
+        var checksumAlgorithm = GetPrimaryChecksumAlgorithm();
+        var expectedChecksum = ComputeChecksum(payload, checksumAlgorithm);
         IReadOnlyDictionary<string, string>? metadata = Supports(capabilities.ObjectMetadata)
             ? new Dictionary<string, string>(StringComparer.Ordinal)
             {
@@ -76,7 +77,7 @@ public abstract class StorageProviderContractTests
         IReadOnlyDictionary<string, string>? checksums = Supports(capabilities.Checksums)
             ? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
             {
-                ["sha256"] = expectedChecksum
+                [checksumAlgorithm] = expectedChecksum
             }
             : null;
 
@@ -99,7 +100,7 @@ public abstract class StorageProviderContractTests
         }
 
         if (Supports(capabilities.Checksums)) {
-            Assert.Equal(expectedChecksum, putObject.Checksums!["sha256"]);
+            AssertChecksumEquals(putObject.Checksums, checksumAlgorithm, expectedChecksum);
         }
 
         if (Supports(capabilities.ListObjects)) {
@@ -128,7 +129,7 @@ public abstract class StorageProviderContractTests
         }
 
         if (Supports(capabilities.Checksums)) {
-            Assert.Equal(expectedChecksum, headObject.Checksums!["sha256"]);
+            AssertChecksumEquals(headObject.Checksums, checksumAlgorithm, expectedChecksum);
         }
 
         var getObject = RequireSuccess(await storage.GetObjectAsync(new GetObjectRequest
@@ -147,7 +148,7 @@ public abstract class StorageProviderContractTests
             }
 
             if (Supports(capabilities.Checksums)) {
-                Assert.Equal(expectedChecksum, getObject.Object.Checksums!["sha256"]);
+                AssertChecksumEquals(getObject.Object.Checksums, checksumAlgorithm, expectedChecksum);
             }
         }
 
@@ -180,6 +181,8 @@ public abstract class StorageProviderContractTests
             BucketName = "contract-invalid-checksums"
         }));
 
+        var checksumAlgorithm = GetPrimaryChecksumAlgorithm();
+
         var putResult = await storage.PutObjectAsync(new PutObjectRequest
         {
             BucketName = "contract-invalid-checksums",
@@ -188,7 +191,7 @@ public abstract class StorageProviderContractTests
             ContentType = "text/plain",
             Checksums = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
             {
-                ["sha256"] = "invalid-checksum"
+                [checksumAlgorithm] = "invalid-checksum"
             }
         });
 
@@ -198,6 +201,86 @@ public abstract class StorageProviderContractTests
         {
             BucketName = "contract-invalid-checksums",
             Key = "docs/object.txt"
+        }), StorageErrorCode.ObjectNotFound);
+    }
+
+    [Fact]
+    public async Task ProviderContract_ChecksumWrites_PersistMultipleAlgorithmsAndRejectConflicts()
+    {
+        await using var fixture = await CreateInitializedFixtureAsync();
+        var storage = fixture.Backend;
+        var capabilities = await storage.GetCapabilitiesAsync();
+
+        if (!Supports(capabilities.Checksums)) {
+            return;
+        }
+
+        var checksumAlgorithms = GetConfiguredChecksumAlgorithms(maxCount: 2);
+        if (checksumAlgorithms.Count < 2) {
+            return;
+        }
+
+        RequireSuccess(await storage.CreateBucketAsync(new CreateBucketRequest
+        {
+            BucketName = "contract-checksum-conflicts"
+        }));
+
+        const string payload = "checksum conflict payload";
+        var expectedChecksums = CreateChecksums(payload, checksumAlgorithms);
+
+        var putObject = RequireSuccess(await storage.PutObjectAsync(new PutObjectRequest
+        {
+            BucketName = "contract-checksum-conflicts",
+            Key = "docs/valid.txt",
+            Content = CreateUtf8Stream(payload),
+            ContentType = "text/plain",
+            Checksums = expectedChecksums
+        }));
+
+        foreach (var expectedChecksum in expectedChecksums) {
+            AssertChecksumEquals(putObject.Checksums, expectedChecksum.Key, expectedChecksum.Value);
+        }
+
+        var headObject = RequireSuccess(await storage.HeadObjectAsync(new HeadObjectRequest
+        {
+            BucketName = "contract-checksum-conflicts",
+            Key = "docs/valid.txt"
+        }));
+
+        foreach (var expectedChecksum in expectedChecksums) {
+            AssertChecksumEquals(headObject.Checksums, expectedChecksum.Key, expectedChecksum.Value);
+        }
+
+        var getObject = RequireSuccess(await storage.GetObjectAsync(new GetObjectRequest
+        {
+            BucketName = "contract-checksum-conflicts",
+            Key = "docs/valid.txt"
+        }));
+        await using (getObject) {
+            Assert.Equal(payload, await ReadUtf8Async(getObject));
+            foreach (var expectedChecksum in expectedChecksums) {
+                AssertChecksumEquals(getObject.Object.Checksums, expectedChecksum.Key, expectedChecksum.Value);
+            }
+        }
+
+        var conflictingChecksums = new Dictionary<string, string>(expectedChecksums, StringComparer.OrdinalIgnoreCase)
+        {
+            [checksumAlgorithms[^1]] = "invalid-checksum"
+        };
+
+        RequireFailure(await storage.PutObjectAsync(new PutObjectRequest
+        {
+            BucketName = "contract-checksum-conflicts",
+            Key = "docs/conflict.txt",
+            Content = CreateUtf8Stream(payload),
+            ContentType = "text/plain",
+            Checksums = conflictingChecksums
+        }), StorageErrorCode.InvalidChecksum);
+
+        RequireFailure(await storage.HeadObjectAsync(new HeadObjectRequest
+        {
+            BucketName = "contract-checksum-conflicts",
+            Key = "docs/conflict.txt"
         }), StorageErrorCode.ObjectNotFound);
     }
 
@@ -321,6 +404,78 @@ public abstract class StorageProviderContractTests
     }
 
     [Fact]
+    public async Task ProviderContract_ConditionalReads_TargetHistoricalVersions()
+    {
+        await using var fixture = await CreateInitializedFixtureAsync();
+        var storage = fixture.Backend;
+        var capabilities = await storage.GetCapabilitiesAsync();
+
+        if (!Supports(capabilities.Versioning) || !Supports(capabilities.ConditionalRequests)) {
+            return;
+        }
+
+        RequireSuccess(await storage.CreateBucketAsync(new CreateBucketRequest
+        {
+            BucketName = "contract-version-conditions",
+            EnableVersioning = true
+        }));
+
+        var v1 = RequireSuccess(await storage.PutObjectAsync(new PutObjectRequest
+        {
+            BucketName = "contract-version-conditions",
+            Key = "docs/history.txt",
+            Content = CreateUtf8Stream("version one"),
+            ContentType = "text/plain"
+        }));
+
+        var v2 = RequireSuccess(await storage.PutObjectAsync(new PutObjectRequest
+        {
+            BucketName = "contract-version-conditions",
+            Key = "docs/history.txt",
+            Content = CreateUtf8Stream("version two"),
+            ContentType = "text/plain"
+        }));
+
+        Assert.False(string.IsNullOrWhiteSpace(v1.VersionId));
+        Assert.False(string.IsNullOrWhiteSpace(v2.VersionId));
+        Assert.NotEqual(v1.VersionId, v2.VersionId);
+        Assert.NotEqual(v1.ETag, v2.ETag);
+
+        var historicalRead = RequireSuccess(await storage.GetObjectAsync(new GetObjectRequest
+        {
+            BucketName = "contract-version-conditions",
+            Key = "docs/history.txt",
+            VersionId = v1.VersionId,
+            IfMatchETag = QuoteETag(v1.ETag)
+        }));
+        await using (historicalRead) {
+            Assert.False(historicalRead.IsNotModified);
+            Assert.Equal("version one", await ReadUtf8Async(historicalRead));
+            Assert.Equal(v1.VersionId, historicalRead.Object.VersionId);
+        }
+
+        var historicalNotModified = RequireSuccess(await storage.GetObjectAsync(new GetObjectRequest
+        {
+            BucketName = "contract-version-conditions",
+            Key = "docs/history.txt",
+            VersionId = v1.VersionId,
+            IfNoneMatchETag = QuoteETag(v1.ETag)
+        }));
+        await using (historicalNotModified) {
+            Assert.True(historicalNotModified.IsNotModified);
+            Assert.Equal(v1.VersionId, historicalNotModified.Object.VersionId);
+        }
+
+        RequireFailure(await storage.GetObjectAsync(new GetObjectRequest
+        {
+            BucketName = "contract-version-conditions",
+            Key = "docs/history.txt",
+            VersionId = v1.VersionId,
+            IfMatchETag = QuoteETag(v2.ETag)
+        }), StorageErrorCode.PreconditionFailed);
+    }
+
+    [Fact]
     public async Task ProviderContract_BucketCors_RoundTripsRulesWithoutLosingVersioningState()
     {
         await using var fixture = await CreateInitializedFixtureAsync();
@@ -389,6 +544,54 @@ public abstract class StorageProviderContractTests
             var preservedVersioning = RequireSuccess(await storage.GetBucketVersioningAsync("contract-cors"));
             Assert.Equal(BucketVersioningStatus.Suspended, preservedVersioning.Status);
         }
+    }
+
+    [Fact]
+    public async Task ProviderContract_BucketDefaultEncryption_IsExplicitlySupportedOrRejected()
+    {
+        await using var fixture = await CreateInitializedFixtureAsync();
+        var storage = fixture.Backend;
+        var capabilities = await storage.GetCapabilitiesAsync();
+
+        RequireSuccess(await storage.CreateBucketAsync(new CreateBucketRequest
+        {
+            BucketName = "contract-default-encryption"
+        }));
+
+        var putRequest = new PutBucketDefaultEncryptionRequest
+        {
+            BucketName = "contract-default-encryption",
+            Rule = new BucketDefaultEncryptionRule
+            {
+                Algorithm = ObjectServerSideEncryptionAlgorithm.KmsDsse,
+                KeyId = "alias/contract-default-key"
+            }
+        };
+
+        if (!Supports(capabilities.ServerSideEncryption)) {
+            RequireFailure(await storage.GetBucketDefaultEncryptionAsync("contract-default-encryption"), StorageErrorCode.UnsupportedCapability);
+            RequireFailure(await storage.PutBucketDefaultEncryptionAsync(putRequest), StorageErrorCode.UnsupportedCapability);
+            RequireFailure(await storage.DeleteBucketDefaultEncryptionAsync(new DeleteBucketDefaultEncryptionRequest
+            {
+                BucketName = "contract-default-encryption"
+            }), StorageErrorCode.UnsupportedCapability);
+            return;
+        }
+
+        var putDefaultEncryption = RequireSuccess(await storage.PutBucketDefaultEncryptionAsync(putRequest));
+        Assert.Equal(ObjectServerSideEncryptionAlgorithm.KmsDsse, putDefaultEncryption.Rule.Algorithm);
+        Assert.Equal("alias/contract-default-key", putDefaultEncryption.Rule.KeyId);
+
+        var getDefaultEncryption = RequireSuccess(await storage.GetBucketDefaultEncryptionAsync("contract-default-encryption"));
+        Assert.Equal(ObjectServerSideEncryptionAlgorithm.KmsDsse, getDefaultEncryption.Rule.Algorithm);
+        Assert.Equal("alias/contract-default-key", getDefaultEncryption.Rule.KeyId);
+
+        RequireSuccess(await storage.DeleteBucketDefaultEncryptionAsync(new DeleteBucketDefaultEncryptionRequest
+        {
+            BucketName = "contract-default-encryption"
+        }));
+
+        RequireFailure(await storage.GetBucketDefaultEncryptionAsync("contract-default-encryption"), StorageErrorCode.BucketEncryptionConfigurationNotFound);
     }
 
     [Fact]
@@ -505,6 +708,95 @@ public abstract class StorageProviderContractTests
             Key = "docs/conditions.txt",
             IfUnmodifiedSinceUtc = lastModifiedUtc.AddMinutes(-5)
         }), StorageErrorCode.PreconditionFailed);
+    }
+
+    [Fact]
+    public async Task ProviderContract_ConditionalReads_RespectPrecedenceAndCombineWithRanges()
+    {
+        await using var fixture = await CreateInitializedFixtureAsync();
+        var storage = fixture.Backend;
+        var capabilities = await storage.GetCapabilitiesAsync();
+
+        if (!Supports(capabilities.ConditionalRequests)) {
+            return;
+        }
+
+        var supportsRangeRequests = Supports(capabilities.RangeRequests);
+        const string payload = "hello integrated s3";
+
+        RequireSuccess(await storage.CreateBucketAsync(new CreateBucketRequest
+        {
+            BucketName = "contract-condition-precedence"
+        }));
+
+        var putObject = RequireSuccess(await storage.PutObjectAsync(new PutObjectRequest
+        {
+            BucketName = "contract-condition-precedence",
+            Key = "docs/precedence.txt",
+            Content = CreateUtf8Stream(payload),
+            ContentType = "text/plain"
+        }));
+
+        var currentETag = QuoteETag(putObject.ETag);
+        var lastModifiedUtc = putObject.LastModifiedUtc;
+
+        var matchedPrecondition = RequireSuccess(await storage.GetObjectAsync(new GetObjectRequest
+        {
+            BucketName = "contract-condition-precedence",
+            Key = "docs/precedence.txt",
+            IfMatchETag = currentETag,
+            IfUnmodifiedSinceUtc = lastModifiedUtc.AddMinutes(-5),
+            Range = supportsRangeRequests
+                ? new ObjectRange
+                {
+                    Start = 6,
+                    End = 15
+                }
+                : null
+        }));
+        await using (matchedPrecondition) {
+            Assert.False(matchedPrecondition.IsNotModified);
+            Assert.Equal(supportsRangeRequests ? "integrated" : payload, await ReadUtf8Async(matchedPrecondition));
+
+            if (supportsRangeRequests) {
+                Assert.NotNull(matchedPrecondition.Range);
+                Assert.Equal(6, matchedPrecondition.Range!.Start);
+                Assert.Equal(15, matchedPrecondition.Range.End);
+                Assert.Equal(10, matchedPrecondition.Object.ContentLength);
+                Assert.Equal(payload.Length, matchedPrecondition.TotalContentLength);
+            }
+        }
+
+        RequireFailure(await storage.GetObjectAsync(new GetObjectRequest
+        {
+            BucketName = "contract-condition-precedence",
+            Key = "docs/precedence.txt",
+            IfMatchETag = "\"different\"",
+            IfUnmodifiedSinceUtc = lastModifiedUtc.AddMinutes(5)
+        }), StorageErrorCode.PreconditionFailed);
+
+        var notModifiedByEntityTag = RequireSuccess(await storage.GetObjectAsync(new GetObjectRequest
+        {
+            BucketName = "contract-condition-precedence",
+            Key = "docs/precedence.txt",
+            IfNoneMatchETag = currentETag,
+            IfModifiedSinceUtc = lastModifiedUtc.AddMinutes(-5)
+        }));
+        await using (notModifiedByEntityTag) {
+            Assert.True(notModifiedByEntityTag.IsNotModified);
+        }
+
+        var ignoredDatePrecondition = RequireSuccess(await storage.GetObjectAsync(new GetObjectRequest
+        {
+            BucketName = "contract-condition-precedence",
+            Key = "docs/precedence.txt",
+            IfNoneMatchETag = "\"different\"",
+            IfModifiedSinceUtc = lastModifiedUtc.AddMinutes(5)
+        }));
+        await using (ignoredDatePrecondition) {
+            Assert.False(ignoredDatePrecondition.IsNotModified);
+            Assert.Equal(payload, await ReadUtf8Async(ignoredDatePrecondition));
+        }
     }
 
     [Fact]
@@ -883,7 +1175,8 @@ public abstract class StorageProviderContractTests
 
         var stateStore = fixture.GetRequiredService<InMemoryObjectStateStore>();
         const string payload = "hello external state";
-        var expectedChecksum = ChecksumTestAlgorithms.ComputeSha256Base64(payload);
+        var checksumAlgorithm = GetPrimaryChecksumAlgorithm();
+        var expectedChecksum = ComputeChecksum(payload, checksumAlgorithm);
 
         RequireSuccess(await storage.CreateBucketAsync(new CreateBucketRequest
         {
@@ -906,7 +1199,7 @@ public abstract class StorageProviderContractTests
             Checksums = Supports(capabilities.Checksums)
                 ? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
                 {
-                    ["sha256"] = expectedChecksum
+                    [checksumAlgorithm] = expectedChecksum
                 }
                 : null
         }));
@@ -935,7 +1228,7 @@ public abstract class StorageProviderContractTests
         }
 
         if (Supports(capabilities.Checksums)) {
-            Assert.Equal(expectedChecksum, storedState!.Checksums!["sha256"]);
+            AssertChecksumEquals(storedState!.Checksums, checksumAlgorithm, expectedChecksum);
         }
 
         var getObject = RequireSuccess(await storage.GetObjectAsync(new GetObjectRequest
@@ -954,7 +1247,7 @@ public abstract class StorageProviderContractTests
             }
 
             if (Supports(capabilities.Checksums)) {
-                Assert.Equal(expectedChecksum, getObject.Object.Checksums!["sha256"]);
+                AssertChecksumEquals(getObject.Object.Checksums, checksumAlgorithm, expectedChecksum);
             }
         }
 
@@ -1075,6 +1368,102 @@ public abstract class StorageProviderContractTests
     }
 
     private static bool Supports(StorageCapabilitySupport support) => support != StorageCapabilitySupport.Unsupported;
+
+    private string GetPrimaryChecksumAlgorithm()
+    {
+        return GetConfiguredChecksumAlgorithms(maxCount: 1)[0];
+    }
+
+    private IReadOnlyList<string> GetConfiguredChecksumAlgorithms(int maxCount)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maxCount);
+
+        var algorithms = new List<string>(maxCount);
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var configuredAlgorithm in ContractOptions.SupportedChecksumAlgorithms) {
+            if (string.IsNullOrWhiteSpace(configuredAlgorithm)) {
+                continue;
+            }
+
+            var normalizedAlgorithm = NormalizeChecksumAlgorithm(configuredAlgorithm);
+            if (seen.Add(normalizedAlgorithm)) {
+                algorithms.Add(normalizedAlgorithm);
+                if (algorithms.Count == maxCount) {
+                    break;
+                }
+            }
+        }
+
+        if (algorithms.Count == 0) {
+            algorithms.Add("sha256");
+        }
+
+        return algorithms;
+    }
+
+    private static IReadOnlyDictionary<string, string> CreateChecksums(string payload, IEnumerable<string> algorithms)
+    {
+        ArgumentNullException.ThrowIfNull(payload);
+        ArgumentNullException.ThrowIfNull(algorithms);
+
+        var checksums = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var algorithm in algorithms) {
+            var normalizedAlgorithm = NormalizeChecksumAlgorithm(algorithm);
+            checksums[normalizedAlgorithm] = ComputeChecksum(payload, normalizedAlgorithm);
+        }
+
+        return checksums;
+    }
+
+    private static string ComputeChecksum(string payload, string algorithm)
+    {
+        return NormalizeChecksumAlgorithm(algorithm) switch
+        {
+            "sha256" => ChecksumTestAlgorithms.ComputeSha256Base64(payload),
+            "sha1" => ChecksumTestAlgorithms.ComputeSha1Base64(payload),
+            "crc32c" => ChecksumTestAlgorithms.ComputeCrc32cBase64(payload),
+            _ => throw new InvalidOperationException($"The contract harness cannot compute checksums for algorithm '{algorithm}'.")
+        };
+    }
+
+    private static string NormalizeChecksumAlgorithm(string algorithm)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(algorithm);
+        return algorithm.Trim().ToLowerInvariant();
+    }
+
+    private static string QuoteETag(string? etag)
+    {
+        return $"\"{Assert.IsType<string>(etag)}\"";
+    }
+
+    private static void AssertChecksumEquals(IReadOnlyDictionary<string, string>? checksums, string algorithm, string expectedValue)
+    {
+        Assert.NotNull(checksums);
+        Assert.True(TryGetChecksumValue(checksums!, algorithm, out var actualValue), $"Expected checksum '{algorithm}' to be present.");
+        Assert.Equal(expectedValue, actualValue);
+    }
+
+    private static bool TryGetChecksumValue(IReadOnlyDictionary<string, string> checksums, string algorithm, out string actualValue)
+    {
+        ArgumentNullException.ThrowIfNull(checksums);
+        ArgumentException.ThrowIfNullOrWhiteSpace(algorithm);
+
+        if (checksums.TryGetValue(algorithm, out actualValue!)) {
+            return true;
+        }
+
+        foreach (var checksum in checksums) {
+            if (string.Equals(checksum.Key, algorithm, StringComparison.OrdinalIgnoreCase)) {
+                actualValue = checksum.Value;
+                return true;
+            }
+        }
+
+        actualValue = string.Empty;
+        return false;
+    }
 
     private static MemoryStream CreateUtf8Stream(string content)
     {

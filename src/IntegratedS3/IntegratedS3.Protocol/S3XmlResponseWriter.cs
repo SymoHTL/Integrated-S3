@@ -50,6 +50,45 @@ public static class S3XmlResponseWriter
         return builder.ToString();
     }
 
+    public static string WriteBucketEncryptionConfiguration(S3BucketEncryptionConfiguration response)
+    {
+        ArgumentNullException.ThrowIfNull(response);
+
+        var builder = new StringBuilder();
+        using var stringWriter = new StringWriter(builder, CultureInfo.InvariantCulture);
+        using var xmlWriter = XmlWriter.Create(stringWriter, CreateSettings());
+
+        xmlWriter.WriteStartDocument();
+        xmlWriter.WriteStartElement("ServerSideEncryptionConfiguration");
+
+        foreach (var rule in response.Rules) {
+            xmlWriter.WriteStartElement("Rule");
+            xmlWriter.WriteStartElement("ApplyServerSideEncryptionByDefault");
+
+            if (!string.IsNullOrWhiteSpace(rule.DefaultEncryption.SseAlgorithm)) {
+                xmlWriter.WriteElementString("SSEAlgorithm", rule.DefaultEncryption.SseAlgorithm);
+            }
+
+            if (!string.IsNullOrWhiteSpace(rule.DefaultEncryption.KmsMasterKeyId)) {
+                xmlWriter.WriteElementString("KMSMasterKeyID", rule.DefaultEncryption.KmsMasterKeyId);
+            }
+
+            xmlWriter.WriteEndElement();
+
+            if (rule.BucketKeyEnabled is { } bucketKeyEnabled) {
+                xmlWriter.WriteElementString("BucketKeyEnabled", XmlConvert.ToString(bucketKeyEnabled));
+            }
+
+            xmlWriter.WriteEndElement();
+        }
+
+        xmlWriter.WriteEndElement();
+        xmlWriter.WriteEndDocument();
+        xmlWriter.Flush();
+
+        return builder.ToString();
+    }
+
     public static string WriteCorsConfiguration(S3CorsConfiguration response)
     {
         ArgumentNullException.ThrowIfNull(response);
@@ -165,6 +204,42 @@ public static class S3XmlResponseWriter
 
         if (!string.IsNullOrWhiteSpace(response.ChecksumType)) {
             xmlWriter.WriteElementString("ChecksumType", response.ChecksumType);
+        }
+
+        xmlWriter.WriteEndElement();
+        xmlWriter.WriteEndDocument();
+        xmlWriter.Flush();
+
+        return builder.ToString();
+    }
+
+    public static string WriteCopyPartResult(S3CopyObjectResult response)
+    {
+        ArgumentNullException.ThrowIfNull(response);
+
+        var builder = new StringBuilder();
+        using var stringWriter = new StringWriter(builder, CultureInfo.InvariantCulture);
+        using var xmlWriter = XmlWriter.Create(stringWriter, CreateSettings());
+
+        xmlWriter.WriteStartDocument();
+        xmlWriter.WriteStartElement("CopyPartResult");
+        xmlWriter.WriteElementString("LastModified", FormatTimestamp(response.LastModifiedUtc));
+        xmlWriter.WriteElementString("ETag", QuoteETag(response.ETag));
+
+        if (!string.IsNullOrWhiteSpace(response.ChecksumCrc32)) {
+            xmlWriter.WriteElementString("ChecksumCRC32", response.ChecksumCrc32);
+        }
+
+        if (!string.IsNullOrWhiteSpace(response.ChecksumCrc32c)) {
+            xmlWriter.WriteElementString("ChecksumCRC32C", response.ChecksumCrc32c);
+        }
+
+        if (!string.IsNullOrWhiteSpace(response.ChecksumSha1)) {
+            xmlWriter.WriteElementString("ChecksumSHA1", response.ChecksumSha1);
+        }
+
+        if (!string.IsNullOrWhiteSpace(response.ChecksumSha256)) {
+            xmlWriter.WriteElementString("ChecksumSHA256", response.ChecksumSha256);
         }
 
         xmlWriter.WriteEndElement();
@@ -461,6 +536,88 @@ public static class S3XmlResponseWriter
         return builder.ToString();
     }
 
+    public static string WriteListPartsResult(S3ListPartsResult response)
+    {
+        ArgumentNullException.ThrowIfNull(response);
+
+        var builder = new StringBuilder();
+        using var stringWriter = new StringWriter(builder, CultureInfo.InvariantCulture);
+        using var xmlWriter = XmlWriter.Create(stringWriter, CreateSettings());
+
+        xmlWriter.WriteStartDocument();
+        xmlWriter.WriteStartElement("ListPartsResult");
+        xmlWriter.WriteElementString("Bucket", response.Bucket);
+        xmlWriter.WriteElementString("Key", EncodeS3ListValue(response.Key, response.EncodingType));
+        xmlWriter.WriteElementString("UploadId", response.UploadId);
+
+        if (response.Initiator is not null) {
+            WriteOwner(xmlWriter, "Initiator", response.Initiator);
+        }
+
+        if (response.Owner is not null) {
+            WriteOwner(xmlWriter, "Owner", response.Owner);
+        }
+
+        xmlWriter.WriteElementString("StorageClass", response.StorageClass);
+
+        if (!string.IsNullOrWhiteSpace(response.ChecksumAlgorithm)) {
+            xmlWriter.WriteElementString("ChecksumAlgorithm", response.ChecksumAlgorithm);
+        }
+
+        if (!string.IsNullOrWhiteSpace(response.ChecksumType)) {
+            xmlWriter.WriteElementString("ChecksumType", response.ChecksumType);
+        }
+
+        if (!string.IsNullOrWhiteSpace(response.EncodingType)) {
+            xmlWriter.WriteElementString("EncodingType", response.EncodingType);
+        }
+
+        xmlWriter.WriteElementString("PartNumberMarker", response.PartNumberMarker.ToString(CultureInfo.InvariantCulture));
+
+        if (response.NextPartNumberMarker.HasValue) {
+            xmlWriter.WriteElementString("NextPartNumberMarker", response.NextPartNumberMarker.Value.ToString(CultureInfo.InvariantCulture));
+        }
+
+        xmlWriter.WriteElementString("MaxParts", response.MaxParts.ToString(CultureInfo.InvariantCulture));
+        xmlWriter.WriteElementString("IsTruncated", response.IsTruncated ? "true" : "false");
+
+        foreach (var part in response.Parts) {
+            xmlWriter.WriteStartElement("Part");
+
+            xmlWriter.WriteElementString("PartNumber", part.PartNumber.ToString(CultureInfo.InvariantCulture));
+            xmlWriter.WriteElementString("LastModified", FormatTimestamp(part.LastModifiedUtc));
+            xmlWriter.WriteElementString("ETag", QuoteETag(part.ETag));
+            xmlWriter.WriteElementString("Size", part.Size.ToString(CultureInfo.InvariantCulture));
+
+            if (!string.IsNullOrWhiteSpace(part.ChecksumCrc32)) {
+                xmlWriter.WriteElementString("ChecksumCRC32", part.ChecksumCrc32);
+            }
+
+            if (!string.IsNullOrWhiteSpace(part.ChecksumCrc32c)) {
+                xmlWriter.WriteElementString("ChecksumCRC32C", part.ChecksumCrc32c);
+            }
+
+            if (!string.IsNullOrWhiteSpace(part.ChecksumCrc64Nvme)) {
+                xmlWriter.WriteElementString("ChecksumCRC64NVME", part.ChecksumCrc64Nvme);
+            }
+
+            if (!string.IsNullOrWhiteSpace(part.ChecksumSha1)) {
+                xmlWriter.WriteElementString("ChecksumSHA1", part.ChecksumSha1);
+            }
+
+            if (!string.IsNullOrWhiteSpace(part.ChecksumSha256)) {
+                xmlWriter.WriteElementString("ChecksumSHA256", part.ChecksumSha256);
+            }
+            xmlWriter.WriteEndElement();
+        }
+
+        xmlWriter.WriteEndElement();
+        xmlWriter.WriteEndDocument();
+        xmlWriter.Flush();
+
+        return builder.ToString();
+    }
+
     public static string WriteListAllMyBucketsResult(S3ListAllMyBucketsResult response)
     {
         ArgumentNullException.ThrowIfNull(response);
@@ -560,6 +717,54 @@ public static class S3XmlResponseWriter
         }
 
         xmlWriter.WriteEndElement();
+        xmlWriter.WriteEndElement();
+        xmlWriter.WriteEndDocument();
+        xmlWriter.Flush();
+
+        return builder.ToString();
+    }
+
+    public static string WriteObjectRetention(S3ObjectRetention response)
+    {
+        ArgumentNullException.ThrowIfNull(response);
+
+        var builder = new StringBuilder();
+        using var stringWriter = new StringWriter(builder, CultureInfo.InvariantCulture);
+        using var xmlWriter = XmlWriter.Create(stringWriter, CreateSettings());
+
+        xmlWriter.WriteStartDocument();
+        xmlWriter.WriteStartElement("Retention");
+
+        if (!string.IsNullOrWhiteSpace(response.Mode)) {
+            xmlWriter.WriteElementString("Mode", response.Mode);
+        }
+
+        if (response.RetainUntilDateUtc is { } retainUntilDateUtc) {
+            xmlWriter.WriteElementString("RetainUntilDate", XmlConvert.ToString(retainUntilDateUtc.UtcDateTime, XmlDateTimeSerializationMode.Utc));
+        }
+
+        xmlWriter.WriteEndElement();
+        xmlWriter.WriteEndDocument();
+        xmlWriter.Flush();
+
+        return builder.ToString();
+    }
+
+    public static string WriteObjectLegalHold(S3ObjectLegalHold response)
+    {
+        ArgumentNullException.ThrowIfNull(response);
+
+        var builder = new StringBuilder();
+        using var stringWriter = new StringWriter(builder, CultureInfo.InvariantCulture);
+        using var xmlWriter = XmlWriter.Create(stringWriter, CreateSettings());
+
+        xmlWriter.WriteStartDocument();
+        xmlWriter.WriteStartElement("LegalHold");
+
+        if (!string.IsNullOrWhiteSpace(response.Status)) {
+            xmlWriter.WriteElementString("Status", response.Status);
+        }
+
         xmlWriter.WriteEndElement();
         xmlWriter.WriteEndDocument();
         xmlWriter.Flush();

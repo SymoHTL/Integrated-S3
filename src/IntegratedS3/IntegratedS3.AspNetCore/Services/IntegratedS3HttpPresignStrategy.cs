@@ -103,6 +103,7 @@ internal sealed class IntegratedS3HttpPresignStrategy(
             SignedHeaders = signedHeaders.Select(static header => header.Key).ToArray(),
             AccessKeyId = credentialResolution.Credential.AccessKeyId,
             SecretAccessKey = credentialResolution.Credential.SecretAccessKey,
+            SecurityToken = credentialResolution.Credential.SessionToken,
             Region = settings.SignatureAuthenticationRegion,
             Service = settings.SignatureAuthenticationService,
             SignedAtUtc = timeProvider.GetUtcNow(),

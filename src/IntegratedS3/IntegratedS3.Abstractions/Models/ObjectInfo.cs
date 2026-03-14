@@ -36,5 +36,11 @@ public sealed class ObjectInfo
 
     public IReadOnlyDictionary<string, string>? Checksums { get; init; }
 
+    public ObjectRetentionMode? RetentionMode { get; init; }
+
+    public DateTimeOffset? RetainUntilDateUtc { get; init; }
+
+    public ObjectLegalHoldStatus? LegalHoldStatus { get; init; }
+
     public ObjectServerSideEncryptionInfo? ServerSideEncryption { get; init; }
 }

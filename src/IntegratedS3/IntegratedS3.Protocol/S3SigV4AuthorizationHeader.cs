@@ -9,4 +9,6 @@ public sealed class S3SigV4AuthorizationHeader
     public required IReadOnlyList<string> SignedHeaders { get; init; }
 
     public required string Signature { get; init; }
+
+    public string? SecurityToken { get; init; }
 }

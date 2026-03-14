@@ -104,6 +104,150 @@ public sealed class IntegratedS3SigV4ConformanceTests : IClassFixture<WebUiAppli
     }
 
     [Fact]
+    public async Task SigV4HeaderAuthentication_WithRequiredSessionToken_AllowsRequests()
+    {
+        const string accessKeyId = "sigv4-session-header-access";
+        const string secretAccessKey = "sigv4-session-header-secret";
+        const string sessionToken = "sigv4-session-header-token";
+        const string bucketName = "sigv4-session-header-bucket";
+
+        await using var isolatedClient = await CreateAuthenticatedClientAsync(accessKeyId, secretAccessKey, sessionToken: sessionToken);
+        using var client = isolatedClient.Client;
+
+        using var createBucketRequest = CreateSigV4HeaderSignedRequest(
+            HttpMethod.Put,
+            $"/integrated-s3/buckets/{bucketName}",
+            accessKeyId,
+            secretAccessKey,
+            securityToken: sessionToken);
+        Assert.Equal(HttpStatusCode.Created, (await client.SendAsync(createBucketRequest)).StatusCode);
+
+        using var listBucketsRequest = CreateSigV4HeaderSignedRequest(
+            HttpMethod.Get,
+            "/integrated-s3/",
+            accessKeyId,
+            secretAccessKey,
+            securityToken: sessionToken);
+        Assert.Equal(HttpStatusCode.OK, (await client.SendAsync(listBucketsRequest)).StatusCode);
+    }
+
+    [Fact]
+    public async Task SigV4HeaderAuthentication_MissingRequiredSessionToken_ReturnsXmlError()
+    {
+        const string accessKeyId = "sigv4-session-missing-access";
+        const string secretAccessKey = "sigv4-session-missing-secret";
+        const string sessionToken = "sigv4-session-missing-token";
+
+        await using var isolatedClient = await CreateAuthenticatedClientAsync(accessKeyId, secretAccessKey, sessionToken: sessionToken);
+        using var client = isolatedClient.Client;
+
+        using var request = CreateSigV4HeaderSignedRequest(
+            HttpMethod.Put,
+            "/integrated-s3/buckets/sigv4-session-missing-bucket",
+            accessKeyId,
+            secretAccessKey);
+        var response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal("application/xml", response.Content.Headers.ContentType?.MediaType);
+        var errorDocument = XDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal("AuthorizationHeaderMalformed", GetRequiredElementValue(errorDocument, "Code"));
+        Assert.Contains("x-amz-security-token", GetRequiredElementValue(errorDocument, "Message"), StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task SigV4PresignedQueryAuthentication_WithRequiredSessionToken_AllowsReads()
+    {
+        const string accessKeyId = "sigv4-session-presign-access";
+        const string secretAccessKey = "sigv4-session-presign-secret";
+        const string sessionToken = "sigv4-session-presign-token";
+        const string bucketName = "sigv4-session-presign-bucket";
+        const string objectKey = "docs/session-presign.txt";
+        const string payload = "presigned session token payload";
+
+        await using var isolatedClient = await CreateAuthenticatedClientAsync(accessKeyId, secretAccessKey, sessionToken: sessionToken);
+        using var client = isolatedClient.Client;
+
+        using var createBucketRequest = CreateSigV4HeaderSignedRequest(
+            HttpMethod.Put,
+            $"/integrated-s3/buckets/{bucketName}",
+            accessKeyId,
+            secretAccessKey,
+            securityToken: sessionToken);
+        Assert.Equal(HttpStatusCode.Created, (await client.SendAsync(createBucketRequest)).StatusCode);
+
+        using var putObjectRequest = CreateSigV4HeaderSignedRequest(
+            HttpMethod.Put,
+            $"/integrated-s3/buckets/{bucketName}/objects/{objectKey}",
+            accessKeyId,
+            secretAccessKey,
+            body: payload,
+            contentType: "text/plain",
+            securityToken: sessionToken);
+        Assert.Equal(HttpStatusCode.OK, (await client.SendAsync(putObjectRequest)).StatusCode);
+
+        using var presignedRequest = CreateSigV4PresignedRequest(
+            HttpMethod.Get,
+            $"/integrated-s3/buckets/{bucketName}/objects/{objectKey}",
+            accessKeyId,
+            secretAccessKey,
+            expiresSeconds: 300,
+            securityToken: sessionToken);
+        var response = await client.SendAsync(presignedRequest);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal(payload, await response.Content.ReadAsStringAsync());
+    }
+
+    [Fact]
+    public async Task SigV4PresignedQueryAuthentication_InvalidSessionToken_ReturnsXmlError()
+    {
+        const string accessKeyId = "sigv4-session-invalid-access";
+        const string secretAccessKey = "sigv4-session-invalid-secret";
+        const string sessionToken = "sigv4-session-invalid-token";
+        const string invalidSessionToken = "sigv4-session-invalid-token-wrong";
+        const string bucketName = "sigv4-session-invalid-bucket";
+        const string objectKey = "docs/session-invalid.txt";
+        const string payload = "invalid session token payload";
+
+        await using var isolatedClient = await CreateAuthenticatedClientAsync(accessKeyId, secretAccessKey, sessionToken: sessionToken);
+        using var client = isolatedClient.Client;
+
+        using var createBucketRequest = CreateSigV4HeaderSignedRequest(
+            HttpMethod.Put,
+            $"/integrated-s3/buckets/{bucketName}",
+            accessKeyId,
+            secretAccessKey,
+            securityToken: sessionToken);
+        Assert.Equal(HttpStatusCode.Created, (await client.SendAsync(createBucketRequest)).StatusCode);
+
+        using var putObjectRequest = CreateSigV4HeaderSignedRequest(
+            HttpMethod.Put,
+            $"/integrated-s3/buckets/{bucketName}/objects/{objectKey}",
+            accessKeyId,
+            secretAccessKey,
+            body: payload,
+            contentType: "text/plain",
+            securityToken: sessionToken);
+        Assert.Equal(HttpStatusCode.OK, (await client.SendAsync(putObjectRequest)).StatusCode);
+
+        using var presignedRequest = CreateSigV4PresignedRequest(
+            HttpMethod.Get,
+            $"/integrated-s3/buckets/{bucketName}/objects/{objectKey}",
+            accessKeyId,
+            secretAccessKey,
+            expiresSeconds: 300,
+            securityToken: invalidSessionToken);
+        var response = await client.SendAsync(presignedRequest);
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+        Assert.Equal("application/xml", response.Content.Headers.ContentType?.MediaType);
+        var errorDocument = XDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal("AccessDenied", GetRequiredElementValue(errorDocument, "Code"));
+        Assert.Contains("X-Amz-Security-Token", GetRequiredElementValue(errorDocument, "Message"), StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task SigV4HeaderAuthentication_AllowsLiteralPlusSignsInSignedIgnoredQueryParameters()
     {
         const string accessKeyId = "sigv4-plus-access";
@@ -286,7 +430,8 @@ public sealed class IntegratedS3SigV4ConformanceTests : IClassFixture<WebUiAppli
     private Task<WebUiApplicationFactory.IsolatedWebUiClient> CreateAuthenticatedClientAsync(
         string accessKeyId,
         string secretAccessKey,
-        Action<IntegratedS3Options>? configureOptions = null)
+        Action<IntegratedS3Options>? configureOptions = null,
+        string? sessionToken = null)
     {
         return _factory.CreateIsolatedClientAsync(builder => {
             builder.Services.Configure<IntegratedS3Options>(options => {
@@ -297,6 +442,7 @@ public sealed class IntegratedS3SigV4ConformanceTests : IClassFixture<WebUiAppli
                     {
                         AccessKeyId = accessKeyId,
                         SecretAccessKey = secretAccessKey,
+                        SessionToken = sessionToken,
                         DisplayName = "sigv4-user",
                         Scopes = ["storage.read", "storage.write"]
                     }
@@ -320,10 +466,12 @@ public sealed class IntegratedS3SigV4ConformanceTests : IClassFixture<WebUiAppli
                 StorageOperationType.ListObjects => "storage.read",
                 StorageOperationType.ListObjectVersions => "storage.read",
                 StorageOperationType.ListMultipartUploads => "storage.read",
+                StorageOperationType.ListMultipartParts => "storage.read",
                 StorageOperationType.GetObject => "storage.read",
                 StorageOperationType.PresignGetObject => "storage.read",
                 StorageOperationType.GetBucketLocation => "storage.read",
                 StorageOperationType.GetBucketCors => "storage.read",
+                StorageOperationType.GetBucketDefaultEncryption => "storage.read",
                 StorageOperationType.GetObjectTags => "storage.read",
                 StorageOperationType.HeadObject => "storage.read",
                 StorageOperationType.PresignPutObject => "storage.write",
@@ -359,7 +507,8 @@ public sealed class IntegratedS3SigV4ConformanceTests : IClassFixture<WebUiAppli
         string? body = null,
         string? contentType = null,
         string host = "localhost",
-        DateTimeOffset? signedAtUtc = null)
+        DateTimeOffset? signedAtUtc = null,
+        string? securityToken = null)
     {
         var request = new HttpRequestMessage(method, pathAndQuery);
         if (body is not null) {
@@ -372,6 +521,9 @@ public sealed class IntegratedS3SigV4ConformanceTests : IClassFixture<WebUiAppli
         request.Headers.Host = host;
         request.Headers.TryAddWithoutValidation("x-amz-date", timestampUtc.ToString("yyyyMMdd'T'HHmmss'Z'"));
         request.Headers.TryAddWithoutValidation("x-amz-content-sha256", payloadHash);
+        if (!string.IsNullOrWhiteSpace(securityToken)) {
+            request.Headers.TryAddWithoutValidation("x-amz-security-token", securityToken);
+        }
 
         var credentialScope = new S3SigV4CredentialScope
         {
@@ -382,17 +534,24 @@ public sealed class IntegratedS3SigV4ConformanceTests : IClassFixture<WebUiAppli
             Terminator = "aws4_request"
         };
 
-        var signedHeaders = new[] { "host", "x-amz-content-sha256", "x-amz-date" };
+        var signedHeaders = new List<string> { "host", "x-amz-content-sha256", "x-amz-date" };
+        var canonicalHeaders = new List<KeyValuePair<string, string?>>
+        {
+            new("host", host),
+            new("x-amz-content-sha256", payloadHash),
+            new("x-amz-date", timestampUtc.ToString("yyyyMMdd'T'HHmmss'Z'"))
+        };
+        if (!string.IsNullOrWhiteSpace(securityToken)) {
+            signedHeaders.Add("x-amz-security-token");
+            canonicalHeaders.Add(new KeyValuePair<string, string?>("x-amz-security-token", securityToken));
+        }
+
         var requestUri = CreateUri(pathAndQuery, host);
         var canonicalRequest = S3SigV4Signer.BuildCanonicalRequest(
             method.Method,
             requestUri.AbsolutePath,
             EnumerateQueryParameters(requestUri),
-            [
-                new KeyValuePair<string, string?>("host", host),
-                new KeyValuePair<string, string?>("x-amz-content-sha256", payloadHash),
-                new KeyValuePair<string, string?>("x-amz-date", timestampUtc.ToString("yyyyMMdd'T'HHmmss'Z'"))
-            ],
+            canonicalHeaders,
             signedHeaders,
             payloadHash);
 
@@ -411,7 +570,8 @@ public sealed class IntegratedS3SigV4ConformanceTests : IClassFixture<WebUiAppli
         string secretAccessKey,
         int expiresSeconds,
         string host = "localhost",
-        DateTimeOffset? signedAtUtc = null)
+        DateTimeOffset? signedAtUtc = null,
+        string? securityToken = null)
     {
         var timestampUtc = signedAtUtc ?? DateTimeOffset.UtcNow;
         var credentialScope = new S3SigV4CredentialScope
@@ -434,6 +594,10 @@ public sealed class IntegratedS3SigV4ConformanceTests : IClassFixture<WebUiAppli
             new KeyValuePair<string, string?>("X-Amz-Expires", expiresSeconds.ToString()),
             new KeyValuePair<string, string?>("X-Amz-SignedHeaders", "host")
         ]);
+
+        if (!string.IsNullOrWhiteSpace(securityToken)) {
+            baseQuery.Add(new KeyValuePair<string, string?>("X-Amz-Security-Token", securityToken));
+        }
 
         var canonicalRequest = S3SigV4Signer.BuildCanonicalRequest(
             method.Method,

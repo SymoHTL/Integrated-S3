@@ -17,6 +17,10 @@ internal static class S3ErrorTranslator
                 (StorageErrorCode.ObjectNotFound,
                  $"Object '{objectKey}' does not exist in bucket '{bucketName}'."),
 
+            "NoSuchVersion" =>
+                (StorageErrorCode.ObjectNotFound,
+                 $"The requested version of object '{objectKey}' does not exist in bucket '{bucketName}'."),
+
             "NoSuchBucket" =>
                 (StorageErrorCode.BucketNotFound,
                  $"Bucket '{bucketName}' does not exist."),
@@ -24,6 +28,10 @@ internal static class S3ErrorTranslator
             "NoSuchCORSConfiguration" =>
                 (StorageErrorCode.CorsConfigurationNotFound,
                  $"Bucket '{bucketName}' does not have a CORS configuration."),
+
+            "ServerSideEncryptionConfigurationNotFoundError" or "ServerSideEncryptionConfigurationNotFound" =>
+                (StorageErrorCode.BucketEncryptionConfigurationNotFound,
+                 $"Bucket '{bucketName}' does not have a default encryption configuration."),
 
             "NoSuchUpload" =>
                 (StorageErrorCode.MultipartConflict,
@@ -62,6 +70,12 @@ internal static class S3ErrorTranslator
                  !string.IsNullOrEmpty(objectKey)
                      ? $"Precondition failed for object '{objectKey}' in bucket '{bucketName}'."
                      : $"Precondition failed for bucket '{bucketName}'."),
+
+            "InvalidRange" =>
+                (StorageErrorCode.InvalidRange,
+                 !string.IsNullOrEmpty(objectKey)
+                     ? $"The requested range is invalid for object '{objectKey}' in bucket '{bucketName}'."
+                     : ex.Message),
 
             "InvalidPart" =>
                 (StorageErrorCode.MultipartConflict,

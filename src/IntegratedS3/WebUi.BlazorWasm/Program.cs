@@ -1,4 +1,5 @@
 var builder = WebApplication.CreateSlimBuilder(args);
+builder.WebHost.UseStaticWebAssets();
 WebUi.BlazorWasm.BlazorWasmApplication.ConfigureServices(builder);
 
 var app = builder.Build();

@@ -17,9 +17,13 @@ public enum StorageOperationType
     GetBucketCors,
     PutBucketCors,
     DeleteBucketCors,
+    GetBucketDefaultEncryption,
+    PutBucketDefaultEncryption,
+    DeleteBucketDefaultEncryption,
     ListObjects,
     ListObjectVersions,
     ListMultipartUploads,
+    ListMultipartParts,
     GetObject,
     HeadObject,
     GetObjectAcl,
@@ -34,6 +38,7 @@ public enum StorageOperationType
     DeleteObjectTags,
     InitiateMultipartUpload,
     UploadMultipartPart,
+    UploadPartCopy,
     CompleteMultipartUpload,
     AbortMultipartUpload
 }

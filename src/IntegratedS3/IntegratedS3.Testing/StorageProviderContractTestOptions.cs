@@ -16,4 +16,10 @@ public sealed class StorageProviderContractTestOptions
     /// <see cref="Abstractions.Services.IStorageMultipartStateStore" />.
     /// </summary>
     public bool SupportsPlatformMultipartStateStore { get; init; }
+
+    /// <summary>
+    /// Lists checksum algorithms that are safe to validate through the shared contract harness.
+    /// The first configured algorithm is used for baseline round-trip coverage.
+    /// </summary>
+    public IReadOnlyList<string> SupportedChecksumAlgorithms { get; init; } = ["sha256"];
 }

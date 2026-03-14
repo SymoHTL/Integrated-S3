@@ -8,6 +8,17 @@ public static class S3SigV4RequestParser
 
     public static bool TryParseAuthorizationHeader(string? authorizationHeader, out S3SigV4AuthorizationHeader? authorization, out string? error)
     {
+        return TryParseAuthorizationHeader(authorizationHeader, [], out authorization, out error);
+    }
+
+    public static bool TryParseAuthorizationHeader(
+        string? authorizationHeader,
+        IEnumerable<KeyValuePair<string, string?>> requestHeaders,
+        out S3SigV4AuthorizationHeader? authorization,
+        out string? error)
+    {
+        ArgumentNullException.ThrowIfNull(requestHeaders);
+
         authorization = null;
         error = null;
 
@@ -51,12 +62,21 @@ public static class S3SigV4RequestParser
             return true;
         }
 
+        string? securityToken = null;
+        foreach (var header in requestHeaders) {
+            if (string.Equals(header.Key, "x-amz-security-token", StringComparison.OrdinalIgnoreCase)) {
+                securityToken = header.Value;
+                break;
+            }
+        }
+
         authorization = new S3SigV4AuthorizationHeader
         {
             Algorithm = AlgorithmName,
             CredentialScope = credentialScope!,
             SignedHeaders = signedHeaders,
-            Signature = signature.Trim()
+            Signature = signature.Trim(),
+            SecurityToken = NormalizeOptionalValue(securityToken)
         };
 
         return true;
@@ -130,7 +150,7 @@ public static class S3SigV4RequestParser
             ExpiresSeconds = expiresSeconds,
             SignedHeaders = signedHeaders,
             Signature = signature.Trim(),
-            SecurityToken = string.IsNullOrWhiteSpace(securityTokenValues) ? null : securityTokenValues
+            SecurityToken = NormalizeOptionalValue(securityTokenValues)
         };
 
         return true;
@@ -181,5 +201,10 @@ public static class S3SigV4RequestParser
 
         value = string.Empty;
         return false;
+    }
+
+    private static string? NormalizeOptionalValue(string? value)
+    {
+        return string.IsNullOrWhiteSpace(value) ? null : value.Trim();
     }
 }

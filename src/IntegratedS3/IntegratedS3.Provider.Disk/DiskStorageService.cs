@@ -288,6 +288,50 @@ internal sealed class DiskStorageService(
         return StorageResult.Success();
     }
 
+    public ValueTask<StorageResult<BucketDefaultEncryptionConfiguration>> GetBucketDefaultEncryptionAsync(string bucketName, CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+
+        var bucketPath = GetBucketPath(bucketName);
+        if (!Directory.Exists(bucketPath)) {
+            return ValueTask.FromResult(StorageResult<BucketDefaultEncryptionConfiguration>.Failure(BucketNotFound(bucketName)));
+        }
+
+        return ValueTask.FromResult(StorageResult<BucketDefaultEncryptionConfiguration>.Failure(StorageError.Unsupported(
+            "Bucket default encryption is not currently supported by the disk provider.",
+            bucketName)));
+    }
+
+    public ValueTask<StorageResult<BucketDefaultEncryptionConfiguration>> PutBucketDefaultEncryptionAsync(PutBucketDefaultEncryptionRequest request, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        cancellationToken.ThrowIfCancellationRequested();
+
+        var bucketPath = GetBucketPath(request.BucketName);
+        if (!Directory.Exists(bucketPath)) {
+            return ValueTask.FromResult(StorageResult<BucketDefaultEncryptionConfiguration>.Failure(BucketNotFound(request.BucketName)));
+        }
+
+        return ValueTask.FromResult(StorageResult<BucketDefaultEncryptionConfiguration>.Failure(StorageError.Unsupported(
+            "Bucket default encryption is not currently supported by the disk provider.",
+            request.BucketName)));
+    }
+
+    public ValueTask<StorageResult> DeleteBucketDefaultEncryptionAsync(DeleteBucketDefaultEncryptionRequest request, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        cancellationToken.ThrowIfCancellationRequested();
+
+        var bucketPath = GetBucketPath(request.BucketName);
+        if (!Directory.Exists(bucketPath)) {
+            return ValueTask.FromResult(StorageResult.Failure(BucketNotFound(request.BucketName)));
+        }
+
+        return ValueTask.FromResult(StorageResult.Failure(StorageError.Unsupported(
+            "Bucket default encryption is not currently supported by the disk provider.",
+            request.BucketName)));
+    }
+
     public async ValueTask<StorageResult<BucketInfo>> HeadBucketAsync(string bucketName, CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
@@ -451,6 +495,78 @@ internal sealed class DiskStorageService(
         }
     }
 
+    public async IAsyncEnumerable<MultipartUploadPart> ListMultipartPartsAsync(ListMultipartPartsRequest request, [EnumeratorCancellation] CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+
+        var bucketPath = GetBucketPath(request.BucketName);
+        if (!Directory.Exists(bucketPath)) {
+            yield break;
+        }
+
+        if (request.PageSize is <= 0) {
+            throw new ArgumentException("Page size must be greater than zero.", nameof(request));
+        }
+
+        if (request.PartNumberMarker is < 0) {
+            throw new ArgumentException("Part number marker must be greater than or equal to zero.", nameof(request));
+        }
+
+        var uploadStateResult = await ReadMultipartStateAsync(request.BucketName, request.Key, request.UploadId, cancellationToken);
+        if (!uploadStateResult.IsSuccess) {
+            yield break;
+        }
+
+        var uploadState = uploadStateResult.Value!;
+        var uploadChecksumAlgorithm = uploadState.State.ChecksumAlgorithm;
+        if (!string.IsNullOrWhiteSpace(uploadChecksumAlgorithm)
+            && !string.Equals(uploadChecksumAlgorithm, Sha256ChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)
+            && !string.Equals(uploadChecksumAlgorithm, Sha1ChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)
+            && !string.Equals(uploadChecksumAlgorithm, Crc32cChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)) {
+            throw new NotSupportedException(
+                $"Checksum algorithm '{uploadChecksumAlgorithm}' is not currently supported for multipart uploads.");
+        }
+
+        var partsDirectoryPath = GetMultipartPartsDirectoryPath(uploadState.UploadDirectoryPath);
+        if (!Directory.Exists(partsDirectoryPath)) {
+            yield break;
+        }
+
+        var yielded = 0;
+        foreach (var partPath in Directory.EnumerateFiles(partsDirectoryPath, "*.part")
+                     .Select(path => new
+                     {
+                         Path = path,
+                         PartNumber = TryParseMultipartPartNumber(path)
+                     })
+                     .Where(static part => part.PartNumber.HasValue)
+                     .OrderBy(static part => part.PartNumber!.Value)) {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var partNumber = partPath.PartNumber!.Value;
+            if (request.PartNumberMarker.HasValue && partNumber <= request.PartNumberMarker.Value) {
+                continue;
+            }
+
+            var fileInfo = new FileInfo(partPath.Path);
+            var actualChecksums = await ComputeChecksumsAsync(partPath.Path, cancellationToken);
+
+            yield return new MultipartUploadPart
+            {
+                PartNumber = partNumber,
+                ETag = BuildETag(fileInfo),
+                ContentLength = fileInfo.Length,
+                LastModifiedUtc = fileInfo.LastWriteTimeUtc,
+                Checksums = CreateMultipartPartResponseChecksums(actualChecksums, uploadChecksumAlgorithm, requestedChecksums: null)
+            };
+
+            yielded++;
+            if (request.PageSize is not null && yielded >= request.PageSize.Value) {
+                yield break;
+            }
+        }
+    }
+
     public async ValueTask<StorageResult<GetObjectResponse>> GetObjectAsync(GetObjectRequest request, CancellationToken cancellationToken = default)
     {
         var serverSideEncryptionError = GetUnsupportedServerSideEncryptionError(
@@ -579,6 +695,13 @@ internal sealed class DiskStorageService(
             return StorageResult<ObjectInfo>.Failure(destinationServerSideEncryptionError);
         }
 
+        var replacementTagValidationError = request.TaggingDirective == ObjectTaggingDirective.Replace
+            ? ObjectTagValidation.Validate(request.Tags)
+            : null;
+        if (replacementTagValidationError is not null) {
+            return StorageResult<ObjectInfo>.Failure(InvalidTag(replacementTagValidationError, request.DestinationBucketName, request.DestinationKey));
+        }
+
         var sourceObjectResult = await ResolveStoredObjectAsync(request.SourceBucketName, request.SourceKey, request.SourceVersionId, cancellationToken);
         if (!sourceObjectResult.IsSuccess) {
             return StorageResult<ObjectInfo>.Failure(sourceObjectResult.Error!);
@@ -688,6 +811,11 @@ internal sealed class DiskStorageService(
             "object writes");
         if (serverSideEncryptionError is not null) {
             return StorageResult<ObjectInfo>.Failure(serverSideEncryptionError);
+        }
+
+        var tagValidationError = ObjectTagValidation.Validate(request.Tags);
+        if (tagValidationError is not null) {
+            return StorageResult<ObjectInfo>.Failure(InvalidTag(tagValidationError, request.BucketName, request.Key));
         }
 
         var bucketPath = GetBucketPath(request.BucketName);
@@ -862,6 +990,11 @@ internal sealed class DiskStorageService(
             return ValueTask.FromResult(StorageResult<MultipartUploadInfo>.Failure(serverSideEncryptionError));
         }
 
+        var tagValidationError = ObjectTagValidation.Validate(request.Tags);
+        if (tagValidationError is not null) {
+            return ValueTask.FromResult(StorageResult<MultipartUploadInfo>.Failure(InvalidTag(tagValidationError, request.BucketName, request.Key)));
+        }
+
         if (!Directory.Exists(GetBucketPath(request.BucketName))) {
             return ValueTask.FromResult(StorageResult<MultipartUploadInfo>.Failure(BucketNotFound(request.BucketName)));
         }
@@ -989,6 +1122,108 @@ internal sealed class DiskStorageService(
             ContentLength = partInfo.Length,
             LastModifiedUtc = partInfo.LastWriteTimeUtc,
             Checksums = CreateMultipartPartResponseChecksums(actualChecksums, uploadChecksumAlgorithm, request.Checksums)
+        });
+    }
+
+    public async ValueTask<StorageResult<MultipartUploadPart>> UploadPartCopyAsync(UploadPartCopyRequest request, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+
+        if (request.PartNumber <= 0) {
+            return StorageResult<MultipartUploadPart>.Failure(MultipartConflict(
+                "Multipart part numbers must be greater than zero.",
+                request.BucketName,
+                request.Key));
+        }
+
+        if (request.SourceRange is not null
+            && (request.SourceRange.Start is null || request.SourceRange.End is null)) {
+            return StorageResult<MultipartUploadPart>.Failure(MultipartInvalidRequest(
+                "Multipart part copy ranges must specify both a start and end byte offset.",
+                request.BucketName,
+                request.Key));
+        }
+
+        if (!Directory.Exists(GetBucketPath(request.BucketName))) {
+            return StorageResult<MultipartUploadPart>.Failure(BucketNotFound(request.BucketName));
+        }
+
+        var sourceObjectResult = await ResolveStoredObjectAsync(request.SourceBucketName, request.SourceKey, request.SourceVersionId, cancellationToken);
+        if (!sourceObjectResult.IsSuccess) {
+            return StorageResult<MultipartUploadPart>.Failure(sourceObjectResult.Error!);
+        }
+
+        var sourceObject = sourceObjectResult.Value!;
+        if (sourceObject.IsDeleteMarker) {
+            return StorageResult<MultipartUploadPart>.Failure(GetDeleteMarkerAccessError(request.SourceBucketName, request.SourceKey, request.SourceVersionId, sourceObject.Metadata));
+        }
+
+        if (string.IsNullOrWhiteSpace(sourceObject.ContentPath)) {
+            return StorageResult<MultipartUploadPart>.Failure(ObjectNotFound(request.SourceBucketName, request.SourceKey, request.SourceVersionId));
+        }
+
+        var sourceInfo = await CreateObjectInfoAsync(request.SourceBucketName, request.SourceKey, sourceObject.ContentPath, sourceObject.Metadata, cancellationToken);
+        var preconditionFailure = EvaluateCopyPreconditions(request, sourceInfo);
+        if (preconditionFailure is not null) {
+            return StorageResult<MultipartUploadPart>.Failure(preconditionFailure);
+        }
+
+        var normalizedRange = NormalizeRange(request.SourceRange, sourceInfo.ContentLength, request.SourceBucketName, request.SourceKey, out var rangeError);
+        if (rangeError is not null) {
+            return StorageResult<MultipartUploadPart>.Failure(rangeError);
+        }
+
+        var uploadStateResult = await ReadMultipartStateAsync(request.BucketName, request.Key, request.UploadId, cancellationToken);
+        if (!uploadStateResult.IsSuccess) {
+            return StorageResult<MultipartUploadPart>.Failure(uploadStateResult.Error!);
+        }
+
+        var uploadDirectoryPath = uploadStateResult.Value!.UploadDirectoryPath;
+        var uploadChecksumAlgorithm = uploadStateResult.Value.State.ChecksumAlgorithm;
+        if (!string.IsNullOrWhiteSpace(uploadChecksumAlgorithm)
+            && !string.Equals(uploadChecksumAlgorithm, Sha256ChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)
+            && !string.Equals(uploadChecksumAlgorithm, Sha1ChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)
+            && !string.Equals(uploadChecksumAlgorithm, Crc32cChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)) {
+            return StorageResult<MultipartUploadPart>.Failure(StorageError.Unsupported(
+                $"Checksum algorithm '{uploadChecksumAlgorithm}' is not currently supported for multipart uploads.",
+                request.BucketName,
+                request.Key));
+        }
+
+        Directory.CreateDirectory(GetMultipartPartsDirectoryPath(uploadDirectoryPath));
+
+        var partPath = GetMultipartPartPath(uploadDirectoryPath, request.PartNumber);
+        var tempPartPath = $"{partPath}.{Guid.NewGuid():N}.tmp";
+        try {
+            await using (var sourceStream = new FileStream(sourceObject.ContentPath, FileMode.Open, FileAccess.Read, FileShare.Read, 81920, FileOptions.Asynchronous | FileOptions.SequentialScan))
+            await using (var tempStream = new FileStream(tempPartPath, FileMode.CreateNew, FileAccess.Write, FileShare.None, 81920, FileOptions.Asynchronous | FileOptions.SequentialScan)) {
+                if (normalizedRange is { Start: { } start, End: { } end }) {
+                    sourceStream.Seek(start, SeekOrigin.Begin);
+                    await CopyRangeAsync(sourceStream, tempStream, end - start + 1, cancellationToken);
+                }
+                else {
+                    await sourceStream.CopyToAsync(tempStream, cancellationToken);
+                }
+            }
+
+            File.Move(tempPartPath, partPath, overwrite: true);
+        }
+        finally {
+            if (File.Exists(tempPartPath)) {
+                File.Delete(tempPartPath);
+            }
+        }
+
+        var partInfo = new FileInfo(partPath);
+        var actualChecksums = await ComputeChecksumsAsync(partPath, cancellationToken);
+
+        return StorageResult<MultipartUploadPart>.Success(new MultipartUploadPart
+        {
+            PartNumber = request.PartNumber,
+            ETag = BuildETag(partInfo),
+            ContentLength = partInfo.Length,
+            LastModifiedUtc = partInfo.LastWriteTimeUtc,
+            Checksums = CreateMultipartPartResponseChecksums(actualChecksums, uploadChecksumAlgorithm, requestedChecksums: null)
         });
     }
 
@@ -1477,6 +1712,14 @@ internal sealed class DiskStorageService(
     private static string GetMultipartPartPath(string uploadDirectoryPath, int partNumber)
     {
         return Path.Combine(GetMultipartPartsDirectoryPath(uploadDirectoryPath), $"{partNumber:D5}.part");
+    }
+
+    private static int? TryParseMultipartPartNumber(string partPath)
+    {
+        var fileName = Path.GetFileNameWithoutExtension(partPath);
+        return int.TryParse(fileName, out var partNumber)
+            ? partNumber
+            : null;
     }
 
     private async Task<ObjectInfo> CreateObjectInfoAsync(string bucketName, string filePath, bool isLatest, CancellationToken cancellationToken)
@@ -2909,7 +3152,32 @@ internal sealed class DiskStorageService(
 
     private static StorageError? EvaluateCopyPreconditions(CopyObjectRequest request, ObjectInfo sourceInfo)
     {
-        if (!MatchesIfMatch(request.SourceIfMatchETag, sourceInfo.ETag)) {
+        return EvaluateCopyPreconditions(
+            sourceInfo,
+            request.SourceIfMatchETag,
+            request.SourceIfNoneMatchETag,
+            request.SourceIfModifiedSinceUtc,
+            request.SourceIfUnmodifiedSinceUtc);
+    }
+
+    private static StorageError? EvaluateCopyPreconditions(UploadPartCopyRequest request, ObjectInfo sourceInfo)
+    {
+        return EvaluateCopyPreconditions(
+            sourceInfo,
+            request.SourceIfMatchETag,
+            request.SourceIfNoneMatchETag,
+            request.SourceIfModifiedSinceUtc,
+            request.SourceIfUnmodifiedSinceUtc);
+    }
+
+    private static StorageError? EvaluateCopyPreconditions(
+        ObjectInfo sourceInfo,
+        string? sourceIfMatchETag,
+        string? sourceIfNoneMatchETag,
+        DateTimeOffset? sourceIfModifiedSinceUtc,
+        DateTimeOffset? sourceIfUnmodifiedSinceUtc)
+    {
+        if (!MatchesIfMatch(sourceIfMatchETag, sourceInfo.ETag)) {
             return new StorageError
             {
                 Code = StorageErrorCode.PreconditionFailed,
@@ -2920,8 +3188,8 @@ internal sealed class DiskStorageService(
             };
         }
 
-        if (ShouldEvaluateIfUnmodifiedSince(request.SourceIfMatchETag, sourceInfo.ETag)
-            && request.SourceIfUnmodifiedSinceUtc is { } ifUnmodifiedSinceUtc
+        if (ShouldEvaluateIfUnmodifiedSince(sourceIfMatchETag, sourceInfo.ETag)
+            && sourceIfUnmodifiedSinceUtc is { } ifUnmodifiedSinceUtc
             && WasModifiedAfter(sourceInfo.LastModifiedUtc, ifUnmodifiedSinceUtc)) {
             return new StorageError
             {
@@ -2933,7 +3201,7 @@ internal sealed class DiskStorageService(
             };
         }
 
-        if (MatchesAnyETag(request.SourceIfNoneMatchETag, sourceInfo.ETag)) {
+        if (MatchesAnyETag(sourceIfNoneMatchETag, sourceInfo.ETag)) {
             return new StorageError
             {
                 Code = StorageErrorCode.PreconditionFailed,
@@ -2944,7 +3212,7 @@ internal sealed class DiskStorageService(
             };
         }
 
-        if (request.SourceIfModifiedSinceUtc is { } ifModifiedSinceUtc
+        if (sourceIfModifiedSinceUtc is { } ifModifiedSinceUtc
             && !WasModifiedAfter(sourceInfo.LastModifiedUtc, ifModifiedSinceUtc)) {
             return new StorageError
             {
@@ -2957,6 +3225,21 @@ internal sealed class DiskStorageService(
         }
 
         return null;
+    }
+
+    private static async Task CopyRangeAsync(Stream source, Stream destination, long byteCount, CancellationToken cancellationToken)
+    {
+        var remaining = byteCount;
+        var buffer = new byte[81920];
+        while (remaining > 0) {
+            var read = await source.ReadAsync(buffer.AsMemory(0, (int)Math.Min(buffer.Length, remaining)), cancellationToken);
+            if (read == 0) {
+                throw new EndOfStreamException("The copy source ended before the requested byte range was fully read.");
+            }
+
+            await destination.WriteAsync(buffer.AsMemory(0, read), cancellationToken);
+            remaining -= read;
+        }
     }
 
     private static ObjectRange? NormalizeRange(ObjectRange? requestedRange, long contentLength, string bucketName, string objectKey, out StorageError? error)

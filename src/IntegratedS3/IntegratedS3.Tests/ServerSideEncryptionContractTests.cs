@@ -131,6 +131,37 @@ public sealed class ServerSideEncryptionContractTests
         Assert.Same(settings, multipartRequest.ServerSideEncryption);
     }
 
+    [Fact]
+    public void BucketDefaultEncryptionContracts_CanCarryManagedRules()
+    {
+        var rule = new BucketDefaultEncryptionRule
+        {
+            Algorithm = ObjectServerSideEncryptionAlgorithm.Kms,
+            KeyId = "kms-default-key"
+        };
+
+        var configuration = new BucketDefaultEncryptionConfiguration
+        {
+            BucketName = "docs",
+            Rule = rule
+        };
+
+        var putRequest = new PutBucketDefaultEncryptionRequest
+        {
+            BucketName = "docs",
+            Rule = rule
+        };
+
+        var deleteRequest = new DeleteBucketDefaultEncryptionRequest
+        {
+            BucketName = "docs"
+        };
+
+        Assert.Same(rule, configuration.Rule);
+        Assert.Same(rule, putRequest.Rule);
+        Assert.Equal("docs", deleteRequest.BucketName);
+    }
+
     private sealed class TestCatalogDbContext(DbContextOptions<TestCatalogDbContext> options) : DbContext(options)
     {
         protected override void OnModelCreating(ModelBuilder modelBuilder)

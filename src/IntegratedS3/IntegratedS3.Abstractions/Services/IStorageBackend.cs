@@ -59,6 +59,15 @@ public interface IStorageBackend
     ValueTask<StorageResult> DeleteBucketCorsAsync(DeleteBucketCorsRequest request, CancellationToken cancellationToken = default)
         => ValueTask.FromResult(StorageResult.Failure(StorageError.Unsupported("Bucket CORS is not implemented by this storage backend.", request.BucketName)));
 
+    ValueTask<StorageResult<BucketDefaultEncryptionConfiguration>> GetBucketDefaultEncryptionAsync(string bucketName, CancellationToken cancellationToken = default)
+        => ValueTask.FromResult(StorageResult<BucketDefaultEncryptionConfiguration>.Failure(StorageError.Unsupported("Bucket default encryption is not implemented by this storage backend.", bucketName)));
+
+    ValueTask<StorageResult<BucketDefaultEncryptionConfiguration>> PutBucketDefaultEncryptionAsync(PutBucketDefaultEncryptionRequest request, CancellationToken cancellationToken = default)
+        => ValueTask.FromResult(StorageResult<BucketDefaultEncryptionConfiguration>.Failure(StorageError.Unsupported("Bucket default encryption is not implemented by this storage backend.", request.BucketName)));
+
+    ValueTask<StorageResult> DeleteBucketDefaultEncryptionAsync(DeleteBucketDefaultEncryptionRequest request, CancellationToken cancellationToken = default)
+        => ValueTask.FromResult(StorageResult.Failure(StorageError.Unsupported("Bucket default encryption is not implemented by this storage backend.", request.BucketName)));
+
     ValueTask<StorageResult<BucketInfo>> HeadBucketAsync(string bucketName, CancellationToken cancellationToken = default);
 
     ValueTask<StorageResult> DeleteBucketAsync(DeleteBucketRequest request, CancellationToken cancellationToken = default);
@@ -70,7 +79,34 @@ public interface IStorageBackend
     IAsyncEnumerable<MultipartUploadInfo> ListMultipartUploadsAsync(ListMultipartUploadsRequest request, CancellationToken cancellationToken = default)
         => throw new NotSupportedException("Multipart upload listing is not implemented by this storage backend.");
 
+    IAsyncEnumerable<MultipartUploadPart> ListMultipartPartsAsync(ListMultipartPartsRequest request, CancellationToken cancellationToken = default)
+        => throw new NotSupportedException("Multipart part listing is not implemented by this storage backend.");
+
     ValueTask<StorageResult<GetObjectResponse>> GetObjectAsync(GetObjectRequest request, CancellationToken cancellationToken = default);
+
+    ValueTask<StorageResult<ObjectRetentionInfo>> GetObjectRetentionAsync(GetObjectRetentionRequest request, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        cancellationToken.ThrowIfCancellationRequested();
+
+        return ValueTask.FromResult(StorageResult<ObjectRetentionInfo>.Failure(
+            StorageError.Unsupported(
+                "Object retention metadata is not implemented by this storage backend.",
+                request.BucketName,
+                request.Key)));
+    }
+
+    ValueTask<StorageResult<ObjectLegalHoldInfo>> GetObjectLegalHoldAsync(GetObjectLegalHoldRequest request, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        cancellationToken.ThrowIfCancellationRequested();
+
+        return ValueTask.FromResult(StorageResult<ObjectLegalHoldInfo>.Failure(
+            StorageError.Unsupported(
+                "Object legal-hold metadata is not implemented by this storage backend.",
+                request.BucketName,
+                request.Key)));
+    }
 
     ValueTask<StorageResult<ObjectTagSet>> GetObjectTagsAsync(GetObjectTagsRequest request, CancellationToken cancellationToken = default);
 
@@ -85,6 +121,18 @@ public interface IStorageBackend
     ValueTask<StorageResult<MultipartUploadInfo>> InitiateMultipartUploadAsync(InitiateMultipartUploadRequest request, CancellationToken cancellationToken = default);
 
     ValueTask<StorageResult<MultipartUploadPart>> UploadMultipartPartAsync(UploadMultipartPartRequest request, CancellationToken cancellationToken = default);
+
+    ValueTask<StorageResult<MultipartUploadPart>> UploadPartCopyAsync(UploadPartCopyRequest request, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        cancellationToken.ThrowIfCancellationRequested();
+
+        return ValueTask.FromResult(StorageResult<MultipartUploadPart>.Failure(
+            StorageError.Unsupported(
+                "Multipart part copy is not implemented by this storage backend.",
+                request.BucketName,
+                request.Key)));
+    }
 
     ValueTask<StorageResult<ObjectInfo>> CompleteMultipartUploadAsync(CompleteMultipartUploadRequest request, CancellationToken cancellationToken = default);
 

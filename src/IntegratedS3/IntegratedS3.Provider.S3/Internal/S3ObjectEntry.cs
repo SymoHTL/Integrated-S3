@@ -22,4 +22,7 @@ internal sealed record S3ObjectEntry(
     string? ContentDisposition = null,
     string? ContentEncoding = null,
     string? ContentLanguage = null,
-    DateTimeOffset? ExpiresUtc = null);
+    DateTimeOffset? ExpiresUtc = null,
+    ObjectRetentionMode? RetentionMode = null,
+    DateTimeOffset? RetainUntilDateUtc = null,
+    ObjectLegalHoldStatus? LegalHoldStatus = null);

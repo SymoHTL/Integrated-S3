@@ -162,6 +162,9 @@ internal sealed class EntityFrameworkStorageCatalogStore<TDbContext>(
         record.MetadataJson = @object.Metadata is null ? null : JsonSerializer.Serialize(@object.Metadata);
         record.TagsJson = @object.Tags is null ? null : JsonSerializer.Serialize(@object.Tags);
         record.ChecksumsJson = @object.Checksums is null ? null : JsonSerializer.Serialize(@object.Checksums);
+        record.RetentionMode = @object.RetentionMode;
+        record.RetainUntilDateUtc = @object.RetainUntilDateUtc;
+        record.LegalHoldStatus = @object.LegalHoldStatus;
         record.ServerSideEncryptionAlgorithm = @object.ServerSideEncryption?.Algorithm;
         record.ServerSideEncryptionKeyId = @object.ServerSideEncryption?.KeyId;
         record.LastSyncedAtUtc = DateTimeOffset.UtcNow;
@@ -234,6 +237,9 @@ internal sealed class EntityFrameworkStorageCatalogStore<TDbContext>(
                 Checksums = string.IsNullOrWhiteSpace(@object.ChecksumsJson)
                     ? null
                     : JsonSerializer.Deserialize<Dictionary<string, string>>(@object.ChecksumsJson),
+                RetentionMode = @object.RetentionMode,
+                RetainUntilDateUtc = @object.RetainUntilDateUtc,
+                LegalHoldStatus = @object.LegalHoldStatus,
                 ServerSideEncryption = @object.ServerSideEncryptionAlgorithm.HasValue
                     ? new ObjectServerSideEncryptionInfo
                     {

@@ -19,6 +19,8 @@ public interface IStorageAuthorizationCompatibilityService
 
     ValueTask<StorageResult<StorageCannedAcl>> GetObjectAclAsync(string bucketName, string key, CancellationToken cancellationToken = default);
 
+    ValueTask<StorageResult<ObjectAclCompatibilityState>> GetObjectAclStateAsync(string bucketName, string key, CancellationToken cancellationToken = default);
+
     ValueTask<StorageResult> PutObjectAclAsync(PutObjectAclCompatibilityRequest request, CancellationToken cancellationToken = default);
 
     ValueTask<StorageResult<BucketPolicyCompatibilityDocument?>> GetBucketPolicyAsync(string bucketName, CancellationToken cancellationToken = default);

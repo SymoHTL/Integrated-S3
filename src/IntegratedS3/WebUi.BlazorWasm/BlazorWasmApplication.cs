@@ -55,7 +55,7 @@ public static class BlazorWasmApplication
             app.MapIntegratedS3Endpoints(configureIntegratedS3Endpoints);
         }
 
-        app.MapFallback(GetHostPage);
+        app.MapFallbackToFile("index.html");
     }
 
     private static DiskStorageOptions ResolveDiskStorageOptions(WebApplicationBuilder builder)
@@ -67,22 +67,4 @@ public static class BlazorWasmApplication
         return diskOptions;
     }
 
-    private static IResult GetHostPage() => Results.Content(
-        """
-        <!DOCTYPE html>
-        <html lang="en">
-        <head>
-            <meta charset="utf-8" />
-            <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-            <title>Integrated S3 Blazor WebAssembly Sample</title>
-            <base href="/" />
-            <link rel="stylesheet" href="css/app.css" />
-        </head>
-        <body>
-            <div id="app">Loading the Blazor WebAssembly sample...</div>
-            <script src="_framework/blazor.webassembly.js"></script>
-        </body>
-        </html>
-        """,
-        "text/html; charset=utf-8");
 }

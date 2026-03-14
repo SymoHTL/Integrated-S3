@@ -8,7 +8,8 @@ public sealed class DiskStorageContractTests : StorageProviderContractTests
     protected override StorageProviderContractTestOptions ContractOptions => new()
     {
         SupportsPlatformObjectStateStore = true,
-        SupportsPlatformMultipartStateStore = true
+        SupportsPlatformMultipartStateStore = true,
+        SupportedChecksumAlgorithms = ["sha256", "sha1"]
     };
 
     protected override StorageProviderContractFixture CreateFixture()

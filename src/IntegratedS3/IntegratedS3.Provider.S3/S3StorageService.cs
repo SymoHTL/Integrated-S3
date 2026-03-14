@@ -243,6 +243,53 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
         }
     }
 
+    public async ValueTask<StorageResult<BucketDefaultEncryptionConfiguration>> GetBucketDefaultEncryptionAsync(string bucketName, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var configuration = await _client.GetBucketDefaultEncryptionAsync(bucketName, cancellationToken).ConfigureAwait(false);
+            return StorageResult<BucketDefaultEncryptionConfiguration>.Success(configuration);
+        }
+        catch (S3ServerSideEncryptionNotSupportedException ex)
+        {
+            return StorageResult<BucketDefaultEncryptionConfiguration>.Failure(StorageError.Unsupported(ex.Message, bucketName));
+        }
+        catch (AmazonS3Exception ex)
+        {
+            return StorageResult<BucketDefaultEncryptionConfiguration>.Failure(S3ErrorTranslator.Translate(ex, Name, bucketName));
+        }
+    }
+
+    public async ValueTask<StorageResult<BucketDefaultEncryptionConfiguration>> PutBucketDefaultEncryptionAsync(PutBucketDefaultEncryptionRequest request, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var configuration = await _client.SetBucketDefaultEncryptionAsync(request, cancellationToken).ConfigureAwait(false);
+            return StorageResult<BucketDefaultEncryptionConfiguration>.Success(configuration);
+        }
+        catch (S3ServerSideEncryptionNotSupportedException ex)
+        {
+            return StorageResult<BucketDefaultEncryptionConfiguration>.Failure(StorageError.Unsupported(ex.Message, request.BucketName));
+        }
+        catch (AmazonS3Exception ex)
+        {
+            return StorageResult<BucketDefaultEncryptionConfiguration>.Failure(S3ErrorTranslator.Translate(ex, Name, request.BucketName));
+        }
+    }
+
+    public async ValueTask<StorageResult> DeleteBucketDefaultEncryptionAsync(DeleteBucketDefaultEncryptionRequest request, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            await _client.DeleteBucketDefaultEncryptionAsync(request.BucketName, cancellationToken).ConfigureAwait(false);
+            return StorageResult.Success();
+        }
+        catch (AmazonS3Exception ex)
+        {
+            return StorageResult.Failure(S3ErrorTranslator.Translate(ex, Name, request.BucketName));
+        }
+    }
+
     public async ValueTask<StorageResult<BucketInfo>> HeadBucketAsync(string bucketName, CancellationToken cancellationToken = default)
     {
         try
@@ -437,6 +484,60 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
         while (keyMarker is not null || uploadIdMarker is not null);
     }
 
+    public async IAsyncEnumerable<MultipartUploadPart> ListMultipartPartsAsync(ListMultipartPartsRequest request, [EnumeratorCancellation] CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        if (request.PageSize is <= 0)
+            throw new ArgumentException("Page size must be greater than zero.", nameof(request));
+        if (request.PartNumberMarker is < 0)
+            throw new ArgumentException("Part number marker must be greater than or equal to zero.", nameof(request));
+
+        int? partNumberMarker = request.PartNumberMarker;
+        var remaining = request.PageSize;
+
+        do
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            S3MultipartPartListPage page;
+            try
+            {
+                page = await _client.ListMultipartPartsAsync(
+                    request.BucketName,
+                    request.Key,
+                    request.UploadId,
+                    partNumberMarker,
+                    remaining,
+                    cancellationToken).ConfigureAwait(false);
+            }
+            catch (AmazonS3Exception ex) when (string.Equals(ex.ErrorCode, "NoSuchUpload", StringComparison.Ordinal))
+            {
+                yield break;
+            }
+            catch (AmazonS3Exception ex)
+            {
+                throw new InvalidOperationException(
+                    S3ErrorTranslator.Translate(ex, Name, request.BucketName, request.Key).Message, ex);
+            }
+
+            foreach (var entry in page.Entries)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                yield return entry;
+
+                if (remaining.HasValue)
+                {
+                    remaining--;
+                    if (remaining <= 0)
+                        yield break;
+                }
+            }
+
+            partNumberMarker = page.NextPartNumberMarker;
+        }
+        while (partNumberMarker.HasValue);
+    }
+
     // -------------------------------------------------------------------------
     // Object CRUD
     // -------------------------------------------------------------------------
@@ -467,6 +568,10 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
             return StorageResult<ObjectInfo>.Failure(S3ErrorTranslator.Translate(ex, Name, request.BucketName, request.Key));
         }
         catch (S3ServerSideEncryptionNotSupportedException ex)
+        {
+            return StorageResult<ObjectInfo>.Failure(StorageError.Unsupported(ex.Message, request.BucketName, request.Key));
+        }
+        catch (S3ObjectLockNotSupportedException ex)
         {
             return StorageResult<ObjectInfo>.Failure(StorageError.Unsupported(ex.Message, request.BucketName, request.Key));
         }
@@ -523,6 +628,10 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
             {
                 return StorageResult<GetObjectResponse>.Failure(StorageError.Unsupported(sseEx.Message, request.BucketName, request.Key));
             }
+            catch (S3ObjectLockNotSupportedException objectLockEx)
+            {
+                return StorageResult<GetObjectResponse>.Failure(StorageError.Unsupported(objectLockEx.Message, request.BucketName, request.Key));
+            }
         }
         catch (AmazonS3Exception ex)
         {
@@ -531,6 +640,44 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
         catch (S3ServerSideEncryptionNotSupportedException ex)
         {
             return StorageResult<GetObjectResponse>.Failure(StorageError.Unsupported(ex.Message, request.BucketName, request.Key));
+        }
+        catch (S3ObjectLockNotSupportedException ex)
+        {
+            return StorageResult<GetObjectResponse>.Failure(StorageError.Unsupported(ex.Message, request.BucketName, request.Key));
+        }
+    }
+
+    public async ValueTask<StorageResult<ObjectRetentionInfo>> GetObjectRetentionAsync(GetObjectRetentionRequest request, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var retention = await _client.GetObjectRetentionAsync(request.BucketName, request.Key, request.VersionId, cancellationToken).ConfigureAwait(false);
+            return StorageResult<ObjectRetentionInfo>.Success(retention);
+        }
+        catch (AmazonS3Exception ex)
+        {
+            return StorageResult<ObjectRetentionInfo>.Failure(S3ErrorTranslator.Translate(ex, Name, request.BucketName, request.Key));
+        }
+        catch (S3ObjectLockNotSupportedException ex)
+        {
+            return StorageResult<ObjectRetentionInfo>.Failure(StorageError.Unsupported(ex.Message, request.BucketName, request.Key));
+        }
+    }
+
+    public async ValueTask<StorageResult<ObjectLegalHoldInfo>> GetObjectLegalHoldAsync(GetObjectLegalHoldRequest request, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var legalHold = await _client.GetObjectLegalHoldAsync(request.BucketName, request.Key, request.VersionId, cancellationToken).ConfigureAwait(false);
+            return StorageResult<ObjectLegalHoldInfo>.Success(legalHold);
+        }
+        catch (AmazonS3Exception ex)
+        {
+            return StorageResult<ObjectLegalHoldInfo>.Failure(S3ErrorTranslator.Translate(ex, Name, request.BucketName, request.Key));
+        }
+        catch (S3ObjectLockNotSupportedException ex)
+        {
+            return StorageResult<ObjectLegalHoldInfo>.Failure(StorageError.Unsupported(ex.Message, request.BucketName, request.Key));
         }
     }
 
@@ -780,6 +927,33 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
         }
     }
 
+    public async ValueTask<StorageResult<MultipartUploadPart>> UploadPartCopyAsync(UploadPartCopyRequest request, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+
+        if (request.SourceRange is not null
+            && (request.SourceRange.Start is null || request.SourceRange.End is null)) {
+            return StorageResult<MultipartUploadPart>.Failure(MultipartInvalidRequest(
+                "Multipart part copy ranges must specify both a start and end byte offset.",
+                request.BucketName,
+                request.Key));
+        }
+
+        try
+        {
+            var part = await _client.UploadPartCopyAsync(request, cancellationToken).ConfigureAwait(false);
+            return StorageResult<MultipartUploadPart>.Success(part);
+        }
+        catch (AmazonS3Exception ex)
+        {
+            return StorageResult<MultipartUploadPart>.Failure(TranslateCopyPartError(ex, request));
+        }
+        catch (NotSupportedException ex)
+        {
+            return StorageResult<MultipartUploadPart>.Failure(StorageError.Unsupported(ex.Message, request.BucketName, request.Key));
+        }
+    }
+
     public async ValueTask<StorageResult<ObjectInfo>> CompleteMultipartUploadAsync(CompleteMultipartUploadRequest request, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(request);
@@ -853,6 +1027,9 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
         LastModifiedUtc = entry.LastModifiedUtc,
         Metadata = entry.Metadata,
         Checksums = entry.Checksums,
+        RetentionMode = entry.RetentionMode,
+        RetainUntilDateUtc = entry.RetainUntilDateUtc,
+        LegalHoldStatus = entry.LegalHoldStatus,
         ServerSideEncryption = entry.ServerSideEncryption
     };
 
@@ -897,6 +1074,35 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
         return S3ErrorTranslator.Translate(exception, Name, request.DestinationBucketName, request.DestinationKey);
     }
 
+    private StorageError TranslateCopyPartError(AmazonS3Exception exception, UploadPartCopyRequest request)
+    {
+        if (string.Equals(exception.ErrorCode, "NoSuchKey", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(exception.ErrorCode, "NoSuchVersion", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(exception.ErrorCode, "InvalidRange", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(exception.ErrorCode, "InvalidRequest", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(exception.ErrorCode, "PreconditionFailed", StringComparison.OrdinalIgnoreCase)
+            || (int)exception.StatusCode == 412
+            || (int)exception.StatusCode == 416)
+        {
+            return S3ErrorTranslator.Translate(exception, Name, request.SourceBucketName, request.SourceKey);
+        }
+
+        return S3ErrorTranslator.Translate(exception, Name, request.BucketName, request.Key);
+    }
+
+    private StorageError MultipartInvalidRequest(string message, string bucketName, string objectKey)
+    {
+        return new StorageError
+        {
+            Code = StorageErrorCode.MultipartConflict,
+            Message = message,
+            BucketName = bucketName,
+            ObjectKey = objectKey,
+            ProviderName = Name,
+            SuggestedHttpStatusCode = 400
+        };
+    }
+
     private static S3ObjectEntry MergeObjectEntries(S3ObjectEntry preferred, S3ObjectEntry fallback)
     {
         return preferred with
@@ -912,6 +1118,9 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
             Metadata = MergeValueDictionaries(preferred.Metadata, fallback.Metadata),
             VersionId = preferred.VersionId ?? fallback.VersionId,
             Checksums = MergeValueDictionaries(preferred.Checksums, fallback.Checksums),
+            RetentionMode = preferred.RetentionMode ?? fallback.RetentionMode,
+            RetainUntilDateUtc = preferred.RetainUntilDateUtc ?? fallback.RetainUntilDateUtc,
+            LegalHoldStatus = preferred.LegalHoldStatus ?? fallback.LegalHoldStatus,
             ServerSideEncryption = preferred.ServerSideEncryption ?? fallback.ServerSideEncryption
         };
     }

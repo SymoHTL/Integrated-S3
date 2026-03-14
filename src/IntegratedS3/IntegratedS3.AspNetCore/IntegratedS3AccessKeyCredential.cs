@@ -6,6 +6,8 @@ public sealed class IntegratedS3AccessKeyCredential
 
     public string SecretAccessKey { get; set; } = string.Empty;
 
+    public string? SessionToken { get; set; }
+
     public string? DisplayName { get; set; }
 
     public List<string> Scopes { get; set; } = [];

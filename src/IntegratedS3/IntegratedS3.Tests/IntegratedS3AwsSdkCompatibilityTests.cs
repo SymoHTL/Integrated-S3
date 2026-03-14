@@ -378,6 +378,137 @@ public sealed class IntegratedS3AwsSdkCompatibilityTests : IClassFixture<WebUiAp
     }
 
     [Fact]
+    public async Task AmazonS3Client_DeleteObjects_HonorsQuietModeAndDeleteMarkerVersionFidelity()
+    {
+        const string accessKeyId = "aws-sdk-batch-delete-access";
+        const string secretAccessKey = "aws-sdk-batch-delete-secret";
+
+        await using var isolatedClient = await CreateAuthenticatedLoopbackClientAsync(accessKeyId, secretAccessKey);
+        using var s3Client = CreateS3Client(isolatedClient.BaseAddress!, accessKeyId, secretAccessKey);
+
+        const string bucketName = "aws-sdk-batch-delete-bucket";
+        const string objectKey = "docs/history.txt";
+        const string missingVersionId = "missing-version";
+
+        Assert.Equal(HttpStatusCode.OK, (await s3Client.PutBucketAsync(new PutBucketRequest
+        {
+            BucketName = bucketName
+        })).HttpStatusCode);
+
+        Assert.Equal(HttpStatusCode.OK, (await s3Client.PutBucketVersioningAsync(new PutBucketVersioningRequest
+        {
+            BucketName = bucketName,
+            VersioningConfig = new S3BucketVersioningConfig
+            {
+                Status = VersionStatus.Enabled
+            }
+        })).HttpStatusCode);
+
+        var putObjectResponse = await s3Client.PutObjectAsync(new PutObjectRequest
+        {
+            BucketName = bucketName,
+            Key = objectKey,
+            ContentBody = "version one",
+            ContentType = "text/plain",
+            UseChunkEncoding = false
+        });
+        Assert.Equal(HttpStatusCode.OK, putObjectResponse.HttpStatusCode);
+
+        var quietDeleteException = await Assert.ThrowsAsync<DeleteObjectsException>(() => s3Client.DeleteObjectsAsync(new DeleteObjectsRequest
+        {
+            BucketName = bucketName,
+            Quiet = true,
+            Objects =
+            [
+                new KeyVersion
+                {
+                    Key = objectKey
+                },
+                new KeyVersion
+                {
+                    Key = objectKey,
+                    VersionId = missingVersionId
+                }
+            ]
+        }));
+
+        var quietDeleteResponse = quietDeleteException.Response;
+        Assert.Equal(HttpStatusCode.OK, quietDeleteResponse.HttpStatusCode);
+        Assert.True(quietDeleteResponse.DeletedObjects is null || quietDeleteResponse.DeletedObjects.Count == 0);
+
+        var quietDeleteError = Assert.Single(quietDeleteResponse.DeleteErrors);
+        Assert.Equal(objectKey, quietDeleteError.Key);
+        Assert.Equal(missingVersionId, quietDeleteError.VersionId);
+        Assert.Equal("NoSuchVersion", quietDeleteError.Code);
+
+        var currentGetException = await Assert.ThrowsAsync<NoSuchKeyException>(() => s3Client.GetObjectAsync(new GetObjectRequest
+        {
+            BucketName = bucketName,
+            Key = objectKey
+        }));
+        Assert.Equal(HttpStatusCode.NotFound, currentGetException.StatusCode);
+
+        var restoredPutResponse = await s3Client.PutObjectAsync(new PutObjectRequest
+        {
+            BucketName = bucketName,
+            Key = objectKey,
+            ContentBody = "version two",
+            ContentType = "text/plain",
+            UseChunkEncoding = false
+        });
+        Assert.Equal(HttpStatusCode.OK, restoredPutResponse.HttpStatusCode);
+
+        var createDeleteMarkerResponse = await s3Client.DeleteObjectsAsync(new DeleteObjectsRequest
+        {
+            BucketName = bucketName,
+            Objects =
+            [
+                new KeyVersion
+                {
+                    Key = objectKey
+                }
+            ]
+        });
+        Assert.Equal(HttpStatusCode.OK, createDeleteMarkerResponse.HttpStatusCode);
+
+        var createdDeleteMarker = Assert.Single(createDeleteMarkerResponse.DeletedObjects);
+        Assert.Equal(objectKey, createdDeleteMarker.Key);
+        Assert.Null(createdDeleteMarker.VersionId);
+        Assert.True(createdDeleteMarker.DeleteMarker is true);
+        var deleteMarkerVersionId = Assert.IsType<string>(createdDeleteMarker.DeleteMarkerVersionId);
+
+        var deleteDeleteMarkerResponse = await s3Client.DeleteObjectsAsync(new DeleteObjectsRequest
+        {
+            BucketName = bucketName,
+            Objects =
+            [
+                new KeyVersion
+                {
+                    Key = objectKey,
+                    VersionId = deleteMarkerVersionId
+                }
+            ]
+        });
+
+        Assert.Equal(HttpStatusCode.OK, deleteDeleteMarkerResponse.HttpStatusCode);
+        var deletedDeleteMarker = Assert.Single(deleteDeleteMarkerResponse.DeletedObjects);
+        Assert.Equal(objectKey, deletedDeleteMarker.Key);
+        Assert.Equal(deleteMarkerVersionId, deletedDeleteMarker.VersionId);
+        Assert.True(deletedDeleteMarker.DeleteMarker is true);
+        Assert.Equal(deleteMarkerVersionId, deletedDeleteMarker.DeleteMarkerVersionId);
+        Assert.True(deleteDeleteMarkerResponse.DeleteErrors is null || deleteDeleteMarkerResponse.DeleteErrors.Count == 0);
+
+        var restoredObjectResponse = await s3Client.GetObjectAsync(new GetObjectRequest
+        {
+            BucketName = bucketName,
+            Key = objectKey
+        });
+        Assert.Equal(HttpStatusCode.OK, restoredObjectResponse.HttpStatusCode);
+        using var reader = new StreamReader(restoredObjectResponse.ResponseStream);
+        Assert.Equal("version two", await reader.ReadToEndAsync());
+    }
+
+    [Fact]
     public async Task AmazonS3Client_PutObject_WithSha1Checksum_ExposesSdkChecksumFieldsAgainstIntegratedS3()
     {
         const string accessKeyId = "aws-sdk-sha1-access";
@@ -1257,6 +1388,200 @@ public sealed class IntegratedS3AwsSdkCompatibilityTests : IClassFixture<WebUiAp
     }
 
     [Fact]
+    public async Task AmazonS3Client_ListParts_RespectsPartMarkersAndPerPartChecksums()
+    {
+        const string accessKeyId = "aws-sdk-list-parts-access";
+        const string secretAccessKey = "aws-sdk-list-parts-secret";
+
+        await using var isolatedClient = await CreateAuthenticatedLoopbackClientAsync(accessKeyId, secretAccessKey);
+        using var s3Client = CreateS3Client(isolatedClient.BaseAddress!, accessKeyId, secretAccessKey);
+
+        const string bucketName = "aws-sdk-list-parts-bucket";
+        const string objectKey = "docs/list-parts.txt";
+        const string part1Payload = "hello ";
+        const string part2Payload = "world";
+        const string part3Payload = "!";
+
+        Assert.Equal(HttpStatusCode.OK, (await s3Client.PutBucketAsync(new PutBucketRequest
+        {
+            BucketName = bucketName
+        })).HttpStatusCode);
+
+        var initiateResponse = await s3Client.InitiateMultipartUploadAsync(new InitiateMultipartUploadRequest
+        {
+            BucketName = bucketName,
+            Key = objectKey,
+            ContentType = "text/plain",
+            ChecksumAlgorithm = ChecksumAlgorithm.SHA256
+        });
+        Assert.Equal(HttpStatusCode.OK, initiateResponse.HttpStatusCode);
+
+        async Task<(UploadPartResponse Response, string Checksum)> UploadPartAsync(int partNumber, string payload, bool isLastPart)
+        {
+            var checksum = ComputeSha256Base64(payload);
+            await using var stream = new MemoryStream(Encoding.UTF8.GetBytes(payload));
+            var response = await s3Client.UploadPartAsync(new UploadPartRequest
+            {
+                BucketName = bucketName,
+                Key = objectKey,
+                UploadId = initiateResponse.UploadId,
+                PartNumber = partNumber,
+                InputStream = stream,
+                PartSize = stream.Length,
+                IsLastPart = isLastPart,
+                ChecksumAlgorithm = ChecksumAlgorithm.SHA256,
+                ChecksumSHA256 = checksum
+            });
+            Assert.Equal(HttpStatusCode.OK, response.HttpStatusCode);
+            return (response, checksum);
+        }
+
+        var part1 = await UploadPartAsync(1, part1Payload, isLastPart: false);
+        var part2 = await UploadPartAsync(2, part2Payload, isLastPart: false);
+        var part3 = await UploadPartAsync(3, part3Payload, isLastPart: true);
+
+        var firstPage = await s3Client.ListPartsAsync(new ListPartsRequest
+        {
+            BucketName = bucketName,
+            Key = objectKey,
+            UploadId = initiateResponse.UploadId,
+            MaxParts = 2
+        });
+
+        Assert.Equal(HttpStatusCode.OK, firstPage.HttpStatusCode);
+        Assert.True(firstPage.IsTruncated);
+        Assert.Equal(2, firstPage.NextPartNumberMarker);
+        Assert.Equal(2, firstPage.Parts.Count);
+        Assert.Equal(1, firstPage.Parts[0].PartNumber);
+        Assert.Equal(part1.Response.ETag, firstPage.Parts[0].ETag);
+        Assert.Equal(part1.Checksum, firstPage.Parts[0].ChecksumSHA256);
+        Assert.Equal(2, firstPage.Parts[1].PartNumber);
+        Assert.Equal(part2.Response.ETag, firstPage.Parts[1].ETag);
+        Assert.Equal(part2.Checksum, firstPage.Parts[1].ChecksumSHA256);
+
+        var secondPage = await s3Client.ListPartsAsync(new ListPartsRequest
+        {
+            BucketName = bucketName,
+            Key = objectKey,
+            UploadId = initiateResponse.UploadId,
+            PartNumberMarker = "2"
+        });
+
+        Assert.Equal(HttpStatusCode.OK, secondPage.HttpStatusCode);
+        Assert.False(secondPage.IsTruncated);
+        var remainingPart = Assert.Single(secondPage.Parts);
+        Assert.Equal(3, remainingPart.PartNumber);
+        Assert.Equal(part3.Response.ETag, remainingPart.ETag);
+        Assert.Equal(part3.Checksum, remainingPart.ChecksumSHA256);
+    }
+
+    [Fact]
+    public async Task AmazonS3Client_UploadPartCopy_WorksAgainstIntegratedS3()
+    {
+        const string accessKeyId = "aws-sdk-copy-part-access";
+        const string secretAccessKey = "aws-sdk-copy-part-secret";
+
+        await using var isolatedClient = await CreateAuthenticatedLoopbackClientAsync(accessKeyId, secretAccessKey);
+        using var s3Client = CreateS3Client(isolatedClient.BaseAddress!, accessKeyId, secretAccessKey);
+
+        const string bucketName = "aws-sdk-copy-part-bucket";
+        const string sourceKey = "docs/source.txt";
+        const string destinationKey = "docs/copied.txt";
+
+        Assert.Equal(HttpStatusCode.OK, (await s3Client.PutBucketAsync(new PutBucketRequest
+        {
+            BucketName = bucketName
+        })).HttpStatusCode);
+
+        Assert.Equal(HttpStatusCode.OK, (await s3Client.PutBucketVersioningAsync(new PutBucketVersioningRequest
+        {
+            BucketName = bucketName,
+            VersioningConfig = new S3BucketVersioningConfig
+            {
+                Status = VersionStatus.Enabled
+            }
+        })).HttpStatusCode);
+
+        var v1Put = await s3Client.PutObjectAsync(new PutObjectRequest
+        {
+            BucketName = bucketName,
+            Key = sourceKey,
+            ContentBody = "hello world",
+            ContentType = "text/plain"
+        });
+        Assert.Equal(HttpStatusCode.OK, v1Put.HttpStatusCode);
+
+        var v1Metadata = await s3Client.GetObjectMetadataAsync(new GetObjectMetadataRequest
+        {
+            BucketName = bucketName,
+            Key = sourceKey,
+            VersionId = v1Put.VersionId
+        });
+        Assert.Equal(HttpStatusCode.OK, v1Metadata.HttpStatusCode);
+
+        var v2Put = await s3Client.PutObjectAsync(new PutObjectRequest
+        {
+            BucketName = bucketName,
+            Key = sourceKey,
+            ContentBody = "goodbye world",
+            ContentType = "text/plain"
+        });
+        Assert.Equal(HttpStatusCode.OK, v2Put.HttpStatusCode);
+        Assert.NotEqual(v1Put.VersionId, v2Put.VersionId);
+
+        var initiateResponse = await s3Client.InitiateMultipartUploadAsync(new InitiateMultipartUploadRequest
+        {
+            BucketName = bucketName,
+            Key = destinationKey,
+            ContentType = "text/plain",
+            ChecksumAlgorithm = ChecksumAlgorithm.SHA256
+        });
+        Assert.Equal(HttpStatusCode.OK, initiateResponse.HttpStatusCode);
+
+        var copiedPartResponse = await s3Client.CopyPartAsync(new CopyPartRequest
+        {
+            SourceBucket = bucketName,
+            SourceKey = sourceKey,
+            SourceVersionId = v1Put.VersionId,
+            DestinationBucket = bucketName,
+            DestinationKey = destinationKey,
+            UploadId = initiateResponse.UploadId,
+            PartNumber = 1,
+            FirstByte = 6,
+            LastByte = 10,
+            ETagToMatch =
+            [
+                v1Metadata.ETag
+            ]
+        });
+
+        Assert.Equal(HttpStatusCode.OK, copiedPartResponse.HttpStatusCode);
+        Assert.Equal(v1Put.VersionId, copiedPartResponse.CopySourceVersionId);
+        Assert.Equal(ComputeSha256Base64("world"), copiedPartResponse.ChecksumSHA256);
+
+        var completeResponse = await s3Client.CompleteMultipartUploadAsync(new CompleteMultipartUploadRequest
+        {
+            BucketName = bucketName,
+            Key = destinationKey,
+            UploadId = initiateResponse.UploadId,
+            PartETags =
+            [
+                new PartETag(1, copiedPartResponse.ETag)
+            ]
+        });
+        Assert.Equal(HttpStatusCode.OK, completeResponse.HttpStatusCode);
+
+        var getObjectResponse = await s3Client.GetObjectAsync(new GetObjectRequest
+        {
+            BucketName = bucketName,
+            Key = destinationKey
+        });
+        Assert.Equal(HttpStatusCode.OK, getObjectResponse.HttpStatusCode);
+        using var reader = new StreamReader(getObjectResponse.ResponseStream);
+        Assert.Equal("world", await reader.ReadToEndAsync());
+    }
+
+    [Fact]
     public async Task AmazonS3Client_MultipartUploadAndCopy_WithChecksumAlgorithm_ExposesCompositeChecksumMetadataAgainstIntegratedS3()
     {
         const string accessKeyId = "aws-sdk-multipart-checksum-access";
@@ -1791,6 +2116,23 @@ public sealed class IntegratedS3AwsSdkCompatibilityTests : IClassFixture<WebUiAp
         }));
         Assert.Equal(HttpStatusCode.NotFound, currentHeadException.StatusCode);
 
+        var missingVersionGetException = await Assert.ThrowsAsync<AmazonS3Exception>(() => s3Client.GetObjectAsync(new GetObjectRequest
+        {
+            BucketName = bucketName,
+            Key = objectKey,
+            VersionId = "missing-version"
+        }));
+        Assert.Equal(HttpStatusCode.NotFound, missingVersionGetException.StatusCode);
+        Assert.Equal("NoSuchVersion", missingVersionGetException.ErrorCode);
+
+        var missingVersionHeadException = await Assert.ThrowsAsync<AmazonS3Exception>(() => s3Client.GetObjectMetadataAsync(new GetObjectMetadataRequest
+        {
+            BucketName = bucketName,
+            Key = objectKey,
+            VersionId = "missing-version"
+        }));
+        Assert.Equal(HttpStatusCode.NotFound, missingVersionHeadException.StatusCode);
+
         var explicitGetException = await Assert.ThrowsAsync<AmazonS3Exception>(() => s3Client.GetObjectAsync(new GetObjectRequest
         {
             BucketName = bucketName,
@@ -1916,6 +2258,17 @@ public sealed class IntegratedS3AwsSdkCompatibilityTests : IClassFixture<WebUiAp
         }));
         Assert.Equal(HttpStatusCode.NotFound, currentCopyException.StatusCode);
         Assert.Equal("NoSuchKey", currentCopyException.ErrorCode);
+
+        var missingVersionCopyException = await Assert.ThrowsAsync<AmazonS3Exception>(() => s3Client.CopyObjectAsync(new CopyObjectRequest
+        {
+            SourceBucket = sourceBucketName,
+            SourceKey = sourceKey,
+            SourceVersionId = "missing-version",
+            DestinationBucket = targetBucketName,
+            DestinationKey = "docs/missing-version-copy.txt"
+        }));
+        Assert.Equal(HttpStatusCode.NotFound, missingVersionCopyException.StatusCode);
+        Assert.Equal("NoSuchVersion", missingVersionCopyException.ErrorCode);
 
         var deleteMarkerCopyException = await Assert.ThrowsAsync<AmazonS3Exception>(() => s3Client.CopyObjectAsync(new CopyObjectRequest
         {
@@ -2302,9 +2655,11 @@ public sealed class IntegratedS3AwsSdkCompatibilityTests : IClassFixture<WebUiAp
                 Core.Models.StorageOperationType.ListObjects => "storage.read",
                 Core.Models.StorageOperationType.ListObjectVersions => "storage.read",
                 Core.Models.StorageOperationType.ListMultipartUploads => "storage.read",
+                Core.Models.StorageOperationType.ListMultipartParts => "storage.read",
                 Core.Models.StorageOperationType.GetObject => "storage.read",
                 Core.Models.StorageOperationType.GetBucketLocation => "storage.read",
                 Core.Models.StorageOperationType.GetBucketCors => "storage.read",
+                Core.Models.StorageOperationType.GetBucketDefaultEncryption => "storage.read",
                 Core.Models.StorageOperationType.GetObjectTags => "storage.read",
                 Core.Models.StorageOperationType.HeadObject => "storage.read",
                 _ => "storage.write"

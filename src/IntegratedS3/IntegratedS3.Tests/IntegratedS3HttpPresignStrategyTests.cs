@@ -10,6 +10,7 @@ using IntegratedS3.AspNetCore;
 using IntegratedS3.AspNetCore.DependencyInjection;
 using IntegratedS3.Core.Models;
 using IntegratedS3.Core.Services;
+using IntegratedS3.Protocol;
 using IntegratedS3.Provider.S3;
 using IntegratedS3.Provider.S3.DependencyInjection;
 using IntegratedS3.Provider.S3.Internal;
@@ -338,6 +339,31 @@ public sealed class IntegratedS3HttpPresignStrategyTests
 
         Assert.True(result.IsSuccess);
         Assert.Equal(StorageAccessMode.Proxy, result.Value?.AccessMode);
+    }
+
+    [Fact]
+    public async Task PresignObjectAsync_WhenCredentialHasSessionToken_IncludesSecurityTokenInProxyUrl()
+    {
+        var presignService = BuildPresignService(
+            new StubLocationResolver(resolvedLocation: null),
+            enableSigV4: true,
+            sessionToken: "test-session-token");
+
+        var request = new StoragePresignRequest
+        {
+            Operation = StoragePresignOperation.GetObject,
+            BucketName = "bucket",
+            Key = "key",
+            ExpiresInSeconds = 300
+        };
+
+        var result = await presignService.PresignObjectAsync(AnyPrincipal, request);
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(StorageAccessMode.Proxy, result.Value?.AccessMode);
+        Assert.Contains(
+            S3SigV4QueryStringParser.Parse(result.Value!.Url.Query),
+            static pair => pair.Key == "X-Amz-Security-Token" && pair.Value == "test-session-token");
     }
 
     [Fact]
@@ -686,7 +712,8 @@ public sealed class IntegratedS3HttpPresignStrategyTests
         IStorageObjectLocationResolver resolver,
         bool enableSigV4,
         IEnumerable<IStorageBackend>? backends = null,
-        TimeProvider? timeProvider = null)
+        TimeProvider? timeProvider = null,
+        string? sessionToken = null)
     {
         var services = new ServiceCollection();
 
@@ -702,7 +729,8 @@ public sealed class IntegratedS3HttpPresignStrategyTests
                 new IntegratedS3AccessKeyCredential
                 {
                     AccessKeyId = "test-key",
-                    SecretAccessKey = "test-secret"
+                    SecretAccessKey = "test-secret",
+                    SessionToken = sessionToken
                 }
             ];
         });
@@ -729,7 +757,8 @@ public sealed class IntegratedS3HttpPresignStrategyTests
         bool enableSigV4,
         IEnumerable<IStorageBackend>? backends = null,
         S3StorageOptions? options = null,
-        TimeProvider? timeProvider = null)
+        TimeProvider? timeProvider = null,
+        string? sessionToken = null)
     {
         var services = new ServiceCollection();
 
@@ -745,7 +774,8 @@ public sealed class IntegratedS3HttpPresignStrategyTests
                 new IntegratedS3AccessKeyCredential
                 {
                     AccessKeyId = "test-key",
-                    SecretAccessKey = "test-secret"
+                    SecretAccessKey = "test-secret",
+                    SessionToken = sessionToken
                 }
             ];
         });

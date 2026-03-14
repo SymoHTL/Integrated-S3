@@ -68,6 +68,9 @@ public sealed class CatalogStorageObjectStateStore(IStorageCatalogStore catalogS
             Metadata = entry.Metadata,
             Tags = entry.Tags,
             Checksums = entry.Checksums,
+            RetentionMode = entry.RetentionMode,
+            RetainUntilDateUtc = entry.RetainUntilDateUtc,
+            LegalHoldStatus = entry.LegalHoldStatus,
             ServerSideEncryption = entry.ServerSideEncryption
         };
     }

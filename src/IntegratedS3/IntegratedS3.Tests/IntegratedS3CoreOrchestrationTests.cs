@@ -1970,6 +1970,59 @@ public sealed class IntegratedS3CoreOrchestrationTests
     }
 
     [Fact]
+    public async Task OrchestratedStorageService_WriteThroughAll_ReplicatesBucketDefaultEncryptionConfiguration()
+    {
+        var primaryBackend = new InMemoryStorageBackend("primary-memory", isPrimary: true);
+        var replicaBackend = new InMemoryStorageBackend("replica-memory");
+
+        await using var fixture = new CoreStorageFixture(overrideCatalogStore: true, addDefaultDiskStorage: false, configureServices: services => {
+            services.Configure<IntegratedS3CoreOptions>(options => {
+                options.ConsistencyMode = StorageConsistencyMode.WriteThroughAll;
+            });
+            services.AddSingleton<IStorageBackend>(primaryBackend);
+            services.AddSingleton<IStorageBackend>(replicaBackend);
+        });
+
+        var storageService = fixture.Services.GetRequiredService<IStorageService>();
+
+        Assert.True((await storageService.CreateBucketAsync(new CreateBucketRequest
+        {
+            BucketName = "encryption-bucket"
+        })).IsSuccess);
+
+        var putEncryption = await storageService.PutBucketDefaultEncryptionAsync(new PutBucketDefaultEncryptionRequest
+        {
+            BucketName = "encryption-bucket",
+            Rule = new BucketDefaultEncryptionRule
+            {
+                Algorithm = ObjectServerSideEncryptionAlgorithm.Kms,
+                KeyId = "alias/default-key"
+            }
+        });
+
+        Assert.True(putEncryption.IsSuccess);
+
+        var primaryEncryption = await primaryBackend.GetBucketDefaultEncryptionAsync("encryption-bucket");
+        var replicaEncryption = await replicaBackend.GetBucketDefaultEncryptionAsync("encryption-bucket");
+
+        Assert.True(primaryEncryption.IsSuccess);
+        Assert.True(replicaEncryption.IsSuccess);
+        Assert.Equal(ObjectServerSideEncryptionAlgorithm.Kms, primaryEncryption.Value!.Rule.Algorithm);
+        Assert.Equal("alias/default-key", primaryEncryption.Value.Rule.KeyId);
+        Assert.Equal(ObjectServerSideEncryptionAlgorithm.Kms, replicaEncryption.Value!.Rule.Algorithm);
+        Assert.Equal("alias/default-key", replicaEncryption.Value.Rule.KeyId);
+
+        var deleteEncryption = await storageService.DeleteBucketDefaultEncryptionAsync(new DeleteBucketDefaultEncryptionRequest
+        {
+            BucketName = "encryption-bucket"
+        });
+
+        Assert.True(deleteEncryption.IsSuccess);
+        Assert.Equal(StorageErrorCode.BucketEncryptionConfigurationNotFound, (await primaryBackend.GetBucketDefaultEncryptionAsync("encryption-bucket")).Error!.Code);
+        Assert.Equal(StorageErrorCode.BucketEncryptionConfigurationNotFound, (await replicaBackend.GetBucketDefaultEncryptionAsync("encryption-bucket")).Error!.Code);
+    }
+
+    [Fact]
     public async Task OrchestratedStorageService_WriteThroughAll_RejectsMultipartUploads()
     {
         await using var fixture = new CoreStorageFixture(configureServices: services => {
@@ -2038,13 +2091,13 @@ public sealed class IntegratedS3CoreOrchestrationTests
         Assert.Equal("catalog-disk", activity.Tags[IntegratedS3Observability.Tags.Provider]);
         Assert.Equal("catalog-disk", activity.Tags[IntegratedS3Observability.Tags.PrimaryProvider]);
 
-        var countMeasurement = Assert.Single(observability.Measurements, measurement =>
+        Assert.Contains(observability.Measurements, measurement =>
             string.Equals(measurement.InstrumentName, IntegratedS3Observability.Metrics.StorageOperationCount, StringComparison.Ordinal)
             && measurement.Tags.TryGetValue(IntegratedS3Observability.Tags.Operation, out var operation)
             && string.Equals(operation, StorageOperationType.CreateBucket.ToString(), StringComparison.Ordinal)
             && measurement.Tags.TryGetValue(IntegratedS3Observability.Tags.Result, out var resultTag)
-            && string.Equals(resultTag, "success", StringComparison.Ordinal));
-        Assert.Equal(1d, countMeasurement.Value);
+            && string.Equals(resultTag, "success", StringComparison.Ordinal)
+            && measurement.Value.Equals(1d));
 
         Assert.Contains(observability.Logs, entry =>
             entry.Level == LogLevel.Debug
@@ -2360,10 +2413,12 @@ public sealed class IntegratedS3CoreOrchestrationTests
                 StorageOperationType.ListObjects => "storage.read",
                 StorageOperationType.ListObjectVersions => "storage.read",
                 StorageOperationType.ListMultipartUploads => "storage.read",
+                StorageOperationType.ListMultipartParts => "storage.read",
                 StorageOperationType.GetObject => "storage.read",
                 StorageOperationType.PresignGetObject => "storage.read",
                 StorageOperationType.GetBucketLocation => "storage.read",
                 StorageOperationType.GetBucketCors => "storage.read",
+                StorageOperationType.GetBucketDefaultEncryption => "storage.read",
                 StorageOperationType.GetObjectTags => "storage.read",
                 StorageOperationType.HeadObject => "storage.read",
                 StorageOperationType.PresignPutObject => "storage.write",
@@ -2818,6 +2873,7 @@ public sealed class IntegratedS3CoreOrchestrationTests
     {
         private readonly Dictionary<string, BucketInfo> _buckets = new(StringComparer.Ordinal);
         private readonly Dictionary<string, BucketCorsConfiguration> _bucketCorsConfigurations = new(StringComparer.Ordinal);
+        private readonly Dictionary<string, BucketDefaultEncryptionConfiguration> _bucketDefaultEncryptions = new(StringComparer.Ordinal);
         private readonly Dictionary<(string BucketName, string Key), StoredObject> _objects = new();
         private readonly Dictionary<SimulatedFailureOperation, Queue<QueuedFailure>> _queuedFailures = new();
         private readonly object _queuedFailureLock = new();
@@ -3070,6 +3126,58 @@ public sealed class IntegratedS3CoreOrchestrationTests
             return ValueTask.FromResult(StorageResult<BucketCorsConfiguration>.Success(CloneBucketCorsConfiguration(configuration)));
         }
 
+        public ValueTask<StorageResult<BucketDefaultEncryptionConfiguration>> GetBucketDefaultEncryptionAsync(string bucketName, CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            if (!_buckets.ContainsKey(bucketName)) {
+                return ValueTask.FromResult(StorageResult<BucketDefaultEncryptionConfiguration>.Failure(new StorageError
+                {
+                    Code = StorageErrorCode.BucketNotFound,
+                    Message = $"Bucket '{bucketName}' was not found.",
+                    BucketName = bucketName,
+                    ProviderName = Name,
+                    SuggestedHttpStatusCode = 404
+                }));
+            }
+
+            return ValueTask.FromResult(_bucketDefaultEncryptions.TryGetValue(bucketName, out var configuration)
+                ? StorageResult<BucketDefaultEncryptionConfiguration>.Success(CloneBucketDefaultEncryptionConfiguration(configuration))
+                : StorageResult<BucketDefaultEncryptionConfiguration>.Failure(new StorageError
+                {
+                    Code = StorageErrorCode.BucketEncryptionConfigurationNotFound,
+                    Message = $"Bucket '{bucketName}' does not have a default encryption configuration.",
+                    BucketName = bucketName,
+                    ProviderName = Name,
+                    SuggestedHttpStatusCode = 404
+                }));
+        }
+
+        public ValueTask<StorageResult<BucketDefaultEncryptionConfiguration>> PutBucketDefaultEncryptionAsync(PutBucketDefaultEncryptionRequest request, CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            if (!_buckets.ContainsKey(request.BucketName)) {
+                return ValueTask.FromResult(StorageResult<BucketDefaultEncryptionConfiguration>.Failure(new StorageError
+                {
+                    Code = StorageErrorCode.BucketNotFound,
+                    Message = $"Bucket '{request.BucketName}' was not found.",
+                    BucketName = request.BucketName,
+                    ProviderName = Name,
+                    SuggestedHttpStatusCode = 404
+                }));
+            }
+
+            var configuration = new BucketDefaultEncryptionConfiguration
+            {
+                BucketName = request.BucketName,
+                Rule = CloneBucketDefaultEncryptionRule(request.Rule)
+            };
+
+            _bucketDefaultEncryptions[request.BucketName] = configuration;
+            return ValueTask.FromResult(StorageResult<BucketDefaultEncryptionConfiguration>.Success(CloneBucketDefaultEncryptionConfiguration(configuration)));
+        }
+
         public ValueTask<StorageResult> DeleteBucketCorsAsync(DeleteBucketCorsRequest request, CancellationToken cancellationToken = default)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -3091,6 +3199,25 @@ public sealed class IntegratedS3CoreOrchestrationTests
             }
 
             _bucketCorsConfigurations.Remove(request.BucketName);
+            return ValueTask.FromResult(StorageResult.Success());
+        }
+
+        public ValueTask<StorageResult> DeleteBucketDefaultEncryptionAsync(DeleteBucketDefaultEncryptionRequest request, CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            if (!_buckets.ContainsKey(request.BucketName)) {
+                return ValueTask.FromResult(StorageResult.Failure(new StorageError
+                {
+                    Code = StorageErrorCode.BucketNotFound,
+                    Message = $"Bucket '{request.BucketName}' was not found.",
+                    BucketName = request.BucketName,
+                    ProviderName = Name,
+                    SuggestedHttpStatusCode = 404
+                }));
+            }
+
+            _bucketDefaultEncryptions.Remove(request.BucketName);
             return ValueTask.FromResult(StorageResult.Success());
         }
 
@@ -3119,6 +3246,7 @@ public sealed class IntegratedS3CoreOrchestrationTests
             }
 
             _bucketCorsConfigurations.Remove(request.BucketName);
+            _bucketDefaultEncryptions.Remove(request.BucketName);
 
             return ValueTask.FromResult(StorageResult.Success());
         }
@@ -3543,6 +3671,24 @@ public sealed class IntegratedS3CoreOrchestrationTests
             {
                 BucketName = configuration.BucketName,
                 Rules = configuration.Rules.Select(CloneBucketCorsRule).ToArray()
+            };
+        }
+
+        private static BucketDefaultEncryptionConfiguration CloneBucketDefaultEncryptionConfiguration(BucketDefaultEncryptionConfiguration configuration)
+        {
+            return new BucketDefaultEncryptionConfiguration
+            {
+                BucketName = configuration.BucketName,
+                Rule = CloneBucketDefaultEncryptionRule(configuration.Rule)
+            };
+        }
+
+        private static BucketDefaultEncryptionRule CloneBucketDefaultEncryptionRule(BucketDefaultEncryptionRule rule)
+        {
+            return new BucketDefaultEncryptionRule
+            {
+                Algorithm = rule.Algorithm,
+                KeyId = rule.KeyId
             };
         }
 

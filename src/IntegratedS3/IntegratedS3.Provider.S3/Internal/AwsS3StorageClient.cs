@@ -4,6 +4,8 @@ using Amazon.S3;
 using Amazon.S3.Model;
 using IntegratedS3.Abstractions.Models;
 using System.Globalization;
+using PutBucketDefaultEncryptionStorageRequest = IntegratedS3.Abstractions.Requests.PutBucketDefaultEncryptionRequest;
+using UploadPartCopyStorageRequest = IntegratedS3.Abstractions.Requests.UploadPartCopyRequest;
 
 namespace IntegratedS3.Provider.S3.Internal;
 
@@ -173,6 +175,49 @@ internal sealed class AwsS3StorageClient : IS3StorageClient
         await _s3.DeleteCORSConfigurationAsync(request, cancellationToken).ConfigureAwait(false);
     }
 
+    public async Task<BucketDefaultEncryptionConfiguration> GetBucketDefaultEncryptionAsync(string bucketName, CancellationToken cancellationToken = default)
+    {
+        var request = new GetBucketEncryptionRequest
+        {
+            BucketName = bucketName
+        };
+
+        var response = await _s3.GetBucketEncryptionAsync(request, cancellationToken).ConfigureAwait(false);
+        return S3BucketDefaultEncryptionMapper.ToBucketDefaultEncryptionConfiguration(bucketName, response.ServerSideEncryptionConfiguration);
+    }
+
+    public async Task<BucketDefaultEncryptionConfiguration> SetBucketDefaultEncryptionAsync(PutBucketDefaultEncryptionStorageRequest request, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+
+        var putRequest = new PutBucketEncryptionRequest
+        {
+            BucketName = request.BucketName,
+            ServerSideEncryptionConfiguration = S3BucketDefaultEncryptionMapper.ToServerSideEncryptionConfiguration(request.Rule)
+        };
+
+        await _s3.PutBucketEncryptionAsync(putRequest, cancellationToken).ConfigureAwait(false);
+        return new BucketDefaultEncryptionConfiguration
+        {
+            BucketName = request.BucketName,
+            Rule = new BucketDefaultEncryptionRule
+            {
+                Algorithm = request.Rule.Algorithm,
+                KeyId = request.Rule.KeyId
+            }
+        };
+    }
+
+    public async Task DeleteBucketDefaultEncryptionAsync(string bucketName, CancellationToken cancellationToken = default)
+    {
+        var request = new DeleteBucketEncryptionRequest
+        {
+            BucketName = bucketName
+        };
+
+        await _s3.DeleteBucketEncryptionAsync(request, cancellationToken).ConfigureAwait(false);
+    }
+
     // -------------------------------------------------------------------------
     // Object listing
     // -------------------------------------------------------------------------
@@ -291,7 +336,10 @@ internal sealed class AwsS3StorageClient : IS3StorageClient
                 ExpiresUtc: ParseExpiresString(response.ExpiresString),
                 ServerSideEncryption: S3ServerSideEncryptionMapper.ToInfo(
                     response.ServerSideEncryptionMethod,
-                    response.ServerSideEncryptionKeyManagementServiceKeyId));
+                    response.ServerSideEncryptionKeyManagementServiceKeyId),
+                RetentionMode: S3ObjectLockMapper.ToRetentionMode(response.ObjectLockMode),
+                RetainUntilDateUtc: ToNullableDateTimeOffset(response.ObjectLockRetainUntilDate),
+                LegalHoldStatus: S3ObjectLockMapper.ToLegalHoldStatus(response.ObjectLockLegalHoldStatus));
         }
         catch (AmazonS3Exception ex) when (ex.StatusCode == System.Net.HttpStatusCode.NotFound)
         {
@@ -401,12 +449,64 @@ internal sealed class AwsS3StorageClient : IS3StorageClient
             ExpiresUtc: ParseExpiresString(response.ExpiresString),
             ServerSideEncryption: S3ServerSideEncryptionMapper.ToInfo(
                 response.ServerSideEncryptionMethod,
-                response.ServerSideEncryptionKeyManagementServiceKeyId));
+                response.ServerSideEncryptionKeyManagementServiceKeyId),
+            RetentionMode: S3ObjectLockMapper.ToRetentionMode(response.ObjectLockMode),
+            RetainUntilDateUtc: ToNullableDateTimeOffset(response.ObjectLockRetainUntilDate),
+            LegalHoldStatus: S3ObjectLockMapper.ToLegalHoldStatus(response.ObjectLockLegalHoldStatus));
 
         long totalContentLength = TryParseContentRangeTotal(response.ContentRange)
             ?? response.ContentLength;
 
         return new S3GetObjectResult(entry, response.ResponseStream, totalContentLength, response);
+    }
+
+    public async Task<ObjectRetentionInfo> GetObjectRetentionAsync(
+        string bucketName,
+        string key,
+        string? versionId,
+        CancellationToken cancellationToken = default)
+    {
+        var request = new GetObjectRetentionRequest
+        {
+            BucketName = bucketName,
+            Key = key,
+            VersionId = versionId
+        };
+
+        var response = await _s3.GetObjectRetentionAsync(request, cancellationToken).ConfigureAwait(false);
+
+        return new ObjectRetentionInfo
+        {
+            BucketName = bucketName,
+            Key = key,
+            VersionId = versionId,
+            Mode = S3ObjectLockMapper.ToRetentionMode(response.Retention?.Mode),
+            RetainUntilDateUtc = ToNullableDateTimeOffset(response.Retention?.RetainUntilDate)
+        };
+    }
+
+    public async Task<ObjectLegalHoldInfo> GetObjectLegalHoldAsync(
+        string bucketName,
+        string key,
+        string? versionId,
+        CancellationToken cancellationToken = default)
+    {
+        var request = new GetObjectLegalHoldRequest
+        {
+            BucketName = bucketName,
+            Key = key,
+            VersionId = versionId
+        };
+
+        var response = await _s3.GetObjectLegalHoldAsync(request, cancellationToken).ConfigureAwait(false);
+
+        return new ObjectLegalHoldInfo
+        {
+            BucketName = bucketName,
+            Key = key,
+            VersionId = versionId,
+            Status = S3ObjectLockMapper.ToLegalHoldStatus(response.LegalHold?.Status)
+        };
     }
 
     public async Task<S3ObjectEntry> PutObjectAsync(
@@ -690,6 +790,83 @@ internal sealed class AwsS3StorageClient : IS3StorageClient
         };
     }
 
+    public async Task<MultipartUploadPart> UploadPartCopyAsync(
+        UploadPartCopyStorageRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+
+        var copyRequest = new CopyPartRequest
+        {
+            DestinationBucket = request.BucketName,
+            DestinationKey = request.Key,
+            UploadId = request.UploadId,
+            PartNumber = request.PartNumber,
+            SourceBucket = request.SourceBucketName,
+            SourceKey = request.SourceKey,
+            SourceVersionId = request.SourceVersionId
+        };
+
+        if (!string.IsNullOrWhiteSpace(request.SourceIfMatchETag)) {
+            copyRequest.ETagToMatch =
+            [
+                request.SourceIfMatchETag
+            ];
+        }
+
+        if (!string.IsNullOrWhiteSpace(request.SourceIfNoneMatchETag)) {
+            copyRequest.ETagsToNotMatch =
+            [
+                .. request.SourceIfNoneMatchETag.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            ];
+        }
+
+        if (request.SourceIfModifiedSinceUtc.HasValue) {
+            copyRequest.ModifiedSinceDate = request.SourceIfModifiedSinceUtc.Value.UtcDateTime;
+        }
+
+        if (request.SourceIfUnmodifiedSinceUtc.HasValue) {
+            copyRequest.UnmodifiedSinceDate = request.SourceIfUnmodifiedSinceUtc.Value.UtcDateTime;
+        }
+
+        long contentLength = 0;
+        if (request.SourceRange is not null) {
+            if (request.SourceRange.Start is null || request.SourceRange.End is null) {
+                throw new NotSupportedException("UploadPartCopy source ranges must specify both start and end byte offsets.");
+            }
+
+            copyRequest.FirstByte = request.SourceRange.Start.Value;
+            copyRequest.LastByte = request.SourceRange.End.Value;
+            contentLength = request.SourceRange.End.Value - request.SourceRange.Start.Value + 1;
+        }
+        else {
+            var sourceEntry = await HeadObjectAsync(
+                request.SourceBucketName,
+                request.SourceKey,
+                request.SourceVersionId,
+                cancellationToken).ConfigureAwait(false);
+            contentLength = sourceEntry?.ContentLength ?? 0;
+        }
+
+        var response = await _s3.CopyPartAsync(copyRequest, cancellationToken).ConfigureAwait(false);
+
+        return new MultipartUploadPart
+        {
+            PartNumber = response.PartNumber ?? request.PartNumber,
+            ETag = response.ETag ?? string.Empty,
+            ContentLength = contentLength,
+            LastModifiedUtc = response.LastModified is not { } lastModifiedUtc
+                ? DateTimeOffset.UtcNow
+                : new DateTimeOffset(DateTime.SpecifyKind(lastModifiedUtc, DateTimeKind.Utc)),
+            Checksums = BuildChecksums(
+                response.ChecksumCRC32,
+                response.ChecksumCRC32C,
+                response.ChecksumCRC64NVME,
+                response.ChecksumSHA1,
+                response.ChecksumSHA256)
+        };
+    }
+
     public async Task<S3ObjectEntry> CompleteMultipartUploadAsync(
         string bucketName,
         string key,
@@ -784,6 +961,52 @@ internal sealed class AwsS3StorageClient : IS3StorageClient
             response.IsTruncated == true ? response.NextUploadIdMarker : null);
     }
 
+    public async Task<S3MultipartPartListPage> ListMultipartPartsAsync(
+        string bucketName,
+        string key,
+        string uploadId,
+        int? partNumberMarker,
+        int? maxParts,
+        CancellationToken cancellationToken = default)
+    {
+        var request = new ListPartsRequest
+        {
+            BucketName = bucketName,
+            Key = key,
+            UploadId = uploadId
+        };
+
+        if (partNumberMarker is > 0) {
+            request.PartNumberMarker = partNumberMarker.Value.ToString(CultureInfo.InvariantCulture);
+        }
+
+        if (maxParts.HasValue) {
+            request.MaxParts = Math.Min(maxParts.Value, 1000);
+        }
+
+        var response = await _s3.ListPartsAsync(request, cancellationToken).ConfigureAwait(false);
+
+        var entries = (response.Parts ?? [])
+            .Select(part => new MultipartUploadPart
+            {
+                PartNumber = part.PartNumber ?? 0,
+                ETag = part.ETag ?? string.Empty,
+                ContentLength = part.Size ?? 0,
+                LastModifiedUtc = ToDateTimeOffset(part.LastModified),
+                Checksums = BuildChecksums(
+                    part.ChecksumCRC32,
+                    part.ChecksumCRC32C,
+                    part.ChecksumCRC64NVME,
+                    part.ChecksumSHA1,
+                    part.ChecksumSHA256)
+            })
+            .ToList();
+
+        return new S3MultipartPartListPage(
+            entries,
+            response.IsTruncated == true ? response.NextPartNumberMarker : null);
+    }
+
     // -------------------------------------------------------------------------
     // Object tags
     // -------------------------------------------------------------------------
@@ -852,6 +1075,9 @@ internal sealed class AwsS3StorageClient : IS3StorageClient
 
     private static DateTimeOffset ToDateTimeOffset(DateTime? value)
         => value.HasValue ? new DateTimeOffset(DateTime.SpecifyKind(value.Value, DateTimeKind.Utc)) : DateTimeOffset.UtcNow;
+
+    private static DateTimeOffset? ToNullableDateTimeOffset(DateTime? value)
+        => value.HasValue ? new DateTimeOffset(DateTime.SpecifyKind(value.Value, DateTimeKind.Utc)) : null;
 
     private static DateTimeOffset? ParseExpiresString(string? rawValue)
     {

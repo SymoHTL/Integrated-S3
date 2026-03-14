@@ -76,6 +76,9 @@ public sealed class InMemoryObjectStateStore : IStorageObjectStateStore
                     Metadata = existing.Metadata,
                     Tags = existing.Tags,
                     Checksums = existing.Checksums,
+                    RetentionMode = existing.RetentionMode,
+                    RetainUntilDateUtc = existing.RetainUntilDateUtc,
+                    LegalHoldStatus = existing.LegalHoldStatus,
                     ServerSideEncryption = existing.ServerSideEncryption
                 };
             }

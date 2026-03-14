@@ -1,4 +1,5 @@
 using IntegratedS3.Abstractions.Models;
+using IntegratedS3.Abstractions.Requests;
 
 namespace IntegratedS3.Provider.S3.Internal;
 
@@ -23,6 +24,13 @@ internal interface IS3StorageClient : IDisposable
         => Task.FromException<S3CorsConfigurationEntry>(new NotSupportedException("Bucket CORS is not implemented by this S3 storage client."));
     Task DeleteBucketCorsAsync(string bucketName, CancellationToken cancellationToken = default)
         => Task.FromException(new NotSupportedException("Bucket CORS is not implemented by this S3 storage client."));
+
+    Task<BucketDefaultEncryptionConfiguration> GetBucketDefaultEncryptionAsync(string bucketName, CancellationToken cancellationToken = default)
+        => Task.FromException<BucketDefaultEncryptionConfiguration>(new NotSupportedException("Bucket default encryption is not implemented by this S3 storage client."));
+    Task<BucketDefaultEncryptionConfiguration> SetBucketDefaultEncryptionAsync(PutBucketDefaultEncryptionRequest request, CancellationToken cancellationToken = default)
+        => Task.FromException<BucketDefaultEncryptionConfiguration>(new NotSupportedException("Bucket default encryption is not implemented by this S3 storage client."));
+    Task DeleteBucketDefaultEncryptionAsync(string bucketName, CancellationToken cancellationToken = default)
+        => Task.FromException(new NotSupportedException("Bucket default encryption is not implemented by this S3 storage client."));
 
     // Object listing
     Task<S3ObjectListPage> ListObjectsAsync(
@@ -71,6 +79,18 @@ internal interface IS3StorageClient : IDisposable
         string? ifNoneMatchETag,
         DateTimeOffset? ifModifiedSinceUtc,
         DateTimeOffset? ifUnmodifiedSinceUtc,
+        CancellationToken cancellationToken = default);
+
+    Task<ObjectRetentionInfo> GetObjectRetentionAsync(
+        string bucketName,
+        string key,
+        string? versionId,
+        CancellationToken cancellationToken = default);
+
+    Task<ObjectLegalHoldInfo> GetObjectLegalHoldAsync(
+        string bucketName,
+        string key,
+        string? versionId,
         CancellationToken cancellationToken = default);
 
     Task<S3ObjectEntry> PutObjectAsync(
@@ -147,6 +167,10 @@ internal interface IS3StorageClient : IDisposable
         IReadOnlyDictionary<string, string>? checksums,
         CancellationToken cancellationToken = default);
 
+    Task<MultipartUploadPart> UploadPartCopyAsync(
+        UploadPartCopyRequest request,
+        CancellationToken cancellationToken = default);
+
     Task<S3ObjectEntry> CompleteMultipartUploadAsync(
         string bucketName,
         string key,
@@ -166,6 +190,14 @@ internal interface IS3StorageClient : IDisposable
         string? keyMarker,
         string? uploadIdMarker,
         int? maxUploads,
+        CancellationToken cancellationToken = default);
+
+    Task<S3MultipartPartListPage> ListMultipartPartsAsync(
+        string bucketName,
+        string key,
+        string uploadId,
+        int? partNumberMarker,
+        int? maxParts,
         CancellationToken cancellationToken = default);
 
     // Object tags

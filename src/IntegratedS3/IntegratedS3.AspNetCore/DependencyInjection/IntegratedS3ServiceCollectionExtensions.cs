@@ -185,6 +185,7 @@ public static class IntegratedS3ServiceCollectionExtensions
                 {
                     AccessKeyId = credential.AccessKeyId.Trim(),
                     SecretAccessKey = credential.SecretAccessKey.Trim(),
+                    SessionToken = string.IsNullOrWhiteSpace(credential.SessionToken) ? null : credential.SessionToken.Trim(),
                     DisplayName = string.IsNullOrWhiteSpace(credential.DisplayName) ? null : credential.DisplayName.Trim(),
                     Scopes = (credential.Scopes ?? [])
                         .Where(static scope => !string.IsNullOrWhiteSpace(scope))
