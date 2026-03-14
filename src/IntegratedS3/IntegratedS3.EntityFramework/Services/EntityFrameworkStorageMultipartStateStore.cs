@@ -111,6 +111,11 @@ internal sealed class EntityFrameworkStorageMultipartStateStore<TDbContext>(
 
         record.InitiatedAtUtc = state.InitiatedAtUtc;
         record.ContentType = state.ContentType;
+        record.CacheControl = state.CacheControl;
+        record.ContentDisposition = state.ContentDisposition;
+        record.ContentEncoding = state.ContentEncoding;
+        record.ContentLanguage = state.ContentLanguage;
+        record.ExpiresUtc = state.ExpiresUtc;
         record.ChecksumAlgorithm = state.ChecksumAlgorithm;
         record.MetadataJson = state.Metadata is null ? null : JsonSerializer.Serialize(state.Metadata);
         record.LastSyncedAtUtc = DateTimeOffset.UtcNow;
@@ -183,6 +188,11 @@ internal sealed class EntityFrameworkStorageMultipartStateStore<TDbContext>(
             UploadId = record.UploadId,
             InitiatedAtUtc = record.InitiatedAtUtc,
             ContentType = record.ContentType,
+            CacheControl = record.CacheControl,
+            ContentDisposition = record.ContentDisposition,
+            ContentEncoding = record.ContentEncoding,
+            ContentLanguage = record.ContentLanguage,
+            ExpiresUtc = record.ExpiresUtc,
             ChecksumAlgorithm = record.ChecksumAlgorithm,
             Metadata = string.IsNullOrWhiteSpace(record.MetadataJson)
                 ? null
