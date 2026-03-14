@@ -66,6 +66,16 @@ Treat the publish step as the trimming/AOT validation pass for the reference hos
 - use `CreateIsolatedClientAsync(...)` for isolated in-process HTTP tests with temp storage and per-test builder overrides
 - use `CreateLoopbackIsolatedClientAsync(...)` when real loopback networking is required, such as AWS SDK compatibility scenarios
 
+## Endpoint route-group customization
+
+`WebUiApplication.ConfigurePipeline(...)` forwards `Action<IntegratedS3EndpointOptions>` into `MapIntegratedS3Endpoints(...)`, so sample hosts and tests can apply authorization or policy conventions at map time.
+
+- use `ConfigureRouteGroup` for the whole `/integrated-s3` surface
+- use `ConfigureRootRouteGroup` or `ConfigureCompatibilityRouteGroup` when a shared route can serve multiple features at once
+- use `SetFeatureRouteGroupConfiguration(IntegratedS3EndpointFeature.<Feature>, ...)` for per-feature route-group callbacks; the current `ConfigureBucketRouteGroup`, `ConfigureObjectRouteGroup`, and similar properties remain convenience wrappers for the built-in features
+
+Future endpoint surfaces should follow the enum-based feature callback pattern instead of inventing a separate configuration style, so host/test customization stays predictable as the HTTP surface grows.
+
 ## Scope guardrails
 
 Keep `WebUi` focused on sample-host responsibilities:

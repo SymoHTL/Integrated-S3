@@ -7,6 +7,7 @@ using IntegratedS3.AspNetCore.DependencyInjection;
 using IntegratedS3.Core.DependencyInjection;
 using IntegratedS3.Provider.Disk;
 using IntegratedS3.Provider.Disk.DependencyInjection;
+using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
@@ -82,6 +83,25 @@ public sealed class IntegratedS3BootstrapTests
         Assert.False(endpointOptions.EnableAdminEndpoints);
         Assert.False(endpointOptions.EnableObjectEndpoints);
         Assert.False(endpointOptions.EnableMultipartEndpoints);
+    }
+
+    [Fact]
+    public void EndpointOptions_FeatureRouteGroupConfiguration_CanRoundTripThroughFeatureRegistry()
+    {
+        var options = new IntegratedS3EndpointOptions();
+        Action<RouteGroupBuilder> bucketConfiguration = static _ => { };
+        Action<RouteGroupBuilder> multipartConfiguration = static _ => { };
+
+        options.SetFeatureRouteGroupConfiguration(IntegratedS3EndpointFeature.Bucket, bucketConfiguration);
+        options.ConfigureMultipartRouteGroup = multipartConfiguration;
+
+        Assert.Same(bucketConfiguration, options.ConfigureBucketRouteGroup);
+        Assert.Same(bucketConfiguration, options.GetFeatureRouteGroupConfiguration(IntegratedS3EndpointFeature.Bucket));
+        Assert.Same(multipartConfiguration, options.GetFeatureRouteGroupConfiguration(IntegratedS3EndpointFeature.Multipart));
+
+        options.SetFeatureRouteGroupConfiguration(IntegratedS3EndpointFeature.Multipart, null);
+
+        Assert.Null(options.ConfigureMultipartRouteGroup);
     }
 
     [Fact]

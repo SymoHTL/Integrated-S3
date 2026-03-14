@@ -77,6 +77,11 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
     private const string AccessControlAllowHeadersHeaderName = "Access-Control-Allow-Headers";
     private const string AccessControlExposeHeadersHeaderName = "Access-Control-Expose-Headers";
     private const string AccessControlMaxAgeHeaderName = "Access-Control-Max-Age";
+    private static readonly EndpointFeatureDescriptor ServiceEndpointFeature = new(IntegratedS3EndpointFeature.Service, "service", nameof(IntegratedS3EndpointOptions.ConfigureServiceRouteGroup));
+    private static readonly EndpointFeatureDescriptor BucketEndpointFeature = new(IntegratedS3EndpointFeature.Bucket, "bucket", nameof(IntegratedS3EndpointOptions.ConfigureBucketRouteGroup));
+    private static readonly EndpointFeatureDescriptor ObjectEndpointFeature = new(IntegratedS3EndpointFeature.Object, "object", nameof(IntegratedS3EndpointOptions.ConfigureObjectRouteGroup));
+    private static readonly EndpointFeatureDescriptor MultipartEndpointFeature = new(IntegratedS3EndpointFeature.Multipart, "multipart", nameof(IntegratedS3EndpointOptions.ConfigureMultipartRouteGroup));
+    private static readonly EndpointFeatureDescriptor AdminEndpointFeature = new(IntegratedS3EndpointFeature.Admin, "admin", nameof(IntegratedS3EndpointOptions.ConfigureAdminRouteGroup));
     private static readonly HashSet<string> EmptyQueryParameters = CreateQueryParameterSet();
     private static readonly HashSet<string> BucketListObjectsV2QueryParameters = CreateQueryParameterSet(ListTypeQueryParameterName, PrefixQueryParameterName, DelimiterQueryParameterName, StartAfterQueryParameterName, MaxKeysQueryParameterName, ContinuationTokenQueryParameterName);
     private static readonly HashSet<string> BucketCorsQueryParameters = CreateQueryParameterSet(CorsQueryParameterName);
@@ -132,26 +137,26 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
         group.AddEndpointFilter<IntegratedS3RequestAuthenticationEndpointFilter>();
         resolvedEndpointOptions.ConfigureRouteGroup?.Invoke(group);
         var hasWholeRouteConfiguration = resolvedEndpointOptions.ConfigureRouteGroup is not null;
-        var bucketGroup = CreateConfiguredRouteGroup(group, resolvedEndpointOptions.ConfigureBucketRouteGroup);
-        var objectGroup = CreateConfiguredRouteGroup(group, resolvedEndpointOptions.ConfigureObjectRouteGroup);
-        var adminGroup = CreateConfiguredRouteGroup(group, resolvedEndpointOptions.ConfigureAdminRouteGroup);
+        var bucketGroup = CreateFeatureRouteGroup(group, resolvedEndpointOptions, BucketEndpointFeature);
+        var objectGroup = CreateFeatureRouteGroup(group, resolvedEndpointOptions, ObjectEndpointFeature);
+        var adminGroup = CreateFeatureRouteGroup(group, resolvedEndpointOptions, AdminEndpointFeature);
         var rootGetGroup = CreateSharedRouteGroup(
             group,
             "GET /",
             nameof(IntegratedS3EndpointOptions.ConfigureRootRouteGroup),
             resolvedEndpointOptions.ConfigureRootRouteGroup,
             hasWholeRouteConfiguration,
-            (resolvedEndpointOptions.EnableServiceEndpoints, "service", nameof(IntegratedS3EndpointOptions.ConfigureServiceRouteGroup), resolvedEndpointOptions.ConfigureServiceRouteGroup),
-            (resolvedEndpointOptions.EnableBucketEndpoints, "bucket", nameof(IntegratedS3EndpointOptions.ConfigureBucketRouteGroup), resolvedEndpointOptions.ConfigureBucketRouteGroup));
+            CreateSharedRouteFeatureConfiguration(resolvedEndpointOptions, ServiceEndpointFeature, resolvedEndpointOptions.EnableServiceEndpoints),
+            CreateSharedRouteFeatureConfiguration(resolvedEndpointOptions, BucketEndpointFeature, resolvedEndpointOptions.EnableBucketEndpoints));
         var compatibilityGroup = CreateSharedRouteGroup(
             group,
             "/{**s3Path}",
             nameof(IntegratedS3EndpointOptions.ConfigureCompatibilityRouteGroup),
             resolvedEndpointOptions.ConfigureCompatibilityRouteGroup,
             hasWholeRouteConfiguration,
-            (resolvedEndpointOptions.EnableBucketEndpoints, "bucket", nameof(IntegratedS3EndpointOptions.ConfigureBucketRouteGroup), resolvedEndpointOptions.ConfigureBucketRouteGroup),
-            (resolvedEndpointOptions.EnableObjectEndpoints, "object", nameof(IntegratedS3EndpointOptions.ConfigureObjectRouteGroup), resolvedEndpointOptions.ConfigureObjectRouteGroup),
-            (resolvedEndpointOptions.EnableMultipartEndpoints, "multipart", nameof(IntegratedS3EndpointOptions.ConfigureMultipartRouteGroup), resolvedEndpointOptions.ConfigureMultipartRouteGroup));
+            CreateSharedRouteFeatureConfiguration(resolvedEndpointOptions, BucketEndpointFeature, resolvedEndpointOptions.EnableBucketEndpoints),
+            CreateSharedRouteFeatureConfiguration(resolvedEndpointOptions, ObjectEndpointFeature, resolvedEndpointOptions.EnableObjectEndpoints),
+            CreateSharedRouteFeatureConfiguration(resolvedEndpointOptions, MultipartEndpointFeature, resolvedEndpointOptions.EnableMultipartEndpoints));
 
         if (resolvedEndpointOptions.EnableServiceEndpoints || resolvedEndpointOptions.EnableBucketEndpoints) {
             rootGetGroup.MapGet("/", (HttpContext httpContext, IOptions<IntegratedS3Options> integratedS3Options, IIntegratedS3RequestContextAccessor requestContextAccessor, IStorageService storageService, IStorageServiceDescriptorProvider descriptorProvider, CancellationToken cancellationToken) =>
@@ -248,6 +253,30 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
         return configuredOptions?.Value.Clone() ?? new IntegratedS3EndpointOptions();
     }
 
+    private static RouteGroupBuilder CreateFeatureRouteGroup(
+        RouteGroupBuilder parentGroup,
+        IntegratedS3EndpointOptions endpointOptions,
+        EndpointFeatureDescriptor feature)
+    {
+        ArgumentNullException.ThrowIfNull(endpointOptions);
+
+        return CreateConfiguredRouteGroup(parentGroup, endpointOptions.GetFeatureRouteGroupConfiguration(feature.Feature));
+    }
+
+    private static (bool IsEnabled, string FeatureDisplayName, string ConfigurationDisplayName, Action<RouteGroupBuilder>? Configuration) CreateSharedRouteFeatureConfiguration(
+        IntegratedS3EndpointOptions endpointOptions,
+        EndpointFeatureDescriptor feature,
+        bool isEnabled)
+    {
+        ArgumentNullException.ThrowIfNull(endpointOptions);
+
+        return (
+            isEnabled,
+            feature.DisplayName,
+            FormatFeatureRouteGroupConfigurationReference(feature),
+            endpointOptions.GetFeatureRouteGroupConfiguration(feature.Feature));
+    }
+
     private static RouteGroupBuilder CreateConfiguredRouteGroup(RouteGroupBuilder parentGroup, params Action<RouteGroupBuilder>?[] configurations)
     {
         ArgumentNullException.ThrowIfNull(parentGroup);
@@ -271,7 +300,7 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
         string sharedConfigurationPropertyName,
         Action<RouteGroupBuilder>? sharedConfiguration,
         bool hasWholeRouteConfiguration,
-        params (bool IsEnabled, string FeatureDisplayName, string ConfigurationPropertyName, Action<RouteGroupBuilder>? Configuration)[] featureConfigurations)
+        params (bool IsEnabled, string FeatureDisplayName, string ConfigurationDisplayName, Action<RouteGroupBuilder>? Configuration)[] featureConfigurations)
     {
         ArgumentNullException.ThrowIfNull(parentGroup);
         ArgumentException.ThrowIfNullOrWhiteSpace(routeDisplayName);
@@ -296,7 +325,7 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
             enabledFeatureConfigurations.Add(featureConfiguration.Configuration);
 
             if (featureConfiguration.Configuration is not null) {
-                configuredCallbackNames.Add(featureConfiguration.ConfigurationPropertyName);
+                configuredCallbackNames.Add(featureConfiguration.ConfigurationDisplayName);
             }
         }
 
@@ -317,6 +346,17 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
             $"Multiple per-feature route-group callbacks ({string.Join(", ", configuredCallbackNames)}) do not automatically apply to shared routes. " +
             $"Configure {sharedConfigurationPropertyName} or {nameof(IntegratedS3EndpointOptions.ConfigureRouteGroup)} to protect the shared route explicitly.");
     }
+
+    private static string FormatFeatureRouteGroupConfigurationReference(EndpointFeatureDescriptor feature)
+    {
+        var genericReference = $"{nameof(IntegratedS3EndpointOptions.SetFeatureRouteGroupConfiguration)}({nameof(IntegratedS3EndpointFeature)}.{feature.Feature}, ...)";
+        return $"{feature.CompatibilityPropertyName} or {genericReference}";
+    }
+
+    private readonly record struct EndpointFeatureDescriptor(
+        IntegratedS3EndpointFeature Feature,
+        string DisplayName,
+        string CompatibilityPropertyName);
 
     private static async Task<IResult> HandleRootGetAsync(
         HttpContext httpContext,
