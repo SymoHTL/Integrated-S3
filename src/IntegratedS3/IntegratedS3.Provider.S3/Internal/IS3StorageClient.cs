@@ -137,6 +137,14 @@ internal interface IS3StorageClient : IDisposable
         int? maxUploads,
         CancellationToken cancellationToken = default);
 
+    Task<S3MultipartUploadPartListPage> ListMultipartUploadPartsAsync(
+        string bucketName,
+        string key,
+        string uploadId,
+        int? partNumberMarker,
+        int? maxParts,
+        CancellationToken cancellationToken = default);
+
     // Object tags
     Task<IReadOnlyDictionary<string, string>> GetObjectTagsAsync(
         string bucketName,

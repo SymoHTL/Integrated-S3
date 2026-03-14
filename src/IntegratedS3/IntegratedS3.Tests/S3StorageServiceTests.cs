@@ -960,6 +960,35 @@ public sealed class S3StorageServiceTests
     }
 
     [Fact]
+    public async Task ListMultipartUploadPartsAsync_FollowsPartMarkersAcrossClientPages_WhenPageSizeNeedsMoreThanOnePage()
+    {
+        var now = DateTimeOffset.UtcNow;
+        var fake = new FakeS3Client();
+        fake.MultipartUploadPartPages.Add(new S3MultipartUploadPartListPage(
+        [
+            new MultipartUploadPart { PartNumber = 1, ETag = "etag-1", ContentLength = 5, LastModifiedUtc = now, Checksums = new Dictionary<string, string> { ["sha256"] = "checksum-1" } },
+            new MultipartUploadPart { PartNumber = 2, ETag = "etag-2", ContentLength = 7, LastModifiedUtc = now.AddMinutes(1), Checksums = new Dictionary<string, string> { ["sha256"] = "checksum-2" } }
+        ], 2));
+        fake.MultipartUploadPartPages.Add(new S3MultipartUploadPartListPage(
+        [
+            new MultipartUploadPart { PartNumber = 3, ETag = "etag-3", ContentLength = 9, LastModifiedUtc = now.AddMinutes(2), Checksums = new Dictionary<string, string> { ["sha256"] = "checksum-3" } },
+            new MultipartUploadPart { PartNumber = 4, ETag = "etag-4", ContentLength = 11, LastModifiedUtc = now.AddMinutes(3), Checksums = new Dictionary<string, string> { ["sha256"] = "checksum-4" } }
+        ], null));
+
+        var svc = BuildService(fake);
+        var parts = await svc.ListMultipartUploadPartsAsync(new ListMultipartUploadPartsRequest
+        {
+            BucketName = "b",
+            Key = "docs/upload.txt",
+            UploadId = "upload-123",
+            PageSize = 3
+        }).ToListAsync();
+
+        Assert.Equal([1, 2, 3], parts.Select(static part => part.PartNumber).ToArray());
+        Assert.Equal(2, fake.MultipartUploadPartListCalls);
+    }
+
+    [Fact]
     public async Task InitiateMultipartUploadAsync_ReturnsUploadInfo_FromClient()
     {
         var initiatedAtUtc = new DateTimeOffset(2025, 8, 1, 12, 0, 0, TimeSpan.Zero);
@@ -1230,6 +1259,9 @@ internal sealed class FakeS3Client : IS3StorageClient
     public List<S3MultipartUploadListPage> MultipartUploadPages { get; } = [];
     private int _multipartUploadPageIndex;
     public int MultipartUploadListCalls { get; private set; }
+    public List<S3MultipartUploadPartListPage> MultipartUploadPartPages { get; } = [];
+    private int _multipartUploadPartPageIndex;
+    public int MultipartUploadPartListCalls { get; private set; }
 
     // Head object
     public S3ObjectEntry? HeadObjectResult { get; set; }
@@ -1358,6 +1390,16 @@ internal sealed class FakeS3Client : IS3StorageClient
             return Task.FromResult(new S3MultipartUploadListPage([], null, null));
 
         var page = MultipartUploadPages[_multipartUploadPageIndex++];
+        return Task.FromResult(page);
+    }
+
+    public Task<S3MultipartUploadPartListPage> ListMultipartUploadPartsAsync(string bucketName, string key, string uploadId, int? partNumberMarker, int? maxParts, CancellationToken cancellationToken = default)
+    {
+        MultipartUploadPartListCalls++;
+        if (_multipartUploadPartPageIndex >= MultipartUploadPartPages.Count)
+            return Task.FromResult(new S3MultipartUploadPartListPage([], null));
+
+        var page = MultipartUploadPartPages[_multipartUploadPartPageIndex++];
         return Task.FromResult(page);
     }
 

@@ -1062,6 +1062,104 @@ public sealed class IntegratedS3AwsSdkCompatibilityTests : IClassFixture<WebUiAp
     }
 
     [Fact]
+    public async Task AmazonS3Client_ListParts_WithChecksumAlgorithm_ExposesMultipartPartDetailsAgainstIntegratedS3()
+    {
+        const string accessKeyId = "aws-sdk-listparts-access";
+        const string secretAccessKey = "aws-sdk-listparts-secret";
+
+        await using var isolatedClient = await CreateAuthenticatedLoopbackClientAsync(accessKeyId, secretAccessKey);
+        using var s3Client = CreateS3Client(isolatedClient.BaseAddress!, accessKeyId, secretAccessKey);
+
+        const string bucketName = "aws-sdk-listparts-bucket";
+        const string objectKey = "docs/listparts.txt";
+        const string part1Payload = "alpha";
+        const string part2Payload = "bravo";
+
+        Assert.Equal(HttpStatusCode.OK, (await s3Client.PutBucketAsync(new PutBucketRequest
+        {
+            BucketName = bucketName
+        })).HttpStatusCode);
+
+        var part1Checksum = ComputeSha256Base64(part1Payload);
+        var part2Checksum = ComputeSha256Base64(part2Payload);
+
+        var initiateResponse = await s3Client.InitiateMultipartUploadAsync(new InitiateMultipartUploadRequest
+        {
+            BucketName = bucketName,
+            Key = objectKey,
+            ContentType = "text/plain",
+            ChecksumAlgorithm = ChecksumAlgorithm.SHA256
+        });
+        Assert.Equal(HttpStatusCode.OK, initiateResponse.HttpStatusCode);
+
+        await using var part1Stream = new MemoryStream(Encoding.UTF8.GetBytes(part1Payload));
+        var part1Response = await s3Client.UploadPartAsync(new UploadPartRequest
+        {
+            BucketName = bucketName,
+            Key = objectKey,
+            UploadId = initiateResponse.UploadId,
+            PartNumber = 1,
+            InputStream = part1Stream,
+            PartSize = part1Stream.Length,
+            IsLastPart = false,
+            ChecksumAlgorithm = ChecksumAlgorithm.SHA256,
+            ChecksumSHA256 = part1Checksum
+        });
+        Assert.Equal(HttpStatusCode.OK, part1Response.HttpStatusCode);
+
+        await using var part2Stream = new MemoryStream(Encoding.UTF8.GetBytes(part2Payload));
+        var part2Response = await s3Client.UploadPartAsync(new UploadPartRequest
+        {
+            BucketName = bucketName,
+            Key = objectKey,
+            UploadId = initiateResponse.UploadId,
+            PartNumber = 2,
+            InputStream = part2Stream,
+            PartSize = part2Stream.Length,
+            IsLastPart = true,
+            ChecksumAlgorithm = ChecksumAlgorithm.SHA256,
+            ChecksumSHA256 = part2Checksum
+        });
+        Assert.Equal(HttpStatusCode.OK, part2Response.HttpStatusCode);
+
+        var firstPage = await s3Client.ListPartsAsync(new ListPartsRequest
+        {
+            BucketName = bucketName,
+            Key = objectKey,
+            UploadId = initiateResponse.UploadId,
+            MaxParts = 1
+        });
+        Assert.Equal(HttpStatusCode.OK, firstPage.HttpStatusCode);
+        Assert.Equal(ChecksumAlgorithm.SHA256, firstPage.ChecksumAlgorithm);
+        Assert.Equal(ChecksumType.COMPOSITE, firstPage.ChecksumType);
+        Assert.True(firstPage.IsTruncated);
+        Assert.Equal(0, firstPage.PartNumberMarker);
+        Assert.Equal(1, firstPage.NextPartNumberMarker);
+        Assert.Equal(1, firstPage.MaxParts);
+
+        var firstPart = Assert.Single(firstPage.Parts);
+        Assert.Equal(1, firstPart.PartNumber);
+        Assert.Equal(part1Response.ETag, firstPart.ETag);
+        Assert.Equal(part1Checksum, firstPart.ChecksumSHA256);
+
+        var secondPage = await s3Client.ListPartsAsync(new ListPartsRequest
+        {
+            BucketName = bucketName,
+            Key = objectKey,
+            UploadId = initiateResponse.UploadId,
+            PartNumberMarker = "1"
+        });
+        Assert.Equal(HttpStatusCode.OK, secondPage.HttpStatusCode);
+        Assert.False(secondPage.IsTruncated);
+        Assert.Equal(1, secondPage.PartNumberMarker);
+
+        var secondPart = Assert.Single(secondPage.Parts);
+        Assert.Equal(2, secondPart.PartNumber);
+        Assert.Equal(part2Response.ETag, secondPart.ETag);
+        Assert.Equal(part2Checksum, secondPart.ChecksumSHA256);
+    }
+
+    [Fact]
     public async Task AmazonS3Client_MultipartUpload_WithSha1ChecksumAlgorithm_ExposesCompositeChecksumMetadataAgainstIntegratedS3()
     {
         const string accessKeyId = "aws-sdk-multipart-sha1-access";

@@ -1256,9 +1256,9 @@ This section is the execution board for the remaining implementation backlog. As
 - Ready: now
 - Depends on: coordinate with Tracks B and C as parity and client-surface hardening follow-ons land
 - Status update:
-  - bucket-level multipart listing/discovery (`GET ?uploads`) is now implemented end-to-end for the current disk/Core/HTTP surface
-  - the new slice adds provider/service contracts for multipart listing, platform-managed multipart-state enumeration via `IStorageMultipartStateStore`, disk-provider sidecar fallback enumeration, S3-compatible `ListMultipartUploadsResult` XML output, delimiter/common-prefix handling, marker pagination (`key-marker` / `upload-id-marker`), and multipart feature-toggle enforcement on the bucket route
-  - focused coverage now locks in empty listings, completed/aborted upload exclusion, platform-managed multipart-state enumeration, virtual-hosted-style HTTP behavior, feature-toggle blocking, and AWS SDK `ListMultipartUploadsAsync` compatibility for the current supported surface
+  - bucket-level multipart listing/discovery (`GET ?uploads`) and object-level multipart part listing (`GET ?uploadId=...`) are now implemented end-to-end for the current disk/Core/HTTP surface
+  - the multipart listing slice now covers provider/service contracts for both upload and part enumeration, platform-managed multipart-state enumeration via `IStorageMultipartStateStore`, disk-provider sidecar fallback enumeration, native S3 `ListPartsAsync` client mapping, S3-compatible `ListMultipartUploadsResult` plus `ListPartsResult` XML output, delimiter/common-prefix handling, marker pagination (`key-marker` / `upload-id-marker` / `part-number-marker`), `max-parts` handling, checksum-aware part entries, and multipart feature-toggle enforcement on the bucket/object routes
+  - focused coverage now locks in empty listings, completed/aborted upload exclusion, platform-managed multipart-state enumeration, disk-provider part enumeration, virtual-hosted-style HTTP behavior, feature-toggle blocking, checksum-aware `ListParts` XML paging, and AWS SDK `ListMultipartUploadsAsync` plus `ListPartsAsync` compatibility for the current supported surface
   - bucket/object-compatible subresource validation now uses an explicit supported-matrix for bucket `?versioning`, `?cors`, `?uploads`, and `?versions` plus object `?tagging`, `?versionId`, and multipart workflows, rejects remaining unsupported single subresources with consistent `NotImplemented` responses, and returns explicit unsupported-combination results for invalid mixed query sets
   - focused HTTP coverage now locks in that SigV4 presign query parameters such as `X-Amz-*` and `x-id` continue to be ignored during bucket/object subresource validation for the currently supported paths
   - protocol/conformance coverage now locks in canonical empty-value subresource signing plus presigned bucket-versioning and historical-version reads on the S3-compatible route
@@ -1266,7 +1266,7 @@ This section is the execution board for the remaining implementation backlog. As
   - next: harden conditional precedence, checksum/header behavior, and canonical-request edge cases now that the bucket/object subresource matrix is explicit on the S3-compatible HTTP surface
   - continue versioning/tagging/delete-marker parity work for the remaining advanced edge cases
   - keep `aws-chunked`, presigned-query, and virtual-hosted-style compatibility tightening against real client behavior
-  - decide whether multipart `encoding-type=url` and further multipart-listing edge semantics should be implemented next or remain explicitly unsupported for now
+  - decide whether multipart `encoding-type=url`, optional `ListParts` owner/initiator fields, and further multipart-listing edge semantics should be implemented next or remain explicitly unsupported for now
 
 ### Track F — Multi-backend async replication, health, and reconciliation
 
