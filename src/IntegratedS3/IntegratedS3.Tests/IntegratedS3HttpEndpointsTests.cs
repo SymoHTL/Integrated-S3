@@ -2815,6 +2815,9 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
         var capabilitiesResponse = await client.GetAsync("/integrated-s3/capabilities");
         Assert.Equal(HttpStatusCode.NotFound, capabilitiesResponse.StatusCode);
 
+        var diagnosticsResponse = await client.GetAsync("/integrated-s3/admin/diagnostics");
+        Assert.Equal(HttpStatusCode.NotFound, diagnosticsResponse.StatusCode);
+
         var repairsResponse = await client.GetAsync("/integrated-s3/admin/repairs");
         Assert.Equal(HttpStatusCode.NotFound, repairsResponse.StatusCode);
 
@@ -2925,6 +2928,9 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
         var anonymousResponse = await client.GetAsync("/integrated-s3/capabilities");
         Assert.Equal(HttpStatusCode.Unauthorized, anonymousResponse.StatusCode);
 
+        var anonymousDiagnosticsResponse = await client.GetAsync("/integrated-s3/admin/diagnostics");
+        Assert.Equal(HttpStatusCode.Unauthorized, anonymousDiagnosticsResponse.StatusCode);
+
         var anonymousRepairsResponse = await client.GetAsync("/integrated-s3/admin/repairs");
         Assert.Equal(HttpStatusCode.Unauthorized, anonymousRepairsResponse.StatusCode);
 
@@ -2933,8 +2939,13 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
         var authenticatedResponse = await client.GetAsync("/integrated-s3/capabilities");
         Assert.Equal(HttpStatusCode.OK, authenticatedResponse.StatusCode);
 
+        var authenticatedDiagnosticsResponse = await client.GetAsync("/integrated-s3/admin/diagnostics");
+        Assert.Equal(HttpStatusCode.OK, authenticatedDiagnosticsResponse.StatusCode);
+
         var authenticatedRepairsResponse = await client.GetAsync("/integrated-s3/admin/repairs");
         Assert.Equal(HttpStatusCode.OK, authenticatedRepairsResponse.StatusCode);
+        var diagnostics = await authenticatedDiagnosticsResponse.Content.ReadFromJsonAsync<StorageAdminDiagnostics>(JsonOptions);
+        Assert.NotNull(diagnostics);
         var repairs = await authenticatedRepairsResponse.Content.ReadFromJsonAsync<StorageReplicaRepairEntry[]>(JsonOptions);
         Assert.NotNull(repairs);
         Assert.Empty(repairs!);
@@ -3019,6 +3030,9 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
         var bucketScopedAdminResponse = await client.GetAsync("/integrated-s3/capabilities");
         Assert.Equal(HttpStatusCode.Forbidden, bucketScopedAdminResponse.StatusCode);
 
+        var bucketScopedDiagnosticsResponse = await client.GetAsync("/integrated-s3/admin/diagnostics");
+        Assert.Equal(HttpStatusCode.Forbidden, bucketScopedDiagnosticsResponse.StatusCode);
+
         client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("TestHeader", "object.write");
 
         var objectScopedResponse = await client.PutAsync(
@@ -3029,10 +3043,16 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
         var objectScopedAdminResponse = await client.GetAsync("/integrated-s3/admin/repairs");
         Assert.Equal(HttpStatusCode.Forbidden, objectScopedAdminResponse.StatusCode);
 
+        var objectScopedDiagnosticsResponse = await client.GetAsync("/integrated-s3/admin/diagnostics");
+        Assert.Equal(HttpStatusCode.Forbidden, objectScopedDiagnosticsResponse.StatusCode);
+
         client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("TestHeader", "admin.read");
 
         var capabilitiesResponse = await client.GetAsync("/integrated-s3/capabilities");
         Assert.Equal(HttpStatusCode.OK, capabilitiesResponse.StatusCode);
+
+        var diagnosticsResponse = await client.GetAsync("/integrated-s3/admin/diagnostics");
+        Assert.Equal(HttpStatusCode.OK, diagnosticsResponse.StatusCode);
 
         var repairsResponse = await client.GetAsync("/integrated-s3/admin/repairs");
         Assert.Equal(HttpStatusCode.OK, repairsResponse.StatusCode);
@@ -3204,6 +3224,135 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
     }
 
     [Fact]
+    public async Task AdminDiagnosticsEndpoint_ReturnsProviderHealthReplicaLagAndRepairDiagnostics()
+    {
+        var observedAtUtc = DateTimeOffset.Parse("2025-02-03T04:10:06+00:00", CultureInfo.InvariantCulture);
+        var backlog = new TestStorageReplicaRepairBacklog([
+            CreateRepairEntry(
+                id: "failed-repair",
+                origin: StorageReplicaRepairOrigin.PartialWriteFailure,
+                status: StorageReplicaRepairStatus.Failed,
+                operation: StorageOperationType.PutObject,
+                primaryBackendName: "primary-memory",
+                replicaBackendName: "replica-memory",
+                bucketName: "repair-bucket",
+                objectKey: "docs/failed.txt",
+                createdAtUtc: observedAtUtc.AddMinutes(-5),
+                attemptCount: 2,
+                lastError: new StorageError
+                {
+                    Code = StorageErrorCode.ProviderUnavailable,
+                    Message = "Replica write failed.",
+                    BucketName = "repair-bucket",
+                    ObjectKey = "docs/failed.txt",
+                    ProviderName = "replica-memory",
+                    SuggestedHttpStatusCode = 503
+                }),
+            CreateRepairEntry(
+                id: "pending-repair",
+                origin: StorageReplicaRepairOrigin.AsyncReplication,
+                status: StorageReplicaRepairStatus.Pending,
+                operation: StorageOperationType.DeleteObject,
+                primaryBackendName: "primary-memory",
+                replicaBackendName: "replica-memory",
+                bucketName: "repair-bucket",
+                objectKey: "docs/pending.txt",
+                createdAtUtc: observedAtUtc.AddMinutes(-2))
+        ]);
+        var primaryBackend = new PassiveDiagnosticsStorageBackend("primary-memory", isPrimary: true);
+        var laggingReplicaBackend = new PassiveDiagnosticsStorageBackend("replica-memory");
+        var currentReplicaBackend = new PassiveDiagnosticsStorageBackend("current-replica");
+
+        await using var isolatedClient = await _factory.CreateIsolatedClientAsync(builder => {
+            builder.Services.RemoveAll<IStorageBackend>();
+            builder.Services.RemoveAll<IStorageReplicaRepairBacklog>();
+            builder.Services.RemoveAll<IStorageBackendHealthEvaluator>();
+            builder.Services.RemoveAll<TimeProvider>();
+            builder.Services.AddSingleton<TimeProvider>(new FixedTimeProvider(observedAtUtc));
+            builder.Services.AddSingleton<IStorageBackend>(primaryBackend);
+            builder.Services.AddSingleton<IStorageBackend>(laggingReplicaBackend);
+            builder.Services.AddSingleton<IStorageBackend>(currentReplicaBackend);
+            builder.Services.AddSingleton<IStorageReplicaRepairBacklog>(backlog);
+            builder.Services.AddSingleton<IStorageBackendHealthEvaluator>(new ConfigurableStorageBackendHealthEvaluator(
+                new Dictionary<string, StorageBackendHealthStatus>(StringComparer.Ordinal)
+                {
+                    [primaryBackend.Name] = StorageBackendHealthStatus.Healthy,
+                    [laggingReplicaBackend.Name] = StorageBackendHealthStatus.Unhealthy,
+                    [currentReplicaBackend.Name] = StorageBackendHealthStatus.Unknown
+                }));
+        });
+
+        using var client = isolatedClient.Client;
+
+        var diagnostics = await client.GetFromJsonAsync<StorageAdminDiagnostics>("/integrated-s3/admin/diagnostics", JsonOptions);
+        Assert.NotNull(diagnostics);
+        Assert.Equal(observedAtUtc, diagnostics!.ObservedAtUtc);
+        Assert.Collection(
+            diagnostics.Providers,
+            primaryProvider => {
+                Assert.Equal("primary-memory", primaryProvider.BackendName);
+                Assert.Equal("test", primaryProvider.Kind);
+                Assert.True(primaryProvider.IsPrimary);
+                Assert.Equal(StorageProviderMode.Managed, primaryProvider.Mode);
+                Assert.Equal(StorageBackendHealthStatus.Healthy, primaryProvider.HealthStatus);
+                Assert.Null(primaryProvider.ReplicaLag);
+            },
+            laggingReplicaProvider => {
+                Assert.Equal("replica-memory", laggingReplicaProvider.BackendName);
+                Assert.False(laggingReplicaProvider.IsPrimary);
+                Assert.Equal(StorageBackendHealthStatus.Unhealthy, laggingReplicaProvider.HealthStatus);
+                var lag = Assert.IsType<StorageAdminReplicaLagDiagnostics>(laggingReplicaProvider.ReplicaLag);
+                Assert.True(lag.HasOutstandingRepairs);
+                Assert.False(lag.IsCurrent);
+                Assert.Equal(2, lag.OutstandingRepairCount);
+                Assert.Equal(1, lag.PendingRepairCount);
+                Assert.Equal(0, lag.InProgressRepairCount);
+                Assert.Equal(1, lag.FailedRepairCount);
+                Assert.Equal(observedAtUtc.AddMinutes(-5), lag.OldestOutstandingRepairCreatedAtUtc);
+                Assert.Equal(observedAtUtc.AddMinutes(-2), lag.LatestRepairActivityAtUtc);
+                Assert.Equal(TimeSpan.FromMinutes(5), lag.ApproximateLag);
+            },
+            currentReplicaProvider => {
+                Assert.Equal("current-replica", currentReplicaProvider.BackendName);
+                Assert.False(currentReplicaProvider.IsPrimary);
+                Assert.Equal(StorageBackendHealthStatus.Unknown, currentReplicaProvider.HealthStatus);
+                var lag = Assert.IsType<StorageAdminReplicaLagDiagnostics>(currentReplicaProvider.ReplicaLag);
+                Assert.False(lag.HasOutstandingRepairs);
+                Assert.True(lag.IsCurrent);
+                Assert.Equal(0, lag.OutstandingRepairCount);
+                Assert.Equal(0, lag.PendingRepairCount);
+                Assert.Equal(0, lag.InProgressRepairCount);
+                Assert.Equal(0, lag.FailedRepairCount);
+                Assert.Null(lag.OldestOutstandingRepairCreatedAtUtc);
+                Assert.Null(lag.LatestRepairActivityAtUtc);
+                Assert.Null(lag.ApproximateLag);
+            });
+
+        Assert.Equal(2, diagnostics.Repairs.OutstandingRepairCount);
+        Assert.Equal(1, diagnostics.Repairs.PendingRepairCount);
+        Assert.Equal(0, diagnostics.Repairs.InProgressRepairCount);
+        Assert.Equal(1, diagnostics.Repairs.FailedRepairCount);
+        Assert.Equal(["replica-memory"], diagnostics.Repairs.ReplicaBackendsWithOutstandingRepairs);
+        Assert.Equal(observedAtUtc.AddMinutes(-5), diagnostics.Repairs.OldestOutstandingRepairCreatedAtUtc);
+        Assert.Equal(observedAtUtc.AddMinutes(-2), diagnostics.Repairs.LatestRepairActivityAtUtc);
+        Assert.Equal(TimeSpan.FromMinutes(5), diagnostics.Repairs.ApproximateMaxReplicaLag);
+        Assert.Collection(
+            diagnostics.Repairs.OutstandingRepairs,
+            failedRepair => {
+                Assert.Equal("failed-repair", failedRepair.Id);
+                Assert.Equal(StorageReplicaRepairStatus.Failed, failedRepair.Status);
+                Assert.Equal(2, failedRepair.AttemptCount);
+                Assert.Equal(StorageErrorCode.ProviderUnavailable, failedRepair.LastErrorCode);
+            },
+            pendingRepair => {
+                Assert.Equal("pending-repair", pendingRepair.Id);
+                Assert.Equal(StorageReplicaRepairStatus.Pending, pendingRepair.Status);
+                Assert.Equal(StorageOperationType.DeleteObject, pendingRepair.Operation);
+                Assert.Null(pendingRepair.LastErrorCode);
+            });
+    }
+
+    [Fact]
     public async Task AdminRepairsEndpoint_ReturnsOutstandingRepairsAndSupportsReplicaBackendFilter()
     {
         var timestamp = DateTimeOffset.Parse("2025-02-03T04:05:06+00:00", CultureInfo.InvariantCulture);
@@ -3321,6 +3470,22 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
                 SuggestedHttpStatusCode = 403
             }));
         }
+    }
+
+    private sealed class ConfigurableStorageBackendHealthEvaluator(IReadOnlyDictionary<string, StorageBackendHealthStatus> statuses) : IStorageBackendHealthEvaluator
+    {
+        public ValueTask<StorageBackendHealthStatus> GetStatusAsync(IStorageBackend backend, CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return ValueTask.FromResult(statuses.TryGetValue(backend.Name, out var status)
+                ? status
+                : StorageBackendHealthStatus.Healthy);
+        }
+    }
+
+    private sealed class FixedTimeProvider(DateTimeOffset fixedNow) : TimeProvider
+    {
+        public override DateTimeOffset GetUtcNow() => fixedNow;
     }
 
     private Task<WebUiApplicationFactory.IsolatedWebUiClient> CreateStorageServiceIsolatedClientAsync(IStorageService storageService)
@@ -3483,8 +3648,144 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
                 {
                     Algorithm = settings.Algorithm,
                     KeyId = settings.KeyId
-                };
+            };
         }
+    }
+
+    private sealed class PassiveDiagnosticsStorageBackend(string name, bool isPrimary = false) : IStorageBackend
+    {
+        public string Name => name;
+
+        public string Kind => "test";
+
+        public bool IsPrimary => isPrimary;
+
+        public string? Description => $"Passive diagnostics backend '{name}'.";
+
+        public ValueTask<StorageCapabilities> GetCapabilitiesAsync(CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return ValueTask.FromResult(new StorageCapabilities());
+        }
+
+        public ValueTask<StorageSupportStateDescriptor> GetSupportStateDescriptorAsync(CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return ValueTask.FromResult(new StorageSupportStateDescriptor());
+        }
+
+        public ValueTask<StorageProviderMode> GetProviderModeAsync(CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return ValueTask.FromResult(StorageProviderMode.Managed);
+        }
+
+        public ValueTask<StorageObjectLocationDescriptor> GetObjectLocationDescriptorAsync(CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return ValueTask.FromResult(new StorageObjectLocationDescriptor());
+        }
+
+        public ValueTask<StorageResult<StorageDirectObjectAccessGrant>> PresignObjectDirectAsync(
+            StorageDirectObjectAccessRequest request,
+            CancellationToken cancellationToken = default)
+        {
+            ArgumentNullException.ThrowIfNull(request);
+            cancellationToken.ThrowIfCancellationRequested();
+
+            return ValueTask.FromResult(StorageResult<StorageDirectObjectAccessGrant>.Failure(
+                StorageError.Unsupported(
+                    "Direct object presign generation is not implemented by this storage backend.",
+                    request.BucketName,
+                    request.Key)));
+        }
+
+        public async IAsyncEnumerable<BucketInfo> ListBucketsAsync([System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            await Task.CompletedTask;
+            yield break;
+        }
+
+        public ValueTask<StorageResult<BucketInfo>> CreateBucketAsync(CreateBucketRequest request, CancellationToken cancellationToken = default) => UnexpectedAsync<BucketInfo>();
+
+        public ValueTask<StorageResult<BucketVersioningInfo>> GetBucketVersioningAsync(string bucketName, CancellationToken cancellationToken = default) => UnexpectedAsync<BucketVersioningInfo>();
+
+        public ValueTask<StorageResult<BucketVersioningInfo>> PutBucketVersioningAsync(PutBucketVersioningRequest request, CancellationToken cancellationToken = default) => UnexpectedAsync<BucketVersioningInfo>();
+
+        public ValueTask<StorageResult<BucketInfo>> HeadBucketAsync(string bucketName, CancellationToken cancellationToken = default) => UnexpectedAsync<BucketInfo>();
+
+        public ValueTask<StorageResult> DeleteBucketAsync(DeleteBucketRequest request, CancellationToken cancellationToken = default) => UnexpectedAsync();
+
+        public async IAsyncEnumerable<ObjectInfo> ListObjectsAsync(ListObjectsRequest request, [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            await Task.CompletedTask;
+            yield break;
+        }
+
+        public async IAsyncEnumerable<ObjectInfo> ListObjectVersionsAsync(ListObjectVersionsRequest request, [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            await Task.CompletedTask;
+            yield break;
+        }
+
+        public ValueTask<StorageResult<GetObjectResponse>> GetObjectAsync(GetObjectRequest request, CancellationToken cancellationToken = default) => UnexpectedAsync<GetObjectResponse>();
+
+        public ValueTask<StorageResult<ObjectTagSet>> GetObjectTagsAsync(GetObjectTagsRequest request, CancellationToken cancellationToken = default) => UnexpectedAsync<ObjectTagSet>();
+
+        public ValueTask<StorageResult<ObjectInfo>> CopyObjectAsync(CopyObjectRequest request, CancellationToken cancellationToken = default) => UnexpectedAsync<ObjectInfo>();
+
+        public ValueTask<StorageResult<ObjectInfo>> PutObjectAsync(PutObjectRequest request, CancellationToken cancellationToken = default) => UnexpectedAsync<ObjectInfo>();
+
+        public ValueTask<StorageResult<ObjectTagSet>> PutObjectTagsAsync(PutObjectTagsRequest request, CancellationToken cancellationToken = default) => UnexpectedAsync<ObjectTagSet>();
+
+        public ValueTask<StorageResult<ObjectTagSet>> DeleteObjectTagsAsync(DeleteObjectTagsRequest request, CancellationToken cancellationToken = default) => UnexpectedAsync<ObjectTagSet>();
+
+        public ValueTask<StorageResult<MultipartUploadInfo>> InitiateMultipartUploadAsync(InitiateMultipartUploadRequest request, CancellationToken cancellationToken = default) => UnexpectedAsync<MultipartUploadInfo>();
+
+        public ValueTask<StorageResult<MultipartUploadPart>> UploadMultipartPartAsync(UploadMultipartPartRequest request, CancellationToken cancellationToken = default) => UnexpectedAsync<MultipartUploadPart>();
+
+        public ValueTask<StorageResult<ObjectInfo>> CompleteMultipartUploadAsync(CompleteMultipartUploadRequest request, CancellationToken cancellationToken = default) => UnexpectedAsync<ObjectInfo>();
+
+        public ValueTask<StorageResult> AbortMultipartUploadAsync(AbortMultipartUploadRequest request, CancellationToken cancellationToken = default) => UnexpectedAsync();
+
+        public ValueTask<StorageResult<ObjectInfo>> HeadObjectAsync(HeadObjectRequest request, CancellationToken cancellationToken = default) => UnexpectedAsync<ObjectInfo>();
+
+        public ValueTask<StorageResult<DeleteObjectResult>> DeleteObjectAsync(DeleteObjectRequest request, CancellationToken cancellationToken = default) => UnexpectedAsync<DeleteObjectResult>();
+
+        public ValueTask<StorageResult<BucketCorsConfiguration>> GetBucketCorsAsync(string bucketName, CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return ValueTask.FromResult(StorageResult<BucketCorsConfiguration>.Failure(StorageError.Unsupported("Bucket CORS is not used in admin diagnostics tests.", bucketName)));
+        }
+
+        public ValueTask<StorageResult<BucketCorsConfiguration>> PutBucketCorsAsync(PutBucketCorsRequest request, CancellationToken cancellationToken = default)
+        {
+            ArgumentNullException.ThrowIfNull(request);
+            cancellationToken.ThrowIfCancellationRequested();
+            return ValueTask.FromResult(StorageResult<BucketCorsConfiguration>.Failure(StorageError.Unsupported("Bucket CORS is not used in admin diagnostics tests.", request.BucketName)));
+        }
+
+        public ValueTask<StorageResult> DeleteBucketCorsAsync(DeleteBucketCorsRequest request, CancellationToken cancellationToken = default)
+        {
+            ArgumentNullException.ThrowIfNull(request);
+            cancellationToken.ThrowIfCancellationRequested();
+            return ValueTask.FromResult(StorageResult.Failure(StorageError.Unsupported("Bucket CORS is not used in admin diagnostics tests.", request.BucketName)));
+        }
+
+        public async IAsyncEnumerable<MultipartUploadInfo> ListMultipartUploadsAsync(ListMultipartUploadsRequest request, [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            ArgumentNullException.ThrowIfNull(request);
+            cancellationToken.ThrowIfCancellationRequested();
+            await Task.CompletedTask;
+            yield break;
+        }
+
+        private static ValueTask<StorageResult<T>> UnexpectedAsync<T>() => throw new NotSupportedException("This backend is only used for admin diagnostics tests.");
+
+        private static ValueTask<StorageResult> UnexpectedAsync() => throw new NotSupportedException("This backend is only used for admin diagnostics tests.");
     }
 
     private sealed class TestStorageReplicaRepairBacklog(IEnumerable<StorageReplicaRepairEntry> entries) : IStorageReplicaRepairBacklog
@@ -3645,6 +3946,7 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
         string bucketName,
         string? objectKey,
         DateTimeOffset createdAtUtc,
+        DateTimeOffset? updatedAtUtc = null,
         string? versionId = null,
         int attemptCount = 0,
         StorageError? lastError = null)
@@ -3661,7 +3963,7 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
             ObjectKey = objectKey,
             VersionId = versionId,
             CreatedAtUtc = createdAtUtc,
-            UpdatedAtUtc = createdAtUtc,
+            UpdatedAtUtc = updatedAtUtc ?? createdAtUtc,
             AttemptCount = attemptCount,
             LastErrorCode = lastError?.Code,
             LastErrorMessage = lastError?.Message

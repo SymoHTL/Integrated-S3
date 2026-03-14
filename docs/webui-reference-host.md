@@ -67,6 +67,7 @@ After the host is running, these requests validate the reference surface without
 ```powershell
 Invoke-WebRequest http://localhost:5298/integrated-s3 | Select-Object -ExpandProperty Content
 Invoke-WebRequest http://localhost:5298/integrated-s3/capabilities | Select-Object -ExpandProperty Content
+Invoke-WebRequest http://localhost:5298/integrated-s3/admin/diagnostics | Select-Object -ExpandProperty Content
 Invoke-WebRequest -Method Put http://localhost:5298/integrated-s3/buckets/demo-bucket
 Invoke-WebRequest http://localhost:5298/integrated-s3/buckets | Select-Object -ExpandProperty Content
 ```

@@ -179,6 +179,9 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
             adminGroup.MapGet("/capabilities", GetCapabilitiesAsync)
                 .WithName("GetIntegratedS3Capabilities");
 
+            adminGroup.MapGet("/admin/diagnostics", GetAdminDiagnosticsAsync)
+                .WithName("GetIntegratedS3AdminDiagnostics");
+
             adminGroup.MapGet("/admin/repairs", ListOutstandingReplicaRepairsAsync)
                 .WithName("ListIntegratedS3ReplicaRepairs");
         }
@@ -413,6 +416,14 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
     {
         var capabilities = await capabilityProvider.GetCapabilitiesAsync(cancellationToken);
         return TypedResults.Ok(capabilities);
+    }
+
+    private static async Task<Ok<StorageAdminDiagnostics>> GetAdminDiagnosticsAsync(
+        IStorageAdminDiagnosticsProvider diagnosticsProvider,
+        CancellationToken cancellationToken)
+    {
+        var diagnostics = await diagnosticsProvider.GetDiagnosticsAsync(cancellationToken);
+        return TypedResults.Ok(diagnostics);
     }
 
     private static async Task<Ok<StorageReplicaRepairEntry[]>> ListOutstandingReplicaRepairsAsync(
