@@ -69,6 +69,7 @@ internal sealed class OrchestratedStorageService(
     public async ValueTask<StorageResult<BucketLocationInfo>> GetBucketLocationAsync(string bucketName, CancellationToken cancellationToken = default)
     {
         return await ExecuteReadAsync(
+            StorageOperationType.GetBucketLocation,
             (backend, ct) => backend.GetBucketLocationAsync(bucketName, ct),
             onSuccess: null,
             cancellationToken);

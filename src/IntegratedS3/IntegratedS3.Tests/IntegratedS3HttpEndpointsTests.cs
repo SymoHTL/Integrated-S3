@@ -1653,6 +1653,10 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
         var listedObject = Assert.Single(document.Root.Elements("Contents"));
         Assert.Equal("docs%2Fb%20file%282%29.txt", listedObject.Element("Key")?.Value);
         Assert.False(string.IsNullOrWhiteSpace(listedObject.Element("Owner")?.Element("ID")?.Value));
+
+    }
+
+    [Fact]
     public async Task S3CompatibleCopyObject_SourceVersionIdUsesHistoricalVersionPreconditionsAndRejectsDeleteMarkers()
     {
         using var client = await _factory.CreateClientAsync();
@@ -2531,11 +2535,10 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
 
     [Fact]
     public async Task S3CompatibleListMultipartUploads_WithEncodingType_ReturnsEncodedKeys()
-    public async Task S3CompatibleListMultipartUploads_UnsupportedEncodingType_ReturnsInvalidArgument()
     {
         using var client = await _factory.CreateClientAsync();
 
-        const string bucketName = "multipart-subresource-bucket";
+        const string bucketName = "multipart-encoding-subresource-bucket";
         const string objectKey = "docs/test file(3).txt";
 
         static string EncodeObjectPath(string key)
@@ -2562,7 +2565,19 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
         Assert.Equal("docs%2Ftest%20file%283%29.txt", upload.Element("Key")?.Value);
         Assert.False(string.IsNullOrWhiteSpace(upload.Element("Owner")?.Element("ID")?.Value));
         Assert.False(string.IsNullOrWhiteSpace(upload.Element("Initiator")?.Element("ID")?.Value));
-        var response = await client.GetAsync("/integrated-s3/multipart-subresource-bucket?uploads&encoding-type=base64");
+
+    }
+
+    [Fact]
+    public async Task S3CompatibleListMultipartUploads_UnsupportedEncodingType_ReturnsInvalidArgument()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        const string bucketName = "multipart-invalid-encoding-subresource-bucket";
+
+        await client.PutAsync($"/integrated-s3/buckets/{bucketName}", content: null);
+
+        var response = await client.GetAsync($"/integrated-s3/{bucketName}?uploads&encoding-type=base64");
 
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
         Assert.Equal("application/xml", response.Content.Headers.ContentType?.MediaType);

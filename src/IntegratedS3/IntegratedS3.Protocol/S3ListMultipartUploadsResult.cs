@@ -18,8 +18,6 @@ public sealed class S3ListMultipartUploadsResult
 
     public string? NextUploadIdMarker { get; init; }
 
-    public string? EncodingType { get; init; }
-
     public int MaxUploads { get; init; }
 
     public bool IsTruncated { get; init; }

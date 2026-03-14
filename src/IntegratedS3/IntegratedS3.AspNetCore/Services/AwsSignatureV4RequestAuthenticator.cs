@@ -129,7 +129,7 @@ internal sealed class AwsSignatureV4RequestAuthenticator(
             return IntegratedS3RequestAuthenticationResult.Failure("RequestTimeTooSkewed", "The difference between the request time and the server time is too large.");
         }
 
-        if (!TryResolvePayloadHash(httpContext.Request, isPresigned: false, out var payloadHash, out var payloadHashError, out statusCode)) {
+        if (!TryResolvePayloadHash(httpContext.Request, isPresigned: false, signedHeaders: authorization.SignedHeaders, out var payloadHash, out var payloadHashError, out statusCode)) {
             return IntegratedS3RequestAuthenticationResult.Failure("InvalidRequest", payloadHashError!, statusCode);
         }
 
@@ -177,7 +177,11 @@ internal sealed class AwsSignatureV4RequestAuthenticator(
             return IntegratedS3RequestAuthenticationResult.Failure("InvalidAccessKeyId", $"The AWS access key id '{presignedRequest.CredentialScope.AccessKeyId}' does not exist in this service.");
         }
 
-        if (!TryResolvePayloadHash(httpContext.Request, isPresigned: true, out var payloadHash, out var payloadHashError, out statusCode)) {
+        if (!presignedRequest.SignedHeaders.Contains("host", StringComparer.Ordinal)) {
+            return IntegratedS3RequestAuthenticationResult.Failure("AuthorizationQueryParametersError", "The presigned request must sign the 'host' header.", statusCode: 400);
+        }
+
+        if (!TryResolvePayloadHash(httpContext.Request, isPresigned: true, signedHeaders: presignedRequest.SignedHeaders, out var payloadHash, out var payloadHashError, out statusCode)) {
             return IntegratedS3RequestAuthenticationResult.Failure("InvalidRequest", payloadHashError!, statusCode);
         }
 
@@ -248,18 +252,40 @@ internal sealed class AwsSignatureV4RequestAuthenticator(
         return (DateTimeOffset.UtcNow - requestTimestampUtc).Duration() > clockSkew;
     }
 
-    private static bool TryResolvePayloadHash(HttpRequest request, bool isPresigned, out string? payloadHash, out string? error, out int statusCode)
+    private static bool TryResolvePayloadHash(
+        HttpRequest request,
+        bool isPresigned,
+        IReadOnlyList<string> signedHeaders,
+        out string? payloadHash,
+        out string? error,
+        out int statusCode)
     {
         var headerValue = request.Headers[AwsContentSha256HeaderName].ToString();
-        if (!string.IsNullOrWhiteSpace(headerValue)) {
-            payloadHash = headerValue.Trim();
+        var signsPayloadHashHeader = signedHeaders.Contains(AwsContentSha256HeaderName, StringComparer.Ordinal);
+
+        if (isPresigned) {
+            if (signsPayloadHashHeader) {
+                if (!string.IsNullOrWhiteSpace(headerValue)) {
+                    payloadHash = headerValue.Trim();
+                    error = null;
+                    statusCode = 200;
+                    return true;
+                }
+
+                payloadHash = null;
+                error = "The presigned request must include the signed x-amz-content-sha256 header.";
+                statusCode = 400;
+                return false;
+            }
+
+            payloadHash = UnsignedPayload;
             error = null;
             statusCode = 200;
             return true;
         }
 
-        if (isPresigned) {
-            payloadHash = UnsignedPayload;
+        if (!string.IsNullOrWhiteSpace(headerValue)) {
+            payloadHash = headerValue.Trim();
             error = null;
             statusCode = 200;
             return true;

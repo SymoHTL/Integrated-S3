@@ -103,7 +103,7 @@ public sealed class WebUiApplicationTests
         var builder = WebApplication.CreateSlimBuilder(new WebApplicationOptions
         {
             EnvironmentName = Environments.Development,
-            ApplicationName = typeof(Program).Assembly.FullName,
+            ApplicationName = typeof(WebUiApplication).Assembly.FullName,
             ContentRootPath = rootPath
         });
 

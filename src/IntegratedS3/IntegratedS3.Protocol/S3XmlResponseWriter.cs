@@ -399,16 +399,6 @@ public static class S3XmlResponseWriter
         xmlWriter.WriteStartDocument();
         xmlWriter.WriteStartElement("ListMultipartUploadsResult");
         xmlWriter.WriteElementString("Bucket", response.Bucket);
-        xmlWriter.WriteElementString("KeyMarker", EncodeS3ListValue(response.KeyMarker ?? string.Empty, response.EncodingType));
-        xmlWriter.WriteElementString("UploadIdMarker", response.UploadIdMarker ?? string.Empty);
-        xmlWriter.WriteElementString("Prefix", EncodeS3ListValue(response.Prefix ?? string.Empty, response.EncodingType));
-
-        if (!string.IsNullOrWhiteSpace(response.Delimiter)) {
-            xmlWriter.WriteElementString("Delimiter", EncodeS3ListValue(response.Delimiter, response.EncodingType));
-        }
-
-        if (!string.IsNullOrWhiteSpace(response.NextKeyMarker)) {
-            xmlWriter.WriteElementString("NextKeyMarker", EncodeS3ListValue(response.NextKeyMarker, response.EncodingType));
         xmlWriter.WriteElementString("KeyMarker", EncodeMultipartResponseValue(response.KeyMarker, urlEncodeResponseValues) ?? string.Empty);
         xmlWriter.WriteElementString("UploadIdMarker", response.UploadIdMarker ?? string.Empty);
         xmlWriter.WriteElementString("Prefix", EncodeMultipartResponseValue(response.Prefix, urlEncodeResponseValues) ?? string.Empty);
@@ -434,7 +424,6 @@ public static class S3XmlResponseWriter
 
         foreach (var upload in response.Uploads) {
             xmlWriter.WriteStartElement("Upload");
-            xmlWriter.WriteElementString("Key", EncodeS3ListValue(upload.Key, response.EncodingType));
             xmlWriter.WriteElementString("Key", EncodeMultipartResponseValue(upload.Key, urlEncodeResponseValues));
             xmlWriter.WriteElementString("UploadId", upload.UploadId);
 
@@ -458,7 +447,6 @@ public static class S3XmlResponseWriter
 
         foreach (var commonPrefix in response.CommonPrefixes) {
             xmlWriter.WriteStartElement("CommonPrefixes");
-            xmlWriter.WriteElementString("Prefix", EncodeS3ListValue(commonPrefix.Prefix, response.EncodingType));
             xmlWriter.WriteElementString("Prefix", EncodeMultipartResponseValue(commonPrefix.Prefix, urlEncodeResponseValues));
             xmlWriter.WriteEndElement();
         }

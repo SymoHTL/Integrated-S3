@@ -623,7 +623,7 @@ public static class IntegratedS3ClientTransferExtensions
         }
         catch (IOException exception) {
             DeletePartialDownload(filePath, exception);
-            throw;
+            throw CreateTransferHttpRequestException("The download failed while writing the response body.", exception);
         }
         catch (OperationCanceledException exception) {
             DeletePartialDownload(filePath, exception);
@@ -687,8 +687,6 @@ public static class IntegratedS3ClientTransferExtensions
                 cancellationToken);
         }
 
-        var existingLength = new FileInfo(filePath).Length;
-
         await using var fileStream = new FileStream(
             filePath, FileMode.Append, FileAccess.Write, FileShare.None,
             bufferSize: 65536, useAsync: true);
@@ -700,15 +698,9 @@ public static class IntegratedS3ClientTransferExtensions
                 validation,
                 cancellationToken);
         }
-        catch
-        {
-            try
-            {
-                fileStream.SetLength(existingLength);
-            }
-            catch
-            {
-                // Swallow any truncation errors; the original exception is more important.
+        catch (Exception exception) {
+            if (exception is IOException ioException) {
+                throw CreateTransferHttpRequestException("The resumed download failed while appending to the destination file.", ioException);
             }
 
             throw;
@@ -748,7 +740,7 @@ public static class IntegratedS3ClientTransferExtensions
         }
         catch (IOException exception) {
             DeletePartialDownload(temporaryFilePath, exception);
-            throw;
+            throw CreateTransferHttpRequestException("The download failed while rewriting the destination file.", exception);
         }
         catch (OperationCanceledException exception) {
             DeletePartialDownload(temporaryFilePath, exception);
@@ -794,6 +786,14 @@ public static class IntegratedS3ClientTransferExtensions
 
         totalLength = 0;
         return false;
+    }
+
+    private static HttpRequestException CreateTransferHttpRequestException(string message, IOException innerException)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(message);
+        ArgumentNullException.ThrowIfNull(innerException);
+
+        return new HttpRequestException(message, innerException);
     }
 
     private static void DeletePartialDownload(string filePath, Exception transferFailure)

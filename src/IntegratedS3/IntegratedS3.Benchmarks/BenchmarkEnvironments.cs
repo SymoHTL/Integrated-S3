@@ -255,11 +255,30 @@ internal sealed class LoopbackHttpBenchmarkEnvironment : IAsyncDisposable
 
     private static void DecorateStorageBackends(IServiceCollection services)
     {
-        BenchmarkEnvironmentStorageBackendHelper.DecorateStorageBackends(services);
+        var backendRegistrations = services
+            .Where(static descriptor => descriptor.ServiceType == typeof(IStorageBackend))
+            .ToArray();
+
+        foreach (var registration in backendRegistrations) {
+            services.Remove(registration);
+            services.AddSingleton<IStorageBackend>(serviceProvider => new ProfilingStorageBackend(CreateBackend(serviceProvider, registration)));
+        }
     }
 
     private static IStorageBackend CreateBackend(IServiceProvider serviceProvider, ServiceDescriptor descriptor)
     {
-        return BenchmarkEnvironmentStorageBackendHelper.CreateBackend(serviceProvider, descriptor);
+        if (descriptor.ImplementationInstance is IStorageBackend instance) {
+            return instance;
+        }
+
+        if (descriptor.ImplementationFactory is not null) {
+            return (IStorageBackend)descriptor.ImplementationFactory(serviceProvider)!;
+        }
+
+        if (descriptor.ImplementationType is not null) {
+            return (IStorageBackend)ActivatorUtilities.CreateInstance(serviceProvider, descriptor.ImplementationType);
+        }
+
+        throw new InvalidOperationException("The IStorageBackend registration could not be materialized.");
     }
 }
