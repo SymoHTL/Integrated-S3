@@ -806,8 +806,10 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
                         DestinationServerSideEncryption = copyServerSideEncryption
                     }, innerCancellationToken);
 
+                    var resolvedSourceVersionId = copyResult.Value?.SourceVersionId;
+
                     return copyResult.IsSuccess
-                        ? ToCopyObjectResult(httpContext, copyResult.Value!, copySource.VersionId)
+                        ? ToCopyObjectResult(httpContext, copyResult.Value!, resolvedSourceVersionId)
                         : ToErrorResult(httpContext, copyResult.Error, resourceOverride: BuildObjectResource(bucketName, key));
                 }
 
