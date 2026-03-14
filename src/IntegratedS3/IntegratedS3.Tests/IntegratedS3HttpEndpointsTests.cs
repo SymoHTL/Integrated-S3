@@ -274,6 +274,29 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
     }
 
     [Fact]
+    public async Task PutObject_WithMultipleChecksumHeaders_ReturnsInvalidRequest()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync("/integrated-s3/buckets/multi-checksum-bucket", content: null)).StatusCode);
+
+        const string payload = "multiple checksum headers";
+        using var request = new HttpRequestMessage(HttpMethod.Put, "/integrated-s3/multi-checksum-bucket/docs/multi.txt")
+        {
+            Content = new StringContent(payload, Encoding.UTF8, "text/plain")
+        };
+        request.Headers.TryAddWithoutValidation("x-amz-checksum-sha256", ComputeSha256Base64(payload));
+        request.Headers.TryAddWithoutValidation("x-amz-checksum-sha1", ComputeSha1Base64(payload));
+
+        var response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal("application/xml", response.Content.Headers.ContentType?.MediaType);
+        var document = XDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal("InvalidRequest", GetRequiredElementValue(document, "Code"));
+    }
+
+    [Fact]
     public async Task S3CompatibleBucketVersioning_RoundTripsXmlPayload()
     {
         using var client = await _factory.CreateClientAsync();
@@ -1491,15 +1514,26 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
         var failedCopyError = XDocument.Parse(await failedCopyResponse.Content.ReadAsStringAsync());
         Assert.Equal("PreconditionFailed", GetRequiredElementValue(failedCopyError, "Code"));
 
-        using var notModifiedCopyRequest = new HttpRequestMessage(HttpMethod.Put, "/integrated-s3/buckets/copy-precondition-target/objects/docs/copied.txt");
-        notModifiedCopyRequest.Headers.TryAddWithoutValidation("x-amz-copy-source", "/copy-precondition-source/docs/source.txt");
-        notModifiedCopyRequest.Headers.TryAddWithoutValidation("x-amz-copy-source-if-none-match", $"\"{sourceObject!.ETag}\"");
+        using var noneMatchCopyRequest = new HttpRequestMessage(HttpMethod.Put, "/integrated-s3/buckets/copy-precondition-target/objects/docs/copied.txt");
+        noneMatchCopyRequest.Headers.TryAddWithoutValidation("x-amz-copy-source", "/copy-precondition-source/docs/source.txt");
+        noneMatchCopyRequest.Headers.TryAddWithoutValidation("x-amz-copy-source-if-none-match", $"\"{sourceObject!.ETag}\"");
 
-        var notModifiedCopyResponse = await client.SendAsync(notModifiedCopyRequest);
-        Assert.Equal(HttpStatusCode.OK, notModifiedCopyResponse.StatusCode);
-        Assert.Equal("application/xml", notModifiedCopyResponse.Content.Headers.ContentType?.MediaType);
-        var notModifiedCopyXml = XDocument.Parse(await notModifiedCopyResponse.Content.ReadAsStringAsync());
-        Assert.Equal("CopyObjectResult", notModifiedCopyXml.Root?.Name.LocalName);
+        var noneMatchCopyResponse = await client.SendAsync(noneMatchCopyRequest);
+        Assert.Equal(HttpStatusCode.PreconditionFailed, noneMatchCopyResponse.StatusCode);
+        Assert.Equal("application/xml", noneMatchCopyResponse.Content.Headers.ContentType?.MediaType);
+        var noneMatchCopyError = XDocument.Parse(await noneMatchCopyResponse.Content.ReadAsStringAsync());
+        Assert.Equal("PreconditionFailed", GetRequiredElementValue(noneMatchCopyError, "Code"));
+
+        using var modifiedSinceCopyRequest = new HttpRequestMessage(HttpMethod.Put, "/integrated-s3/buckets/copy-precondition-target/objects/docs/copied.txt");
+        modifiedSinceCopyRequest.Headers.TryAddWithoutValidation("x-amz-copy-source", "/copy-precondition-source/docs/source.txt");
+        modifiedSinceCopyRequest.Headers.TryAddWithoutValidation("x-amz-copy-source-if-none-match", "\"different\"");
+        modifiedSinceCopyRequest.Headers.TryAddWithoutValidation("x-amz-copy-source-if-modified-since", sourceObject!.LastModifiedUtc.AddMinutes(5).ToString("R"));
+
+        var modifiedSinceCopyResponse = await client.SendAsync(modifiedSinceCopyRequest);
+        Assert.Equal(HttpStatusCode.PreconditionFailed, modifiedSinceCopyResponse.StatusCode);
+        Assert.Equal("application/xml", modifiedSinceCopyResponse.Content.Headers.ContentType?.MediaType);
+        var modifiedSinceCopyError = XDocument.Parse(await modifiedSinceCopyResponse.Content.ReadAsStringAsync());
+        Assert.Equal("PreconditionFailed", GetRequiredElementValue(modifiedSinceCopyError, "Code"));
 
         var targetHead = await client.SendAsync(new HttpRequestMessage(HttpMethod.Head, "/integrated-s3/buckets/copy-precondition-target/objects/docs/copied.txt"));
         Assert.Equal(HttpStatusCode.NotFound, targetHead.StatusCode);
@@ -4390,9 +4424,7 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
         };
 
         var uri = CreateUri(pathAndQuery, host);
-        var baseQuery = QueryHelpers.ParseQuery(uri.Query)
-            .SelectMany(static pair => pair.Value, static (pair, value) => new KeyValuePair<string, string?>(pair.Key, value))
-            .ToList();
+        var baseQuery = S3SigV4QueryStringParser.Parse(uri.Query).ToList();
 
         baseQuery.AddRange([
             new KeyValuePair<string, string?>("X-Amz-Algorithm", "AWS4-HMAC-SHA256"),
@@ -4438,15 +4470,6 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
 
     private static IEnumerable<KeyValuePair<string, string?>> EnumerateQueryParameters(Uri uri)
     {
-        foreach (var pair in QueryHelpers.ParseQuery(uri.Query)) {
-            if (pair.Value.Count == 0) {
-                yield return new KeyValuePair<string, string?>(pair.Key, string.Empty);
-                continue;
-            }
-
-            foreach (var value in pair.Value) {
-                yield return new KeyValuePair<string, string?>(pair.Key, value);
-            }
-        }
+        return S3SigV4QueryStringParser.Parse(uri.Query);
     }
 }

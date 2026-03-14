@@ -337,15 +337,6 @@ internal sealed class AwsSignatureV4RequestAuthenticator(
 
     private static IEnumerable<KeyValuePair<string, string?>> EnumerateQueryParameters(HttpRequest request)
     {
-        foreach (var pair in request.Query) {
-            if (pair.Value.Count == 0) {
-                yield return new KeyValuePair<string, string?>(pair.Key, string.Empty);
-                continue;
-            }
-
-            foreach (var value in pair.Value) {
-                yield return new KeyValuePair<string, string?>(pair.Key, value);
-            }
-        }
+        return S3SigV4QueryStringParser.Parse(request.QueryString.Value);
     }
 }

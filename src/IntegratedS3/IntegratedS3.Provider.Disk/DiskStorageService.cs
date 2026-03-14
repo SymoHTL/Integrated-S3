@@ -607,10 +607,6 @@ internal sealed class DiskStorageService(
             return StorageResult<ObjectInfo>.Failure(preconditionFailure);
         }
 
-        if (IsCopyNotModified(request, sourceInfo)) {
-            return StorageResult<ObjectInfo>.Success(sourceInfo);
-        }
-
         var destinationPath = GetObjectPath(request.DestinationBucketName, request.DestinationKey);
         var destinationDirectoryPath = Path.GetDirectoryName(destinationPath)!;
         Directory.CreateDirectory(destinationDirectoryPath);
@@ -2826,18 +2822,30 @@ internal sealed class DiskStorageService(
             };
         }
 
-        return null;
-    }
-
-    private static bool IsCopyNotModified(CopyObjectRequest request, ObjectInfo sourceInfo)
-    {
         if (MatchesAnyETag(request.SourceIfNoneMatchETag, sourceInfo.ETag)) {
-            return true;
+            return new StorageError
+            {
+                Code = StorageErrorCode.PreconditionFailed,
+                Message = $"The source object '{sourceInfo.Key}' matches the supplied copy If-None-Match precondition.",
+                BucketName = sourceInfo.BucketName,
+                ObjectKey = sourceInfo.Key,
+                SuggestedHttpStatusCode = 412
+            };
         }
 
-        return string.IsNullOrWhiteSpace(request.SourceIfNoneMatchETag)
-               && request.SourceIfModifiedSinceUtc is { } ifModifiedSinceUtc
-               && !WasModifiedAfter(sourceInfo.LastModifiedUtc, ifModifiedSinceUtc);
+        if (request.SourceIfModifiedSinceUtc is { } ifModifiedSinceUtc
+            && !WasModifiedAfter(sourceInfo.LastModifiedUtc, ifModifiedSinceUtc)) {
+            return new StorageError
+            {
+                Code = StorageErrorCode.PreconditionFailed,
+                Message = $"The source object '{sourceInfo.Key}' was not modified after the supplied copy If-Modified-Since precondition.",
+                BucketName = sourceInfo.BucketName,
+                ObjectKey = sourceInfo.Key,
+                SuggestedHttpStatusCode = 412
+            };
+        }
+
+        return null;
     }
 
     private static ObjectRange? NormalizeRange(ObjectRange? requestedRange, long contentLength, string bucketName, string objectKey, out StorageError? error)

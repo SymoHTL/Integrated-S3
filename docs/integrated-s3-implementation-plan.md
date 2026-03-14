@@ -847,8 +847,9 @@ The current HTTP surface is real and useful, but it still has some clearly bound
 - object tagging now covers current and archived object versions on the currently supported surface, including S3-compatible delete-tagging; broader S3 tagging edge-case behavior is still pending
 - only the currently supported bucket subresources are implemented; unsupported S3 bucket/object subresources intentionally return `NotImplemented`
 - S3-compatible bucket listing now covers both `list-type=2` and the current `?versions` subresource, while additional subresource combinations are still pending
-- conditional behavior is solid for the current `GET` / `HEAD` paths, but broader S3 precedence and edge-case parity still need hardening
-- SigV4 validation and `aws-chunked` decoding work for the implemented routing surface, but canonical-request edge cases and parity hardening should continue before claiming wider compatibility
+- conditional behavior is solid for the current `GET` / `HEAD` paths and now covers copy-source precedence failures, but remaining delete-marker/versioning edge-case parity still needs hardening
+- direct write validation now rejects ambiguous multi-checksum `x-amz-checksum-*` request headers, while deeper checksum override and trailing-checksum parity are still pending
+- SigV4 validation and `aws-chunked` decoding work for the implemented routing surface, and raw-query canonicalization now preserves literal `+` and duplicate query parameter edges; broader virtual-hosted-style and remaining parity hardening should continue before claiming wider compatibility
 - first-party presign generation now supports proxy-mode object `GET` / `PUT` plus provider-backed direct/delegated reads where the current backend or resolver seams can satisfy the request; native S3 `PUT` still falls back to proxy today
 
 ### Addressing strategy
@@ -1277,6 +1278,13 @@ This section is the execution board for the remaining implementation backlog. As
   - bucket/object-compatible subresource validation now uses an explicit supported-matrix for bucket `?versioning`, `?cors`, `?uploads`, and `?versions` plus object `?tagging`, `?versionId`, and multipart workflows, rejects remaining unsupported single subresources with consistent `NotImplemented` responses, and returns explicit unsupported-combination results for invalid mixed query sets
   - focused HTTP coverage now locks in that SigV4 presign query parameters such as `X-Amz-*` and `x-id` continue to be ignored during bucket/object subresource validation for the currently supported paths
   - protocol/conformance coverage now locks in canonical empty-value subresource signing plus presigned bucket-versioning and historical-version reads on the S3-compatible route
+  - copy-object source conditionals now return S3-style `412 PreconditionFailed` responses for `x-amz-copy-source-if-none-match` / `x-amz-copy-source-if-modified-since` failures while preserving the existing `if-match` / `if-unmodified-since` precedence behavior
+  - direct write validation now rejects ambiguous multi-checksum `x-amz-checksum-*` request header combinations instead of accepting them silently on the current S3-compatible write surface
+  - SigV4 request canonicalization now parses the raw query string so signed literal `+` values and duplicate query parameters survive canonical-request construction, with focused protocol plus HTTP conformance coverage
+- Remaining scope:
+  - next: continue versioning/tagging/delete-marker parity work for the remaining advanced edge cases now that the current conditional, checksum-header validation, and raw-query SigV4 gaps are covered
+  - keep `aws-chunked`, presigned-query, checksum-override, and virtual-hosted-style compatibility tightening against real client behavior
+  - decide whether multipart `encoding-type=url` and further multipart-listing edge semantics should be implemented next or remain explicitly unsupported for now
   - continued versioning/tagging/delete-marker hardening now makes simple deletes idempotent for missing keys, creates current delete markers for missing keys in versioned buckets, emits `x-amz-tagging-count` on successful current and historical object reads, validates documented object-tag limits as `InvalidTag`, and returns `NoSuchVersion` for explicit missing-version entries inside `POST ?delete`
   - non-empty bucket deletion now preserves S3-compatible `BucketNotEmpty` / `409 Conflict` semantics across the disk provider, native S3 translation path, and S3-compatible HTTP DeleteBucket surface, with focused regression coverage at each layer
 - Remaining scope:
@@ -1378,6 +1386,7 @@ This section is the execution board for the remaining implementation backlog. As
   - finish package polish items such as XML docs, onboarding docs, versioned protocol compatibility guidance, and any analyzers/diagnostics worth shipping
 - Next recommended steps:
   - triage the remaining observed IL2026/IL3050 native AOT warnings in `IntegratedS3.AspNetCore` / `WebUi` and decide whether they should be eliminated further, annotated more precisely, or explicitly documented for consumers
+- extend conformance and protocol hardening into the remaining delete-marker/versioning, checksum-override, and `aws-chunked` edge cases now that the current subresource/presign, conditional-precedence, and raw-query SigV4 gaps are covered
   - extend conformance and protocol hardening into conditional-precedence, checksum/header, and canonical-request edge cases now that the current subresource plus delete-marker/versioning/tagging gaps are narrowed
   - decide whether single-object explicit missing-version reads/writes should grow a dedicated `NoSuchVersion` contract or remain explicitly normalized to generic not-found behavior
   - extend conformance and protocol hardening into additional conditional-precedence, checksum/header, and remaining delete-marker/versioning edge cases now that the current subresource/presign plus version-aware copy/delete-marker gaps are covered

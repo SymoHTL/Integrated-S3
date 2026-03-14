@@ -138,12 +138,31 @@ public sealed class IntegratedS3AwsSdkCompatibilityTests : IClassFixture<WebUiAp
             SourceKey = sourceKey,
             DestinationBucket = targetBucketName,
             DestinationKey = targetKey,
-            ETagToMatch = metadataResponse.ETag
+            ETagToMatch = metadataResponse.ETag,
+            UnmodifiedSinceDate = metadataResponse.LastModified!.Value.ToUniversalTime().AddMinutes(-5)
         });
         Assert.Equal(HttpStatusCode.OK, copyResponse.HttpStatusCode);
         Assert.Equal(metadataResponse.ChecksumCRC32, copyResponse.ChecksumCRC32);
         Assert.Equal(metadataResponse.ChecksumCRC32C, copyResponse.ChecksumCRC32C);
         Assert.Equal(metadataResponse.ChecksumSHA256, copyResponse.ChecksumSHA256);
+
+        var failedCopyException = await Assert.ThrowsAsync<AmazonS3Exception>(() => s3Client.CopyObjectAsync(new CopyObjectRequest
+        {
+            SourceBucket = sourceBucketName,
+            SourceKey = sourceKey,
+            DestinationBucket = targetBucketName,
+            DestinationKey = "docs/not-copied.txt",
+            ETagToNotMatch = metadataResponse.ETag,
+            ModifiedSinceDate = metadataResponse.LastModified!.Value.ToUniversalTime().AddMinutes(-5)
+        }));
+        Assert.Equal(HttpStatusCode.PreconditionFailed, failedCopyException.StatusCode);
+
+        var missingCopiedObjectException = await Assert.ThrowsAsync<AmazonS3Exception>(() => s3Client.GetObjectMetadataAsync(new GetObjectMetadataRequest
+        {
+            BucketName = targetBucketName,
+            Key = "docs/not-copied.txt"
+        }));
+        Assert.Equal(HttpStatusCode.NotFound, missingCopiedObjectException.StatusCode);
 
         var copiedObjectResponse = await s3Client.GetObjectAsync(new GetObjectRequest
         {

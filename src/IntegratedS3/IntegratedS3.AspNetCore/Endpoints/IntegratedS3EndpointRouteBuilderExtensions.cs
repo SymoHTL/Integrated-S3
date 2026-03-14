@@ -3546,6 +3546,17 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
             parsedChecksums["crc32c"] = checksumCrc32c.Trim();
         }
 
+        if (parsedChecksums.Count > 1) {
+            checksums = null;
+            errorResult = ToErrorResult(
+                request.HttpContext,
+                StatusCodes.Status400BadRequest,
+                "InvalidRequest",
+                "Expecting a single x-amz-checksum-* header. Multiple checksum types are not allowed.",
+                resource: null);
+            return false;
+        }
+
         if (requireChecksumValueForDeclaredAlgorithm
             && string.Equals(checksumAlgorithm, "sha256", StringComparison.OrdinalIgnoreCase)
             && !parsedChecksums.ContainsKey("sha256")) {
