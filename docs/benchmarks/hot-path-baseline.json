@@ -1,0 +1,693 @@
+﻿{
+  "GeneratedAtUtc": "2026-03-14T09:46:23.7416501+00:00",
+  "Environment": {
+    "OsDescription": "Microsoft Windows 10.0.26200",
+    "FrameworkDescription": ".NET 10.0.3",
+    "ProcessArchitecture": "X64",
+    "ProcessorCount": 32,
+    "ServerGc": false
+  },
+  "Configuration": {
+    "WarmupIterations": 2,
+    "MeasuredIterations": 12
+  },
+  "Scenarios": [
+    {
+      "Scenario": {
+        "Id": "http-sigv4-head-bucket-auth",
+        "HotPath": "request auth/signature validation",
+        "Transport": "loopback HTTP",
+        "ProviderTopology": "ASP.NET endpoint plus disk backend",
+        "WorkloadDescription": "Send a SigV4-signed HEAD bucket request through the loopback HTTP host.",
+        "PayloadBytes": null,
+        "LogicalItemCount": null
+      },
+      "Latency": {
+        "MeanMilliseconds": 0.7503583333333333,
+        "P50Milliseconds": 0.7133,
+        "P95Milliseconds": 0.9599,
+        "P99Milliseconds": 0.9599
+      },
+      "Throughput": {
+        "OperationsPerSecond": 1332.6966005130882,
+        "PayloadMiBPerSecond": null,
+        "LogicalItemsPerSecond": null
+      },
+      "Allocation": {
+        "MeanBytesPerOperation": 21616.666666666668,
+        "P95BytesPerOperation": 21928
+      },
+      "LohPressure": {
+        "MeanDeltaBytes": 0,
+        "MaxDeltaBytes": 0
+      },
+      "TempFileChurn": {
+        "MeanFilesCreated": 0,
+        "MeanFilesDeleted": 0,
+        "MeanFilesRenamed": 0,
+        "MeanNetBytesDelta": 0
+      },
+      "ThreadPool": {
+        "MaxPendingWorkItemsDelta": 0,
+        "MaxThreadCountDelta": 0,
+        "MinAvailableWorkerThreads": 32764,
+        "MinAvailableIoThreads": 1000
+      },
+      "ProviderBreakdown": [
+        {
+          "ProviderName": "http-disk-primary",
+          "MeanMilliseconds": 0.082575,
+          "P95Milliseconds": 0.1312,
+          "P99Milliseconds": 0.1312
+        },
+        {
+          "ProviderName": "application-overhead",
+          "MeanMilliseconds": 0.6677833333333333,
+          "P95Milliseconds": 0.8542,
+          "P99Milliseconds": 0.8542
+        }
+      ]
+    },
+    {
+      "Scenario": {
+        "Id": "disk-head-object-metadata",
+        "HotPath": "metadata lookup",
+        "Transport": "in-process service",
+        "ProviderTopology": "single disk backend",
+        "WorkloadDescription": "Head an existing disk-backed object through IStorageService.",
+        "PayloadBytes": 65536,
+        "LogicalItemCount": null
+      },
+      "Latency": {
+        "MeanMilliseconds": 0.36998333333333333,
+        "P50Milliseconds": 0.3482,
+        "P95Milliseconds": 0.5619,
+        "P99Milliseconds": 0.5619
+      },
+      "Throughput": {
+        "OperationsPerSecond": 2702.824451551872,
+        "PayloadMiBPerSecond": 168.926528221992,
+        "LogicalItemsPerSecond": null
+      },
+      "Allocation": {
+        "MeanBytesPerOperation": 8320,
+        "P95BytesPerOperation": 8320
+      },
+      "LohPressure": {
+        "MeanDeltaBytes": 0,
+        "MaxDeltaBytes": 0
+      },
+      "TempFileChurn": {
+        "MeanFilesCreated": 0,
+        "MeanFilesDeleted": 0,
+        "MeanFilesRenamed": 0,
+        "MeanNetBytesDelta": 0
+      },
+      "ThreadPool": {
+        "MaxPendingWorkItemsDelta": 1,
+        "MaxThreadCountDelta": 0,
+        "MinAvailableWorkerThreads": 32765,
+        "MinAvailableIoThreads": 1000
+      },
+      "ProviderBreakdown": [
+        {
+          "ProviderName": "disk-primary",
+          "MeanMilliseconds": 0.33571666666666666,
+          "P95Milliseconds": 0.515,
+          "P99Milliseconds": 0.515
+        },
+        {
+          "ProviderName": "application-overhead",
+          "MeanMilliseconds": 0.03426666666666666,
+          "P95Milliseconds": 0.05569999999999997,
+          "P99Milliseconds": 0.05569999999999997
+        }
+      ]
+    },
+    {
+      "Scenario": {
+        "Id": "disk-put-object",
+        "HotPath": "object upload",
+        "Transport": "in-process service",
+        "ProviderTopology": "single disk backend",
+        "WorkloadDescription": "Overwrite a 1 MiB object through the disk-backed IStorageService.",
+        "PayloadBytes": 1048576,
+        "LogicalItemCount": null
+      },
+      "Latency": {
+        "MeanMilliseconds": 15.9066,
+        "P50Milliseconds": 16.021,
+        "P95Milliseconds": 16.9927,
+        "P99Milliseconds": 16.9927
+      },
+      "Throughput": {
+        "OperationsPerSecond": 62.8669860309557,
+        "PayloadMiBPerSecond": 62.8669860309557,
+        "LogicalItemsPerSecond": null
+      },
+      "Allocation": {
+        "MeanBytesPerOperation": 110759.33333333333,
+        "P95BytesPerOperation": 111064
+      },
+      "LohPressure": {
+        "MeanDeltaBytes": 0,
+        "MaxDeltaBytes": 0
+      },
+      "TempFileChurn": {
+        "MeanFilesCreated": 2,
+        "MeanFilesDeleted": 2,
+        "MeanFilesRenamed": 2,
+        "MeanNetBytesDelta": 0
+      },
+      "ThreadPool": {
+        "MaxPendingWorkItemsDelta": 0,
+        "MaxThreadCountDelta": 0,
+        "MinAvailableWorkerThreads": 32765,
+        "MinAvailableIoThreads": 1000
+      },
+      "ProviderBreakdown": [
+        {
+          "ProviderName": "disk-primary",
+          "MeanMilliseconds": 15.862783333333333,
+          "P95Milliseconds": 16.9592,
+          "P99Milliseconds": 16.9592
+        },
+        {
+          "ProviderName": "application-overhead",
+          "MeanMilliseconds": 0.04381666666666698,
+          "P95Milliseconds": 0.056699999999999307,
+          "P99Milliseconds": 0.056699999999999307
+        }
+      ]
+    },
+    {
+      "Scenario": {
+        "Id": "disk-get-object",
+        "HotPath": "object download",
+        "Transport": "in-process service",
+        "ProviderTopology": "single disk backend",
+        "WorkloadDescription": "Stream a 4 MiB disk-backed object through IStorageService.",
+        "PayloadBytes": 4194304,
+        "LogicalItemCount": null
+      },
+      "Latency": {
+        "MeanMilliseconds": 1.1404833333333333,
+        "P50Milliseconds": 1.1563,
+        "P95Milliseconds": 1.4165,
+        "P99Milliseconds": 1.4165
+      },
+      "Throughput": {
+        "OperationsPerSecond": 876.8212307647344,
+        "PayloadMiBPerSecond": 3507.2849230589377,
+        "LogicalItemsPerSecond": null
+      },
+      "Allocation": {
+        "MeanBytesPerOperation": 32216,
+        "P95BytesPerOperation": 150952
+      },
+      "LohPressure": {
+        "MeanDeltaBytes": 0,
+        "MaxDeltaBytes": 0
+      },
+      "TempFileChurn": {
+        "MeanFilesCreated": 0,
+        "MeanFilesDeleted": 0,
+        "MeanFilesRenamed": 0,
+        "MeanNetBytesDelta": 0
+      },
+      "ThreadPool": {
+        "MaxPendingWorkItemsDelta": 0,
+        "MaxThreadCountDelta": 0,
+        "MinAvailableWorkerThreads": 32765,
+        "MinAvailableIoThreads": 1000
+      },
+      "ProviderBreakdown": [
+        {
+          "ProviderName": "disk-primary",
+          "MeanMilliseconds": 0.345825,
+          "P95Milliseconds": 0.5119,
+          "P99Milliseconds": 0.5119
+        },
+        {
+          "ProviderName": "application-overhead",
+          "MeanMilliseconds": 0.7946583333333334,
+          "P95Milliseconds": 1.0598999999999998,
+          "P99Milliseconds": 1.0598999999999998
+        }
+      ]
+    },
+    {
+      "Scenario": {
+        "Id": "disk-upload-multipart-part",
+        "HotPath": "multipart part upload",
+        "Transport": "in-process service",
+        "ProviderTopology": "single disk backend",
+        "WorkloadDescription": "Upload a 2 MiB multipart part against an existing disk-backed upload.",
+        "PayloadBytes": 2097152,
+        "LogicalItemCount": null
+      },
+      "Latency": {
+        "MeanMilliseconds": 15.427425,
+        "P50Milliseconds": 15.4945,
+        "P95Milliseconds": 16.0554,
+        "P99Milliseconds": 16.0554
+      },
+      "Throughput": {
+        "OperationsPerSecond": 64.8196312735275,
+        "PayloadMiBPerSecond": 129.639262547055,
+        "LogicalItemsPerSecond": null
+      },
+      "Allocation": {
+        "MeanBytesPerOperation": 96690.66666666667,
+        "P95BytesPerOperation": 96896
+      },
+      "LohPressure": {
+        "MeanDeltaBytes": 0,
+        "MaxDeltaBytes": 0
+      },
+      "TempFileChurn": {
+        "MeanFilesCreated": 1,
+        "MeanFilesDeleted": 1,
+        "MeanFilesRenamed": 1,
+        "MeanNetBytesDelta": 0
+      },
+      "ThreadPool": {
+        "MaxPendingWorkItemsDelta": 0,
+        "MaxThreadCountDelta": 0,
+        "MinAvailableWorkerThreads": 32765,
+        "MinAvailableIoThreads": 1000
+      },
+      "ProviderBreakdown": [
+        {
+          "ProviderName": "disk-primary",
+          "MeanMilliseconds": 15.392208333333336,
+          "P95Milliseconds": 16.0239,
+          "P99Milliseconds": 16.0239
+        },
+        {
+          "ProviderName": "application-overhead",
+          "MeanMilliseconds": 0.0352166666666666,
+          "P95Milliseconds": 0.04290000000000127,
+          "P99Milliseconds": 0.04290000000000127
+        }
+      ]
+    },
+    {
+      "Scenario": {
+        "Id": "disk-complete-multipart-upload",
+        "HotPath": "multipart complete",
+        "Transport": "in-process service",
+        "ProviderTopology": "single disk backend",
+        "WorkloadDescription": "Complete a three-part disk-backed multipart upload after the parts are staged.",
+        "PayloadBytes": 3145728,
+        "LogicalItemCount": null
+      },
+      "Latency": {
+        "MeanMilliseconds": 27.360991666666667,
+        "P50Milliseconds": 27.4489,
+        "P95Milliseconds": 29.2261,
+        "P99Milliseconds": 29.2261
+      },
+      "Throughput": {
+        "OperationsPerSecond": 36.54838290157003,
+        "PayloadMiBPerSecond": 109.64514870471008,
+        "LogicalItemsPerSecond": null
+      },
+      "Allocation": {
+        "MeanBytesPerOperation": 132026.66666666666,
+        "P95BytesPerOperation": 161968
+      },
+      "LohPressure": {
+        "MeanDeltaBytes": 0,
+        "MaxDeltaBytes": 0
+      },
+      "TempFileChurn": {
+        "MeanFilesCreated": 2,
+        "MeanFilesDeleted": 8,
+        "MeanFilesRenamed": 2,
+        "MeanNetBytesDelta": -3145981.9166666665
+      },
+      "ThreadPool": {
+        "MaxPendingWorkItemsDelta": 0,
+        "MaxThreadCountDelta": 0,
+        "MinAvailableWorkerThreads": 32765,
+        "MinAvailableIoThreads": 1000
+      },
+      "ProviderBreakdown": [
+        {
+          "ProviderName": "disk-primary",
+          "MeanMilliseconds": 27.329333333333327,
+          "P95Milliseconds": 29.2035,
+          "P99Milliseconds": 29.2035
+        },
+        {
+          "ProviderName": "application-overhead",
+          "MeanMilliseconds": 0.031658333333332976,
+          "P95Milliseconds": 0.05010000000000048,
+          "P99Milliseconds": 0.05010000000000048
+        }
+      ]
+    },
+    {
+      "Scenario": {
+        "Id": "disk-mirror-put-object",
+        "HotPath": "mirrored writes",
+        "Transport": "in-process service",
+        "ProviderTopology": "write-through primary plus replica disk backends",
+        "WorkloadDescription": "Write-through overwrite of a 1 MiB object across primary and replica disk backends.",
+        "PayloadBytes": 1048576,
+        "LogicalItemCount": null
+      },
+      "Latency": {
+        "MeanMilliseconds": 35.853808333333326,
+        "P50Milliseconds": 35.7682,
+        "P95Milliseconds": 39.3295,
+        "P99Milliseconds": 39.3295
+      },
+      "Throughput": {
+        "OperationsPerSecond": 27.891039933693705,
+        "PayloadMiBPerSecond": 27.891039933693705,
+        "LogicalItemsPerSecond": null
+      },
+      "Allocation": {
+        "MeanBytesPerOperation": 236326.66666666666,
+        "P95BytesPerOperation": 355096
+      },
+      "LohPressure": {
+        "MeanDeltaBytes": 0,
+        "MaxDeltaBytes": 0
+      },
+      "TempFileChurn": {
+        "MeanFilesCreated": 4,
+        "MeanFilesDeleted": 4,
+        "MeanFilesRenamed": 4,
+        "MeanNetBytesDelta": 0
+      },
+      "ThreadPool": {
+        "MaxPendingWorkItemsDelta": 0,
+        "MaxThreadCountDelta": 0,
+        "MinAvailableWorkerThreads": 32765,
+        "MinAvailableIoThreads": 1000
+      },
+      "ProviderBreakdown": [
+        {
+          "ProviderName": "disk-primary",
+          "MeanMilliseconds": 15.332133333333331,
+          "P95Milliseconds": 16.339,
+          "P99Milliseconds": 16.339
+        },
+        {
+          "ProviderName": "disk-replica",
+          "MeanMilliseconds": 15.282691666666667,
+          "P95Milliseconds": 17.0722,
+          "P99Milliseconds": 17.0722
+        },
+        {
+          "ProviderName": "application-overhead",
+          "MeanMilliseconds": 5.238983333333333,
+          "P95Milliseconds": 5.918300000000009,
+          "P99Milliseconds": 5.918300000000009
+        }
+      ]
+    },
+    {
+      "Scenario": {
+        "Id": "disk-list-objects",
+        "HotPath": "list operations",
+        "Transport": "in-process service",
+        "ProviderTopology": "single disk backend",
+        "WorkloadDescription": "Enumerate 256 disk-backed objects through IStorageService.",
+        "PayloadBytes": null,
+        "LogicalItemCount": 256
+      },
+      "Latency": {
+        "MeanMilliseconds": 25.689333333333334,
+        "P50Milliseconds": 24.2342,
+        "P95Milliseconds": 32.1662,
+        "P99Milliseconds": 32.1662
+      },
+      "Throughput": {
+        "OperationsPerSecond": 38.92666216847459,
+        "PayloadMiBPerSecond": null,
+        "LogicalItemsPerSecond": 9965.225515129496
+      },
+      "Allocation": {
+        "MeanBytesPerOperation": 1384946.6666666667,
+        "P95BytesPerOperation": 1388760
+      },
+      "LohPressure": {
+        "MeanDeltaBytes": 0,
+        "MaxDeltaBytes": 0
+      },
+      "TempFileChurn": {
+        "MeanFilesCreated": 0,
+        "MeanFilesDeleted": 0,
+        "MeanFilesRenamed": 0,
+        "MeanNetBytesDelta": 0
+      },
+      "ThreadPool": {
+        "MaxPendingWorkItemsDelta": 0,
+        "MaxThreadCountDelta": 0,
+        "MinAvailableWorkerThreads": 32765,
+        "MinAvailableIoThreads": 1000
+      },
+      "ProviderBreakdown": [
+        {
+          "ProviderName": "disk-primary",
+          "MeanMilliseconds": 25.656266666666667,
+          "P95Milliseconds": 32.1368,
+          "P99Milliseconds": 32.1368
+        },
+        {
+          "ProviderName": "application-overhead",
+          "MeanMilliseconds": 0.033066666666667466,
+          "P95Milliseconds": 0.05270000000000152,
+          "P99Milliseconds": 0.05270000000000152
+        }
+      ]
+    },
+    {
+      "Scenario": {
+        "Id": "service-presign-get-object",
+        "HotPath": "presign generation",
+        "Transport": "in-process service",
+        "ProviderTopology": "first-party HTTP presign strategy",
+        "WorkloadDescription": "Generate a first-party GET-object presigned URL via IStoragePresignService.",
+        "PayloadBytes": null,
+        "LogicalItemCount": null
+      },
+      "Latency": {
+        "MeanMilliseconds": 0.232475,
+        "P50Milliseconds": 0.2381,
+        "P95Milliseconds": 0.3745,
+        "P99Milliseconds": 0.3745
+      },
+      "Throughput": {
+        "OperationsPerSecond": 4301.537799763415,
+        "PayloadMiBPerSecond": null,
+        "LogicalItemsPerSecond": null
+      },
+      "Allocation": {
+        "MeanBytesPerOperation": 26794.666666666668,
+        "P95BytesPerOperation": 27000
+      },
+      "LohPressure": {
+        "MeanDeltaBytes": 0,
+        "MaxDeltaBytes": 0
+      },
+      "TempFileChurn": {
+        "MeanFilesCreated": 0,
+        "MeanFilesDeleted": 0,
+        "MeanFilesRenamed": 0,
+        "MeanNetBytesDelta": 0
+      },
+      "ThreadPool": {
+        "MaxPendingWorkItemsDelta": 0,
+        "MaxThreadCountDelta": 0,
+        "MinAvailableWorkerThreads": 32765,
+        "MinAvailableIoThreads": 1000
+      },
+      "ProviderBreakdown": [
+        {
+          "ProviderName": "application-overhead",
+          "MeanMilliseconds": 0.232475,
+          "P95Milliseconds": 0.3745,
+          "P99Milliseconds": 0.3745
+        }
+      ]
+    },
+    {
+      "Scenario": {
+        "Id": "http-put-object",
+        "HotPath": "object upload",
+        "Transport": "loopback HTTP",
+        "ProviderTopology": "ASP.NET endpoint plus disk backend",
+        "WorkloadDescription": "Send a SigV4-signed 1 MiB PUT object request through the loopback HTTP host.",
+        "PayloadBytes": 1048576,
+        "LogicalItemCount": null
+      },
+      "Latency": {
+        "MeanMilliseconds": 19.803125000000005,
+        "P50Milliseconds": 17.3515,
+        "P95Milliseconds": 33.0758,
+        "P99Milliseconds": 33.0758
+      },
+      "Throughput": {
+        "OperationsPerSecond": 50.497080637525634,
+        "PayloadMiBPerSecond": 50.497080637525634,
+        "LogicalItemsPerSecond": null
+      },
+      "Allocation": {
+        "MeanBytesPerOperation": 235768.66666666666,
+        "P95BytesPerOperation": 238408
+      },
+      "LohPressure": {
+        "MeanDeltaBytes": 0,
+        "MaxDeltaBytes": 0
+      },
+      "TempFileChurn": {
+        "MeanFilesCreated": 2,
+        "MeanFilesDeleted": 2,
+        "MeanFilesRenamed": 2,
+        "MeanNetBytesDelta": 0
+      },
+      "ThreadPool": {
+        "MaxPendingWorkItemsDelta": 0,
+        "MaxThreadCountDelta": 0,
+        "MinAvailableWorkerThreads": 32765,
+        "MinAvailableIoThreads": 1000
+      },
+      "ProviderBreakdown": [
+        {
+          "ProviderName": "http-disk-primary",
+          "MeanMilliseconds": 18.881858333333334,
+          "P95Milliseconds": 32.1236,
+          "P99Milliseconds": 32.1236
+        },
+        {
+          "ProviderName": "application-overhead",
+          "MeanMilliseconds": 0.9212666666666669,
+          "P95Milliseconds": 1.0198,
+          "P99Milliseconds": 1.0198
+        }
+      ]
+    },
+    {
+      "Scenario": {
+        "Id": "http-get-object",
+        "HotPath": "object download",
+        "Transport": "loopback HTTP",
+        "ProviderTopology": "ASP.NET endpoint plus disk backend",
+        "WorkloadDescription": "Send a SigV4-signed GET object request through the loopback HTTP host and drain the response body.",
+        "PayloadBytes": 4194304,
+        "LogicalItemCount": null
+      },
+      "Latency": {
+        "MeanMilliseconds": 3.706183333333333,
+        "P50Milliseconds": 3.5075,
+        "P95Milliseconds": 4.3153,
+        "P99Milliseconds": 4.3153
+      },
+      "Throughput": {
+        "OperationsPerSecond": 269.8193559411974,
+        "PayloadMiBPerSecond": 1079.2774237647895,
+        "LogicalItemsPerSecond": null
+      },
+      "Allocation": {
+        "MeanBytesPerOperation": 53981.333333333336,
+        "P95BytesPerOperation": 66160
+      },
+      "LohPressure": {
+        "MeanDeltaBytes": 0,
+        "MaxDeltaBytes": 0
+      },
+      "TempFileChurn": {
+        "MeanFilesCreated": 0,
+        "MeanFilesDeleted": 0,
+        "MeanFilesRenamed": 0,
+        "MeanNetBytesDelta": 0
+      },
+      "ThreadPool": {
+        "MaxPendingWorkItemsDelta": 0,
+        "MaxThreadCountDelta": 0,
+        "MinAvailableWorkerThreads": 32765,
+        "MinAvailableIoThreads": 1000
+      },
+      "ProviderBreakdown": [
+        {
+          "ProviderName": "http-disk-primary",
+          "MeanMilliseconds": 0.2758083333333334,
+          "P95Milliseconds": 0.4193,
+          "P99Milliseconds": 0.4193
+        },
+        {
+          "ProviderName": "application-overhead",
+          "MeanMilliseconds": 3.4303749999999997,
+          "P95Milliseconds": 4.0859,
+          "P99Milliseconds": 4.0859
+        }
+      ]
+    },
+    {
+      "Scenario": {
+        "Id": "http-list-objects",
+        "HotPath": "list operations",
+        "Transport": "loopback HTTP",
+        "ProviderTopology": "ASP.NET endpoint plus disk backend",
+        "WorkloadDescription": "Send a SigV4-signed HTTP list-objects request and drain the serialized response body.",
+        "PayloadBytes": null,
+        "LogicalItemCount": 256
+      },
+      "Latency": {
+        "MeanMilliseconds": 25.602974999999997,
+        "P50Milliseconds": 24.8721,
+        "P95Milliseconds": 30.1357,
+        "P99Milliseconds": 30.1357
+      },
+      "Throughput": {
+        "OperationsPerSecond": 39.057961037730976,
+        "PayloadMiBPerSecond": null,
+        "LogicalItemsPerSecond": 9998.83802565913
+      },
+      "Allocation": {
+        "MeanBytesPerOperation": 1463683.3333333333,
+        "P95BytesPerOperation": 1467832
+      },
+      "LohPressure": {
+        "MeanDeltaBytes": 0,
+        "MaxDeltaBytes": 0
+      },
+      "TempFileChurn": {
+        "MeanFilesCreated": 0,
+        "MeanFilesDeleted": 0,
+        "MeanFilesRenamed": 0,
+        "MeanNetBytesDelta": 0
+      },
+      "ThreadPool": {
+        "MaxPendingWorkItemsDelta": 0,
+        "MaxThreadCountDelta": 0,
+        "MinAvailableWorkerThreads": 32765,
+        "MinAvailableIoThreads": 1000
+      },
+      "ProviderBreakdown": [
+        {
+          "ProviderName": "http-disk-primary",
+          "MeanMilliseconds": 24.37928333333333,
+          "P95Milliseconds": 28.8083,
+          "P99Milliseconds": 28.8083
+        },
+        {
+          "ProviderName": "application-overhead",
+          "MeanMilliseconds": 1.2236916666666662,
+          "P95Milliseconds": 1.6601,
+          "P99Milliseconds": 1.6601
+        }
+      ]
+    }
+  ],
+  "Notes": [
+    "Latency, throughput, and allocation values are regression-oriented baselines from the configured iteration counts, not pass/fail thresholds.",
+    "Temp-file churn is collected from FileSystemWatcher events scoped to benchmark-owned roots, so provider work outside those roots is intentionally excluded.",
+    "Provider breakdown adds an \u0027application-overhead\u0027 bucket for non-provider time inside the measured path."
+  ]
+}

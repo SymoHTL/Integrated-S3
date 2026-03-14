@@ -13,6 +13,10 @@ namespace IntegratedS3.Client;
 /// <paramref name="transferClient"/> for the actual data transfer, keeping the two concerns
 /// (authorization/presign issuance vs. data movement) on separate <see cref="HttpClient"/> instances.
 /// This allows callers to apply different auth, timeout, or handler policies to each leg of the request.
+/// Overloads without a <c>preferredAccessMode</c> parameter intentionally keep access-mode selection
+/// explicit at the caller boundary. They do not infer <see cref="StorageAccessMode.Direct" /> or
+/// <see cref="StorageAccessMode.Delegated" /> from service/provider discovery and therefore preserve
+/// proxy-mode as the stable default until the caller opts into another mode explicitly.
 /// </remarks>
 public static class IntegratedS3ClientTransferExtensions
 {
@@ -45,10 +49,7 @@ public static class IntegratedS3ClientTransferExtensions
         var presigned = await client.PresignPutObjectAsync(
             bucketName, key, expiresInSeconds, contentType, cancellationToken);
 
-        using var httpContent = new StreamContent(content);
-        using var request = presigned.CreateHttpRequestMessage(httpContent);
-        using var response = await transferClient.SendAsync(request, cancellationToken);
-        response.EnsureSuccessStatusCode();
+        await UploadPresignedAsync(transferClient, presigned, content, checksum: null, cancellationToken);
     }
 
     /// <summary>
@@ -87,10 +88,84 @@ public static class IntegratedS3ClientTransferExtensions
         var presigned = await client.PresignPutObjectAsync(
             bucketName, key, expiresInSeconds, preferredAccessMode, contentType, cancellationToken);
 
-        using var httpContent = new StreamContent(content);
-        using var request = presigned.CreateHttpRequestMessage(httpContent);
-        using var response = await transferClient.SendAsync(request, cancellationToken);
-        response.EnsureSuccessStatusCode();
+        await UploadPresignedAsync(transferClient, presigned, content, checksum: null, cancellationToken);
+    }
+
+    /// <summary>
+    /// Obtains a checksum-aware presigned PUT URL and uploads <paramref name="content"/> to storage.
+    /// The stream is forwarded without buffering the full payload into memory, but checksum-aware uploads
+    /// require a seekable source so the checksum can be computed before the upload begins.
+    /// </summary>
+    public static async Task UploadStreamAsync(
+        this IIntegratedS3Client client,
+        HttpClient transferClient,
+        string bucketName,
+        string key,
+        Stream content,
+        int expiresInSeconds,
+        IntegratedS3TransferChecksumAlgorithm checksumAlgorithm,
+        string? contentType = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(client);
+        ArgumentNullException.ThrowIfNull(transferClient);
+        ArgumentNullException.ThrowIfNull(content);
+
+        var checksum = await IntegratedS3ClientTransferChecksumHelper.PrepareUploadChecksumAsync(
+            content,
+            checksumAlgorithm,
+            cancellationToken);
+
+        var presigned = await client.PresignPutObjectAsync(
+            bucketName,
+            key,
+            expiresInSeconds,
+            checksumAlgorithm,
+            checksum.ChecksumValue,
+            contentType,
+            cancellationToken);
+
+        await UploadPresignedAsync(transferClient, presigned, content, checksum, cancellationToken);
+    }
+
+    /// <summary>
+    /// Obtains a checksum-aware presigned PUT URL and uploads <paramref name="content"/> to storage,
+    /// forwarding <paramref name="preferredAccessMode"/> to the presign request.
+    /// The stream is forwarded without buffering the full payload into memory, but checksum-aware uploads
+    /// require a seekable source so the checksum can be computed before the upload begins.
+    /// </summary>
+    public static async Task UploadStreamAsync(
+        this IIntegratedS3Client client,
+        HttpClient transferClient,
+        string bucketName,
+        string key,
+        Stream content,
+        int expiresInSeconds,
+        StorageAccessMode preferredAccessMode,
+        IntegratedS3TransferChecksumAlgorithm checksumAlgorithm,
+        string? contentType = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(client);
+        ArgumentNullException.ThrowIfNull(transferClient);
+        ArgumentNullException.ThrowIfNull(content);
+
+        var checksum = await IntegratedS3ClientTransferChecksumHelper.PrepareUploadChecksumAsync(
+            content,
+            checksumAlgorithm,
+            cancellationToken);
+
+        var presigned = await client.PresignPutObjectAsync(
+            bucketName,
+            key,
+            expiresInSeconds,
+            preferredAccessMode,
+            checksumAlgorithm,
+            checksum.ChecksumValue,
+            contentType,
+            cancellationToken);
+
+        await UploadPresignedAsync(transferClient, presigned, content, checksum, cancellationToken);
     }
 
     /// <summary>
@@ -121,7 +196,7 @@ public static class IntegratedS3ClientTransferExtensions
 
         await using var fileStream = new FileStream(
             filePath, FileMode.Open, FileAccess.Read, FileShare.Read,
-            bufferSize: 65536, useAsync: true);
+            bufferSize: 65536, options: FileOptions.Asynchronous | FileOptions.SequentialScan);
 
         await UploadStreamAsync(
             client, transferClient, bucketName, key,
@@ -163,11 +238,69 @@ public static class IntegratedS3ClientTransferExtensions
 
         await using var fileStream = new FileStream(
             filePath, FileMode.Open, FileAccess.Read, FileShare.Read,
-            bufferSize: 65536, useAsync: true);
+            bufferSize: 65536, options: FileOptions.Asynchronous | FileOptions.SequentialScan);
 
         await UploadStreamAsync(
             client, transferClient, bucketName, key,
             fileStream, expiresInSeconds, preferredAccessMode, contentType, cancellationToken);
+    }
+
+    /// <summary>
+    /// Opens <paramref name="filePath"/>, computes the requested checksum in a streaming pre-pass,
+    /// and uploads the file through a checksum-aware presigned PUT URL.
+    /// </summary>
+    public static async Task UploadFileAsync(
+        this IIntegratedS3Client client,
+        HttpClient transferClient,
+        string bucketName,
+        string key,
+        string filePath,
+        int expiresInSeconds,
+        IntegratedS3TransferChecksumAlgorithm checksumAlgorithm,
+        string? contentType = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(client);
+        ArgumentNullException.ThrowIfNull(transferClient);
+        ArgumentException.ThrowIfNullOrWhiteSpace(filePath);
+
+        await using var fileStream = new FileStream(
+            filePath, FileMode.Open, FileAccess.Read, FileShare.Read,
+            bufferSize: 65536, options: FileOptions.Asynchronous | FileOptions.SequentialScan);
+
+        await UploadStreamAsync(
+            client, transferClient, bucketName, key,
+            fileStream, expiresInSeconds, checksumAlgorithm, contentType, cancellationToken);
+    }
+
+    /// <summary>
+    /// Opens <paramref name="filePath"/>, computes the requested checksum in a streaming pre-pass,
+    /// and uploads the file through a checksum-aware presigned PUT URL while forwarding
+    /// <paramref name="preferredAccessMode"/> to the presign request.
+    /// </summary>
+    public static async Task UploadFileAsync(
+        this IIntegratedS3Client client,
+        HttpClient transferClient,
+        string bucketName,
+        string key,
+        string filePath,
+        int expiresInSeconds,
+        StorageAccessMode preferredAccessMode,
+        IntegratedS3TransferChecksumAlgorithm checksumAlgorithm,
+        string? contentType = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(client);
+        ArgumentNullException.ThrowIfNull(transferClient);
+        ArgumentException.ThrowIfNullOrWhiteSpace(filePath);
+
+        await using var fileStream = new FileStream(
+            filePath, FileMode.Open, FileAccess.Read, FileShare.Read,
+            bufferSize: 65536, options: FileOptions.Asynchronous | FileOptions.SequentialScan);
+
+        await UploadStreamAsync(
+            client, transferClient, bucketName, key,
+            fileStream, expiresInSeconds, preferredAccessMode, checksumAlgorithm, contentType, cancellationToken);
     }
 
     /// <summary>
@@ -204,7 +337,12 @@ public static class IntegratedS3ClientTransferExtensions
             request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
         response.EnsureSuccessStatusCode();
 
-        await response.Content.CopyToAsync(destination, cancellationToken);
+        var validation = IntegratedS3ClientTransferChecksumHelper.CreateDownloadValidation(response);
+        await IntegratedS3ClientTransferChecksumHelper.CopyToAsync(
+            response.Content,
+            destination,
+            validation,
+            cancellationToken);
     }
 
     /// <summary>
@@ -250,7 +388,29 @@ public static class IntegratedS3ClientTransferExtensions
             request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
         response.EnsureSuccessStatusCode();
 
-        await response.Content.CopyToAsync(destination, cancellationToken);
+        var validation = IntegratedS3ClientTransferChecksumHelper.CreateDownloadValidation(response);
+        await IntegratedS3ClientTransferChecksumHelper.CopyToAsync(
+            response.Content,
+            destination,
+            validation,
+            cancellationToken);
+    }
+
+    private static async Task UploadPresignedAsync(
+        HttpClient transferClient,
+        StoragePresignedRequest presigned,
+        Stream content,
+        IntegratedS3ClientTransferChecksumHelper.PreparedUploadChecksum? checksum,
+        CancellationToken cancellationToken)
+    {
+        using var httpContent = new StreamContent(content);
+        using var request = presigned.CreateHttpRequestMessage(httpContent);
+        using var response = await transferClient.SendAsync(request, cancellationToken);
+        response.EnsureSuccessStatusCode();
+
+        if (checksum is { } preparedChecksum) {
+            IntegratedS3ClientTransferChecksumHelper.ValidateUploadResponseChecksum(response, preparedChecksum);
+        }
     }
 
     /// <summary>
@@ -446,9 +606,18 @@ public static class IntegratedS3ClientTransferExtensions
             using var response = await transferClient.SendAsync(
                 request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
             response.EnsureSuccessStatusCode();
-            await response.Content.CopyToAsync(fileStream, cancellationToken);
+            var validation = IntegratedS3ClientTransferChecksumHelper.CreateDownloadValidation(response);
+            await IntegratedS3ClientTransferChecksumHelper.CopyToAsync(
+                response.Content,
+                fileStream,
+                validation,
+                cancellationToken);
         }
         catch (HttpRequestException exception) {
+            DeletePartialDownload(filePath, exception);
+            throw;
+        }
+        catch (InvalidDataException exception) {
             DeletePartialDownload(filePath, exception);
             throw;
         }
@@ -510,11 +679,40 @@ public static class IntegratedS3ClientTransferExtensions
         string filePath,
         CancellationToken cancellationToken)
     {
+        var validation = IntegratedS3ClientTransferChecksumHelper.CreateDownloadValidation(response);
+        if (validation is not null) {
+            await IntegratedS3ClientTransferChecksumHelper.SeedExistingBytesAsync(
+                validation,
+                filePath,
+                cancellationToken);
+        }
+
+        var existingLength = new FileInfo(filePath).Length;
+
         await using var fileStream = new FileStream(
             filePath, FileMode.Append, FileAccess.Write, FileShare.None,
             bufferSize: 65536, useAsync: true);
 
-        await response.Content.CopyToAsync(fileStream, cancellationToken);
+        try {
+            await IntegratedS3ClientTransferChecksumHelper.CopyToAsync(
+                response.Content,
+                fileStream,
+                validation,
+                cancellationToken);
+        }
+        catch
+        {
+            try
+            {
+                fileStream.SetLength(existingLength);
+            }
+            catch
+            {
+                // Swallow any truncation errors; the original exception is more important.
+            }
+
+            throw;
+        }
     }
 
     private static async Task RewriteDownloadFromStartAsync(
@@ -544,6 +742,10 @@ public static class IntegratedS3ClientTransferExtensions
             DeletePartialDownload(temporaryFilePath, exception);
             throw;
         }
+        catch (InvalidDataException exception) {
+            DeletePartialDownload(temporaryFilePath, exception);
+            throw;
+        }
         catch (IOException exception) {
             DeletePartialDownload(temporaryFilePath, exception);
             throw;
@@ -567,7 +769,12 @@ public static class IntegratedS3ClientTransferExtensions
             filePath, FileMode.CreateNew, FileAccess.Write, FileShare.None,
             bufferSize: 65536, useAsync: true);
 
-        await response.Content.CopyToAsync(fileStream, cancellationToken);
+        var validation = IntegratedS3ClientTransferChecksumHelper.CreateDownloadValidation(response);
+        await IntegratedS3ClientTransferChecksumHelper.CopyToAsync(
+            response.Content,
+            fileStream,
+            validation,
+            cancellationToken);
     }
 
     private static string CreateTemporaryDownloadPath(string destinationFilePath)

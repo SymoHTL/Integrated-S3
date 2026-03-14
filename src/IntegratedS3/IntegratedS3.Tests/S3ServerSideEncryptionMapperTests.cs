@@ -26,12 +26,16 @@ public sealed class S3ServerSideEncryptionMapperTests
         Assert.Null(request.ServerSideEncryptionKeyManagementServiceEncryptionContext);
     }
 
-    [Fact]
-    public void ApplyTo_CopyAndInitiateMultipartRequests_MapsKmsFieldsAndContext()
+    [Theory]
+    [InlineData(ObjectServerSideEncryptionAlgorithm.Kms, "aws:kms")]
+    [InlineData(ObjectServerSideEncryptionAlgorithm.KmsDsse, "aws:kms:dsse")]
+    public void ApplyTo_CopyAndInitiateMultipartRequests_MapsManagedKmsFieldsAndContext(
+        ObjectServerSideEncryptionAlgorithm algorithm,
+        string expectedMethod)
     {
         var settings = new ObjectServerSideEncryptionSettings
         {
-            Algorithm = ObjectServerSideEncryptionAlgorithm.Kms,
+            Algorithm = algorithm,
             KeyId = "kms-key-1",
             Context = new Dictionary<string, string>(StringComparer.Ordinal)
             {
@@ -45,9 +49,9 @@ public sealed class S3ServerSideEncryptionMapperTests
         S3ServerSideEncryptionMapper.ApplyTo(copyRequest, settings);
         S3ServerSideEncryptionMapper.ApplyTo(multipartRequest, settings);
 
-        Assert.Equal(ServerSideEncryptionMethod.AWSKMS.Value, copyRequest.ServerSideEncryptionMethod?.Value);
+        Assert.Equal(expectedMethod, copyRequest.ServerSideEncryptionMethod?.Value);
         Assert.Equal("kms-key-1", copyRequest.ServerSideEncryptionKeyManagementServiceKeyId);
-        Assert.Equal(ServerSideEncryptionMethod.AWSKMS.Value, multipartRequest.ServerSideEncryptionMethod?.Value);
+        Assert.Equal(expectedMethod, multipartRequest.ServerSideEncryptionMethod?.Value);
         Assert.Equal("kms-key-1", multipartRequest.ServerSideEncryptionKeyManagementServiceKeyId);
         AssertEncryptionContext(settings.Context!, copyRequest.ServerSideEncryptionKeyManagementServiceEncryptionContext);
         AssertEncryptionContext(settings.Context!, multipartRequest.ServerSideEncryptionKeyManagementServiceEncryptionContext);
@@ -58,6 +62,7 @@ public sealed class S3ServerSideEncryptionMapperTests
     {
         var aes256 = S3ServerSideEncryptionMapper.ToInfo(ServerSideEncryptionMethod.AES256, null);
         var kms = S3ServerSideEncryptionMapper.ToInfo(ServerSideEncryptionMethod.AWSKMS, "kms-key-1");
+        var kmsDsse = S3ServerSideEncryptionMapper.ToInfo(ServerSideEncryptionMethod.AWSKMSDSSE, "kms-key-2");
 
         Assert.NotNull(aes256);
         Assert.Equal(ObjectServerSideEncryptionAlgorithm.Aes256, aes256!.Algorithm);
@@ -66,15 +71,19 @@ public sealed class S3ServerSideEncryptionMapperTests
         Assert.NotNull(kms);
         Assert.Equal(ObjectServerSideEncryptionAlgorithm.Kms, kms!.Algorithm);
         Assert.Equal("kms-key-1", kms.KeyId);
+
+        Assert.NotNull(kmsDsse);
+        Assert.Equal(ObjectServerSideEncryptionAlgorithm.KmsDsse, kmsDsse!.Algorithm);
+        Assert.Equal("kms-key-2", kmsDsse.KeyId);
     }
 
     [Fact]
     public void ToInfo_ThrowsForUnsupportedAwsAlgorithms()
     {
         var ex = Assert.Throws<S3ServerSideEncryptionNotSupportedException>(
-            () => S3ServerSideEncryptionMapper.ToInfo(ServerSideEncryptionMethod.AWSKMSDSSE, "kms-key-1"));
+            () => S3ServerSideEncryptionMapper.ToInfo(new ServerSideEncryptionMethod("aws:unsupported"), "kms-key-1"));
 
-        Assert.Contains("aws:kms:dsse", ex.Message, StringComparison.Ordinal);
+        Assert.Contains("aws:unsupported", ex.Message, StringComparison.Ordinal);
     }
 
     private static void AssertEncryptionContext(

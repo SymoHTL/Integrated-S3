@@ -1,12 +1,15 @@
 using IntegratedS3.Abstractions.Capabilities;
 using IntegratedS3.Abstractions.Models;
 using IntegratedS3.Abstractions.Requests;
+using IntegratedS3.Abstractions.Responses;
+using IntegratedS3.Abstractions.Results;
 using IntegratedS3.Abstractions.Services;
 using IntegratedS3.AspNetCore;
 using IntegratedS3.AspNetCore.DependencyInjection;
 using IntegratedS3.Core.DependencyInjection;
 using IntegratedS3.Provider.Disk;
 using IntegratedS3.Provider.Disk.DependencyInjection;
+using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
@@ -82,6 +85,25 @@ public sealed class IntegratedS3BootstrapTests
         Assert.False(endpointOptions.EnableAdminEndpoints);
         Assert.False(endpointOptions.EnableObjectEndpoints);
         Assert.False(endpointOptions.EnableMultipartEndpoints);
+    }
+
+    [Fact]
+    public void EndpointOptions_FeatureRouteGroupConfiguration_CanRoundTripThroughFeatureRegistry()
+    {
+        var options = new IntegratedS3EndpointOptions();
+        Action<RouteGroupBuilder> bucketConfiguration = static _ => { };
+        Action<RouteGroupBuilder> multipartConfiguration = static _ => { };
+
+        options.SetFeatureRouteGroupConfiguration(IntegratedS3EndpointFeature.Bucket, bucketConfiguration);
+        options.ConfigureMultipartRouteGroup = multipartConfiguration;
+
+        Assert.Same(bucketConfiguration, options.ConfigureBucketRouteGroup);
+        Assert.Same(bucketConfiguration, options.GetFeatureRouteGroupConfiguration(IntegratedS3EndpointFeature.Bucket));
+        Assert.Same(multipartConfiguration, options.GetFeatureRouteGroupConfiguration(IntegratedS3EndpointFeature.Multipart));
+
+        options.SetFeatureRouteGroupConfiguration(IntegratedS3EndpointFeature.Multipart, null);
+
+        Assert.Null(options.ConfigureMultipartRouteGroup);
     }
 
     [Fact]
@@ -181,11 +203,118 @@ public sealed class IntegratedS3BootstrapTests
     }
 
     [Fact]
+    public async Task AddIntegratedS3Backend_ActivatesCustomBackendsViaDependencyInjection()
+    {
+        var services = new ServiceCollection();
+        services.AddSingleton(new TestBackendRegistrationOptions
+        {
+            Name = "custom-primary",
+            Kind = "custom",
+            IsPrimary = true,
+            Description = "Dependency-injected custom backend",
+            Mode = StorageProviderMode.Passthrough,
+            DefaultAccessMode = StorageObjectAccessMode.Delegated,
+            SupportedAccessModes = [StorageObjectAccessMode.Delegated, StorageObjectAccessMode.Redirect],
+            ObjectCrud = StorageCapabilitySupport.Native,
+            Checksums = StorageCapabilitySupport.Emulated,
+            ObjectMetadata = StorageSupportStateOwnership.PlatformManaged
+        });
+        services.AddIntegratedS3Backend<DescriptorOnlyStorageBackend>();
+
+        await using var serviceProvider = services.BuildServiceProvider();
+        var descriptorProvider = serviceProvider.GetRequiredService<IStorageServiceDescriptorProvider>();
+        var capabilityProvider = serviceProvider.GetRequiredService<IStorageCapabilityProvider>();
+        var storageService = serviceProvider.GetRequiredService<IStorageService>();
+
+        var descriptor = await descriptorProvider.GetServiceDescriptorAsync();
+        var capabilities = await capabilityProvider.GetCapabilitiesAsync();
+
+        Assert.NotNull(storageService);
+        Assert.Equal("Integrated S3", descriptor.ServiceName);
+
+        var provider = Assert.Single(descriptor.Providers);
+        Assert.Equal("custom-primary", provider.Name);
+        Assert.Equal("custom", provider.Kind);
+        Assert.True(provider.IsPrimary);
+        Assert.Equal("Dependency-injected custom backend", provider.Description);
+        Assert.Equal(StorageProviderMode.Passthrough, provider.Mode);
+        Assert.Equal(StorageCapabilitySupport.Native, provider.Capabilities.ObjectCrud);
+        Assert.Equal(StorageCapabilitySupport.Emulated, provider.Capabilities.Checksums);
+        Assert.Equal(StorageObjectAccessMode.Delegated, provider.ObjectLocation.DefaultAccessMode);
+        Assert.Equal([StorageObjectAccessMode.Delegated, StorageObjectAccessMode.Redirect], provider.ObjectLocation.SupportedAccessModes);
+        Assert.Equal(StorageSupportStateOwnership.PlatformManaged, provider.SupportState.ObjectMetadata);
+        Assert.Equal(StorageCapabilitySupport.Native, capabilities.ObjectCrud);
+        Assert.Equal(StorageCapabilitySupport.Emulated, capabilities.Checksums);
+    }
+
+    [Fact]
+    public async Task AddIntegratedS3Backend_FactoryOverload_SupportsMultipleCustomBackends()
+    {
+        var services = new ServiceCollection();
+        services.AddIntegratedS3(options => {
+            options.ServiceName = "Factory Registered Backends";
+        });
+        services.AddIntegratedS3Backend(static _ => new DescriptorOnlyStorageBackend(new TestBackendRegistrationOptions
+        {
+            Name = "factory-primary",
+            Kind = "factory",
+            IsPrimary = true,
+            Description = "Primary factory backend",
+            ObjectCrud = StorageCapabilitySupport.Native
+        }));
+        services.AddIntegratedS3Backend(static _ => new DescriptorOnlyStorageBackend(new TestBackendRegistrationOptions
+        {
+            Name = "factory-replica",
+            Kind = "factory",
+            IsPrimary = false,
+            Description = "Replica factory backend",
+            Mode = StorageProviderMode.Passthrough,
+            DefaultAccessMode = StorageObjectAccessMode.Redirect,
+            SupportedAccessModes = [StorageObjectAccessMode.Redirect, StorageObjectAccessMode.Delegated]
+        }));
+
+        await using var serviceProvider = services.BuildServiceProvider();
+        var descriptorProvider = serviceProvider.GetRequiredService<IStorageServiceDescriptorProvider>();
+
+        var descriptor = await descriptorProvider.GetServiceDescriptorAsync();
+
+        Assert.Equal(2, descriptor.Providers.Count);
+        Assert.Contains(descriptor.Providers, static provider =>
+            provider.Name == "factory-primary"
+            && provider.Kind == "factory"
+            && provider.IsPrimary
+            && provider.Description == "Primary factory backend"
+            && provider.Capabilities.ObjectCrud == StorageCapabilitySupport.Native);
+        Assert.Contains(descriptor.Providers, static provider =>
+            provider.Name == "factory-replica"
+            && provider.Kind == "factory"
+            && !provider.IsPrimary
+            && provider.Mode == StorageProviderMode.Passthrough
+            && provider.ObjectLocation.DefaultAccessMode == StorageObjectAccessMode.Redirect
+            && provider.ObjectLocation.SupportedAccessModes.SequenceEqual([StorageObjectAccessMode.Redirect, StorageObjectAccessMode.Delegated]));
+    }
+
+    [Fact]
     public async Task CapabilityProvider_ReturnsClonedSnapshots()
     {
         var services = new ServiceCollection();
         services.AddIntegratedS3(options => {
             options.Capabilities.ObjectCrud = StorageCapabilitySupport.Native;
+            options.Capabilities.ServerSideEncryptionDetails = new StorageServerSideEncryptionDescriptor
+            {
+                Variants =
+                [
+                    new StorageServerSideEncryptionVariantDescriptor
+                    {
+                        Algorithm = ObjectServerSideEncryptionAlgorithm.KmsDsse,
+                        RequestStyle = StorageServerSideEncryptionRequestStyle.Managed,
+                        SupportedRequestOperations = [StorageServerSideEncryptionRequestOperation.PutObject],
+                        SupportsResponseMetadata = true,
+                        SupportsKeyId = true,
+                        SupportsContext = true
+                    }
+                ]
+            };
         });
 
         await using var serviceProvider = services.BuildServiceProvider();
@@ -193,10 +322,13 @@ public sealed class IntegratedS3BootstrapTests
 
         var first = await provider.GetCapabilitiesAsync();
         first.ObjectCrud = StorageCapabilitySupport.Unsupported;
+        first.ServerSideEncryptionDetails = new StorageServerSideEncryptionDescriptor();
 
         var second = await provider.GetCapabilitiesAsync();
 
         Assert.Equal(StorageCapabilitySupport.Native, second.ObjectCrud);
+        var variant = Assert.Single(second.ServerSideEncryptionDetails.Variants);
+        Assert.Equal(ObjectServerSideEncryptionAlgorithm.KmsDsse, variant.Algorithm);
     }
 
     [Fact]
@@ -300,5 +432,116 @@ public sealed class IntegratedS3BootstrapTests
         });
 
         Assert.Null(location);
+    }
+
+    private sealed class TestBackendRegistrationOptions
+    {
+        public string Name { get; init; } = string.Empty;
+
+        public string Kind { get; init; } = "custom";
+
+        public bool IsPrimary { get; init; }
+
+        public string? Description { get; init; }
+
+        public StorageProviderMode Mode { get; init; } = StorageProviderMode.Managed;
+
+        public StorageCapabilitySupport ObjectCrud { get; init; } = StorageCapabilitySupport.Unsupported;
+
+        public StorageCapabilitySupport Checksums { get; init; } = StorageCapabilitySupport.Unsupported;
+
+        public StorageObjectAccessMode DefaultAccessMode { get; init; } = StorageObjectAccessMode.ProxyStream;
+
+        public IReadOnlyList<StorageObjectAccessMode> SupportedAccessModes { get; init; } = [StorageObjectAccessMode.ProxyStream];
+
+        public StorageSupportStateOwnership ObjectMetadata { get; init; } = StorageSupportStateOwnership.NotApplicable;
+    }
+
+    private sealed class DescriptorOnlyStorageBackend(TestBackendRegistrationOptions options) : IStorageBackend
+    {
+        private readonly TestBackendRegistrationOptions _options = options ?? throw new ArgumentNullException(nameof(options));
+
+        public string Name => _options.Name;
+
+        public string Kind => _options.Kind;
+
+        public bool IsPrimary => _options.IsPrimary;
+
+        public string? Description => _options.Description;
+
+        public ValueTask<StorageCapabilities> GetCapabilitiesAsync(CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return ValueTask.FromResult(new StorageCapabilities
+            {
+                ObjectCrud = _options.ObjectCrud,
+                Checksums = _options.Checksums
+            });
+        }
+
+        public ValueTask<StorageSupportStateDescriptor> GetSupportStateDescriptorAsync(CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return ValueTask.FromResult(new StorageSupportStateDescriptor
+            {
+                ObjectMetadata = _options.ObjectMetadata
+            });
+        }
+
+        public ValueTask<StorageProviderMode> GetProviderModeAsync(CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return ValueTask.FromResult(_options.Mode);
+        }
+
+        public ValueTask<StorageObjectLocationDescriptor> GetObjectLocationDescriptorAsync(CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return ValueTask.FromResult(new StorageObjectLocationDescriptor
+            {
+                DefaultAccessMode = _options.DefaultAccessMode,
+                SupportedAccessModes = [.. _options.SupportedAccessModes]
+            });
+        }
+
+        public IAsyncEnumerable<BucketInfo> ListBucketsAsync(CancellationToken cancellationToken = default) => throw new NotSupportedException();
+
+        public ValueTask<StorageResult<BucketInfo>> CreateBucketAsync(CreateBucketRequest request, CancellationToken cancellationToken = default) => throw new NotSupportedException();
+
+        public ValueTask<StorageResult<BucketVersioningInfo>> GetBucketVersioningAsync(string bucketName, CancellationToken cancellationToken = default) => throw new NotSupportedException();
+
+        public ValueTask<StorageResult<BucketVersioningInfo>> PutBucketVersioningAsync(PutBucketVersioningRequest request, CancellationToken cancellationToken = default) => throw new NotSupportedException();
+
+        public ValueTask<StorageResult<BucketInfo>> HeadBucketAsync(string bucketName, CancellationToken cancellationToken = default) => throw new NotSupportedException();
+
+        public ValueTask<StorageResult> DeleteBucketAsync(DeleteBucketRequest request, CancellationToken cancellationToken = default) => throw new NotSupportedException();
+
+        public IAsyncEnumerable<ObjectInfo> ListObjectsAsync(ListObjectsRequest request, CancellationToken cancellationToken = default) => throw new NotSupportedException();
+
+        public IAsyncEnumerable<ObjectInfo> ListObjectVersionsAsync(ListObjectVersionsRequest request, CancellationToken cancellationToken = default) => throw new NotSupportedException();
+
+        public ValueTask<StorageResult<GetObjectResponse>> GetObjectAsync(GetObjectRequest request, CancellationToken cancellationToken = default) => throw new NotSupportedException();
+
+        public ValueTask<StorageResult<ObjectTagSet>> GetObjectTagsAsync(GetObjectTagsRequest request, CancellationToken cancellationToken = default) => throw new NotSupportedException();
+
+        public ValueTask<StorageResult<ObjectInfo>> CopyObjectAsync(CopyObjectRequest request, CancellationToken cancellationToken = default) => throw new NotSupportedException();
+
+        public ValueTask<StorageResult<ObjectInfo>> PutObjectAsync(PutObjectRequest request, CancellationToken cancellationToken = default) => throw new NotSupportedException();
+
+        public ValueTask<StorageResult<ObjectTagSet>> PutObjectTagsAsync(PutObjectTagsRequest request, CancellationToken cancellationToken = default) => throw new NotSupportedException();
+
+        public ValueTask<StorageResult<ObjectTagSet>> DeleteObjectTagsAsync(DeleteObjectTagsRequest request, CancellationToken cancellationToken = default) => throw new NotSupportedException();
+
+        public ValueTask<StorageResult<MultipartUploadInfo>> InitiateMultipartUploadAsync(InitiateMultipartUploadRequest request, CancellationToken cancellationToken = default) => throw new NotSupportedException();
+
+        public ValueTask<StorageResult<MultipartUploadPart>> UploadMultipartPartAsync(UploadMultipartPartRequest request, CancellationToken cancellationToken = default) => throw new NotSupportedException();
+
+        public ValueTask<StorageResult<ObjectInfo>> CompleteMultipartUploadAsync(CompleteMultipartUploadRequest request, CancellationToken cancellationToken = default) => throw new NotSupportedException();
+
+        public ValueTask<StorageResult> AbortMultipartUploadAsync(AbortMultipartUploadRequest request, CancellationToken cancellationToken = default) => throw new NotSupportedException();
+
+        public ValueTask<StorageResult<ObjectInfo>> HeadObjectAsync(HeadObjectRequest request, CancellationToken cancellationToken = default) => throw new NotSupportedException();
+
+        public ValueTask<StorageResult<DeleteObjectResult>> DeleteObjectAsync(DeleteObjectRequest request, CancellationToken cancellationToken = default) => throw new NotSupportedException();
     }
 }

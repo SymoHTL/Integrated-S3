@@ -9,22 +9,48 @@ namespace IntegratedS3.Provider.S3.Internal;
 internal sealed class AwsS3StorageClient : IS3StorageClient
 {
     private readonly IAmazonS3 _s3;
+    private readonly Uri? _serviceUri;
 
     public AwsS3StorageClient(S3StorageOptions options)
     {
+        ArgumentNullException.ThrowIfNull(options);
+
+        _serviceUri = TryCreateAbsoluteUri(options.ServiceUrl);
+        var config = CreateConfig(options);
+        _s3 = !string.IsNullOrWhiteSpace(options.AccessKey) && !string.IsNullOrWhiteSpace(options.SecretKey)
+            ? new AmazonS3Client(new BasicAWSCredentials(options.AccessKey, options.SecretKey), config)
+            : new AmazonS3Client(config);
+    }
+
+    internal static AmazonS3Config CreateConfig(S3StorageOptions options)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+
         var config = new AmazonS3Config
         {
             ForcePathStyle = options.ForcePathStyle
         };
 
         if (!string.IsNullOrWhiteSpace(options.ServiceUrl))
+        {
             config.ServiceURL = options.ServiceUrl;
-        else
-            config.RegionEndpoint = RegionEndpoint.GetBySystemName(options.Region);
+            config.AuthenticationRegion = options.Region;
 
-        _s3 = !string.IsNullOrWhiteSpace(options.AccessKey) && !string.IsNullOrWhiteSpace(options.SecretKey)
-            ? new AmazonS3Client(new BasicAWSCredentials(options.AccessKey, options.SecretKey), config)
-            : new AmazonS3Client(config);
+            if (TryCreateAbsoluteUri(options.ServiceUrl) is { } serviceUri)
+                config.UseHttp = string.Equals(serviceUri.Scheme, Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase);
+
+            // Local S3-compatible endpoints frequently lag the AWS SDK v4
+            // flexible-checksum defaults; required-only mode preserves explicit
+            // checksum flows without injecting extra compatibility failures.
+            config.RequestChecksumCalculation = RequestChecksumCalculation.WHEN_REQUIRED;
+            config.ResponseChecksumValidation = ResponseChecksumValidation.WHEN_REQUIRED;
+        }
+        else
+        {
+            config.RegionEndpoint = RegionEndpoint.GetBySystemName(options.Region);
+        }
+
+        return config;
     }
 
     // -------------------------------------------------------------------------
@@ -68,6 +94,13 @@ internal sealed class AwsS3StorageClient : IS3StorageClient
     {
         var request = new DeleteBucketRequest { BucketName = bucketName };
         await _s3.DeleteBucketAsync(request, cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<S3BucketLocationEntry> GetBucketLocationAsync(string bucketName, CancellationToken cancellationToken = default)
+    {
+        var request = new GetBucketLocationRequest { BucketName = bucketName };
+        var response = await _s3.GetBucketLocationAsync(request, cancellationToken).ConfigureAwait(false);
+        return new S3BucketLocationEntry(response.Location?.Value);
     }
 
     // -------------------------------------------------------------------------
@@ -279,7 +312,7 @@ internal sealed class AwsS3StorageClient : IS3StorageClient
         };
 
         var presignedUrl = _s3.GetPreSignedURL(request);
-        return Task.FromResult(new Uri(presignedUrl, UriKind.Absolute));
+        return Task.FromResult(AlignPresignedUrlWithServiceUrl(new Uri(presignedUrl, UriKind.Absolute)));
     }
 
     public async Task<S3GetObjectResult> GetObjectAsync(
@@ -840,6 +873,30 @@ internal sealed class AwsS3StorageClient : IS3StorageClient
         }
 
         return false;
+    }
+
+    private Uri AlignPresignedUrlWithServiceUrl(Uri presignedUrl)
+    {
+        if (_serviceUri is null
+            || string.Equals(presignedUrl.Scheme, _serviceUri.Scheme, StringComparison.OrdinalIgnoreCase))
+        {
+            return presignedUrl;
+        }
+
+        var builder = new UriBuilder(presignedUrl)
+        {
+            Scheme = _serviceUri.Scheme,
+            Port = _serviceUri.IsDefaultPort ? -1 : _serviceUri.Port
+        };
+
+        return builder.Uri;
+    }
+
+    private static Uri? TryCreateAbsoluteUri(string? value)
+    {
+        return Uri.TryCreate(value, UriKind.Absolute, out var uri)
+            ? uri
+            : null;
     }
 
     private static string? NormalizeChecksumAlgorithm(string? value)
