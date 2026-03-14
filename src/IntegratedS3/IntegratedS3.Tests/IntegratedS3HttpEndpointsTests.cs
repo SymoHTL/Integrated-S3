@@ -1382,6 +1382,90 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
     }
 
     [Fact]
+    public async Task S3CompatibleCopyObject_SourceVersionIdUsesHistoricalVersionPreconditionsAndRejectsDeleteMarkers()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        const string sourceBucketName = "s3-compatible-copy-version-source";
+        const string targetBucketName = "s3-compatible-copy-version-target";
+        const string sourceKey = "docs/source.txt";
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync($"/integrated-s3/buckets/{sourceBucketName}", content: null)).StatusCode);
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync($"/integrated-s3/buckets/{targetBucketName}", content: null)).StatusCode);
+        await EnableBucketVersioningAsync(client, sourceBucketName);
+
+        var v1Response = await client.PutAsync(
+            $"/integrated-s3/{sourceBucketName}/{sourceKey}",
+            new StringContent("version one", Encoding.UTF8, "text/plain"));
+        Assert.Equal(HttpStatusCode.OK, v1Response.StatusCode);
+        var v1VersionId = Assert.Single(v1Response.Headers.GetValues("x-amz-version-id"));
+
+        var v2Response = await client.PutAsync(
+            $"/integrated-s3/{sourceBucketName}/{sourceKey}",
+            new StringContent("version two", Encoding.UTF8, "text/plain"));
+        Assert.Equal(HttpStatusCode.OK, v2Response.StatusCode);
+        var v2VersionId = Assert.Single(v2Response.Headers.GetValues("x-amz-version-id"));
+        Assert.NotEqual(v1VersionId, v2VersionId);
+
+        var historicalSourcePath = $"/integrated-s3/{sourceBucketName}/{sourceKey}?versionId={Uri.EscapeDataString(v1VersionId)}";
+        var historicalMetadata = await GetHeadObjectMetadataAsync(client, historicalSourcePath);
+
+        var deleteCurrent = await client.DeleteAsync($"/integrated-s3/{sourceBucketName}/{sourceKey}");
+        Assert.Equal(HttpStatusCode.NoContent, deleteCurrent.StatusCode);
+        Assert.Equal("true", Assert.Single(deleteCurrent.Headers.GetValues("x-amz-delete-marker")));
+        var deleteMarkerVersionId = Assert.Single(deleteCurrent.Headers.GetValues("x-amz-version-id"));
+
+        using var historicalCopyRequest = new HttpRequestMessage(HttpMethod.Put, $"/integrated-s3/{targetBucketName}/docs/historical-copy.txt");
+        historicalCopyRequest.Headers.TryAddWithoutValidation("x-amz-copy-source", $"/{sourceBucketName}/{sourceKey}?versionId={Uri.EscapeDataString(v1VersionId)}");
+        historicalCopyRequest.Headers.TryAddWithoutValidation("x-amz-copy-source-if-match", historicalMetadata.ETag);
+        historicalCopyRequest.Headers.TryAddWithoutValidation("x-amz-copy-source-if-unmodified-since", historicalMetadata.LastModifiedUtc.AddMinutes(5).ToString("R"));
+
+        var historicalCopyResponse = await client.SendAsync(historicalCopyRequest);
+        Assert.Equal(HttpStatusCode.OK, historicalCopyResponse.StatusCode);
+        Assert.Equal(v1VersionId, Assert.Single(historicalCopyResponse.Headers.GetValues("x-amz-copy-source-version-id")));
+        var historicalCopyDocument = XDocument.Parse(await historicalCopyResponse.Content.ReadAsStringAsync());
+        Assert.Equal("CopyObjectResult", historicalCopyDocument.Root?.Name.LocalName);
+
+        var copiedHistoricalObject = await client.GetAsync($"/integrated-s3/{targetBucketName}/docs/historical-copy.txt");
+        Assert.Equal(HttpStatusCode.OK, copiedHistoricalObject.StatusCode);
+        Assert.Equal("version one", await copiedHistoricalObject.Content.ReadAsStringAsync());
+
+        using var currentCopyRequest = new HttpRequestMessage(HttpMethod.Put, $"/integrated-s3/{targetBucketName}/docs/current-copy.txt");
+        currentCopyRequest.Headers.TryAddWithoutValidation("x-amz-copy-source", $"/{sourceBucketName}/{sourceKey}");
+
+        var currentCopyResponse = await client.SendAsync(currentCopyRequest);
+        Assert.Equal(HttpStatusCode.NotFound, currentCopyResponse.StatusCode);
+        Assert.Equal("true", Assert.Single(currentCopyResponse.Headers.GetValues("x-amz-delete-marker")));
+        Assert.Equal(deleteMarkerVersionId, Assert.Single(currentCopyResponse.Headers.GetValues("x-amz-version-id")));
+        Assert.Null(currentCopyResponse.Content.Headers.LastModified);
+        var currentCopyError = XDocument.Parse(await currentCopyResponse.Content.ReadAsStringAsync());
+        Assert.Equal("NoSuchKey", GetRequiredElementValue(currentCopyError, "Code"));
+
+        var currentCopyTargetHead = await client.SendAsync(new HttpRequestMessage(HttpMethod.Head, $"/integrated-s3/{targetBucketName}/docs/current-copy.txt"));
+        Assert.Equal(HttpStatusCode.NotFound, currentCopyTargetHead.StatusCode);
+
+        var versionsResponse = await client.GetAsync($"/integrated-s3/{sourceBucketName}?versions&prefix={Uri.EscapeDataString(sourceKey)}");
+        Assert.Equal(HttpStatusCode.OK, versionsResponse.StatusCode);
+        var versionsDocument = XDocument.Parse(await versionsResponse.Content.ReadAsStringAsync());
+        var deleteMarker = Assert.Single(versionsDocument.Root!.Elements("DeleteMarker"));
+        var expectedDeleteMarkerLastModified = DateTimeOffset.Parse(deleteMarker.Element("LastModified")!.Value, CultureInfo.InvariantCulture).ToString("R");
+
+        using var explicitDeleteMarkerCopyRequest = new HttpRequestMessage(HttpMethod.Put, $"/integrated-s3/{targetBucketName}/docs/delete-marker-copy.txt");
+        explicitDeleteMarkerCopyRequest.Headers.TryAddWithoutValidation("x-amz-copy-source", $"/{sourceBucketName}/{sourceKey}?versionId={Uri.EscapeDataString(deleteMarkerVersionId)}");
+
+        var explicitDeleteMarkerCopyResponse = await client.SendAsync(explicitDeleteMarkerCopyRequest);
+        Assert.Equal(HttpStatusCode.MethodNotAllowed, explicitDeleteMarkerCopyResponse.StatusCode);
+        Assert.Equal("true", Assert.Single(explicitDeleteMarkerCopyResponse.Headers.GetValues("x-amz-delete-marker")));
+        Assert.Equal(deleteMarkerVersionId, Assert.Single(explicitDeleteMarkerCopyResponse.Headers.GetValues("x-amz-version-id")));
+        Assert.Equal(expectedDeleteMarkerLastModified, explicitDeleteMarkerCopyResponse.Content.Headers.LastModified?.ToString("R"));
+        var explicitDeleteMarkerCopyError = XDocument.Parse(await explicitDeleteMarkerCopyResponse.Content.ReadAsStringAsync());
+        Assert.Equal("MethodNotAllowed", GetRequiredElementValue(explicitDeleteMarkerCopyError, "Code"));
+
+        var deleteMarkerCopyTargetHead = await client.SendAsync(new HttpRequestMessage(HttpMethod.Head, $"/integrated-s3/{targetBucketName}/docs/delete-marker-copy.txt"));
+        Assert.Equal(HttpStatusCode.NotFound, deleteMarkerCopyTargetHead.StatusCode);
+    }
+
+    [Fact]
     public async Task S3CompatibleBucketRoute_ListType2_ReturnsXmlPayload()
     {
         using var client = await _factory.CreateClientAsync();

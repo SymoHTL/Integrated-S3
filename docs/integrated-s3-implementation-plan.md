@@ -1329,7 +1329,8 @@ This section is the execution board for the remaining implementation backlog. As
 - Depends on: can scaffold immediately; full coverage expands as the remaining Tracks B through G hardening slices land
 - Status update:
   - `IntegratedS3SigV4ConformanceTests` now cover presigned bucket-versioning reads, presigned historical-version reads, and presigned expiry/clock-skew XML error behavior, while `IntegratedS3SigV4ProtocolTests` lock in canonical empty-value subresource signing.
-  - `IntegratedS3HttpEndpointsTests` now cover unsupported mixed bucket subresources and multipart `encoding-type=url` rejection, and `IntegratedS3AwsSdkCompatibilityTests` now include version-id-aware metadata/read coverage.
+  - `IntegratedS3HttpEndpointsTests` now cover unsupported mixed bucket subresources, multipart `encoding-type=url` rejection, and S3-compatible copy-source `versionId` handling for historical versions plus current/explicit delete-marker failures.
+  - `IntegratedS3AwsSdkCompatibilityTests` now include version-id-aware metadata/read coverage plus `CopyObject.SourceVersionId` historical-copy and delete-marker compatibility coverage.
   - `IntegratedS3CoreOrchestrationTests` now cover provider-unavailable read failover, no failover on not-found, unhealthy snapshot expiry recovery, probe-timeout handling, async replica recording/dispatch, unhealthy-replica preflight, outstanding-repair read policy, partial-write backlog semantics, failed-repair visibility, multi-replica dispatch-recording failure isolation, mixed replay success/failure, and backlog growth for replicas that remain stale.
   - `src\IntegratedS3\WebUi` now has a dedicated reference-host guide in `docs/webui-reference-host.md`, with local sample storage kept under `App_Data` and excluded from build/publish outputs.
   - CI automation now lives in `.github\workflows\trackh-publish-aot-ci.yml`, and `eng\Invoke-AotPublishValidation.ps1` enforces the current self-contained publish warning posture without depending on exact line numbers.
@@ -1341,7 +1342,7 @@ This section is the execution board for the remaining implementation backlog. As
   - `dotnet test src\IntegratedS3\IntegratedS3.slnx` passed in the current Track E/H worktree.
   - `dotnet publish -c Release --self-contained src\IntegratedS3\WebUi\WebUi.csproj` passed in the current Track E/H worktree, and `eng\Invoke-AotPublishValidation.ps1` now tracks the remaining Minimal API / trimming-sensitive warning posture without depending on exact line numbers.
 - Remaining scope:
-  - extend conformance beyond the current versioned-read, presigned-expiry/clock-skew, and AWS SDK version-id coverage into the remaining protocol edge cases and broader client-compatibility scenarios
+  - extend conformance beyond the current versioned-read/copy, presigned-expiry/clock-skew, and AWS SDK version-id metadata/read/copy coverage into the remaining protocol edge cases and broader client-compatibility scenarios
   - extend fault-injection beyond the current unhealthy-provider, async-replication/backlog, partial-write-through, and newly added multi-replica replay coverage into broader repair/reconciliation scenarios
   - add structured logs, metrics, traces, correlation IDs, provider tags, auth-failure visibility, mirror-lag visibility, and reconciliation-backlog visibility
   - expand the benchmark suite beyond the current disk, mirrored-disk, loopback HTTP, and first-party presign baseline set into reproducible native-S3 and broader client-comparison scenarios
@@ -1350,6 +1351,8 @@ This section is the execution board for the remaining implementation backlog. As
   - finish package polish items such as XML docs, onboarding docs, versioned protocol compatibility guidance, and any analyzers/diagnostics worth shipping
 - Next recommended steps:
   - triage the remaining observed IL2026/IL3050 native AOT warnings in `IntegratedS3.AspNetCore` / `WebUi` and decide whether they should be eliminated further, annotated more precisely, or explicitly documented for consumers
+  - extend conformance and protocol hardening into additional conditional-precedence, checksum/header, and remaining delete-marker/versioning edge cases now that the current subresource/presign plus version-aware copy/delete-marker gaps are covered
+  - add benchmark baselines for representative disk plus HTTP get/put/list paths before broadening the remaining release-polish work
   - extend conformance and protocol hardening into conditional-precedence, checksum/header, and delete-marker/versioning edge cases now that the current subresource/presign gaps are covered
   - decide whether benchmark baseline refresh should stay as a repo-local/manual release step or gain dedicated CI / scheduled automation once the current scenario set proves stable
 
