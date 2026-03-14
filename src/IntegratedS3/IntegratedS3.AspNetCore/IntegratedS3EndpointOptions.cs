@@ -4,6 +4,8 @@ namespace IntegratedS3.AspNetCore;
 
 public sealed class IntegratedS3EndpointOptions
 {
+    private readonly Dictionary<IntegratedS3EndpointFeature, Action<RouteGroupBuilder>?> featureRouteGroupConfigurations = [];
+
     public bool EnableServiceEndpoints { get; set; } = true;
 
     public bool EnableBucketEndpoints { get; set; } = true;
@@ -20,19 +22,60 @@ public sealed class IntegratedS3EndpointOptions
 
     public Action<RouteGroupBuilder>? ConfigureCompatibilityRouteGroup { get; set; }
 
-    public Action<RouteGroupBuilder>? ConfigureServiceRouteGroup { get; set; }
+    public Action<RouteGroupBuilder>? ConfigureServiceRouteGroup
+    {
+        get => GetFeatureRouteGroupConfiguration(IntegratedS3EndpointFeature.Service);
+        set => SetFeatureRouteGroupConfiguration(IntegratedS3EndpointFeature.Service, value);
+    }
 
-    public Action<RouteGroupBuilder>? ConfigureBucketRouteGroup { get; set; }
+    public Action<RouteGroupBuilder>? ConfigureBucketRouteGroup
+    {
+        get => GetFeatureRouteGroupConfiguration(IntegratedS3EndpointFeature.Bucket);
+        set => SetFeatureRouteGroupConfiguration(IntegratedS3EndpointFeature.Bucket, value);
+    }
 
-    public Action<RouteGroupBuilder>? ConfigureObjectRouteGroup { get; set; }
+    public Action<RouteGroupBuilder>? ConfigureObjectRouteGroup
+    {
+        get => GetFeatureRouteGroupConfiguration(IntegratedS3EndpointFeature.Object);
+        set => SetFeatureRouteGroupConfiguration(IntegratedS3EndpointFeature.Object, value);
+    }
 
-    public Action<RouteGroupBuilder>? ConfigureMultipartRouteGroup { get; set; }
+    public Action<RouteGroupBuilder>? ConfigureMultipartRouteGroup
+    {
+        get => GetFeatureRouteGroupConfiguration(IntegratedS3EndpointFeature.Multipart);
+        set => SetFeatureRouteGroupConfiguration(IntegratedS3EndpointFeature.Multipart, value);
+    }
 
-    public Action<RouteGroupBuilder>? ConfigureAdminRouteGroup { get; set; }
+    public Action<RouteGroupBuilder>? ConfigureAdminRouteGroup
+    {
+        get => GetFeatureRouteGroupConfiguration(IntegratedS3EndpointFeature.Admin);
+        set => SetFeatureRouteGroupConfiguration(IntegratedS3EndpointFeature.Admin, value);
+    }
+
+    public Action<RouteGroupBuilder>? GetFeatureRouteGroupConfiguration(IntegratedS3EndpointFeature feature)
+    {
+        ValidateFeature(feature);
+
+        return featureRouteGroupConfigurations.TryGetValue(feature, out var configuration)
+            ? configuration
+            : null;
+    }
+
+    public void SetFeatureRouteGroupConfiguration(IntegratedS3EndpointFeature feature, Action<RouteGroupBuilder>? configuration)
+    {
+        ValidateFeature(feature);
+
+        if (configuration is null) {
+            featureRouteGroupConfigurations.Remove(feature);
+            return;
+        }
+
+        featureRouteGroupConfigurations[feature] = configuration;
+    }
 
     internal IntegratedS3EndpointOptions Clone()
     {
-        return new IntegratedS3EndpointOptions
+        var clone = new IntegratedS3EndpointOptions
         {
             EnableServiceEndpoints = EnableServiceEndpoints,
             EnableBucketEndpoints = EnableBucketEndpoints,
@@ -41,12 +84,20 @@ public sealed class IntegratedS3EndpointOptions
             EnableAdminEndpoints = EnableAdminEndpoints,
             ConfigureRouteGroup = ConfigureRouteGroup,
             ConfigureRootRouteGroup = ConfigureRootRouteGroup,
-            ConfigureCompatibilityRouteGroup = ConfigureCompatibilityRouteGroup,
-            ConfigureServiceRouteGroup = ConfigureServiceRouteGroup,
-            ConfigureBucketRouteGroup = ConfigureBucketRouteGroup,
-            ConfigureObjectRouteGroup = ConfigureObjectRouteGroup,
-            ConfigureMultipartRouteGroup = ConfigureMultipartRouteGroup,
-            ConfigureAdminRouteGroup = ConfigureAdminRouteGroup
+            ConfigureCompatibilityRouteGroup = ConfigureCompatibilityRouteGroup
         };
+
+        foreach (var (feature, configuration) in featureRouteGroupConfigurations) {
+            clone.featureRouteGroupConfigurations[feature] = configuration;
+        }
+
+        return clone;
+    }
+
+    private static void ValidateFeature(IntegratedS3EndpointFeature feature)
+    {
+        if (!Enum.IsDefined(feature)) {
+            throw new ArgumentOutOfRangeException(nameof(feature), feature, "Unknown Integrated S3 endpoint feature.");
+        }
     }
 }

@@ -1,0 +1,70 @@
+@model WebUi.MvcRazor.Models.StorageDashboardViewModel
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>@Model.ServiceName</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 0; background: #f7f9fc; color: #112038; }
+        main { max-width: 960px; margin: 0 auto; padding: 2rem 1.5rem 3rem; }
+        .hero, .bucket { background: #ffffff; border-radius: 16px; box-shadow: 0 18px 38px rgba(17, 32, 56, 0.08); padding: 1.5rem; margin-bottom: 1.5rem; }
+        .hero h1 { margin-top: 0; }
+        .links { display: flex; gap: 1rem; flex-wrap: wrap; margin-top: 1rem; }
+        .links a { color: #0b5fff; text-decoration: none; }
+        table { width: 100%; border-collapse: collapse; margin-top: 1rem; }
+        th, td { padding: 0.75rem; text-align: left; border-bottom: 1px solid #dbe5f1; }
+        code { background: #eef4ff; border-radius: 6px; padding: 0.15rem 0.35rem; }
+        .empty { color: #51617d; }
+    </style>
+</head>
+<body>
+    <main>
+        <section class="hero">
+            <h1>@Model.ServiceName</h1>
+            <p>
+                This MVC/Razor sample consumes IntegratedS3 by injecting <code>IStorageService</code> into a controller
+                while also exposing the HTTP endpoint surface under <code>@Model.RoutePrefix</code>.
+            </p>
+            <div class="links">
+                <a href="@Model.RoutePrefix">Service document</a>
+                <a href="@($"{Model.RoutePrefix}/buckets")">Bucket JSON endpoint</a>
+                <a href="@($"{Model.RoutePrefix}/capabilities")">Capabilities endpoint</a>
+            </div>
+        </section>
+
+        @foreach (var bucket in Model.Buckets) {
+            <section class="bucket">
+                <h2>@bucket.Name</h2>
+                <p>Created @bucket.CreatedAtUtc.UtcDateTime.ToString("u")</p>
+
+                @if (bucket.Objects.Count == 0) {
+                    <p class="empty">No objects are stored in this bucket yet.</p>
+                }
+                else {
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Object key</th>
+                                <th>Content type</th>
+                                <th>Bytes</th>
+                                <th>Last modified (UTC)</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                        @foreach (var objectEntry in bucket.Objects) {
+                            <tr>
+                                <td>@objectEntry.Key</td>
+                                <td>@(objectEntry.ContentType ?? "unknown")</td>
+                                <td>@objectEntry.ContentLength</td>
+                                <td>@objectEntry.LastModifiedUtc.UtcDateTime.ToString("u")</td>
+                            </tr>
+                        }
+                        </tbody>
+                    </table>
+                }
+            </section>
+        }
+    </main>
+</body>
+</html>
