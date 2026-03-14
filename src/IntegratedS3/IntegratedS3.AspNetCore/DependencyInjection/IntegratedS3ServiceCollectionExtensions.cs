@@ -332,10 +332,35 @@ public static class IntegratedS3ServiceCollectionExtensions
             Cors = capabilities.Cors,
             ObjectLock = capabilities.ObjectLock,
             ServerSideEncryption = capabilities.ServerSideEncryption,
+            ServerSideEncryptionDetails = CloneServerSideEncryptionDetails(capabilities.ServerSideEncryptionDetails),
             Checksums = capabilities.Checksums,
             XmlErrors = capabilities.XmlErrors,
             PathStyleAddressing = capabilities.PathStyleAddressing,
             VirtualHostedStyleAddressing = capabilities.VirtualHostedStyleAddressing
+        };
+    }
+
+    private static Abstractions.Capabilities.StorageServerSideEncryptionDescriptor CloneServerSideEncryptionDetails(Abstractions.Capabilities.StorageServerSideEncryptionDescriptor serverSideEncryptionDetails)
+    {
+        ArgumentNullException.ThrowIfNull(serverSideEncryptionDetails);
+
+        return new Abstractions.Capabilities.StorageServerSideEncryptionDescriptor
+        {
+            Variants = serverSideEncryptionDetails.Variants.Count == 0
+                ? []
+                : serverSideEncryptionDetails.Variants
+                    .Select(static variant => new Abstractions.Capabilities.StorageServerSideEncryptionVariantDescriptor
+                    {
+                        Algorithm = variant.Algorithm,
+                        RequestStyle = variant.RequestStyle,
+                        SupportedRequestOperations = variant.SupportedRequestOperations.Count == 0
+                            ? []
+                            : [.. variant.SupportedRequestOperations],
+                        SupportsResponseMetadata = variant.SupportsResponseMetadata,
+                        SupportsKeyId = variant.SupportsKeyId,
+                        SupportsContext = variant.SupportsContext
+                    })
+                    .ToArray()
         };
     }
 }

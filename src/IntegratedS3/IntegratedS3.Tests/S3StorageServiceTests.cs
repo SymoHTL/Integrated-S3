@@ -46,6 +46,9 @@ public sealed class S3StorageServiceTests
         Assert.Equal(StorageCapabilitySupport.Native, caps.Checksums);
         Assert.Equal(StorageCapabilitySupport.Native, caps.PresignedUrls);
         Assert.Equal(StorageCapabilitySupport.Native, caps.ServerSideEncryption);
+        Assert.Contains(
+            caps.ServerSideEncryptionDetails.Variants,
+            static variant => variant.Algorithm == ObjectServerSideEncryptionAlgorithm.KmsDsse);
     }
 
     // --- Support state descriptor ---
@@ -457,7 +460,7 @@ public sealed class S3StorageServiceTests
             "v1",
             ServerSideEncryption: new ObjectServerSideEncryptionInfo
             {
-                Algorithm = ObjectServerSideEncryptionAlgorithm.Kms,
+                Algorithm = ObjectServerSideEncryptionAlgorithm.KmsDsse,
                 KeyId = "kms-key-1"
             });
         var svc = BuildService(fake);
@@ -471,7 +474,7 @@ public sealed class S3StorageServiceTests
         Assert.Equal("\"abc\"", result.Value.ETag);
         Assert.Equal("v1", result.Value.VersionId);
         Assert.NotNull(result.Value.ServerSideEncryption);
-        Assert.Equal(ObjectServerSideEncryptionAlgorithm.Kms, result.Value.ServerSideEncryption!.Algorithm);
+        Assert.Equal(ObjectServerSideEncryptionAlgorithm.KmsDsse, result.Value.ServerSideEncryption!.Algorithm);
         Assert.Equal("kms-key-1", result.Value.ServerSideEncryption.KeyId);
     }
 
@@ -601,7 +604,7 @@ public sealed class S3StorageServiceTests
     {
         var serverSideEncryption = new ObjectServerSideEncryptionSettings
         {
-            Algorithm = ObjectServerSideEncryptionAlgorithm.Kms,
+            Algorithm = ObjectServerSideEncryptionAlgorithm.KmsDsse,
             KeyId = "kms-key-1",
             Context = new Dictionary<string, string>(StringComparer.Ordinal)
             {
@@ -623,7 +626,7 @@ public sealed class S3StorageServiceTests
             },
             ServerSideEncryption: new ObjectServerSideEncryptionInfo
             {
-                Algorithm = ObjectServerSideEncryptionAlgorithm.Kms,
+                Algorithm = ObjectServerSideEncryptionAlgorithm.KmsDsse,
                 KeyId = "kms-key-1"
             });
 
@@ -645,7 +648,7 @@ public sealed class S3StorageServiceTests
         Assert.NotNull(fake.LastPutObjectServerSideEncryption);
         Assert.Same(serverSideEncryption, fake.LastPutObjectServerSideEncryption);
         Assert.NotNull(result.Value.ServerSideEncryption);
-        Assert.Equal(ObjectServerSideEncryptionAlgorithm.Kms, result.Value.ServerSideEncryption!.Algorithm);
+        Assert.Equal(ObjectServerSideEncryptionAlgorithm.KmsDsse, result.Value.ServerSideEncryption!.Algorithm);
         Assert.Equal("kms-key-1", result.Value.ServerSideEncryption.KeyId);
     }
 
@@ -668,6 +671,33 @@ public sealed class S3StorageServiceTests
 
         Assert.False(result.IsSuccess);
         Assert.Equal(StorageErrorCode.UnsupportedCapability, result.Error!.Code);
+    }
+
+    [Fact]
+    public async Task PutObjectAsync_RejectsManagedKmsContextWithEmptyValue()
+    {
+        var fake = new FakeS3Client();
+        var svc = BuildService(fake);
+
+        var result = await svc.PutObjectAsync(new PutObjectRequest
+        {
+            BucketName = "b",
+            Key = "k",
+            Content = Stream.Null,
+            ServerSideEncryption = new ObjectServerSideEncryptionSettings
+            {
+                Algorithm = ObjectServerSideEncryptionAlgorithm.KmsDsse,
+                Context = new Dictionary<string, string>(StringComparer.Ordinal)
+                {
+                    ["tenant"] = string.Empty
+                }
+            }
+        });
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(StorageErrorCode.UnsupportedCapability, result.Error!.Code);
+        Assert.Contains("non-empty strings", result.Error.Message, StringComparison.Ordinal);
+        Assert.Null(fake.LastPutObjectServerSideEncryption);
     }
 
     [Fact]
@@ -778,7 +808,7 @@ public sealed class S3StorageServiceTests
         };
         var destinationServerSideEncryption = new ObjectServerSideEncryptionSettings
         {
-            Algorithm = ObjectServerSideEncryptionAlgorithm.Kms,
+            Algorithm = ObjectServerSideEncryptionAlgorithm.KmsDsse,
             KeyId = "kms-key-copy",
             Context = new Dictionary<string, string>(StringComparer.Ordinal)
             {
@@ -798,7 +828,7 @@ public sealed class S3StorageServiceTests
                 Checksums: checksums,
                 ServerSideEncryption: new ObjectServerSideEncryptionInfo
                 {
-                    Algorithm = ObjectServerSideEncryptionAlgorithm.Kms,
+                    Algorithm = ObjectServerSideEncryptionAlgorithm.KmsDsse,
                     KeyId = "kms-key-copy"
                 }),
             HeadObjectResult = new S3ObjectEntry(
@@ -812,7 +842,7 @@ public sealed class S3StorageServiceTests
                 Checksums: checksums,
                 ServerSideEncryption: new ObjectServerSideEncryptionInfo
                 {
-                    Algorithm = ObjectServerSideEncryptionAlgorithm.Kms,
+                    Algorithm = ObjectServerSideEncryptionAlgorithm.KmsDsse,
                     KeyId = "kms-key-copy"
                 })
         };
@@ -836,7 +866,7 @@ public sealed class S3StorageServiceTests
         Assert.Equal("v2", result.Value.VersionId);
         Assert.Equal("copied-checksum", result.Value.Checksums!["sha256"]);
         Assert.NotNull(result.Value.ServerSideEncryption);
-        Assert.Equal(ObjectServerSideEncryptionAlgorithm.Kms, result.Value.ServerSideEncryption!.Algorithm);
+        Assert.Equal(ObjectServerSideEncryptionAlgorithm.KmsDsse, result.Value.ServerSideEncryption!.Algorithm);
         Assert.Equal("kms-key-copy", result.Value.ServerSideEncryption.KeyId);
     }
 
@@ -965,7 +995,7 @@ public sealed class S3StorageServiceTests
         var initiatedAtUtc = new DateTimeOffset(2025, 8, 1, 12, 0, 0, TimeSpan.Zero);
         var serverSideEncryption = new ObjectServerSideEncryptionSettings
         {
-            Algorithm = ObjectServerSideEncryptionAlgorithm.Kms,
+            Algorithm = ObjectServerSideEncryptionAlgorithm.KmsDsse,
             KeyId = "kms-multipart-key",
             Context = new Dictionary<string, string>(StringComparer.Ordinal)
             {
@@ -1195,6 +1225,9 @@ public sealed class S3StorageServiceTests
         Assert.Equal(StorageCapabilitySupport.Native, provider.Capabilities.CopyOperations);
         Assert.Equal(StorageCapabilitySupport.Native, provider.Capabilities.Checksums);
         Assert.Equal(StorageCapabilitySupport.Native, provider.Capabilities.ServerSideEncryption);
+        Assert.Contains(
+            provider.Capabilities.ServerSideEncryptionDetails.Variants,
+            static variant => variant.Algorithm == ObjectServerSideEncryptionAlgorithm.KmsDsse);
         Assert.Equal(StorageObjectAccessMode.Delegated, provider.ObjectLocation.DefaultAccessMode);
         Assert.Equal([StorageObjectAccessMode.Delegated, StorageObjectAccessMode.ProxyStream], provider.ObjectLocation.SupportedAccessModes);
     }

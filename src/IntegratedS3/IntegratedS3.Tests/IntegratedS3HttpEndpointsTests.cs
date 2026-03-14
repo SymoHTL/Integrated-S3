@@ -2410,8 +2410,12 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
         Assert.Equal(part1Payload + part2Payload, await downloadResponse.Content.ReadAsStringAsync());
     }
 
-    [Fact]
-    public async Task S3CompatiblePutObject_WithKmsServerSideEncryptionHeaders_ParsesRequestAndEmitsResponseHeaders()
+    [Theory]
+    [InlineData("aws:kms", ObjectServerSideEncryptionAlgorithm.Kms)]
+    [InlineData("aws:kms:dsse", ObjectServerSideEncryptionAlgorithm.KmsDsse)]
+    public async Task S3CompatiblePutObject_WithManagedKmsServerSideEncryptionHeaders_ParsesRequestAndEmitsResponseHeaders(
+        string headerValue,
+        ObjectServerSideEncryptionAlgorithm expectedAlgorithm)
     {
         var storageService = new RecordingStorageService();
         await using var isolatedClient = await CreateStorageServiceIsolatedClientAsync(storageService);
@@ -2423,19 +2427,19 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
         {
             Content = new StringContent("encrypted payload", Encoding.UTF8, "text/plain")
         };
-        request.Headers.TryAddWithoutValidation("x-amz-server-side-encryption", "aws:kms");
+        request.Headers.TryAddWithoutValidation("x-amz-server-side-encryption", headerValue);
         request.Headers.TryAddWithoutValidation("x-amz-server-side-encryption-aws-kms-key-id", "alias/test-key");
         request.Headers.TryAddWithoutValidation("x-amz-server-side-encryption-context", encryptionContext);
 
         var response = await client.SendAsync(request);
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
-        Assert.Equal("aws:kms", Assert.Single(response.Headers.GetValues("x-amz-server-side-encryption")));
+        Assert.Equal(headerValue, Assert.Single(response.Headers.GetValues("x-amz-server-side-encryption")));
         Assert.Equal("alias/test-key", Assert.Single(response.Headers.GetValues("x-amz-server-side-encryption-aws-kms-key-id")));
 
         var putRequest = storageService.LastPutObjectRequest ?? throw new Xunit.Sdk.XunitException("Expected PUT request to reach the storage service.");
         var serverSideEncryption = putRequest.ServerSideEncryption ?? throw new Xunit.Sdk.XunitException("Expected PUT request server-side encryption settings.");
-        Assert.Equal(ObjectServerSideEncryptionAlgorithm.Kms, serverSideEncryption.Algorithm);
+        Assert.Equal(expectedAlgorithm, serverSideEncryption.Algorithm);
         Assert.Equal("alias/test-key", serverSideEncryption.KeyId);
         Assert.Equal("alpha", serverSideEncryption.Context!["tenant"]);
         Assert.Equal("test", serverSideEncryption.Context["environment"]);
@@ -2513,6 +2517,31 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
     }
 
     [Fact]
+    public async Task S3CompatiblePutObject_WithEmptyServerSideEncryptionContextValue_ReturnsInvalidArgument()
+    {
+        var storageService = new RecordingStorageService();
+        await using var isolatedClient = await CreateStorageServiceIsolatedClientAsync(storageService);
+        using var client = isolatedClient.Client;
+
+        using var request = new HttpRequestMessage(HttpMethod.Put, "/integrated-s3/sse-context-bucket/docs/empty-context-value.txt")
+        {
+            Content = new StringContent("empty context value", Encoding.UTF8, "text/plain")
+        };
+        request.Headers.TryAddWithoutValidation("x-amz-server-side-encryption", "aws:kms:dsse");
+        request.Headers.TryAddWithoutValidation(
+            "x-amz-server-side-encryption-context",
+            Convert.ToBase64String(Encoding.UTF8.GetBytes("""{"tenant":""}""")));
+
+        var response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        var document = XDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal("InvalidArgument", GetRequiredElementValue(document, "Code"));
+        Assert.Contains("non-empty string values", GetRequiredElementValue(document, "Message"));
+        Assert.Null(storageService.LastPutObjectRequest);
+    }
+
+    [Fact]
     public async Task S3CompatiblePutObject_WithUnsupportedServerSideEncryptionHeader_ReturnsNotImplemented()
     {
         var storageService = new RecordingStorageService();
@@ -2582,9 +2611,14 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
     }
 
     [Theory]
-    [InlineData("GET")]
-    [InlineData("HEAD")]
-    public async Task S3CompatibleReadObject_EmitsServerSideEncryptionHeaders(string method)
+    [InlineData("GET", ObjectServerSideEncryptionAlgorithm.Kms, "aws:kms")]
+    [InlineData("HEAD", ObjectServerSideEncryptionAlgorithm.Kms, "aws:kms")]
+    [InlineData("GET", ObjectServerSideEncryptionAlgorithm.KmsDsse, "aws:kms:dsse")]
+    [InlineData("HEAD", ObjectServerSideEncryptionAlgorithm.KmsDsse, "aws:kms:dsse")]
+    public async Task S3CompatibleReadObject_EmitsServerSideEncryptionHeaders(
+        string method,
+        ObjectServerSideEncryptionAlgorithm algorithm,
+        string expectedHeaderValue)
     {
         var objectInfo = new ObjectInfo
         {
@@ -2596,7 +2630,7 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
             LastModifiedUtc = DateTimeOffset.Parse("2026-03-01T00:00:00Z", CultureInfo.InvariantCulture),
             ServerSideEncryption = new ObjectServerSideEncryptionInfo
             {
-                Algorithm = ObjectServerSideEncryptionAlgorithm.Kms,
+                Algorithm = algorithm,
                 KeyId = "alias/read-key"
             }
         };
@@ -2617,7 +2651,7 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
         var response = await client.SendAsync(request);
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
-        Assert.Equal("aws:kms", Assert.Single(response.Headers.GetValues("x-amz-server-side-encryption")));
+        Assert.Equal(expectedHeaderValue, Assert.Single(response.Headers.GetValues("x-amz-server-side-encryption")));
         Assert.Equal("alias/read-key", Assert.Single(response.Headers.GetValues("x-amz-server-side-encryption-aws-kms-key-id")));
 
         if (string.Equals(method, HttpMethod.Get.Method, StringComparison.Ordinal)) {

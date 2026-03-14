@@ -186,6 +186,21 @@ public sealed class IntegratedS3BootstrapTests
         var services = new ServiceCollection();
         services.AddIntegratedS3(options => {
             options.Capabilities.ObjectCrud = StorageCapabilitySupport.Native;
+            options.Capabilities.ServerSideEncryptionDetails = new StorageServerSideEncryptionDescriptor
+            {
+                Variants =
+                [
+                    new StorageServerSideEncryptionVariantDescriptor
+                    {
+                        Algorithm = ObjectServerSideEncryptionAlgorithm.KmsDsse,
+                        RequestStyle = StorageServerSideEncryptionRequestStyle.Managed,
+                        SupportedRequestOperations = [StorageServerSideEncryptionRequestOperation.PutObject],
+                        SupportsResponseMetadata = true,
+                        SupportsKeyId = true,
+                        SupportsContext = true
+                    }
+                ]
+            };
         });
 
         await using var serviceProvider = services.BuildServiceProvider();
@@ -193,10 +208,13 @@ public sealed class IntegratedS3BootstrapTests
 
         var first = await provider.GetCapabilitiesAsync();
         first.ObjectCrud = StorageCapabilitySupport.Unsupported;
+        first.ServerSideEncryptionDetails = new StorageServerSideEncryptionDescriptor();
 
         var second = await provider.GetCapabilitiesAsync();
 
         Assert.Equal(StorageCapabilitySupport.Native, second.ObjectCrud);
+        var variant = Assert.Single(second.ServerSideEncryptionDetails.Variants);
+        Assert.Equal(ObjectServerSideEncryptionAlgorithm.KmsDsse, variant.Algorithm);
     }
 
     [Fact]

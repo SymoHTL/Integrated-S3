@@ -2062,6 +2062,7 @@ public sealed class DiskStorageServiceTests
 
         var capabilities = await storageService.GetCapabilitiesAsync();
         Assert.Equal(IntegratedS3.Abstractions.Capabilities.StorageCapabilitySupport.Unsupported, capabilities.ServerSideEncryption);
+        Assert.Empty(capabilities.ServerSideEncryptionDetails.Variants);
 
         var providerMode = await storageService.GetProviderModeAsync();
         Assert.Equal(IntegratedS3.Abstractions.Models.StorageProviderMode.Hybrid, providerMode);
