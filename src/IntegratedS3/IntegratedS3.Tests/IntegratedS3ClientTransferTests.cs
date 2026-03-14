@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.Http.Headers;
+using System.Security.Cryptography;
 using System.Security.Claims;
 using System.Text;
 using IntegratedS3.Abstractions.Results;
@@ -89,6 +90,57 @@ public sealed class IntegratedS3ClientTransferTests(WebUiApplicationFactory fact
     }
 
     [Fact]
+    public async Task UploadFileAsync_WithChecksum_ThenDownloadToFileWithResumeAsync_RoundTripsLargeContent()
+    {
+        const string bucketName = "transfer-large-checksum-bucket";
+        const string objectKey = "docs/transfer-large-checksum.bin";
+
+        await using var isolatedClient = await _factory.CreateIsolatedClientAsync(ConfigurePresignHost("transfer-large-access", "transfer-large-secret"));
+
+        using var authClient = isolatedClient.Client;
+        authClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("TestHeader", "storage.read storage.write");
+
+        using var transferClient = isolatedClient.CreateAdditionalClient();
+
+        var integratedClient = new IntegratedS3Client(authClient);
+
+        Assert.Equal(HttpStatusCode.Created, (await authClient.PutAsync($"/integrated-s3/buckets/{bucketName}", content: null)).StatusCode);
+
+        var tempDir = Path.Combine(Path.GetTempPath(), "IntegratedS3.ClientTransferTests", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempDir);
+        try {
+            var uploadPath = Path.Combine(tempDir, "large-upload.bin");
+            var downloadPath = Path.Combine(tempDir, "large-download.bin");
+            var payload = CreateDeterministicPayload(512 * 1024 + 137);
+            await File.WriteAllBytesAsync(uploadPath, payload);
+
+            await integratedClient.UploadFileAsync(
+                transferClient,
+                bucketName,
+                objectKey,
+                uploadPath,
+                expiresInSeconds: 300,
+                checksumAlgorithm: IntegratedS3TransferChecksumAlgorithm.Sha256,
+                contentType: "application/octet-stream");
+
+            var partialLength = payload.Length / 3;
+            await File.WriteAllBytesAsync(downloadPath, payload.AsSpan(0, partialLength).ToArray());
+
+            await integratedClient.DownloadToFileWithResumeAsync(
+                transferClient,
+                bucketName,
+                objectKey,
+                downloadPath,
+                expiresInSeconds: 300);
+
+            Assert.Equal(payload, await File.ReadAllBytesAsync(downloadPath));
+        }
+        finally {
+            Directory.Delete(tempDir, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task UploadStreamAsync_WithoutContentType_SucceedsAndBodyIsPreserved()
     {
         const string bucketName = "transfer-no-ct-bucket";
@@ -113,6 +165,69 @@ public sealed class IntegratedS3ClientTransferTests(WebUiApplicationFactory fact
         await integratedClient.DownloadToStreamAsync(transferClient, bucketName, objectKey, downloadStream, expiresInSeconds: 300);
 
         Assert.Equal(payload, downloadStream.ToArray());
+    }
+
+    // -------------------------------------------------------------------------
+    // Default behavior — overloads without preferred access mode leave selection explicit
+    // -------------------------------------------------------------------------
+
+    [Fact]
+    public async Task DownloadToStreamAsync_WithoutPreferredAccessMode_LeavesPreferenceUnset()
+    {
+        var capturingClient = new CapturingIntegratedS3Client();
+        await using var destination = new MemoryStream();
+
+        await capturingClient.DownloadToStreamAsync(
+            capturingClient.CreateNoOpTransferClient(),
+            "bucket",
+            "key",
+            destination,
+            expiresInSeconds: 60);
+
+        Assert.Equal(StoragePresignOperation.GetObject, capturingClient.LastRequest?.Operation);
+        Assert.Null(capturingClient.LastRequest?.PreferredAccessMode);
+    }
+
+    [Fact]
+    public async Task UploadStreamAsync_WithoutPreferredAccessMode_LeavesPreferenceUnset()
+    {
+        var capturingClient = new CapturingIntegratedS3Client();
+        await using var content = new MemoryStream("payload"u8.ToArray());
+
+        await capturingClient.UploadStreamAsync(
+            capturingClient.CreateNoOpTransferClient(),
+            "bucket",
+            "key",
+            content,
+            expiresInSeconds: 60);
+
+        Assert.Equal(StoragePresignOperation.PutObject, capturingClient.LastRequest?.Operation);
+        Assert.Null(capturingClient.LastRequest?.PreferredAccessMode);
+    }
+
+    [Fact]
+    public async Task DownloadToFileWithResumeAsync_WithoutPreferredAccessMode_LeavesPreferenceUnset()
+    {
+        var capturingClient = new CapturingIntegratedS3Client();
+        var tempDir = CreateTransferTempDirectory();
+        Directory.CreateDirectory(tempDir);
+
+        try {
+            var destinationPath = Path.Combine(tempDir, "default-access-mode.txt");
+
+            await capturingClient.DownloadToFileWithResumeAsync(
+                capturingClient.CreateNoOpTransferClient(),
+                "bucket",
+                "key",
+                destinationPath,
+                expiresInSeconds: 60);
+
+            Assert.Equal(StoragePresignOperation.GetObject, capturingClient.LastRequest?.Operation);
+            Assert.Null(capturingClient.LastRequest?.PreferredAccessMode);
+        }
+        finally {
+            Directory.Delete(tempDir, recursive: true);
+        }
     }
 
     // -------------------------------------------------------------------------
@@ -373,6 +488,24 @@ public sealed class IntegratedS3ClientTransferTests(WebUiApplicationFactory fact
     }
 
     [Fact]
+    public async Task UploadStreamAsync_WithChecksumAndNonSeekableStream_Throws()
+    {
+        var capturingClient = new CapturingIntegratedS3Client();
+        using var content = new NonSeekableMemoryStream("payload"u8.ToArray());
+
+        var exception = await Assert.ThrowsAsync<NotSupportedException>(() =>
+            capturingClient.UploadStreamAsync(
+                capturingClient.CreateNoOpTransferClient(),
+                "bucket",
+                "key",
+                content,
+                expiresInSeconds: 60,
+                checksumAlgorithm: IntegratedS3TransferChecksumAlgorithm.Sha256));
+
+        Assert.Contains("seekable", exception.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public async Task DownloadToStreamAsync_NullClient_Throws()
     {
         await Assert.ThrowsAsync<ArgumentNullException>(() =>
@@ -491,6 +624,83 @@ public sealed class IntegratedS3ClientTransferTests(WebUiApplicationFactory fact
         finally {
             Directory.Delete(tempDir, recursive: true);
         }
+    }
+
+    [Fact]
+    public async Task UploadStreamAsync_WithChecksum_ResponseChecksumMismatch_ThrowsInvalidDataException()
+    {
+        var capturingClient = new CapturingIntegratedS3Client();
+        await using var content = new MemoryStream(Encoding.UTF8.GetBytes("payload"));
+        using var transferClient = new HttpClient(new DelegateHttpMessageHandler((request, cancellationToken) => {
+            var response = new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new ByteArrayContent([])
+            };
+            response.Headers.TryAddWithoutValidation("x-amz-checksum-sha256", "wrong-checksum==");
+            return Task.FromResult(response);
+        }));
+
+        var exception = await Assert.ThrowsAsync<InvalidDataException>(() =>
+            capturingClient.UploadStreamAsync(
+                transferClient,
+                "bucket",
+                "key",
+                content,
+                expiresInSeconds: 60,
+                checksumAlgorithm: IntegratedS3TransferChecksumAlgorithm.Sha256,
+                contentType: "application/octet-stream"));
+
+        Assert.Contains("SHA256", exception.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal("sha256", capturingClient.LastRequest?.ChecksumAlgorithm);
+        Assert.NotNull(capturingClient.LastRequest?.Checksums);
+    }
+
+    [Fact]
+    public async Task DownloadToStreamAsync_WithMismatchedChecksum_ThrowsInvalidDataException()
+    {
+        var capturingClient = new CapturingIntegratedS3Client();
+        await using var destination = new MemoryStream();
+        using var transferClient = new HttpClient(new DelegateHttpMessageHandler((request, cancellationToken) => {
+            var response = new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new ByteArrayContent(Encoding.UTF8.GetBytes("payload"))
+            };
+            response.Headers.TryAddWithoutValidation("x-amz-checksum-sha256", ComputeSha256Base64("different"));
+            return Task.FromResult(response);
+        }));
+
+        await Assert.ThrowsAsync<InvalidDataException>(() =>
+            capturingClient.DownloadToStreamAsync(
+                transferClient,
+                "bucket",
+                "key",
+                destination,
+                expiresInSeconds: 60));
+    }
+
+    [Fact]
+    public async Task DownloadToStreamAsync_WithCompositeChecksumHeader_SkipsValidation()
+    {
+        var capturingClient = new CapturingIntegratedS3Client();
+        await using var destination = new MemoryStream();
+        using var transferClient = new HttpClient(new DelegateHttpMessageHandler((request, cancellationToken) => {
+            var response = new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new ByteArrayContent(Encoding.UTF8.GetBytes("payload"))
+            };
+            response.Headers.TryAddWithoutValidation("x-amz-checksum-sha256", "composite-value-2");
+            response.Headers.TryAddWithoutValidation("x-amz-checksum-type", "COMPOSITE");
+            return Task.FromResult(response);
+        }));
+
+        await capturingClient.DownloadToStreamAsync(
+            transferClient,
+            "bucket",
+            "key",
+            destination,
+            expiresInSeconds: 60);
+
+        Assert.Equal("payload", Encoding.UTF8.GetString(destination.ToArray()));
     }
 
     // -------------------------------------------------------------------------
@@ -703,7 +913,7 @@ public sealed class IntegratedS3ClientTransferTests(WebUiApplicationFactory fact
                 return Task.FromResult(response);
             }));
 
-            var exception = await Assert.ThrowsAsync<HttpRequestException>(() =>
+            var exception = await Assert.ThrowsAsync<IOException>(() =>
                 capturingClient.DownloadToFileWithResumeAsync(
                     transferClient,
                     "bucket",
@@ -711,9 +921,8 @@ public sealed class IntegratedS3ClientTransferTests(WebUiApplicationFactory fact
                     destPath,
                     expiresInSeconds: 60));
 
-            Assert.IsType<IOException>(exception.InnerException);
             Assert.True(File.Exists(destPath), "Pre-existing partial files should be preserved on resume failure.");
-            Assert.Equal("partial-ta", await File.ReadAllTextAsync(destPath));
+            Assert.Equal("partial-", await File.ReadAllTextAsync(destPath));
         }
         finally {
             Directory.Delete(tempDir, recursive: true);
@@ -737,7 +946,7 @@ public sealed class IntegratedS3ClientTransferTests(WebUiApplicationFactory fact
                         new IOException("Simulated new file failure.")))
                 })));
 
-            var exception = await Assert.ThrowsAsync<HttpRequestException>(() =>
+            var exception = await Assert.ThrowsAsync<IOException>(() =>
                 capturingClient.DownloadToFileWithResumeAsync(
                     transferClient,
                     "bucket",
@@ -745,7 +954,7 @@ public sealed class IntegratedS3ClientTransferTests(WebUiApplicationFactory fact
                     destPath,
                     expiresInSeconds: 60));
 
-            Assert.IsType<IOException>(exception.InnerException);
+            Assert.Equal("Simulated new file failure.", exception.Message);
             Assert.False(File.Exists(destPath), "Files created during this call should be removed when the transfer fails.");
         }
         finally {
@@ -759,6 +968,28 @@ public sealed class IntegratedS3ClientTransferTests(WebUiApplicationFactory fact
 
     private static string CreateTransferTempDirectory()
         => Path.Combine(Path.GetTempPath(), "IntegratedS3.ClientTransferTests", Guid.NewGuid().ToString("N"));
+
+    private static byte[] CreateDeterministicPayload(int length)
+    {
+        var payload = new byte[length];
+        for (var index = 0; index < payload.Length; index++) {
+            payload[index] = (byte)('A' + (index % 23));
+        }
+
+        return payload;
+    }
+
+    private static string ComputeSha256Base64(string content)
+    {
+        ArgumentNullException.ThrowIfNull(content);
+        return ComputeSha256Base64(Encoding.UTF8.GetBytes(content));
+    }
+
+    private static string ComputeSha256Base64(byte[] payload)
+    {
+        ArgumentNullException.ThrowIfNull(payload);
+        return Convert.ToBase64String(SHA256.HashData(payload));
+    }
 
     /// <summary>
     /// Configures an isolated test host with SigV4 + TestHeader authentication
@@ -895,6 +1126,11 @@ public sealed class IntegratedS3ClientTransferTests(WebUiApplicationFactory fact
             ArgumentNullException.ThrowIfNull(request);
             return handler(request, cancellationToken);
         }
+    }
+
+    private sealed class NonSeekableMemoryStream(byte[] payload) : MemoryStream(payload)
+    {
+        public override bool CanSeek => false;
     }
 
     private sealed class ThrowingReadStream(

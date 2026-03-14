@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <Description>Hot-path benchmark harness and baseline reporting for IntegratedS3.</Description>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\IntegratedS3.Abstractions\IntegratedS3.Abstractions.csproj" />
+    <ProjectReference Include="..\IntegratedS3.Protocol\IntegratedS3.Protocol.csproj" />
+    <ProjectReference Include="..\IntegratedS3.Core\IntegratedS3.Core.csproj" />
+    <ProjectReference Include="..\IntegratedS3.AspNetCore\IntegratedS3.AspNetCore.csproj" />
+    <ProjectReference Include="..\IntegratedS3.Provider.Disk\IntegratedS3.Provider.Disk.csproj" />
+  </ItemGroup>
+</Project>
