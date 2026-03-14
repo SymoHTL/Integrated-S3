@@ -1279,7 +1279,7 @@ This section is the execution board for the remaining implementation backlog. As
   - health-aware reads now combine `IStorageBackendHealthEvaluator`, dynamic snapshots, and optional `IStorageBackendHealthProbe` probing so recently unhealthy providers can be deprioritized and later reconsidered for read preference, while replicas with outstanding repairs are avoided by default unless explicitly configured otherwise
   - strict `WriteThroughAll` now preflights required replicas for health/currentness before mutating the primary, and post-primary partial failures are recorded as repair backlog entries instead of being rolled back or silently normalized
   - the admin HTTP surface now exposes read-only repair-backlog visibility at `GET /integrated-s3/admin/repairs`, including optional `replicaBackend` filtering and route-group auth/endpoint-toggle coverage
-  - focused orchestration coverage now locks in async replica recording/dispatch, unhealthy-replica preflight, outstanding-repair read behavior, partial-write backlog semantics, failed-repair visibility, multi-replica dispatch-recording failure isolation, mixed replay success/failure, and backlog growth for only the replicas that remain stale
+  - focused orchestration coverage now locks in async replica recording/dispatch, unhealthy-replica preflight, outstanding-repair read behavior, partial-write backlog semantics, failed-repair visibility, multi-replica dispatch-recording failure isolation, mixed replay success/failure, backlog growth for only the replicas that remain stale, and broader multi-replica repair semantics for bucket versioning, bucket CORS deletion, object-tag deletion, and write-through bucket-CORS partial failures
 - Current semantics and boundaries:
   - replicas with outstanding repairs are treated as not current for strict write-through preflight and are excluded from replica-preferred reads by default, but that remains a tracked divergence signal rather than a blanket durability proof that every replica is fully caught up
   - unhealthy providers affect read routing today and repair backlog visibility is now exposed on the admin surface, but health state still does not imply automatic async replay completion, provider eviction, or topology mutation
@@ -1291,7 +1291,7 @@ This section is the execution board for the remaining implementation backlog. As
   - add richer reconciliation and divergence-repair semantics for content, metadata, and version drift beyond the current backlog/dispatcher scaffold
   - add optional host integrations such as mirror replay, orphan detection, checksum verification, multipart cleanup, index compaction, and expired-artifact cleanup without coupling providers or Core to a fixed hosting model
   - expand admin visibility beyond repair backlog into provider health, replica lag, and richer repair diagnostics without coupling providers to a fixed hosting model
-  - broaden failure-semantics and multi-provider fault-injection coverage beyond the focused async-replication/backlog/read-policy scenarios already covered
+  - continue fault-injection hardening beyond the current unhealthy-provider, async-replication/backlog/read-policy, bucket-versioning/CORS/tag-delete repair, and write-through delete scenarios into backlog-saturation, topology-change, and richer repair-diagnostics slices
 
 ### Track G — Advanced S3 feature slices
 
@@ -1324,7 +1324,7 @@ This section is the execution board for the remaining implementation backlog. As
 - Status update:
   - `IntegratedS3SigV4ConformanceTests` now cover presigned bucket-versioning reads, presigned historical-version reads, and presigned expiry/clock-skew XML error behavior, while `IntegratedS3SigV4ProtocolTests` lock in canonical empty-value subresource signing.
   - `IntegratedS3HttpEndpointsTests` now cover unsupported mixed bucket subresources and multipart `encoding-type=url` rejection, and `IntegratedS3AwsSdkCompatibilityTests` now include version-id-aware metadata/read coverage.
-  - `IntegratedS3CoreOrchestrationTests` now cover provider-unavailable read failover, no failover on not-found, unhealthy snapshot expiry recovery, probe-timeout handling, async replica recording/dispatch, unhealthy-replica preflight, outstanding-repair read policy, partial-write backlog semantics, failed-repair visibility, multi-replica dispatch-recording failure isolation, mixed replay success/failure, and backlog growth for replicas that remain stale.
+  - `IntegratedS3CoreOrchestrationTests` now cover provider-unavailable read failover, no failover on not-found, unhealthy snapshot expiry recovery, probe-timeout handling, async replica recording/dispatch, unhealthy-replica preflight, outstanding-repair read policy, partial-write backlog semantics, failed-repair visibility, multi-replica dispatch-recording failure isolation, mixed replay success/failure, backlog growth for replicas that remain stale, and broader repair/reconciliation fault injection across bucket versioning, bucket-CORS deletion, object-tag deletion, and write-through bucket-CORS delete failures.
   - `src\IntegratedS3\WebUi` now has a dedicated reference-host guide in `docs/webui-reference-host.md`, with local sample storage kept under `App_Data` and excluded from build/publish outputs.
   - CI automation now lives in `.github\workflows\trackh-publish-aot-ci.yml`, and `eng\Invoke-AotPublishValidation.ps1` enforces the current self-contained publish warning posture without depending on exact line numbers.
 - Verification status (March 2026):
@@ -1333,7 +1333,7 @@ This section is the execution board for the remaining implementation backlog. As
   - `dotnet publish -c Release --self-contained src\IntegratedS3\WebUi\WebUi.csproj` passed in the current Track E/H worktree, and `eng\Invoke-AotPublishValidation.ps1` now tracks the remaining Minimal API / trimming-sensitive warning posture without depending on exact line numbers.
 - Remaining scope:
   - extend conformance beyond the current versioned-read, presigned-expiry/clock-skew, and AWS SDK version-id coverage into the remaining protocol edge cases and broader client-compatibility scenarios
-  - extend fault-injection beyond the current unhealthy-provider, async-replication/backlog, partial-write-through, and newly added multi-replica replay coverage into broader repair/reconciliation scenarios
+  - extend fault-injection beyond the current unhealthy-provider, async-replication/backlog, partial-write-through, multi-replica replay, bucket-versioning/CORS/tag-delete repair, and write-through bucket-CORS delete coverage into backlog-saturation, topology-change, and other durable repair/reconciliation scenarios
   - add structured logs, metrics, traces, correlation IDs, provider tags, auth-failure visibility, mirror-lag visibility, and reconciliation-backlog visibility
   - benchmark the hot paths called out in this plan and track throughput, latency, allocation, and provider-breakdown baselines
   - keep the new trimming/AOT publish automation in CI aligned with the supported host surface and reduce or document the remaining publish warnings alongside benchmark baselines
