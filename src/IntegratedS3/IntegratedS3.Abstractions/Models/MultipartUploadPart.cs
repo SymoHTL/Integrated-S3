@@ -11,4 +11,6 @@ public sealed class MultipartUploadPart
     public DateTimeOffset LastModifiedUtc { get; init; }
 
     public IReadOnlyDictionary<string, string>? Checksums { get; init; }
+
+    public string? CopySourceVersionId { get; init; }
 }

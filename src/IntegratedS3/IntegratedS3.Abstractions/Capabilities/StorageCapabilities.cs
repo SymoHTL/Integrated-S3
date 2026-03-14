@@ -56,6 +56,9 @@ public sealed class StorageCapabilities
     /// <summary>Server-side encryption request and response behavior.</summary>
     public StorageCapabilitySupport ServerSideEncryption { get; set; } = StorageCapabilitySupport.Unsupported;
 
+    /// <summary>Supported server-side-encryption variants and request-style details.</summary>
+    public StorageServerSideEncryptionDescriptor ServerSideEncryptionDetails { get; set; } = new();
+
     /// <summary>Checksum validation, persistence, or exposure.</summary>
     public StorageCapabilitySupport Checksums { get; set; } = StorageCapabilitySupport.Unsupported;
 

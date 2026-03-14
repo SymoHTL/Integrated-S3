@@ -22,9 +22,29 @@ public sealed class CopyObjectRequest
 
     public DateTimeOffset? SourceIfUnmodifiedSinceUtc { get; init; }
 
+    public CopyObjectMetadataDirective MetadataDirective { get; init; } = CopyObjectMetadataDirective.Copy;
+
+    public string? ContentType { get; init; }
+
+    public string? CacheControl { get; init; }
+
+    public string? ContentDisposition { get; init; }
+
+    public string? ContentEncoding { get; init; }
+
+    public string? ContentLanguage { get; init; }
+
+    public DateTimeOffset? ExpiresUtc { get; init; }
+
+    public IReadOnlyDictionary<string, string>? Metadata { get; init; }
+
     public ObjectServerSideEncryptionSettings? SourceServerSideEncryption { get; init; }
 
     public ObjectServerSideEncryptionSettings? DestinationServerSideEncryption { get; init; }
+
+    public ObjectTaggingDirective TaggingDirective { get; init; } = ObjectTaggingDirective.Copy;
+
+    public IReadOnlyDictionary<string, string>? Tags { get; init; }
 
     public bool OverwriteIfExists { get; init; } = true;
 }

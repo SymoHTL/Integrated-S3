@@ -6,10 +6,10 @@ namespace IntegratedS3.Client;
 /// <summary>
 /// Default HTTP client for the IntegratedS3 presign endpoint.
 /// </summary>
-public sealed class IntegratedS3Client(HttpClient httpClient, string routePrefix = "integrated-s3") : IIntegratedS3Client
+public sealed class IntegratedS3Client(HttpClient httpClient, string routePrefix = IntegratedS3ClientOptions.DefaultRoutePrefix) : IIntegratedS3Client
 {
     private readonly HttpClient _httpClient = httpClient ?? throw new ArgumentNullException(nameof(httpClient));
-    private readonly string _routePrefix = NormalizeRoutePrefix(routePrefix);
+    private readonly string _routePrefix = IntegratedS3ClientPathUtilities.NormalizeRoutePrefix(routePrefix);
 
     /// <summary>
     /// Requests a presigned object operation from the configured route prefix.
@@ -59,12 +59,4 @@ public sealed class IntegratedS3Client(HttpClient httpClient, string routePrefix
         throw new HttpRequestException(message, inner: null, statusCode: response.StatusCode);
     }
 
-    private static string NormalizeRoutePrefix(string? routePrefix)
-    {
-        if (string.IsNullOrWhiteSpace(routePrefix)) {
-            return "integrated-s3";
-        }
-
-        return routePrefix.Trim().Trim('/');
-    }
 }

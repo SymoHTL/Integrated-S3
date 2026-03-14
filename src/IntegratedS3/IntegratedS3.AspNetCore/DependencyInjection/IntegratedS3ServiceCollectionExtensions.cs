@@ -9,6 +9,7 @@ using Microsoft.AspNetCore.Http.Json;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using System.Diagnostics.CodeAnalysis;
 
 namespace IntegratedS3.AspNetCore.DependencyInjection;
 
@@ -29,6 +30,8 @@ public static class IntegratedS3ServiceCollectionExtensions
     /// <summary>
     /// Registers the IntegratedS3 ASP.NET host surface by binding the <c>IntegratedS3</c> configuration section.
     /// </summary>
+    [RequiresUnreferencedCode("Configuration binding for IntegratedS3 options may require additional metadata preservation when trimming application code.")]
+    [RequiresDynamicCode("Configuration binding for IntegratedS3 options may require runtime-generated code when AOT compiling.")]
     public static IServiceCollection AddIntegratedS3(this IServiceCollection services, IConfiguration configuration)
     {
         ArgumentNullException.ThrowIfNull(services);
@@ -39,6 +42,8 @@ public static class IntegratedS3ServiceCollectionExtensions
     /// <summary>
     /// Registers the IntegratedS3 ASP.NET host surface by binding configuration and then applying additional option overrides.
     /// </summary>
+    [RequiresUnreferencedCode("Configuration binding for IntegratedS3 options may require additional metadata preservation when trimming application code.")]
+    [RequiresDynamicCode("Configuration binding for IntegratedS3 options may require runtime-generated code when AOT compiling.")]
     public static IServiceCollection AddIntegratedS3(this IServiceCollection services, IConfiguration configuration, Action<IntegratedS3Options> configure)
     {
         ArgumentNullException.ThrowIfNull(services);
@@ -51,6 +56,8 @@ public static class IntegratedS3ServiceCollectionExtensions
     /// <summary>
     /// Registers the IntegratedS3 ASP.NET host surface from an explicit configuration section.
     /// </summary>
+    [RequiresUnreferencedCode("Configuration binding for IntegratedS3 options may require additional metadata preservation when trimming application code.")]
+    [RequiresDynamicCode("Configuration binding for IntegratedS3 options may require runtime-generated code when AOT compiling.")]
     public static IServiceCollection AddIntegratedS3(this IServiceCollection services, IConfigurationSection section)
     {
         ArgumentNullException.ThrowIfNull(services);
@@ -67,6 +74,8 @@ public static class IntegratedS3ServiceCollectionExtensions
     /// <summary>
     /// Registers the IntegratedS3 ASP.NET host surface from an explicit configuration section and an additional options delegate.
     /// </summary>
+    [RequiresUnreferencedCode("Configuration binding for IntegratedS3 options may require additional metadata preservation when trimming application code.")]
+    [RequiresDynamicCode("Configuration binding for IntegratedS3 options may require runtime-generated code when AOT compiling.")]
     public static IServiceCollection AddIntegratedS3(this IServiceCollection services, IConfigurationSection section, Action<IntegratedS3Options> configure)
     {
         ArgumentNullException.ThrowIfNull(services);
@@ -92,6 +101,38 @@ public static class IntegratedS3ServiceCollectionExtensions
 
         services.AddOptions<IntegratedS3Options>()
             .Configure(configure);
+
+        return services.AddIntegratedS3CoreServices();
+    }
+
+    /// <summary>
+    /// Adds a provider descriptor using simple name/kind arguments.
+    /// </summary>
+    /// <summary>
+    /// Registers a custom storage backend type as a singleton and wires the standard IntegratedS3 core services.
+    /// </summary>
+    public static IServiceCollection AddIntegratedS3Backend<TBackend>(this IServiceCollection services)
+        where TBackend : class, IStorageBackend
+    {
+        ArgumentNullException.ThrowIfNull(services);
+
+        services.AddSingleton<IStorageBackend, TBackend>();
+
+        return services.AddIntegratedS3CoreServices();
+    }
+
+    /// <summary>
+    /// Registers a custom storage backend through a factory and wires the standard IntegratedS3 core services.
+    /// </summary>
+    public static IServiceCollection AddIntegratedS3Backend<TBackend>(
+        this IServiceCollection services,
+        Func<IServiceProvider, TBackend> implementationFactory)
+        where TBackend : class, IStorageBackend
+    {
+        ArgumentNullException.ThrowIfNull(services);
+        ArgumentNullException.ThrowIfNull(implementationFactory);
+
+        services.AddSingleton<IStorageBackend>(serviceProvider => implementationFactory(serviceProvider));
 
         return services.AddIntegratedS3CoreServices();
     }
@@ -362,10 +403,35 @@ public static class IntegratedS3ServiceCollectionExtensions
             Cors = capabilities.Cors,
             ObjectLock = capabilities.ObjectLock,
             ServerSideEncryption = capabilities.ServerSideEncryption,
+            ServerSideEncryptionDetails = CloneServerSideEncryptionDetails(capabilities.ServerSideEncryptionDetails),
             Checksums = capabilities.Checksums,
             XmlErrors = capabilities.XmlErrors,
             PathStyleAddressing = capabilities.PathStyleAddressing,
             VirtualHostedStyleAddressing = capabilities.VirtualHostedStyleAddressing
+        };
+    }
+
+    private static Abstractions.Capabilities.StorageServerSideEncryptionDescriptor CloneServerSideEncryptionDetails(Abstractions.Capabilities.StorageServerSideEncryptionDescriptor serverSideEncryptionDetails)
+    {
+        ArgumentNullException.ThrowIfNull(serverSideEncryptionDetails);
+
+        return new Abstractions.Capabilities.StorageServerSideEncryptionDescriptor
+        {
+            Variants = serverSideEncryptionDetails.Variants.Count == 0
+                ? []
+                : serverSideEncryptionDetails.Variants
+                    .Select(static variant => new Abstractions.Capabilities.StorageServerSideEncryptionVariantDescriptor
+                    {
+                        Algorithm = variant.Algorithm,
+                        RequestStyle = variant.RequestStyle,
+                        SupportedRequestOperations = variant.SupportedRequestOperations.Count == 0
+                            ? []
+                            : [.. variant.SupportedRequestOperations],
+                        SupportsResponseMetadata = variant.SupportsResponseMetadata,
+                        SupportsKeyId = variant.SupportsKeyId,
+                        SupportsContext = variant.SupportsContext
+                    })
+                    .ToArray()
         };
     }
 }

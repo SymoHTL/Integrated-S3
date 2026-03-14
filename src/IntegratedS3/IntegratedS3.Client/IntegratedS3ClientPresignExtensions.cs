@@ -5,6 +5,13 @@ namespace IntegratedS3.Client;
 /// <summary>
 /// Convenience helpers that construct <see cref="StoragePresignRequest"/> values for common object operations.
 /// </summary>
+/// <remarks>
+/// Overloads without a <c>preferredAccessMode</c> parameter intentionally keep access-mode selection
+/// explicit at the caller boundary. They do not infer <see cref="StorageAccessMode.Direct" /> or
+/// <see cref="StorageAccessMode.Delegated" /> from service/provider discovery and therefore preserve
+/// the server's proxy-mode default. Callers opt into non-proxy flows through the overloads that accept
+/// <see cref="StorageAccessMode" />.
+/// </remarks>
 public static class IntegratedS3ClientPresignExtensions
 {
     /// <summary>
@@ -86,6 +93,36 @@ public static class IntegratedS3ClientPresignExtensions
         string bucketName,
         string key,
         int expiresInSeconds,
+        IntegratedS3TransferChecksumAlgorithm checksumAlgorithm,
+        string checksumValue,
+        string? contentType = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(client);
+        ArgumentException.ThrowIfNullOrWhiteSpace(checksumValue);
+
+        var checksumKey = IntegratedS3ClientTransferChecksumHelper.ToProtocolValue(checksumAlgorithm);
+
+        return client.PresignObjectAsync(new StoragePresignRequest
+        {
+            Operation = StoragePresignOperation.PutObject,
+            BucketName = bucketName,
+            Key = key,
+            ExpiresInSeconds = expiresInSeconds,
+            ContentType = contentType,
+            ChecksumAlgorithm = checksumKey,
+            Checksums = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+            {
+                [checksumKey] = checksumValue
+            }
+        }, cancellationToken);
+    }
+
+    public static ValueTask<StoragePresignedRequest> PresignPutObjectAsync(
+        this IIntegratedS3Client client,
+        string bucketName,
+        string key,
+        int expiresInSeconds,
         StorageAccessMode preferredAccessMode,
         string? contentType = null,
         CancellationToken cancellationToken = default)
@@ -99,6 +136,38 @@ public static class IntegratedS3ClientPresignExtensions
             Key = key,
             ExpiresInSeconds = expiresInSeconds,
             ContentType = contentType,
+            PreferredAccessMode = preferredAccessMode
+        }, cancellationToken);
+    }
+
+    public static ValueTask<StoragePresignedRequest> PresignPutObjectAsync(
+        this IIntegratedS3Client client,
+        string bucketName,
+        string key,
+        int expiresInSeconds,
+        StorageAccessMode preferredAccessMode,
+        IntegratedS3TransferChecksumAlgorithm checksumAlgorithm,
+        string checksumValue,
+        string? contentType = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(client);
+        ArgumentException.ThrowIfNullOrWhiteSpace(checksumValue);
+
+        var checksumKey = IntegratedS3ClientTransferChecksumHelper.ToProtocolValue(checksumAlgorithm);
+
+        return client.PresignObjectAsync(new StoragePresignRequest
+        {
+            Operation = StoragePresignOperation.PutObject,
+            BucketName = bucketName,
+            Key = key,
+            ExpiresInSeconds = expiresInSeconds,
+            ContentType = contentType,
+            ChecksumAlgorithm = checksumKey,
+            Checksums = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+            {
+                [checksumKey] = checksumValue
+            },
             PreferredAccessMode = preferredAccessMode
         }, cancellationToken);
     }

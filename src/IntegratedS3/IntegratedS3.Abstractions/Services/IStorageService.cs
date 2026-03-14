@@ -21,6 +21,11 @@ public interface IStorageService
     ValueTask<StorageResult<BucketInfo>> CreateBucketAsync(CreateBucketRequest request, CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Gets the location constraint for a bucket.
+    /// </summary>
+    ValueTask<StorageResult<BucketLocationInfo>> GetBucketLocationAsync(string bucketName, CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Gets the versioning configuration for a bucket.
     /// </summary>
     ValueTask<StorageResult<BucketVersioningInfo>> GetBucketVersioningAsync(string bucketName, CancellationToken cancellationToken = default);
@@ -69,6 +74,11 @@ public interface IStorageService
     /// Asynchronously enumerates in-progress multipart uploads for a bucket.
     /// </summary>
     IAsyncEnumerable<MultipartUploadInfo> ListMultipartUploadsAsync(ListMultipartUploadsRequest request, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Asynchronously enumerates the parts that have been uploaded for a multipart session.
+    /// </summary>
+    IAsyncEnumerable<MultipartUploadPart> ListMultipartUploadPartsAsync(ListMultipartUploadPartsRequest request, CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Reads object metadata and, when successful, returns a response that owns the readable object stream.
