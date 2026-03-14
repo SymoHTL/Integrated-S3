@@ -1991,7 +1991,9 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
         var previousContext = requestContextAccessor.Current;
         requestContextAccessor.Current = new IntegratedS3RequestContext
         {
-            Principal = httpContext.User
+            Principal = httpContext.User,
+            CorrelationId = IntegratedS3AspNetCoreTelemetry.GetOrCreateCorrelationId(httpContext),
+            RequestId = httpContext.TraceIdentifier
         };
 
         try {

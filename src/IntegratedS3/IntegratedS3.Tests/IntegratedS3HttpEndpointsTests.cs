@@ -7,26 +7,28 @@ using System.Text;
 using System.Text.Json;
 using System.Globalization;
 using System.Xml.Linq;
-using IntegratedS3.Abstractions.Models;
 using IntegratedS3.Abstractions.Capabilities;
 using IntegratedS3.Abstractions.Errors;
+using IntegratedS3.Abstractions.Models;
+using IntegratedS3.Abstractions.Observability;
 using IntegratedS3.Abstractions.Requests;
-using IntegratedS3.Abstractions.Results;
 using IntegratedS3.Abstractions.Responses;
+using IntegratedS3.Abstractions.Results;
 using IntegratedS3.Abstractions.Services;
 using IntegratedS3.AspNetCore;
-using IntegratedS3.Client;
 using IntegratedS3.AspNetCore.Endpoints;
+using IntegratedS3.Client;
 using IntegratedS3.Core.Models;
 using IntegratedS3.Core.Services;
 using IntegratedS3.Protocol;
 using IntegratedS3.Tests.Infrastructure;
+using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Builder;
-using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.WebUtilities;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Logging;
 using Xunit;
 
 namespace IntegratedS3.Tests;
@@ -2018,6 +2020,62 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
         Assert.Equal("application/xml", response.Content.Headers.ContentType?.MediaType);
         var errorDocument = XDocument.Parse(await response.Content.ReadAsStringAsync());
         Assert.Equal("SignatureDoesNotMatch", GetRequiredElementValue(errorDocument, "Code"));
+    }
+
+    [Fact]
+    public async Task SigV4Authentication_InvalidSignature_EmitsCorrelationHeaderLogsMetricsAndTrace()
+    {
+        const string accessKeyId = "telemetry-access";
+        const string secretAccessKey = "telemetry-secret";
+        using var observability = new TestObservabilityCollector();
+
+        await using var isolatedClient = await _factory.CreateIsolatedClientAsync(builder => {
+            builder.Logging.ClearProviders();
+            builder.Logging.SetMinimumLevel(LogLevel.Debug);
+            builder.Logging.AddProvider(observability);
+            builder.Services.Configure<IntegratedS3Options>(options => {
+                options.EnableAwsSignatureV4Authentication = true;
+                options.AccessKeyCredentials =
+                [
+                    new IntegratedS3AccessKeyCredential
+                    {
+                        AccessKeyId = accessKeyId,
+                        SecretAccessKey = secretAccessKey,
+                        Scopes = ["storage.write"]
+                    }
+                ];
+            });
+            builder.Services.AddSingleton<IIntegratedS3AuthorizationService, ScopeBasedIntegratedS3AuthorizationService>();
+        });
+
+        using var client = isolatedClient.Client;
+        using var request = CreateSigV4HeaderSignedRequest(HttpMethod.Put, "/integrated-s3/buckets/telemetry-invalid-signature", accessKeyId, secretAccessKey);
+        request.Headers.Remove("Authorization");
+        request.Headers.TryAddWithoutValidation("Authorization", CreateCorruptedAuthorizationHeader(HttpMethod.Put, "/integrated-s3/buckets/telemetry-invalid-signature", accessKeyId, secretAccessKey));
+        request.Headers.TryAddWithoutValidation(IntegratedS3Observability.CorrelationIdHeaderName, "http-correlation-001");
+
+        var response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+        Assert.Equal("http-correlation-001", Assert.Single(response.Headers.GetValues(IntegratedS3Observability.CorrelationIdHeaderName)));
+
+        Assert.Contains(observability.Measurements, measurement =>
+            string.Equals(measurement.InstrumentName, IntegratedS3Observability.Metrics.HttpAuthenticationFailures, StringComparison.Ordinal)
+            && measurement.Tags.TryGetValue(IntegratedS3Observability.Tags.AuthType, out var authType)
+            && string.Equals(authType, "sigv4-header", StringComparison.Ordinal)
+            && measurement.Tags.TryGetValue(IntegratedS3Observability.Tags.ErrorCode, out var errorCode)
+            && string.Equals(errorCode, "SignatureDoesNotMatch", StringComparison.Ordinal));
+
+        Assert.Contains(observability.Activities, activity =>
+            string.Equals(activity.OperationName, "IntegratedS3.Authenticate", StringComparison.Ordinal)
+            && string.Equals(activity.Tags[IntegratedS3Observability.Tags.CorrelationId], "http-correlation-001", StringComparison.Ordinal)
+            && string.Equals(activity.Tags[IntegratedS3Observability.Tags.ErrorCode], "SignatureDoesNotMatch", StringComparison.Ordinal));
+
+        Assert.Contains(observability.Logs, entry =>
+            entry.Level == LogLevel.Warning
+            && entry.CategoryName.EndsWith("AwsSignatureV4RequestAuthenticator", StringComparison.Ordinal)
+            && string.Equals(entry.State["CorrelationId"], "http-correlation-001", StringComparison.Ordinal)
+            && entry.Message.Contains("authentication failed", StringComparison.OrdinalIgnoreCase));
     }
 
     [Theory]

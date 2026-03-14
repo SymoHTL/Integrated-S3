@@ -989,15 +989,17 @@ These are optional host integrations around Core orchestration seams, not a comm
 
 ### Observability requirements
 
-- structured logs
-- metrics
-- traces
-- correlation IDs
-- provider tags
-- auth failure visibility
-- mirror lag visibility
-- reconciliation backlog visibility
-- health endpoints
+The current supported observability path is:
+
+- structured `ILogger` logs across HTTP auth, Core authorization/orchestration, replica repair, and backend health transitions
+- traces from the shared `IntegratedS3` `ActivitySource`
+- metrics from the shared `IntegratedS3` `Meter`
+- correlation IDs via the canonical `x-integrateds3-correlation-id` header plus request-context/log/activity propagation
+- provider, primary-provider, and replica-backend tags on operation, repair, backlog, and backend-health telemetry
+- explicit auth-failure visibility via warning logs plus `integrateds3.http.authentication.failures` and `integrateds3.storage.authorization.failures`
+- mirror-lag and reconciliation-backlog visibility via `integrateds3.replication.backlog.size`, `integrateds3.replication.backlog.oldest_age`, and the admin repair-backlog endpoint
+- backend health visibility via `integrateds3.backend.health.status`
+- dedicated health endpoints remain host-owned for now; see `docs/observability.md`
 
 ## Phase 11 — Testing, Conformance, and Packaging
 
@@ -1336,16 +1338,19 @@ This section is the execution board for the remaining implementation backlog. As
   - `IntegratedS3CoreOrchestrationTests` now cover provider-unavailable read failover, no failover on not-found, unhealthy snapshot expiry recovery, probe-timeout handling, async replica recording/dispatch, unhealthy-replica preflight, outstanding-repair read policy, partial-write backlog semantics, failed-repair visibility, multi-replica dispatch-recording failure isolation, mixed replay success/failure, and backlog growth for replicas that remain stale.
   - `src\IntegratedS3\WebUi` now has a dedicated reference-host guide in `docs/webui-reference-host.md`, with local sample storage kept under `App_Data` and excluded from build/publish outputs.
   - CI automation now lives in `.github\workflows\trackh-publish-aot-ci.yml`, and `eng\Invoke-AotPublishValidation.ps1` enforces the current self-contained publish warning posture without depending on exact line numbers.
+  - `IntegratedS3.Abstractions.Observability.IntegratedS3Observability` now exposes the shared activity-source, meter, metric-name, tag-name, and correlation-header contract for hosts, while `IntegratedS3.AspNetCore` and `IntegratedS3.Core` emit structured logs, traces, metrics, provider tags, auth-failure signals, and replica/backlog/backend-health visibility on the shipped request/auth/orchestration paths.
+  - `docs/observability.md` now documents the supported host integration path, including the shared `IntegratedS3` source/meter names, correlation-header behavior, backlog/health visibility, and the current limitation that dedicated health endpoints remain host-owned.
   - `src\IntegratedS3\IntegratedS3.Benchmarks` now benchmarks the Track H hot paths across disk-backed service flows, write-through mirrored writes, loopback HTTP `GET` / `PUT` / `LIST` / SigV4 auth flows, and first-party presign generation, while `eng\Invoke-HotPathBenchmarkBaselines.ps1` refreshes normalized JSON / Markdown baseline reports under `docs\benchmarks`.
   - `docs\performance-benchmarks.md` now documents the supported benchmark workflow, metric model, provider-breakdown strategy, and the currently supported limitations for repo-local baseline refreshes.
   - `IntegratedS3.Tests` now verifies benchmark scenario coverage plus the summary/report generation path without requiring the full benchmark suite to run inside `dotnet test`.
 - Verification status (March 2026):
-  - `dotnet build src\IntegratedS3\IntegratedS3.slnx` passed in the current Track E/H worktree.
-  - `dotnet test src\IntegratedS3\IntegratedS3.slnx` passed in the current Track E/H worktree.
-  - `dotnet publish -c Release --self-contained src\IntegratedS3\WebUi\WebUi.csproj` passed in the current Track E/H worktree, and `eng\Invoke-AotPublishValidation.ps1` now tracks the remaining Minimal API / trimming-sensitive warning posture without depending on exact line numbers.
+  - `dotnet build src\IntegratedS3\IntegratedS3.slnx` passed in the current Track H worktree.
+  - `dotnet test src\IntegratedS3\IntegratedS3.slnx` passed in the current Track H worktree.
+  - `dotnet publish -c Release --self-contained src\IntegratedS3\WebUi\WebUi.csproj` passed in the current Track H worktree, and `eng\Invoke-AotPublishValidation.ps1` now tracks the remaining Minimal API / trimming-sensitive warning posture without depending on exact line numbers.
 - Remaining scope:
   - extend conformance beyond the current versioned-read/copy, presigned-expiry/clock-skew, and AWS SDK version-id metadata/read/copy coverage into the remaining protocol edge cases and broader client-compatibility scenarios
   - extend fault-injection beyond the current unhealthy-provider, async-replication/backlog, partial-write-through, and newly added multi-replica replay coverage into broader repair/reconciliation scenarios
+  - benchmark the hot paths called out in this plan and track throughput, latency, allocation, and provider-breakdown baselines
   - add structured logs, metrics, traces, correlation IDs, provider tags, auth-failure visibility, mirror-lag visibility, and reconciliation-backlog visibility
   - expand the benchmark suite beyond the current disk, mirrored-disk, loopback HTTP, and first-party presign baseline set into reproducible native-S3 and broader client-comparison scenarios
   - keep the new trimming/AOT publish automation in CI aligned with the supported host surface and reduce or document the remaining publish warnings alongside benchmark baselines
