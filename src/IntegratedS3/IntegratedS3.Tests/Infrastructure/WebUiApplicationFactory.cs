@@ -24,17 +24,18 @@ public sealed class WebUiApplicationFactory : IAsyncDisposable
             return _application.GetTestClient();
         }
 
-        _application = await CreateApplicationAsync(_rootPath, configureBuilder: null, configureIntegratedS3Endpoints: null, useTestServer: true);
+        _application = await CreateApplicationAsync(_rootPath, configureBuilder: null, configureIntegratedS3Endpoints: null, configureConfiguration: null, useTestServer: true);
 
         return _application.GetTestClient();
     }
 
     public async Task<IsolatedWebUiClient> CreateIsolatedClientAsync(
         Action<WebApplicationBuilder>? configureBuilder = null,
-        Action<IntegratedS3EndpointOptions>? configureIntegratedS3Endpoints = null)
+        Action<IntegratedS3EndpointOptions>? configureIntegratedS3Endpoints = null,
+        Action<ConfigurationManager>? configureConfiguration = null)
     {
         var rootPath = Path.Combine(Path.GetTempPath(), "IntegratedS3.WebUi.Tests", Guid.NewGuid().ToString("N"));
-        var application = await CreateApplicationAsync(rootPath, configureBuilder, configureIntegratedS3Endpoints, useTestServer: true);
+        var application = await CreateApplicationAsync(rootPath, configureBuilder, configureIntegratedS3Endpoints, configureConfiguration, useTestServer: true);
         var client = new IsolatedWebUiClient(application, rootPath, application.GetTestClient(), application.GetTestClient().BaseAddress);
         _isolatedClients.Add(client);
         return client;
@@ -42,10 +43,11 @@ public sealed class WebUiApplicationFactory : IAsyncDisposable
 
     public async Task<IsolatedWebUiClient> CreateLoopbackIsolatedClientAsync(
         Action<WebApplicationBuilder>? configureBuilder = null,
-        Action<IntegratedS3EndpointOptions>? configureIntegratedS3Endpoints = null)
+        Action<IntegratedS3EndpointOptions>? configureIntegratedS3Endpoints = null,
+        Action<ConfigurationManager>? configureConfiguration = null)
     {
         var rootPath = Path.Combine(Path.GetTempPath(), "IntegratedS3.WebUi.Tests", Guid.NewGuid().ToString("N"));
-        var application = await CreateApplicationAsync(rootPath, configureBuilder, configureIntegratedS3Endpoints, useTestServer: false);
+        var application = await CreateApplicationAsync(rootPath, configureBuilder, configureIntegratedS3Endpoints, configureConfiguration, useTestServer: false);
         var address = application.Urls.SingleOrDefault();
         if (string.IsNullOrWhiteSpace(address)) {
             address = application.Services.GetRequiredService<IServer>().Features.Get<IServerAddressesFeature>()?.Addresses.SingleOrDefault();
@@ -89,6 +91,7 @@ public sealed class WebUiApplicationFactory : IAsyncDisposable
         string rootPath,
         Action<WebApplicationBuilder>? configureBuilder,
         Action<IntegratedS3EndpointOptions>? configureIntegratedS3Endpoints,
+        Action<ConfigurationManager>? configureConfiguration,
         bool useTestServer)
     {
         Directory.CreateDirectory(rootPath);
@@ -114,6 +117,7 @@ public sealed class WebUiApplicationFactory : IAsyncDisposable
             ["IntegratedS3:Disk:RootPath"] = rootPath,
             ["IntegratedS3:Disk:CreateRootDirectory"] = "true"
         });
+        configureConfiguration?.Invoke(builder.Configuration);
 
         WebUiApplication.ConfigureServices(builder);
         configureBuilder?.Invoke(builder);

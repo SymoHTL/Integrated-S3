@@ -25,6 +25,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.WebUtilities;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Xunit;
@@ -2832,6 +2833,56 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
         var repairs = await authenticatedRepairsResponse.Content.ReadFromJsonAsync<StorageReplicaRepairEntry[]>(JsonOptions);
         Assert.NotNull(repairs);
         Assert.Empty(repairs!);
+    }
+
+    [Fact]
+    public async Task EndpointRouteGroupAuthorization_CanBeConfiguredThroughBoundEndpointOptions()
+    {
+        await using var isolatedClient = await _factory.CreateIsolatedClientAsync(
+            builder => {
+                builder.Services.AddAuthentication("TestHeader")
+                    .AddScheme<AuthenticationSchemeOptions, TestHeaderAuthenticationHandler>("TestHeader", static _ => { });
+                builder.Services.AddAuthorization(options => {
+                    options.AddPolicy("IntegratedS3Route", policy => {
+                        policy.AddAuthenticationSchemes("TestHeader");
+                        policy.RequireAuthenticatedUser();
+                    });
+                });
+            },
+            configureConfiguration: configuration => {
+                configuration.AddInMemoryCollection(new Dictionary<string, string?>
+                {
+                    ["IntegratedS3:Endpoints:RouteAuthorization:PolicyNames:0"] = "IntegratedS3Route"
+                });
+            });
+
+        using var client = isolatedClient.Client;
+
+        var anonymousResponse = await client.GetAsync("/integrated-s3/capabilities");
+        Assert.Equal(HttpStatusCode.Unauthorized, anonymousResponse.StatusCode);
+
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("TestHeader", "storage.read");
+
+        var authenticatedResponse = await client.GetAsync("/integrated-s3/capabilities");
+        Assert.Equal(HttpStatusCode.OK, authenticatedResponse.StatusCode);
+
+        var authenticatedRepairsResponse = await client.GetAsync("/integrated-s3/admin/repairs");
+        Assert.Equal(HttpStatusCode.OK, authenticatedRepairsResponse.StatusCode);
+    }
+
+    [Fact]
+    public async Task EndpointAuthorizationConventions_RejectConflictingAnonymousAndAuthorizedConfiguration()
+    {
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(() => _factory.CreateIsolatedClientAsync(
+            configureConfiguration: configuration => {
+                configuration.AddInMemoryCollection(new Dictionary<string, string?>
+                {
+                    ["IntegratedS3:Endpoints:RouteAuthorization:AllowAnonymous"] = "true",
+                    ["IntegratedS3:Endpoints:RouteAuthorization:RequireAuthorization"] = "true"
+                });
+            }));
+
+        Assert.Contains(nameof(IntegratedS3EndpointOptions.RouteAuthorization), exception.Message, StringComparison.Ordinal);
     }
 
     [Fact]

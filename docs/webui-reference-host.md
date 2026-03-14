@@ -30,11 +30,14 @@ The sample host reads settings from `src\IntegratedS3\WebUi\appsettings.json`.
 
 - `IntegratedS3:ServiceName` — display name shown by the service document
 - `IntegratedS3:RoutePrefix` — base path for the IntegratedS3 HTTP surface
+- `IntegratedS3:Endpoints:*RouteAuthorization:*` — optional whole-route, shared-route, and per-feature authorization conventions (`RequireAuthorization`, named `PolicyNames`, or `AllowAnonymous`) applied when `MapIntegratedS3Endpoints(...)` maps the HTTP surface
 - `IntegratedS3:Disk:ProviderName` — provider name reported by the sample disk backend
 - `IntegratedS3:Disk:RootPath` — disk-backed object storage location; relative paths are resolved from the WebUi content root
 - `IntegratedS3:Disk:CreateRootDirectory` — creates the storage root automatically on startup when needed
 
 By default, sample data is stored under `App_Data\IntegratedS3`. Runtime storage data is ignored by source control and excluded from build/publish outputs so local sample usage does not leak into release artifacts.
+
+The reference host does not register authentication or authorization services by default. If a consumer enables any `IntegratedS3:Endpoints:*RouteAuthorization:*` settings, the consuming host should also register the matching ASP.NET authentication/authorization services and policies before calling `MapIntegratedS3Endpoints(...)`.
 
 ## Quick smoke test
 
