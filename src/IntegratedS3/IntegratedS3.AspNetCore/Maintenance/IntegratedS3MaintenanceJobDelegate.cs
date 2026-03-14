@@ -1,0 +1,3 @@
+namespace IntegratedS3.AspNetCore.Maintenance;
+
+public delegate ValueTask IntegratedS3MaintenanceJobDelegate(IServiceProvider serviceProvider, CancellationToken cancellationToken);

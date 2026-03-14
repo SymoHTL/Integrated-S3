@@ -43,6 +43,7 @@ The sample host reads settings from `src\IntegratedS3\WebUi\appsettings.json`.
 
 By default, sample data is stored under `App_Data\IntegratedS3`. Runtime storage data is ignored by source control and excluded from build/publish outputs so local sample usage does not leak into release artifacts.
 
+Optional replay/cleanup jobs remain opt-in host composition. When a consumer wants background mirror replay, orphan detection, checksum verification, multipart cleanup, index compaction, or expired-artifact cleanup, register `AddIntegratedS3MaintenanceJob(...)` after the normal `AddIntegratedS3(...)` / provider wiring and follow `docs\host-maintenance-jobs.md`.
 ## Health check wiring
 
 The reference host shows the supported ASP.NET Core integration path for backend health:

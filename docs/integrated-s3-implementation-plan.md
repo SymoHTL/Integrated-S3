@@ -978,7 +978,7 @@ Performance must be designed in from the start.
 
 ### Optional hosted/background services
 
-These are optional host integrations around Core orchestration seams, not a commitment that reconciliation/repair must ship as a built-in always-on background-service architecture. Track F now exposes provider-agnostic divergence/backlog/dispatch seams so consumers can host replay/repair via `IHostedService`, external schedulers, or other operational tooling without being forced into a mandatory built-in hosted service.
+These are optional host integrations around Core orchestration seams, not a commitment that reconciliation/repair must ship as a built-in always-on background-service architecture. Track F now exposes provider-agnostic divergence/backlog/dispatch seams so consumers can host replay/repair via `IHostedService`, external schedulers, or other operational tooling without being forced into a mandatory built-in hosted service. `IntegratedS3.AspNetCore` now includes `AddIntegratedS3MaintenanceJob(...)`, `IIntegratedS3MaintenanceJob`, and `IntegratedS3MaintenanceJobNames` so hosts can schedule mirror replay, orphan detection, checksum verification, multipart cleanup, index compaction, and expired-artifact cleanup with the same opt-in model; reference guidance lives in `docs\host-maintenance-jobs.md`.
 
 - mirror replay
 - orphan detection
@@ -1300,8 +1300,12 @@ This section is the execution board for the remaining implementation backlog. As
   - incomplete or failed repair attempts remain visible as reconciliation backlog or outstanding divergence and can influence subsequent reads and writes; partial repair must not be reported as success
   - multipart remains explicitly unsupported under both replicated write modes
   - reconciliation/repair work in this track stays provider-agnostic and optional-host-integrated rather than locking the product into a mandatory built-in background-service architecture
+- optional host scheduling for replay/cleanup work is now exposed through `IntegratedS3.AspNetCore` via `AddIntegratedS3MaintenanceJob(...)`, `IIntegratedS3MaintenanceJob`, and `IntegratedS3MaintenanceJobNames`, with fresh DI scopes per run and configuration-bindable `Enabled` / `RunOnStartup` / `Interval` settings for mirror replay, orphan detection, checksum verification, multipart cleanup, index compaction, and expired-artifact cleanup
+- reference guidance now documents the recommended host-owned seams for each maintenance category, including the current limitation that the repair backlog captures divergence visibility but not yet enough durable operation intent to deliver a fully generic replay engine after process restarts
 - Remaining scope:
   - add richer reconciliation and divergence-repair semantics for content, metadata, and version drift beyond the current backlog/dispatcher scaffold
+  - persist richer repair inputs and maintenance-specific contracts so hosts can build more generic durable replay/cleanup implementations without provider-specific or store-specific glue
+  - expand admin visibility beyond repair backlog into provider health, replica lag, and richer repair diagnostics without coupling providers to a fixed hosting model
   - add optional host integrations such as mirror replay, orphan detection, checksum verification, multipart cleanup, index compaction, and expired-artifact cleanup without coupling providers or Core to a fixed hosting model
   - broaden failure-semantics and multi-provider fault-injection coverage beyond the focused async-replication/backlog/read-policy scenarios already covered
 
