@@ -2,6 +2,7 @@ using System.Net;
 using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using System.Security.Claims;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Xml;
@@ -11,6 +12,7 @@ using IntegratedS3.Abstractions.Models;
 using IntegratedS3.Abstractions.Requests;
 using IntegratedS3.Abstractions.Responses;
 using IntegratedS3.Abstractions.Services;
+using IntegratedS3.AspNetCore.DependencyInjection;
 using IntegratedS3.AspNetCore.Services;
 using IntegratedS3.Protocol;
 using Microsoft.AspNetCore.Builder;
@@ -54,12 +56,23 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
     private const string ServerSideEncryptionHeaderName = "x-amz-server-side-encryption";
     private const string ServerSideEncryptionAwsKmsKeyIdHeaderName = "x-amz-server-side-encryption-aws-kms-key-id";
     private const string ServerSideEncryptionContextHeaderName = "x-amz-server-side-encryption-context";
+    private const string ServerSideEncryptionCustomerAlgorithmHeaderName = "x-amz-server-side-encryption-customer-algorithm";
+    private const string ServerSideEncryptionCustomerKeyHeaderName = "x-amz-server-side-encryption-customer-key";
+    private const string ServerSideEncryptionCustomerKeyMd5HeaderName = "x-amz-server-side-encryption-customer-key-MD5";
+    private const string CopySourceServerSideEncryptionCustomerAlgorithmHeaderName = "x-amz-copy-source-server-side-encryption-customer-algorithm";
+    private const string CopySourceServerSideEncryptionCustomerKeyHeaderName = "x-amz-copy-source-server-side-encryption-customer-key";
+    private const string CopySourceServerSideEncryptionCustomerKeyMd5HeaderName = "x-amz-copy-source-server-side-encryption-customer-key-MD5";
     private const string SdkChecksumAlgorithmHeaderName = "x-amz-sdk-checksum-algorithm";
     private const string ChecksumAlgorithmHeaderName = "x-amz-checksum-algorithm";
     private const string ChecksumCrc32HeaderName = "x-amz-checksum-crc32";
     private const string ChecksumCrc32cHeaderName = "x-amz-checksum-crc32c";
     private const string ChecksumSha1HeaderName = "x-amz-checksum-sha1";
     private const string ChecksumSha256HeaderName = "x-amz-checksum-sha256";
+    private const string AwsContentSha256HeaderName = "x-amz-content-sha256";
+    private const string AwsTrailerHeaderName = "x-amz-trailer";
+    private const string AwsTrailerSignatureHeaderName = "x-amz-trailer-signature";
+    private const string StreamingAws4HmacSha256PayloadTrailer = "STREAMING-AWS4-HMAC-SHA256-PAYLOAD-TRAILER";
+    private const string StreamingUnsignedPayloadTrailer = "STREAMING-UNSIGNED-PAYLOAD-TRAILER";
     private const string ChecksumTypeHeaderName = "x-amz-checksum-type";
     private const string DeleteMarkerHeaderName = "x-amz-delete-marker";
     private const string TaggingCountHeaderName = "x-amz-tagging-count";
@@ -152,6 +165,20 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
         ServerSideEncryptionContextHeaderName
     };
 
+    private static readonly HashSet<string> SupportedCustomerServerSideEncryptionRequestHeaders = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ServerSideEncryptionCustomerAlgorithmHeaderName,
+        ServerSideEncryptionCustomerKeyHeaderName,
+        ServerSideEncryptionCustomerKeyMd5HeaderName
+    };
+
+    private static readonly HashSet<string> SupportedCopySourceCustomerServerSideEncryptionRequestHeaders = new(StringComparer.OrdinalIgnoreCase)
+    {
+        CopySourceServerSideEncryptionCustomerAlgorithmHeaderName,
+        CopySourceServerSideEncryptionCustomerKeyHeaderName,
+        CopySourceServerSideEncryptionCustomerKeyMd5HeaderName
+    };
+
     [RequiresUnreferencedCode("Minimal API endpoint registration may reflect over route handler delegates and parameters.")]
     [RequiresDynamicCode("Minimal API endpoint registration may require runtime-generated code for route handler delegates.")]
     public static RouteGroupBuilder MapIntegratedS3Endpoints(this IEndpointRouteBuilder endpoints)
@@ -159,6 +186,18 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
         ArgumentNullException.ThrowIfNull(endpoints);
 
         return endpoints.MapIntegratedS3Endpoints(ResolveConfiguredEndpointOptions(endpoints));
+    }
+
+    public static RouteGroupBuilder MapIntegratedS3Endpoints(
+        this IEndpointRouteBuilder endpoints,
+        IntegratedS3EndpointConfigurationOptions endpointConfiguration)
+    {
+        ArgumentNullException.ThrowIfNull(endpoints);
+        ArgumentNullException.ThrowIfNull(endpointConfiguration);
+
+        var resolvedEndpointOptions = new IntegratedS3EndpointOptions();
+        endpointConfiguration.ApplyTo(resolvedEndpointOptions);
+        return MapIntegratedS3EndpointsCore(endpoints, resolvedEndpointOptions);
     }
 
     [RequiresUnreferencedCode("Minimal API endpoint registration may reflect over route handler delegates and parameters.")]
@@ -180,8 +219,17 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
         ArgumentNullException.ThrowIfNull(endpoints);
         ArgumentNullException.ThrowIfNull(endpointOptions);
 
+        return MapIntegratedS3EndpointsCore(endpoints, endpointOptions.Clone());
+    }
+
+    private static RouteGroupBuilder MapIntegratedS3EndpointsCore(
+        IEndpointRouteBuilder endpoints,
+        IntegratedS3EndpointOptions resolvedEndpointOptions)
+    {
+        ArgumentNullException.ThrowIfNull(endpoints);
+        ArgumentNullException.ThrowIfNull(resolvedEndpointOptions);
+
         var options = endpoints.ServiceProvider.GetRequiredService<IOptions<IntegratedS3Options>>().Value;
-        var resolvedEndpointOptions = endpointOptions.Clone();
         var group = endpoints.MapGroup(options.RoutePrefix);
         group.AddEndpointFilter<IntegratedS3RequestAuthenticationEndpointFilter>();
         var routeConfiguration = CreateRouteGroupConfiguration(
@@ -477,13 +525,12 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
             return;
         }
 
-        if (authorizationOptions.PolicyNames.Length > 0) {
-            group.RequireAuthorization(authorizationOptions.PolicyNames);
-            return;
-        }
-
         if (authorizationOptions.RequireAuthorization) {
             group.RequireAuthorization();
+        }
+
+        if (authorizationOptions.PolicyNames.Length > 0) {
+            group.RequireAuthorization(authorizationOptions.PolicyNames);
         }
     }
 
@@ -1036,6 +1083,10 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
                             return copyTagsErrorResult!;
                         }
 
+                        if (!TryParseRequestChecksums(request, preparedBody, requireChecksumValueForDeclaredAlgorithm: false, out var copyChecksumAlgorithm, out var requestedCopyChecksums, out var copyChecksumErrorResult)) {
+                            return copyChecksumErrorResult!;
+                        }
+
                         var copyResult = await storageService.CopyObjectAsync(new CopyObjectRequest
                         {
                             SourceBucketName = copySource!.BucketName,
@@ -1057,7 +1108,11 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
                             Metadata = metadataDirective == CopyObjectMetadataDirective.Replace ? ParseObjectMetadataHeaders(request.Headers) : null,
                             TaggingDirective = taggingDirective,
                             Tags = taggingDirective == ObjectTaggingDirective.Replace ? copyTags : null,
-                            DestinationServerSideEncryption = copyServerSideEncryption
+                            ChecksumAlgorithm = copyChecksumAlgorithm,
+                            Checksums = requestedCopyChecksums,
+                            DestinationServerSideEncryption = copyServerSideEncryption,
+                            SourceCustomerEncryption = TryParseCopySourceCustomerEncryptionSettings(request),
+                            DestinationCustomerEncryption = TryParseCustomerEncryptionSettings(request)
                         }, innerCancellationToken);
 
                         if (!copyResult.IsSuccess) {
@@ -1072,7 +1127,7 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
                         return aclApplyError ?? ToCopyObjectResult(httpContext, copyResult.Value!, copySource.VersionId);
                     }
 
-                    if (!TryParseRequestChecksums(request, preparedBody.TrailerHeaders, requireChecksumValueForDeclaredAlgorithm: true, out _, out var requestedChecksums, out var checksumErrorResult)) {
+                    if (!TryParseRequestChecksums(request, preparedBody, requireChecksumValueForDeclaredAlgorithm: true, out var checksumAlgorithm, out var requestedChecksums, out var checksumErrorResult)) {
                         return checksumErrorResult!;
                     }
 
@@ -1101,7 +1156,8 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
                         Metadata = metadata,
                         Tags = tags,
                         Checksums = requestedChecksums,
-                        ServerSideEncryption = serverSideEncryption
+                        ServerSideEncryption = serverSideEncryption,
+                        CustomerEncryption = TryParseCustomerEncryptionSettings(request)
                     }, innerCancellationToken);
 
                     if (!result.IsSuccess) {
@@ -1115,6 +1171,7 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
 
                     if (result.Value is not null) {
                         ApplyObjectResultHeaders(httpContext.Response, result.Value);
+                        ApplyChecksumAlgorithmHeader(httpContext.Response, checksumAlgorithm);
                     }
 
                     return TypedResults.Ok(result.Value);
@@ -1162,7 +1219,8 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
                     IfMatchETag = request.Headers.IfMatch.ToString(),
                     IfNoneMatchETag = request.Headers.IfNoneMatch.ToString(),
                     IfModifiedSinceUtc = headers.IfModifiedSince,
-                    IfUnmodifiedSinceUtc = headers.IfUnmodifiedSince
+                    IfUnmodifiedSinceUtc = headers.IfUnmodifiedSince,
+                    CustomerEncryption = TryParseCustomerEncryptionSettings(request)
                 }, innerCancellationToken);
 
                 if (!result.IsSuccess) {
@@ -1208,7 +1266,8 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
                     IfMatchETag = httpContext.Request.Headers.IfMatch.ToString(),
                     IfNoneMatchETag = httpContext.Request.Headers.IfNoneMatch.ToString(),
                     IfModifiedSinceUtc = headers.IfModifiedSince,
-                    IfUnmodifiedSinceUtc = headers.IfUnmodifiedSince
+                    IfUnmodifiedSinceUtc = headers.IfUnmodifiedSince,
+                    CustomerEncryption = TryParseCustomerEncryptionSettings(httpContext.Request)
                 }, innerCancellationToken);
 
                 if (!result.IsSuccess) {
@@ -2373,7 +2432,7 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
 
         try {
             return await ExecuteWithRequestContextAsync(httpContext, requestContextAccessor, async innerCancellationToken => {
-                if (!TryParseRequestChecksums(httpContext.Request, trailerHeaders: null, requireChecksumValueForDeclaredAlgorithm: false, out var checksumAlgorithm, out _, out var checksumErrorResult)) {
+                if (!TryParseRequestChecksums(httpContext.Request, preparedBody: null, requireChecksumValueForDeclaredAlgorithm: false, out var checksumAlgorithm, out _, out var checksumErrorResult)) {
                     return checksumErrorResult!;
                 }
 
@@ -2400,7 +2459,8 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
                     Metadata = metadata,
                     Tags = tags,
                     ChecksumAlgorithm = checksumAlgorithm,
-                    ServerSideEncryption = serverSideEncryption
+                    ServerSideEncryption = serverSideEncryption,
+                    CustomerEncryption = TryParseCustomerEncryptionSettings(httpContext.Request)
                 }, innerCancellationToken);
 
                 if (!result.IsSuccess) {
@@ -2408,6 +2468,8 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
                 }
 
                 ApplyChecksumAlgorithmHeader(httpContext.Response, result.Value!.ChecksumAlgorithm);
+                ApplyServerSideEncryptionHeaders(httpContext.Response, result.Value.ServerSideEncryption);
+                EmitCustomerEncryptionResponseHeaders(httpContext.Response, result.Value.CustomerEncryption);
                 return new XmlContentResult(
                     S3XmlResponseWriter.WriteInitiateMultipartUploadResult(new S3InitiateMultipartUploadResult
                     {
@@ -2450,7 +2512,7 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
         try {
             var preparedBody = await PrepareRequestBodyAsync(httpContext.Request, cancellationToken);
             try {
-                if (!TryParseRequestChecksums(httpContext.Request, preparedBody.TrailerHeaders, requireChecksumValueForDeclaredAlgorithm: false, out var checksumAlgorithm, out var requestedChecksums, out var checksumErrorResult)) {
+                if (!TryParseRequestChecksums(httpContext.Request, preparedBody, requireChecksumValueForDeclaredAlgorithm: true, out var checksumAlgorithm, out var requestedChecksums, out var checksumErrorResult)) {
                     return checksumErrorResult!;
                 }
 
@@ -2464,7 +2526,8 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
                         Content = preparedBody.Content,
                         ContentLength = preparedBody.ContentLength,
                         ChecksumAlgorithm = checksumAlgorithm,
-                        Checksums = requestedChecksums
+                        Checksums = requestedChecksums,
+                        CustomerEncryption = TryParseCustomerEncryptionSettings(httpContext.Request)
                     }, innerCancellationToken);
 
                     if (!result.IsSuccess) {
@@ -2516,6 +2579,10 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
             return ToErrorResult(httpContext, StatusCodes.Status400BadRequest, "InvalidArgument", sourceRangeError!, BuildObjectResource(bucketName, key), bucketName, key);
         }
 
+        if (!TryParseRequestChecksums(httpContext.Request, preparedBody: null, requireChecksumValueForDeclaredAlgorithm: false, out var checksumAlgorithm, out var requestedChecksums, out var checksumErrorResult)) {
+            return checksumErrorResult!;
+        }
+
         if (!TryParseObjectServerSideEncryptionSettings(httpContext.Request, allowManagedRequestHeaders: false, BuildObjectResource(bucketName, key), bucketName, key, out _, out var serverSideEncryptionErrorResult)) {
             return serverSideEncryptionErrorResult!;
         }
@@ -2535,7 +2602,11 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
                     SourceIfNoneMatchETag = httpContext.Request.Headers[CopySourceIfNoneMatchHeaderName].ToString(),
                     SourceIfModifiedSinceUtc = ParseOptionalHttpDateHeader(httpContext.Request.Headers[CopySourceIfModifiedSinceHeaderName].ToString()),
                     SourceIfUnmodifiedSinceUtc = ParseOptionalHttpDateHeader(httpContext.Request.Headers[CopySourceIfUnmodifiedSinceHeaderName].ToString()),
-                    SourceRange = sourceRange
+                    SourceRange = sourceRange,
+                    ChecksumAlgorithm = checksumAlgorithm,
+                    Checksums = requestedChecksums,
+                    SourceCustomerEncryption = TryParseCopySourceCustomerEncryptionSettings(httpContext.Request),
+                    DestinationCustomerEncryption = TryParseCustomerEncryptionSettings(httpContext.Request)
                 }, innerCancellationToken);
 
                 if (!result.IsSuccess) {
@@ -3195,6 +3266,7 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
     private static IResult ToCopyObjectResult(HttpContext httpContext, ObjectInfo @object, string? sourceVersionId)
     {
         ApplyObjectResultHeaders(httpContext.Response, @object);
+        ApplyChecksumAlgorithmHeader(httpContext.Response, GetResponseChecksumAlgorithm(@object.Checksums));
         if (!string.IsNullOrWhiteSpace(sourceVersionId)) {
             httpContext.Response.Headers[CopySourceVersionIdHeaderName] = sourceVersionId;
         }
@@ -5718,21 +5790,23 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
     private static async Task<PreparedRequestBody> PrepareRequestBodyAsync(HttpRequest request, CancellationToken cancellationToken)
     {
         if (!IsAwsChunkedContent(request)) {
-            return new PreparedRequestBody(request.Body, request.ContentLength, tempFilePath: null, trailerHeaders: null);
+            return new PreparedRequestBody(request.Body, request.ContentLength, tempFilePath: null, trailerHeaders: null, trailerHeaderEntries: null, finalChunkSignature: null);
         }
 
         var tempFilePath = Path.Combine(Path.GetTempPath(), $"integrateds3-aws-chunked-{Guid.NewGuid():N}.tmp");
         var trailerHeaders = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        var trailerHeaderEntries = new List<KeyValuePair<string, string>>();
+        string? finalChunkSignature = null;
         try {
             await using (var tempWriteStream = new FileStream(tempFilePath, FileMode.CreateNew, FileAccess.Write, FileShare.None, 81920, FileOptions.Asynchronous | FileOptions.SequentialScan)) {
-                await CopyAwsChunkedContentToAsync(request.Body, tempWriteStream, trailerHeaders, cancellationToken);
+                finalChunkSignature = await CopyAwsChunkedContentToAsync(request.Body, tempWriteStream, trailerHeaders, trailerHeaderEntries, cancellationToken);
                 await tempWriteStream.FlushAsync(cancellationToken);
             }
 
             var decodedLength = TryParseDecodedContentLength(request.Headers["x-amz-decoded-content-length"].ToString());
             var tempReadStream = new FileStream(tempFilePath, FileMode.Open, FileAccess.Read, FileShare.Read, 81920, FileOptions.Asynchronous | FileOptions.SequentialScan);
             var contentLength = decodedLength ?? tempReadStream.Length;
-            return new PreparedRequestBody(tempReadStream, contentLength, tempFilePath, trailerHeaders);
+            return new PreparedRequestBody(tempReadStream, contentLength, tempFilePath, trailerHeaders, trailerHeaderEntries, finalChunkSignature);
         }
         catch {
             if (File.Exists(tempFilePath)) {
@@ -5766,7 +5840,12 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
             : null;
     }
 
-    private static async Task CopyAwsChunkedContentToAsync(Stream source, Stream destination, Dictionary<string, string> trailerHeaders, CancellationToken cancellationToken)
+    private static async Task<string?> CopyAwsChunkedContentToAsync(
+        Stream source,
+        Stream destination,
+        Dictionary<string, string> trailerHeaders,
+        List<KeyValuePair<string, string>> trailerHeaderEntries,
+        CancellationToken cancellationToken)
     {
         while (true) {
             var chunkHeader = await ReadLineAsync(source, cancellationToken)
@@ -5778,8 +5857,8 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
             }
 
             if (chunkLength == 0) {
-                await ConsumeChunkTrailersAsync(source, trailerHeaders, cancellationToken);
-                return;
+                await ConsumeChunkTrailersAsync(source, trailerHeaders, trailerHeaderEntries, cancellationToken);
+                return TryGetAwsChunkSignature(chunkHeader);
             }
 
             await CopyExactBytesAsync(source, destination, chunkLength, cancellationToken);
@@ -5810,7 +5889,11 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
         }
     }
 
-    private static async Task ConsumeChunkTrailersAsync(Stream source, Dictionary<string, string> trailerHeaders, CancellationToken cancellationToken)
+    private static async Task ConsumeChunkTrailersAsync(
+        Stream source,
+        Dictionary<string, string> trailerHeaders,
+        List<KeyValuePair<string, string>> trailerHeaderEntries,
+        CancellationToken cancellationToken)
     {
         while (true) {
             var trailerLine = await ReadLineAsync(source, cancellationToken)
@@ -5830,8 +5913,33 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
                 throw new FormatException("The aws-chunked request body contains an invalid trailer header.");
             }
 
+            trailerHeaderEntries.Add(new KeyValuePair<string, string>(trailerName, trailerValue));
             trailerHeaders[trailerName] = trailerValue;
         }
+    }
+
+    private static string? TryGetAwsChunkSignature(string chunkHeader)
+    {
+        var separatorIndex = chunkHeader.IndexOf(';');
+        if (separatorIndex < 0 || separatorIndex == chunkHeader.Length - 1) {
+            return null;
+        }
+
+        foreach (var extension in chunkHeader[(separatorIndex + 1)..].Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)) {
+            var equalsIndex = extension.IndexOf('=');
+            if (equalsIndex <= 0 || equalsIndex == extension.Length - 1) {
+                continue;
+            }
+
+            if (!string.Equals(extension[..equalsIndex].Trim(), "chunk-signature", StringComparison.OrdinalIgnoreCase)) {
+                continue;
+            }
+
+            var signature = extension[(equalsIndex + 1)..].Trim();
+            return signature.Length == 0 ? null : signature;
+        }
+
+        return null;
     }
 
     private static async Task CopyExactBytesAsync(Stream source, Stream destination, long byteCount, CancellationToken cancellationToken)
@@ -6196,17 +6304,59 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
     private static string? FindUnsupportedServerSideEncryptionHeader(HttpRequest request)
     {
         foreach (var headerName in request.Headers.Keys) {
-            if (headerName.StartsWith(CopySourceServerSideEncryptionHeaderPrefix, StringComparison.OrdinalIgnoreCase)) {
+            if (headerName.StartsWith(CopySourceServerSideEncryptionHeaderPrefix, StringComparison.OrdinalIgnoreCase)
+                && !SupportedCopySourceCustomerServerSideEncryptionRequestHeaders.Contains(headerName)) {
                 return headerName;
             }
 
             if (headerName.StartsWith(ServerSideEncryptionHeaderPrefix, StringComparison.OrdinalIgnoreCase)
-                && !SupportedManagedServerSideEncryptionRequestHeaders.Contains(headerName)) {
+                && !SupportedManagedServerSideEncryptionRequestHeaders.Contains(headerName)
+                && !SupportedCustomerServerSideEncryptionRequestHeaders.Contains(headerName)) {
                 return headerName;
             }
         }
 
         return null;
+    }
+
+    private static ObjectCustomerEncryptionSettings? TryParseCustomerEncryptionSettings(HttpRequest request)
+    {
+        var algorithm = request.Headers[ServerSideEncryptionCustomerAlgorithmHeaderName].FirstOrDefault();
+        if (string.IsNullOrEmpty(algorithm))
+            return null;
+
+        var key = request.Headers[ServerSideEncryptionCustomerKeyHeaderName].FirstOrDefault();
+        var keyMd5 = request.Headers[ServerSideEncryptionCustomerKeyMd5HeaderName].FirstOrDefault();
+
+        if (string.IsNullOrEmpty(key) || string.IsNullOrEmpty(keyMd5))
+            return null;
+
+        return new ObjectCustomerEncryptionSettings
+        {
+            Algorithm = algorithm,
+            Key = key,
+            KeyMd5 = keyMd5
+        };
+    }
+
+    private static ObjectCustomerEncryptionSettings? TryParseCopySourceCustomerEncryptionSettings(HttpRequest request)
+    {
+        var algorithm = request.Headers[CopySourceServerSideEncryptionCustomerAlgorithmHeaderName].FirstOrDefault();
+        if (string.IsNullOrEmpty(algorithm))
+            return null;
+
+        var key = request.Headers[CopySourceServerSideEncryptionCustomerKeyHeaderName].FirstOrDefault();
+        var keyMd5 = request.Headers[CopySourceServerSideEncryptionCustomerKeyMd5HeaderName].FirstOrDefault();
+
+        if (string.IsNullOrEmpty(key) || string.IsNullOrEmpty(keyMd5))
+            return null;
+
+        return new ObjectCustomerEncryptionSettings
+        {
+            Algorithm = algorithm,
+            Key = key,
+            KeyMd5 = keyMd5
+        };
     }
 
     private static bool TryNormalizeServerSideEncryptionAlgorithm(string rawValue, out ObjectServerSideEncryptionAlgorithm algorithm)
@@ -6399,35 +6549,68 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
 
     private static bool TryParseRequestChecksums(
         HttpRequest request,
-        IReadOnlyDictionary<string, string>? trailerHeaders,
+        PreparedRequestBody? preparedBody,
         bool requireChecksumValueForDeclaredAlgorithm,
         out string? checksumAlgorithm,
         out IReadOnlyDictionary<string, string>? checksums,
         out IResult? errorResult)
     {
+        var trailerHeaders = preparedBody?.TrailerHeaders;
+
         if (!TryGetRequestChecksumAlgorithm(request, out checksumAlgorithm, out errorResult)) {
+            checksums = null;
+            return false;
+        }
+
+        if (!TryValidateAwsChunkedChecksumTrailers(request, trailerHeaders, preparedBody?.TrailerHeaderEntries, out var declaredTrailerHeaders, out errorResult)) {
+            checksums = null;
+            return false;
+        }
+
+        if (!TryValidateDeclaredChecksumTrailerHeaders(request, trailerHeaders, declaredTrailerHeaders, out errorResult)) {
+            checksums = null;
+            return false;
+        }
+
+        if (!TryValidateAwsChunkedTrailerSignature(request, preparedBody, out errorResult)) {
             checksums = null;
             return false;
         }
 
         var parsedChecksums = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
-        var checksumSha256 = GetRequestHeaderValue(request, trailerHeaders, ChecksumSha256HeaderName);
+        if (!TryGetRequestHeaderValue(request, trailerHeaders, ChecksumSha256HeaderName, out var checksumSha256, out errorResult)) {
+            checksums = null;
+            return false;
+        }
+
         if (!string.IsNullOrWhiteSpace(checksumSha256)) {
             parsedChecksums["sha256"] = checksumSha256.Trim();
         }
 
-        var checksumSha1 = GetRequestHeaderValue(request, trailerHeaders, ChecksumSha1HeaderName);
+        if (!TryGetRequestHeaderValue(request, trailerHeaders, ChecksumSha1HeaderName, out var checksumSha1, out errorResult)) {
+            checksums = null;
+            return false;
+        }
+
         if (!string.IsNullOrWhiteSpace(checksumSha1)) {
             parsedChecksums["sha1"] = checksumSha1.Trim();
         }
 
-        var checksumCrc32 = GetRequestHeaderValue(request, trailerHeaders, ChecksumCrc32HeaderName);
+        if (!TryGetRequestHeaderValue(request, trailerHeaders, ChecksumCrc32HeaderName, out var checksumCrc32, out errorResult)) {
+            checksums = null;
+            return false;
+        }
+
         if (!string.IsNullOrWhiteSpace(checksumCrc32)) {
             parsedChecksums["crc32"] = checksumCrc32.Trim();
         }
 
-        var checksumCrc32c = GetRequestHeaderValue(request, trailerHeaders, ChecksumCrc32cHeaderName);
+        if (!TryGetRequestHeaderValue(request, trailerHeaders, ChecksumCrc32cHeaderName, out var checksumCrc32c, out errorResult)) {
+            checksums = null;
+            return false;
+        }
+
         if (!string.IsNullOrWhiteSpace(checksumCrc32c)) {
             parsedChecksums["crc32c"] = checksumCrc32c.Trim();
         }
@@ -6506,20 +6689,303 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
         return true;
     }
 
-    private static string GetRequestHeaderValue(HttpRequest request, IReadOnlyDictionary<string, string>? trailerHeaders, string headerName)
+    private static bool TryValidateAwsChunkedChecksumTrailers(
+        HttpRequest request,
+        IReadOnlyDictionary<string, string>? trailerHeaders,
+        IReadOnlyList<KeyValuePair<string, string>>? trailerHeaderEntries,
+        out HashSet<string>? declaredTrailerHeaders,
+        out IResult? errorResult)
+    {
+        if (!TryParseTrailerHeaderNames(request, out declaredTrailerHeaders, out errorResult)) {
+            return false;
+        }
+
+        var usesTrailerBackedPayloadHash = IsTrailerBackedStreamingPayloadHash(request.Headers[AwsContentSha256HeaderName].ToString());
+        var requiresTrailerSignature = IsSignedTrailerBackedStreamingPayloadHash(request.Headers[AwsContentSha256HeaderName].ToString());
+        var actualTrailerHeaderNames = trailerHeaderEntries is null
+            ? []
+            : trailerHeaderEntries
+                .Where(static trailerHeader => !string.Equals(trailerHeader.Key, AwsTrailerSignatureHeaderName, StringComparison.OrdinalIgnoreCase))
+                .Select(static trailerHeader => trailerHeader.Key)
+                .ToArray();
+        var actualChecksumTrailerHeaderNames = actualTrailerHeaderNames
+            .Where(IsChecksumHeaderName)
+            .ToArray();
+        var declaredChecksumTrailerHeaders = declaredTrailerHeaders is null
+            ? []
+            : declaredTrailerHeaders.Where(IsChecksumHeaderName).ToArray();
+        var hasDeclaredTrailers = declaredTrailerHeaders is { Count: > 0 };
+        var requiresTrailerValidation = usesTrailerBackedPayloadHash
+            || actualChecksumTrailerHeaderNames.Length > 0
+            || declaredChecksumTrailerHeaders.Length > 0;
+
+        if (!requiresTrailerValidation) {
+            errorResult = null;
+            return true;
+        }
+
+        if (!IsAwsChunkedContent(request)) {
+            errorResult = ToErrorResult(
+                request.HttpContext,
+                StatusCodes.Status400BadRequest,
+                "InvalidRequest",
+                $"The '{request.Headers[AwsContentSha256HeaderName].ToString().Trim()}' payload hash requires the '{HeaderNames.ContentEncoding}: aws-chunked' request header.",
+                resource: null);
+            return false;
+        }
+
+        if (!hasDeclaredTrailers) {
+            errorResult = ToErrorResult(
+                request.HttpContext,
+                StatusCodes.Status400BadRequest,
+                "InvalidRequest",
+                $"Missing required header for this request: {AwsTrailerHeaderName}",
+                resource: null);
+            return false;
+        }
+
+        if (requiresTrailerSignature
+            && (trailerHeaders is null
+                || !trailerHeaders.ContainsKey(AwsTrailerSignatureHeaderName))) {
+            errorResult = ToErrorResult(
+                request.HttpContext,
+                StatusCodes.Status400BadRequest,
+                "InvalidRequest",
+                $"The aws-chunked request body must include the '{AwsTrailerSignatureHeaderName}' trailer header when '{StreamingAws4HmacSha256PayloadTrailer}' is used.",
+                resource: null);
+            return false;
+        }
+
+        var duplicateChecksumTrailerHeader = actualChecksumTrailerHeaderNames
+            .GroupBy(static headerName => headerName, StringComparer.OrdinalIgnoreCase)
+            .FirstOrDefault(static group => group.Count() > 1);
+        if (duplicateChecksumTrailerHeader is not null) {
+            errorResult = ToErrorResult(
+                request.HttpContext,
+                StatusCodes.Status400BadRequest,
+                "InvalidRequest",
+                $"The aws-chunked trailer header '{duplicateChecksumTrailerHeader.Key}' must not be repeated.",
+                resource: null);
+            return false;
+        }
+
+        if (usesTrailerBackedPayloadHash && actualTrailerHeaderNames.Length == 0) {
+            errorResult = ToErrorResult(
+                request.HttpContext,
+                StatusCodes.Status400BadRequest,
+                "InvalidRequest",
+                $"The aws-chunked request body must include the trailer headers declared by '{AwsTrailerHeaderName}'.",
+                resource: null);
+            return false;
+        }
+
+        foreach (var trailerHeaderName in actualTrailerHeaderNames) {
+            if (!usesTrailerBackedPayloadHash && !IsChecksumHeaderName(trailerHeaderName)) {
+                continue;
+            }
+
+            if (declaredTrailerHeaders!.Contains(trailerHeaderName)) {
+                continue;
+            }
+
+            errorResult = ToErrorResult(
+                request.HttpContext,
+                StatusCodes.Status400BadRequest,
+                "InvalidRequest",
+                $"The aws-chunked trailer header '{trailerHeaderName}' must be declared in the '{AwsTrailerHeaderName}' header.",
+                resource: null);
+            return false;
+        }
+
+        errorResult = null;
+        return true;
+    }
+
+    private static bool TryValidateAwsChunkedTrailerSignature(
+        HttpRequest request,
+        PreparedRequestBody? preparedBody,
+        out IResult? errorResult)
+    {
+        if (!IsSignedTrailerBackedStreamingPayloadHash(request.Headers[AwsContentSha256HeaderName].ToString())) {
+            errorResult = null;
+            return true;
+        }
+
+        if (preparedBody?.TrailerHeaders is null
+            || !preparedBody.TrailerHeaders.TryGetValue(AwsTrailerSignatureHeaderName, out var trailerSignature)
+            || string.IsNullOrWhiteSpace(trailerSignature)) {
+            errorResult = ToErrorResult(
+                request.HttpContext,
+                StatusCodes.Status400BadRequest,
+                "InvalidRequest",
+                $"The aws-chunked request body must include the '{AwsTrailerSignatureHeaderName}' trailer header when '{StreamingAws4HmacSha256PayloadTrailer}' is used.",
+                resource: null);
+            return false;
+        }
+
+        if (!AwsChunkedTrailerSigningContextStore.TryGet(request.HttpContext, out var signingContext)) {
+            errorResult = null;
+            return true;
+        }
+
+        var finalChunkSignature = preparedBody.FinalChunkSignature;
+        if (string.IsNullOrWhiteSpace(finalChunkSignature)) {
+            errorResult = ToErrorResult(
+                request.HttpContext,
+                StatusCodes.Status400BadRequest,
+                "InvalidRequest",
+                $"The aws-chunked request body must include the zero-length chunk signature required to validate '{AwsTrailerSignatureHeaderName}'.",
+                resource: null);
+            return false;
+        }
+
+        var trailerPayload = S3SigV4Signer.BuildCanonicalStreamingTrailerHeaders(
+            preparedBody.TrailerHeaderEntries ?? Array.Empty<KeyValuePair<string, string>>());
+        var stringToSign = S3SigV4Signer.BuildStreamingTrailerStringToSign(
+            signingContext.SignedAtUtc,
+            signingContext.CredentialScope,
+            finalChunkSignature,
+            S3SigV4Signer.ComputeSha256Hex(trailerPayload));
+        var expectedSignature = S3SigV4Signer.ComputeSignature(signingContext.SecretAccessKey, signingContext.CredentialScope, stringToSign);
+        if (FixedTimeEqualsOrdinalIgnoreCase(expectedSignature, trailerSignature.Trim())) {
+            errorResult = null;
+            return true;
+        }
+
+        errorResult = ToErrorResult(
+            request.HttpContext,
+            StatusCodes.Status403Forbidden,
+            "SignatureDoesNotMatch",
+            "The request signature we calculated does not match the signature you provided.",
+            resource: null);
+        return false;
+    }
+
+    private static bool TryValidateDeclaredChecksumTrailerHeaders(
+        HttpRequest request,
+        IReadOnlyDictionary<string, string>? trailerHeaders,
+        HashSet<string>? declaredTrailerHeaders,
+        out IResult? errorResult)
+    {
+        if (declaredTrailerHeaders is null || declaredTrailerHeaders.Count == 0) {
+            errorResult = null;
+            return true;
+        }
+
+        foreach (var declaredTrailerHeader in declaredTrailerHeaders) {
+            if (!IsChecksumHeaderName(declaredTrailerHeader)) {
+                continue;
+            }
+
+            if (trailerHeaders is not null
+                && trailerHeaders.TryGetValue(declaredTrailerHeader, out var trailerHeaderValue)
+                && !string.IsNullOrWhiteSpace(trailerHeaderValue)) {
+                continue;
+            }
+
+            errorResult = ToErrorResult(
+                request.HttpContext,
+                StatusCodes.Status400BadRequest,
+                "InvalidRequest",
+                $"The '{AwsTrailerHeaderName}' header declared '{declaredTrailerHeader}', but the aws-chunked trailer did not include that checksum header.",
+                resource: null);
+            return false;
+        }
+
+        errorResult = null;
+        return true;
+    }
+
+    private static bool TryParseTrailerHeaderNames(HttpRequest request, out HashSet<string>? trailerHeaders, out IResult? errorResult)
+    {
+        var rawValue = request.Headers[AwsTrailerHeaderName].ToString();
+        if (string.IsNullOrWhiteSpace(rawValue)) {
+            trailerHeaders = null;
+            errorResult = null;
+            return true;
+        }
+
+        trailerHeaders = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var headerSegment in rawValue.Split(',')) {
+            var headerName = headerSegment.Trim();
+            if (headerName.Length == 0) {
+                errorResult = ToErrorResult(
+                    request.HttpContext,
+                    StatusCodes.Status400BadRequest,
+                    "InvalidRequest",
+                    $"The '{AwsTrailerHeaderName}' header must contain a comma-separated list of trailer header names.",
+                    resource: null);
+                trailerHeaders = null;
+                return false;
+            }
+
+            trailerHeaders.Add(headerName);
+        }
+
+        errorResult = null;
+        return true;
+    }
+
+    private static bool TryGetRequestHeaderValue(
+        HttpRequest request,
+        IReadOnlyDictionary<string, string>? trailerHeaders,
+        string headerName,
+        out string value,
+        out IResult? errorResult)
     {
         var requestHeaderValue = request.Headers[headerName].ToString();
-        if (!string.IsNullOrWhiteSpace(requestHeaderValue)) {
-            return requestHeaderValue;
+        var hasRequestHeaderValue = !string.IsNullOrWhiteSpace(requestHeaderValue);
+
+        var trailerHeaderValue = string.Empty;
+        var hasTrailerHeaderValue = trailerHeaders is not null
+            && trailerHeaders.TryGetValue(headerName, out trailerHeaderValue)
+            && !string.IsNullOrWhiteSpace(trailerHeaderValue);
+
+        if (hasRequestHeaderValue && hasTrailerHeaderValue) {
+            value = string.Empty;
+            errorResult = ToErrorResult(
+                request.HttpContext,
+                StatusCodes.Status400BadRequest,
+                "InvalidRequest",
+                $"The '{headerName}' checksum cannot be sent in both the request headers and the aws-chunked trailers.",
+                resource: null);
+            return false;
         }
 
-        if (trailerHeaders is not null
-            && trailerHeaders.TryGetValue(headerName, out var trailerHeaderValue)
-            && !string.IsNullOrWhiteSpace(trailerHeaderValue)) {
-            return trailerHeaderValue;
+        if (hasRequestHeaderValue) {
+            value = requestHeaderValue.Trim();
+            errorResult = null;
+            return true;
         }
 
-        return string.Empty;
+        if (hasTrailerHeaderValue) {
+            value = trailerHeaderValue!.Trim();
+            errorResult = null;
+            return true;
+        }
+
+        value = string.Empty;
+        errorResult = null;
+        return true;
+    }
+
+    private static bool IsTrailerBackedStreamingPayloadHash(string? payloadHash)
+    {
+        return string.Equals(payloadHash?.Trim(), StreamingAws4HmacSha256PayloadTrailer, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(payloadHash?.Trim(), StreamingUnsignedPayloadTrailer, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsSignedTrailerBackedStreamingPayloadHash(string? payloadHash)
+    {
+        return string.Equals(payloadHash?.Trim(), StreamingAws4HmacSha256PayloadTrailer, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsChecksumHeaderName(string headerName)
+    {
+        return string.Equals(headerName, ChecksumSha256HeaderName, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(headerName, ChecksumSha1HeaderName, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(headerName, ChecksumCrc32HeaderName, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(headerName, ChecksumCrc32cHeaderName, StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool TryGetRequestChecksumAlgorithm(HttpRequest request, out string? checksumAlgorithm, out IResult? errorResult)
@@ -6791,6 +7257,7 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
         ApplyChecksumHeaders(httpResponse, objectInfo.Checksums);
         ApplyObjectLockHeaders(httpResponse, objectInfo);
         ApplyServerSideEncryptionHeaders(httpResponse, objectInfo.ServerSideEncryption);
+        EmitCustomerEncryptionResponseHeaders(httpResponse, objectInfo.CustomerEncryption);
     }
 
     private static void ApplyObjectLockHeaders(HttpResponse httpResponse, ObjectInfo objectInfo)
@@ -6869,6 +7336,16 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
         }
     }
 
+    private static void EmitCustomerEncryptionResponseHeaders(HttpResponse httpResponse, ObjectCustomerEncryptionInfo? customerEncryption)
+    {
+        if (customerEncryption is null) {
+            return;
+        }
+
+        httpResponse.Headers[ServerSideEncryptionCustomerAlgorithmHeaderName] = customerEncryption.Algorithm;
+        httpResponse.Headers[ServerSideEncryptionCustomerKeyMd5HeaderName] = customerEncryption.KeyMd5;
+    }
+
     private static string? ToS3RetentionMode(ObjectRetentionMode? mode)
     {
         return mode switch
@@ -6926,6 +7403,36 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
         return null;
     }
 
+    private static string? GetResponseChecksumAlgorithm(IReadOnlyDictionary<string, string>? checksums)
+    {
+        if (checksums is null) {
+            return null;
+        }
+
+        string? algorithm = null;
+        foreach (var checksum in checksums) {
+            if (string.IsNullOrWhiteSpace(checksum.Value)) {
+                continue;
+            }
+
+            var normalizedAlgorithm = NormalizeResponseChecksumAlgorithm(checksum.Key);
+            if (normalizedAlgorithm is null) {
+                continue;
+            }
+
+            if (algorithm is null) {
+                algorithm = normalizedAlgorithm;
+                continue;
+            }
+
+            if (!string.Equals(algorithm, normalizedAlgorithm, StringComparison.Ordinal)) {
+                return null;
+            }
+        }
+
+        return algorithm;
+    }
+
     private static bool IsCompositeChecksumValue(string? checksum)
     {
         if (string.IsNullOrWhiteSpace(checksum)) {
@@ -6939,6 +7446,35 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
 
         return int.TryParse(checksum[(separatorIndex + 1)..], NumberStyles.None, CultureInfo.InvariantCulture, out var partCount)
             && partCount > 0;
+    }
+
+    private static string? NormalizeResponseChecksumAlgorithm(string? checksumAlgorithm)
+    {
+        if (string.IsNullOrWhiteSpace(checksumAlgorithm)) {
+            return null;
+        }
+
+        if (string.Equals(checksumAlgorithm, "sha256", StringComparison.OrdinalIgnoreCase)) {
+            return "sha256";
+        }
+
+        if (string.Equals(checksumAlgorithm, "sha1", StringComparison.OrdinalIgnoreCase)) {
+            return "sha1";
+        }
+
+        if (string.Equals(checksumAlgorithm, "crc32", StringComparison.OrdinalIgnoreCase)) {
+            return "crc32";
+        }
+
+        if (string.Equals(checksumAlgorithm, "crc32c", StringComparison.OrdinalIgnoreCase)) {
+            return "crc32c";
+        }
+
+        if (string.Equals(checksumAlgorithm, "crc64nvme", StringComparison.OrdinalIgnoreCase)) {
+            return "crc64nvme";
+        }
+
+        return null;
     }
 
     private static string? ToS3ChecksumAlgorithmValue(string? checksumAlgorithm)
@@ -7132,13 +7668,35 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
         }
     }
 
-    private sealed class PreparedRequestBody(Stream content, long? contentLength, string? tempFilePath, IReadOnlyDictionary<string, string>? trailerHeaders) : IAsyncDisposable
+    private static bool FixedTimeEqualsOrdinal(string expected, string actual)
+    {
+        return CryptographicOperations.FixedTimeEquals(
+            Encoding.UTF8.GetBytes(expected),
+            Encoding.UTF8.GetBytes(actual));
+    }
+
+    private static bool FixedTimeEqualsOrdinalIgnoreCase(string expected, string actual)
+    {
+        return FixedTimeEqualsOrdinal(expected.ToUpperInvariant(), actual.ToUpperInvariant());
+    }
+
+    private sealed class PreparedRequestBody(
+        Stream content,
+        long? contentLength,
+        string? tempFilePath,
+        IReadOnlyDictionary<string, string>? trailerHeaders,
+        IReadOnlyList<KeyValuePair<string, string>>? trailerHeaderEntries,
+        string? finalChunkSignature) : IAsyncDisposable
     {
         public Stream Content { get; } = content;
 
         public long? ContentLength { get; } = contentLength;
 
         public IReadOnlyDictionary<string, string>? TrailerHeaders { get; } = trailerHeaders;
+
+        public IReadOnlyList<KeyValuePair<string, string>>? TrailerHeaderEntries { get; } = trailerHeaderEntries;
+
+        public string? FinalChunkSignature { get; } = finalChunkSignature;
 
         public async ValueTask DisposeAsync()
         {

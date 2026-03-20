@@ -17,6 +17,7 @@ using IntegratedS3.Abstractions.Responses;
 using IntegratedS3.Abstractions.Results;
 using IntegratedS3.Abstractions.Services;
 using IntegratedS3.AspNetCore;
+using IntegratedS3.AspNetCore.DependencyInjection;
 using IntegratedS3.AspNetCore.Endpoints;
 using IntegratedS3.Client;
 using IntegratedS3.Core.Models;
@@ -38,6 +39,7 @@ namespace IntegratedS3.Tests;
 public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicationFactory>
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
+    private static readonly uint[] Crc32Table = CreateCrc32Table();
 
     private readonly WebUiApplicationFactory _factory;
 
@@ -171,6 +173,7 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
 
         var putResponse = await client.SendAsync(putRequest);
         Assert.Equal(HttpStatusCode.OK, putResponse.StatusCode);
+        Assert.Equal("SHA256", Assert.Single(putResponse.Headers.GetValues("x-amz-checksum-algorithm")));
         Assert.Equal(checksum, Assert.Single(putResponse.Headers.GetValues("x-amz-checksum-sha256")));
         var versionId = Assert.Single(putResponse.Headers.GetValues("x-amz-version-id"));
         Assert.False(string.IsNullOrWhiteSpace(versionId));
@@ -219,42 +222,54 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
         Assert.Equal("NoSuchVersion", Assert.Single(wrongVersionHeadResponse.Headers.GetValues("x-amz-error-code")));
     }
 
-    [Fact]
-    public async Task PutObject_WithSha1ChecksumHeaders_ValidatesPayloadAndEmitsSha1Headers()
+    [Theory]
+    [InlineData("x-amz-sdk-checksum-algorithm", "sha1-header-bucket")]
+    [InlineData("x-amz-checksum-algorithm", "sha1-algorithm-header-bucket")]
+    public async Task PutObject_WithSha1ChecksumHeaders_ValidatesPayloadAndEmitsSha1Headers(string algorithmHeaderName, string bucketName)
     {
         using var client = await _factory.CreateClientAsync();
 
-        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync("/integrated-s3/buckets/sha1-header-bucket", content: null)).StatusCode);
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync($"/integrated-s3/buckets/{bucketName}", content: null)).StatusCode);
 
         const string payload = "hello sha1 checksum";
         var checksum = ComputeSha1Base64(payload);
 
-        using var putRequest = new HttpRequestMessage(HttpMethod.Put, "/integrated-s3/sha1-header-bucket/docs/sha1.txt")
+        using var putRequest = new HttpRequestMessage(HttpMethod.Put, $"/integrated-s3/{bucketName}/docs/sha1.txt")
         {
             Content = new StringContent(payload, Encoding.UTF8, "text/plain")
         };
-        putRequest.Headers.TryAddWithoutValidation("x-amz-sdk-checksum-algorithm", "SHA1");
+        putRequest.Headers.TryAddWithoutValidation(algorithmHeaderName, "SHA1");
         putRequest.Headers.TryAddWithoutValidation("x-amz-checksum-sha1", checksum);
 
         var putResponse = await client.SendAsync(putRequest);
         Assert.Equal(HttpStatusCode.OK, putResponse.StatusCode);
+        Assert.Equal("SHA1", Assert.Single(putResponse.Headers.GetValues("x-amz-checksum-algorithm")));
         Assert.Equal(checksum, Assert.Single(putResponse.Headers.GetValues("x-amz-checksum-sha1")));
+        Assert.False(putResponse.Headers.Contains("x-amz-checksum-sha256"));
+        Assert.False(putResponse.Headers.Contains("x-amz-checksum-crc32"));
+        Assert.False(putResponse.Headers.Contains("x-amz-checksum-crc32c"));
 
-        using var headRequest = new HttpRequestMessage(HttpMethod.Head, "/integrated-s3/sha1-header-bucket/docs/sha1.txt");
+        using var headRequest = new HttpRequestMessage(HttpMethod.Head, $"/integrated-s3/{bucketName}/docs/sha1.txt");
         var headResponse = await client.SendAsync(headRequest);
         Assert.Equal(HttpStatusCode.OK, headResponse.StatusCode);
         Assert.Equal(checksum, Assert.Single(headResponse.Headers.GetValues("x-amz-checksum-sha1")));
+        Assert.False(headResponse.Headers.Contains("x-amz-checksum-sha256"));
+        Assert.False(headResponse.Headers.Contains("x-amz-checksum-crc32"));
+        Assert.False(headResponse.Headers.Contains("x-amz-checksum-crc32c"));
 
-        var getResponse = await client.GetAsync("/integrated-s3/sha1-header-bucket/docs/sha1.txt");
+        var getResponse = await client.GetAsync($"/integrated-s3/{bucketName}/docs/sha1.txt");
         Assert.Equal(HttpStatusCode.OK, getResponse.StatusCode);
         Assert.Equal(checksum, Assert.Single(getResponse.Headers.GetValues("x-amz-checksum-sha1")));
+        Assert.False(getResponse.Headers.Contains("x-amz-checksum-sha256"));
+        Assert.False(getResponse.Headers.Contains("x-amz-checksum-crc32"));
+        Assert.False(getResponse.Headers.Contains("x-amz-checksum-crc32c"));
         Assert.Equal(payload, await getResponse.Content.ReadAsStringAsync());
 
-        using var badPutRequest = new HttpRequestMessage(HttpMethod.Put, "/integrated-s3/sha1-header-bucket/docs/bad-sha1.txt")
+        using var badPutRequest = new HttpRequestMessage(HttpMethod.Put, $"/integrated-s3/{bucketName}/docs/bad-sha1.txt")
         {
             Content = new StringContent("sha1 checksum mismatch", Encoding.UTF8, "text/plain")
         };
-        badPutRequest.Headers.TryAddWithoutValidation("x-amz-sdk-checksum-algorithm", "SHA1");
+        badPutRequest.Headers.TryAddWithoutValidation(algorithmHeaderName, "SHA1");
         badPutRequest.Headers.TryAddWithoutValidation("x-amz-checksum-sha1", "invalid-checksum");
 
         var badPutResponse = await client.SendAsync(badPutRequest);
@@ -284,16 +299,26 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
 
         var putResponse = await client.SendAsync(putRequest);
         Assert.Equal(HttpStatusCode.OK, putResponse.StatusCode);
+        Assert.Equal("CRC32C", Assert.Single(putResponse.Headers.GetValues("x-amz-checksum-algorithm")));
         Assert.Equal(checksum, Assert.Single(putResponse.Headers.GetValues("x-amz-checksum-crc32c")));
+        Assert.False(putResponse.Headers.Contains("x-amz-checksum-sha256"));
+        Assert.False(putResponse.Headers.Contains("x-amz-checksum-sha1"));
+        Assert.False(putResponse.Headers.Contains("x-amz-checksum-crc32"));
 
         using var headRequest = new HttpRequestMessage(HttpMethod.Head, "/integrated-s3/crc32c-header-bucket/docs/crc32c.txt");
         var headResponse = await client.SendAsync(headRequest);
         Assert.Equal(HttpStatusCode.OK, headResponse.StatusCode);
         Assert.Equal(checksum, Assert.Single(headResponse.Headers.GetValues("x-amz-checksum-crc32c")));
+        Assert.False(headResponse.Headers.Contains("x-amz-checksum-sha256"));
+        Assert.False(headResponse.Headers.Contains("x-amz-checksum-sha1"));
+        Assert.False(headResponse.Headers.Contains("x-amz-checksum-crc32"));
 
         var getResponse = await client.GetAsync("/integrated-s3/crc32c-header-bucket/docs/crc32c.txt");
         Assert.Equal(HttpStatusCode.OK, getResponse.StatusCode);
         Assert.Equal(checksum, Assert.Single(getResponse.Headers.GetValues("x-amz-checksum-crc32c")));
+        Assert.False(getResponse.Headers.Contains("x-amz-checksum-sha256"));
+        Assert.False(getResponse.Headers.Contains("x-amz-checksum-sha1"));
+        Assert.False(getResponse.Headers.Contains("x-amz-checksum-crc32"));
         Assert.Equal(payload, await getResponse.Content.ReadAsStringAsync());
 
         using var badPutRequest = new HttpRequestMessage(HttpMethod.Put, "/integrated-s3/crc32c-header-bucket/docs/bad-crc32c.txt")
@@ -353,6 +378,613 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
         Assert.Equal("application/xml", response.Content.Headers.ContentType?.MediaType);
         var document = XDocument.Parse(await response.Content.ReadAsStringAsync());
         Assert.Equal("InvalidRequest", GetRequiredElementValue(document, "Code"));
+    }
+
+    [Fact]
+    public async Task PutObject_WithAwsChunkedTrailerChecksum_ValidatesPayloadAndEmitsChecksumHeaders()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        const string bucketName = "aws-chunked-trailer-valid-bucket";
+        const string objectKey = "docs/trailer.txt";
+        const string payload = "hello from aws chunked trailer";
+        var checksum = ComputeSha256Base64(payload);
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync($"/integrated-s3/buckets/{bucketName}", content: null)).StatusCode);
+
+        using var putRequest = CreateAwsChunkedPutObjectRequest(
+            $"/integrated-s3/{bucketName}/{objectKey}",
+            payload,
+            sdkChecksumAlgorithm: "SHA256",
+            trailerHeaders: new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["x-amz-checksum-sha256"] = checksum
+            });
+
+        var putResponse = await client.SendAsync(putRequest);
+        Assert.Equal(HttpStatusCode.OK, putResponse.StatusCode);
+        Assert.Equal("SHA256", Assert.Single(putResponse.Headers.GetValues("x-amz-checksum-algorithm")));
+        Assert.Equal(checksum, Assert.Single(putResponse.Headers.GetValues("x-amz-checksum-sha256")));
+
+        using var headRequest = new HttpRequestMessage(HttpMethod.Head, $"/integrated-s3/{bucketName}/{objectKey}");
+        var headResponse = await client.SendAsync(headRequest);
+        Assert.Equal(HttpStatusCode.OK, headResponse.StatusCode);
+        Assert.Equal(checksum, Assert.Single(headResponse.Headers.GetValues("x-amz-checksum-sha256")));
+
+        var getResponse = await client.GetAsync($"/integrated-s3/{bucketName}/{objectKey}");
+        Assert.Equal(HttpStatusCode.OK, getResponse.StatusCode);
+        Assert.Equal(checksum, Assert.Single(getResponse.Headers.GetValues("x-amz-checksum-sha256")));
+        Assert.Equal(payload, await getResponse.Content.ReadAsStringAsync());
+    }
+
+    [Fact]
+    public async Task PutObject_WithUnsignedTrailerBackedPayloadHashWithoutTrailerSignature_Succeeds()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        const string bucketName = "aws-chunked-unsigned-trailer-valid-bucket";
+        const string objectKey = "docs/unsigned-trailer.txt";
+        const string payload = "hello from unsigned aws chunked trailer";
+        var checksum = ComputeSha256Base64(payload);
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync($"/integrated-s3/buckets/{bucketName}", content: null)).StatusCode);
+
+        using var putRequest = CreateAwsChunkedPutObjectRequest(
+            $"/integrated-s3/{bucketName}/{objectKey}",
+            payload,
+            sdkChecksumAlgorithm: "SHA256",
+            trailerHeaders: new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["x-amz-checksum-sha256"] = checksum
+            },
+            declaredTrailerHeaderNames: ["x-amz-checksum-sha256"]);
+        putRequest.Headers.TryAddWithoutValidation("x-amz-content-sha256", "STREAMING-UNSIGNED-PAYLOAD-TRAILER");
+
+        var putResponse = await client.SendAsync(putRequest);
+        Assert.Equal(HttpStatusCode.OK, putResponse.StatusCode);
+        Assert.Equal("SHA256", Assert.Single(putResponse.Headers.GetValues("x-amz-checksum-algorithm")));
+        Assert.Equal(checksum, Assert.Single(putResponse.Headers.GetValues("x-amz-checksum-sha256")));
+
+        using var headRequest = new HttpRequestMessage(HttpMethod.Head, $"/integrated-s3/{bucketName}/{objectKey}");
+        var headResponse = await client.SendAsync(headRequest);
+        Assert.Equal(HttpStatusCode.OK, headResponse.StatusCode);
+        Assert.Equal(checksum, Assert.Single(headResponse.Headers.GetValues("x-amz-checksum-sha256")));
+
+        var getResponse = await client.GetAsync($"/integrated-s3/{bucketName}/{objectKey}");
+        Assert.Equal(HttpStatusCode.OK, getResponse.StatusCode);
+        Assert.Equal(checksum, Assert.Single(getResponse.Headers.GetValues("x-amz-checksum-sha256")));
+        Assert.Equal(payload, await getResponse.Content.ReadAsStringAsync());
+    }
+
+    [Fact]
+    public async Task PutObject_WithUnsignedTrailerBackedSha1Checksum_PersistsAndEmitsSha1Headers()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        const string bucketName = "aws-chunked-unsigned-trailer-sha1-valid-bucket";
+        const string objectKey = "docs/unsigned-trailer-sha1.txt";
+        const string payload = "hello from unsigned aws chunked sha1 trailer";
+        var checksum = ComputeSha1Base64(payload);
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync($"/integrated-s3/buckets/{bucketName}", content: null)).StatusCode);
+
+        using var putRequest = CreateAwsChunkedPutObjectRequest(
+            $"/integrated-s3/{bucketName}/{objectKey}",
+            payload,
+            sdkChecksumAlgorithm: "SHA1",
+            trailerHeaders: new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["x-amz-checksum-sha1"] = checksum
+            },
+            declaredTrailerHeaderNames: ["x-amz-checksum-sha1"]);
+        putRequest.Headers.TryAddWithoutValidation("x-amz-content-sha256", "STREAMING-UNSIGNED-PAYLOAD-TRAILER");
+
+        var putResponse = await client.SendAsync(putRequest);
+        Assert.Equal(HttpStatusCode.OK, putResponse.StatusCode);
+        Assert.Equal("SHA1", Assert.Single(putResponse.Headers.GetValues("x-amz-checksum-algorithm")));
+        Assert.Equal(checksum, Assert.Single(putResponse.Headers.GetValues("x-amz-checksum-sha1")));
+        Assert.False(putResponse.Headers.Contains("x-amz-checksum-sha256"));
+        Assert.False(putResponse.Headers.Contains("x-amz-checksum-crc32"));
+        Assert.False(putResponse.Headers.Contains("x-amz-checksum-crc32c"));
+
+        using var headRequest = new HttpRequestMessage(HttpMethod.Head, $"/integrated-s3/{bucketName}/{objectKey}");
+        var headResponse = await client.SendAsync(headRequest);
+        Assert.Equal(HttpStatusCode.OK, headResponse.StatusCode);
+        Assert.Equal(checksum, Assert.Single(headResponse.Headers.GetValues("x-amz-checksum-sha1")));
+        Assert.False(headResponse.Headers.Contains("x-amz-checksum-sha256"));
+        Assert.False(headResponse.Headers.Contains("x-amz-checksum-crc32"));
+        Assert.False(headResponse.Headers.Contains("x-amz-checksum-crc32c"));
+
+        var getResponse = await client.GetAsync($"/integrated-s3/{bucketName}/{objectKey}");
+        Assert.Equal(HttpStatusCode.OK, getResponse.StatusCode);
+        Assert.Equal(checksum, Assert.Single(getResponse.Headers.GetValues("x-amz-checksum-sha1")));
+        Assert.False(getResponse.Headers.Contains("x-amz-checksum-sha256"));
+        Assert.False(getResponse.Headers.Contains("x-amz-checksum-crc32"));
+        Assert.False(getResponse.Headers.Contains("x-amz-checksum-crc32c"));
+        Assert.Equal(payload, await getResponse.Content.ReadAsStringAsync());
+    }
+
+    [Fact]
+    public async Task PutObject_WithUnsignedTrailerBackedCrc32cChecksum_PersistsAndEmitsCrc32cHeaders()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        const string bucketName = "aws-chunked-unsigned-trailer-crc32c-valid-bucket";
+        const string objectKey = "docs/unsigned-trailer-crc32c.txt";
+        const string payload = "hello from unsigned aws chunked crc32c trailer";
+        var checksum = ChecksumTestAlgorithms.ComputeCrc32cBase64(payload);
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync($"/integrated-s3/buckets/{bucketName}", content: null)).StatusCode);
+
+        using var putRequest = CreateAwsChunkedPutObjectRequest(
+            $"/integrated-s3/{bucketName}/{objectKey}",
+            payload,
+            sdkChecksumAlgorithm: "CRC32C",
+            trailerHeaders: new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["x-amz-checksum-crc32c"] = checksum
+            },
+            declaredTrailerHeaderNames: ["x-amz-checksum-crc32c"]);
+        putRequest.Headers.TryAddWithoutValidation("x-amz-content-sha256", "STREAMING-UNSIGNED-PAYLOAD-TRAILER");
+
+        var putResponse = await client.SendAsync(putRequest);
+        Assert.Equal(HttpStatusCode.OK, putResponse.StatusCode);
+        Assert.Equal("CRC32C", Assert.Single(putResponse.Headers.GetValues("x-amz-checksum-algorithm")));
+        Assert.Equal(checksum, Assert.Single(putResponse.Headers.GetValues("x-amz-checksum-crc32c")));
+        Assert.False(putResponse.Headers.Contains("x-amz-checksum-sha256"));
+        Assert.False(putResponse.Headers.Contains("x-amz-checksum-sha1"));
+        Assert.False(putResponse.Headers.Contains("x-amz-checksum-crc32"));
+
+        using var headRequest = new HttpRequestMessage(HttpMethod.Head, $"/integrated-s3/{bucketName}/{objectKey}");
+        var headResponse = await client.SendAsync(headRequest);
+        Assert.Equal(HttpStatusCode.OK, headResponse.StatusCode);
+        Assert.Equal(checksum, Assert.Single(headResponse.Headers.GetValues("x-amz-checksum-crc32c")));
+        Assert.False(headResponse.Headers.Contains("x-amz-checksum-sha256"));
+        Assert.False(headResponse.Headers.Contains("x-amz-checksum-sha1"));
+        Assert.False(headResponse.Headers.Contains("x-amz-checksum-crc32"));
+
+        var getResponse = await client.GetAsync($"/integrated-s3/{bucketName}/{objectKey}");
+        Assert.Equal(HttpStatusCode.OK, getResponse.StatusCode);
+        Assert.Equal(checksum, Assert.Single(getResponse.Headers.GetValues("x-amz-checksum-crc32c")));
+        Assert.False(getResponse.Headers.Contains("x-amz-checksum-sha256"));
+        Assert.False(getResponse.Headers.Contains("x-amz-checksum-sha1"));
+        Assert.False(getResponse.Headers.Contains("x-amz-checksum-crc32"));
+        Assert.Equal(payload, await getResponse.Content.ReadAsStringAsync());
+    }
+
+    [Fact]
+    public async Task PutObject_WithUnsignedTrailerBackedCrc32Checksum_PersistsAndEmitsCrc32Headers()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        const string bucketName = "aws-chunked-unsigned-trailer-crc32-valid-bucket";
+        const string objectKey = "docs/unsigned-trailer-crc32.txt";
+        const string payload = "hello from unsigned aws chunked crc32 trailer";
+        var checksum = ComputeCrc32Base64(payload);
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync($"/integrated-s3/buckets/{bucketName}", content: null)).StatusCode);
+
+        using var putRequest = CreateAwsChunkedPutObjectRequest(
+            $"/integrated-s3/{bucketName}/{objectKey}",
+            payload,
+            sdkChecksumAlgorithm: "CRC32",
+            trailerHeaders: new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["x-amz-checksum-crc32"] = checksum
+            },
+            declaredTrailerHeaderNames: ["x-amz-checksum-crc32"]);
+        putRequest.Headers.TryAddWithoutValidation("x-amz-content-sha256", "STREAMING-UNSIGNED-PAYLOAD-TRAILER");
+
+        var putResponse = await client.SendAsync(putRequest);
+        Assert.Equal(HttpStatusCode.OK, putResponse.StatusCode);
+        Assert.Equal("CRC32", Assert.Single(putResponse.Headers.GetValues("x-amz-checksum-algorithm")));
+        Assert.Equal(checksum, Assert.Single(putResponse.Headers.GetValues("x-amz-checksum-crc32")));
+        Assert.False(putResponse.Headers.Contains("x-amz-checksum-sha256"));
+        Assert.False(putResponse.Headers.Contains("x-amz-checksum-sha1"));
+        Assert.False(putResponse.Headers.Contains("x-amz-checksum-crc32c"));
+
+        using var headRequest = new HttpRequestMessage(HttpMethod.Head, $"/integrated-s3/{bucketName}/{objectKey}");
+        var headResponse = await client.SendAsync(headRequest);
+        Assert.Equal(HttpStatusCode.OK, headResponse.StatusCode);
+        Assert.Equal(checksum, Assert.Single(headResponse.Headers.GetValues("x-amz-checksum-crc32")));
+        Assert.False(headResponse.Headers.Contains("x-amz-checksum-sha256"));
+        Assert.False(headResponse.Headers.Contains("x-amz-checksum-sha1"));
+        Assert.False(headResponse.Headers.Contains("x-amz-checksum-crc32c"));
+
+        var getResponse = await client.GetAsync($"/integrated-s3/{bucketName}/{objectKey}");
+        Assert.Equal(HttpStatusCode.OK, getResponse.StatusCode);
+        Assert.Equal(checksum, Assert.Single(getResponse.Headers.GetValues("x-amz-checksum-crc32")));
+        Assert.False(getResponse.Headers.Contains("x-amz-checksum-sha256"));
+        Assert.False(getResponse.Headers.Contains("x-amz-checksum-sha1"));
+        Assert.False(getResponse.Headers.Contains("x-amz-checksum-crc32c"));
+        Assert.Equal(payload, await getResponse.Content.ReadAsStringAsync());
+    }
+
+    [Fact]
+    public async Task PutObject_WithUnsignedTrailerBackedChecksumMismatch_ReturnsBadDigest()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        const string bucketName = "aws-chunked-unsigned-trailer-bad-digest-bucket";
+        const string objectKey = "docs/unsigned-trailer-bad-digest.txt";
+        const string payload = "hello from unsigned aws chunked trailer";
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync($"/integrated-s3/buckets/{bucketName}", content: null)).StatusCode);
+
+        using var putRequest = CreateAwsChunkedPutObjectRequest(
+            $"/integrated-s3/{bucketName}/{objectKey}",
+            payload,
+            sdkChecksumAlgorithm: "SHA256",
+            trailerHeaders: new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["x-amz-checksum-sha256"] = ComputeSha256Base64("different payload")
+            },
+            declaredTrailerHeaderNames: ["x-amz-checksum-sha256"]);
+        putRequest.Headers.TryAddWithoutValidation("x-amz-content-sha256", "STREAMING-UNSIGNED-PAYLOAD-TRAILER");
+
+        var response = await client.SendAsync(putRequest);
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal("application/xml", response.Content.Headers.ContentType?.MediaType);
+
+        var document = XDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal("BadDigest", GetRequiredElementValue(document, "Code"));
+        var message = GetRequiredElementValue(document, "Message");
+        Assert.Contains("SHA256", message, StringComparison.Ordinal);
+        Assert.Contains(objectKey, message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task PutObject_WithUnsignedTrailerBackedSha1ChecksumMismatch_ReturnsBadDigest()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        const string bucketName = "aws-chunked-unsigned-trailer-sha1-bad-digest-bucket";
+        const string objectKey = "docs/unsigned-trailer-sha1-bad-digest.txt";
+        const string payload = "hello from unsigned aws chunked sha1 trailer";
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync($"/integrated-s3/buckets/{bucketName}", content: null)).StatusCode);
+
+        using var putRequest = CreateAwsChunkedPutObjectRequest(
+            $"/integrated-s3/{bucketName}/{objectKey}",
+            payload,
+            sdkChecksumAlgorithm: "SHA1",
+            trailerHeaders: new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["x-amz-checksum-sha1"] = ComputeSha1Base64("different payload")
+            },
+            declaredTrailerHeaderNames: ["x-amz-checksum-sha1"]);
+        putRequest.Headers.TryAddWithoutValidation("x-amz-content-sha256", "STREAMING-UNSIGNED-PAYLOAD-TRAILER");
+
+        var response = await client.SendAsync(putRequest);
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal("application/xml", response.Content.Headers.ContentType?.MediaType);
+
+        var document = XDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal("BadDigest", GetRequiredElementValue(document, "Code"));
+        var message = GetRequiredElementValue(document, "Message");
+        Assert.Contains("SHA1", message, StringComparison.Ordinal);
+        Assert.Contains(objectKey, message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task PutObject_WithUnsignedTrailerBackedCrc32cChecksumMismatch_ReturnsBadDigest()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        const string bucketName = "aws-chunked-unsigned-trailer-crc32c-bad-digest-bucket";
+        const string objectKey = "docs/unsigned-trailer-crc32c-bad-digest.txt";
+        const string payload = "hello from unsigned aws chunked crc32c trailer";
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync($"/integrated-s3/buckets/{bucketName}", content: null)).StatusCode);
+
+        using var putRequest = CreateAwsChunkedPutObjectRequest(
+            $"/integrated-s3/{bucketName}/{objectKey}",
+            payload,
+            sdkChecksumAlgorithm: "CRC32C",
+            trailerHeaders: new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["x-amz-checksum-crc32c"] = ChecksumTestAlgorithms.ComputeCrc32cBase64("different payload")
+            },
+            declaredTrailerHeaderNames: ["x-amz-checksum-crc32c"]);
+        putRequest.Headers.TryAddWithoutValidation("x-amz-content-sha256", "STREAMING-UNSIGNED-PAYLOAD-TRAILER");
+
+        var response = await client.SendAsync(putRequest);
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal("application/xml", response.Content.Headers.ContentType?.MediaType);
+
+        var document = XDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal("BadDigest", GetRequiredElementValue(document, "Code"));
+        var message = GetRequiredElementValue(document, "Message");
+        Assert.Contains("CRC32C", message, StringComparison.Ordinal);
+        Assert.Contains(objectKey, message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task PutObject_WithUnsignedTrailerBackedCrc32ChecksumMismatch_ReturnsBadDigest()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        const string bucketName = "aws-chunked-unsigned-trailer-crc32-bad-digest-bucket";
+        const string objectKey = "docs/unsigned-trailer-crc32-bad-digest.txt";
+        const string payload = "hello from unsigned aws chunked crc32 trailer";
+        var checksum = ComputeCrc32Base64("different payload");
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync($"/integrated-s3/buckets/{bucketName}", content: null)).StatusCode);
+
+        using var putRequest = CreateAwsChunkedPutObjectRequest(
+            $"/integrated-s3/{bucketName}/{objectKey}",
+            payload,
+            sdkChecksumAlgorithm: "CRC32",
+            trailerHeaders: new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["x-amz-checksum-crc32"] = checksum
+            },
+            declaredTrailerHeaderNames: ["x-amz-checksum-crc32"]);
+        putRequest.Headers.TryAddWithoutValidation("x-amz-content-sha256", "STREAMING-UNSIGNED-PAYLOAD-TRAILER");
+
+        var response = await client.SendAsync(putRequest);
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal("application/xml", response.Content.Headers.ContentType?.MediaType);
+
+        var document = XDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal("BadDigest", GetRequiredElementValue(document, "Code"));
+        var message = GetRequiredElementValue(document, "Message");
+        Assert.Contains("CRC32", message, StringComparison.Ordinal);
+        Assert.Contains(objectKey, message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task PutObject_WithTrailerBackedPayloadHashWithoutTrailerSignature_ReturnsInvalidRequest()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        const string bucketName = "aws-chunked-trailer-signature-missing-bucket";
+        const string objectKey = "docs/trailer-signature-missing.txt";
+        const string payload = "hello from missing aws chunked trailer signature";
+        var checksum = ComputeSha256Base64(payload);
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync($"/integrated-s3/buckets/{bucketName}", content: null)).StatusCode);
+
+        using var putRequest = CreateAwsChunkedPutObjectRequest(
+            $"/integrated-s3/{bucketName}/{objectKey}",
+            payload,
+            sdkChecksumAlgorithm: "SHA256",
+            trailerHeaders: new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["x-amz-checksum-sha256"] = checksum
+            },
+            declaredTrailerHeaderNames: ["x-amz-checksum-sha256"]);
+        putRequest.Headers.TryAddWithoutValidation("x-amz-content-sha256", "STREAMING-AWS4-HMAC-SHA256-PAYLOAD-TRAILER");
+
+        var response = await client.SendAsync(putRequest);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal("application/xml", response.Content.Headers.ContentType?.MediaType);
+
+        var document = XDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal("InvalidRequest", GetRequiredElementValue(document, "Code"));
+        Assert.Contains("x-amz-trailer-signature", GetRequiredElementValue(document, "Message"), StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("SHA1", "x-amz-checksum-sha1", "aws-chunked-signed-trailer-sha1-valid-bucket", "docs/signed-trailer-sha1.txt", "hello from signed aws chunked sha1 trailer")]
+    [InlineData("CRC32", "x-amz-checksum-crc32", "aws-chunked-signed-trailer-crc32-valid-bucket", "docs/signed-trailer-crc32.txt", "hello from signed aws chunked crc32 trailer")]
+    [InlineData("CRC32C", "x-amz-checksum-crc32c", "aws-chunked-signed-trailer-crc32c-valid-bucket", "docs/signed-trailer-crc32c.txt", "hello from signed aws chunked crc32c trailer")]
+    public async Task PutObject_WithSigV4AwsChunkedTrailerSignatureAndNonSha256Checksum_PersistsAndEmitsCompatibleChecksumHeaders(
+        string sdkChecksumAlgorithm,
+        string trailerHeaderName,
+        string bucketName,
+        string objectKey,
+        string payload)
+    {
+        const string accessKeyId = "sigv4-http-chunked-signed-trailer-access";
+        const string secretAccessKey = "sigv4-http-chunked-signed-trailer-secret";
+        var checksum = ComputeTrailerChecksumBase64(trailerHeaderName, payload);
+
+        await using var isolatedClient = await CreateSigV4AuthenticatedClientAsync(accessKeyId, secretAccessKey);
+        using var client = isolatedClient.Client;
+
+        using var createBucketRequest = CreateSigV4HeaderSignedRequest(HttpMethod.Put, $"/integrated-s3/buckets/{bucketName}", accessKeyId, secretAccessKey);
+        Assert.Equal(HttpStatusCode.Created, (await client.SendAsync(createBucketRequest)).StatusCode);
+
+        using var putRequest = CreateSigV4AwsChunkedTrailerRequest(
+            $"/integrated-s3/{bucketName}/{objectKey}",
+            accessKeyId,
+            secretAccessKey,
+            payload,
+            new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+            {
+                [trailerHeaderName] = checksum
+            });
+        await AssertSigV4AwsChunkedTrailerRequestAsync(putRequest, sdkChecksumAlgorithm, trailerHeaderName);
+
+        var putResponse = await client.SendAsync(putRequest);
+
+        Assert.Equal(HttpStatusCode.OK, putResponse.StatusCode);
+        Assert.Equal(sdkChecksumAlgorithm, Assert.Single(putResponse.Headers.GetValues("x-amz-checksum-algorithm")));
+        AssertOnlyExpectedChecksumHeader(putResponse.Headers, trailerHeaderName, checksum);
+
+        using var headRequest = CreateSigV4HeaderSignedRequest(HttpMethod.Head, $"/integrated-s3/{bucketName}/{objectKey}", accessKeyId, secretAccessKey);
+        var headResponse = await client.SendAsync(headRequest);
+
+        Assert.Equal(HttpStatusCode.OK, headResponse.StatusCode);
+        AssertOnlyExpectedChecksumHeader(headResponse.Headers, trailerHeaderName, checksum);
+
+        using var getRequest = CreateSigV4HeaderSignedRequest(HttpMethod.Get, $"/integrated-s3/{bucketName}/{objectKey}", accessKeyId, secretAccessKey);
+        var getResponse = await client.SendAsync(getRequest);
+
+        Assert.Equal(HttpStatusCode.OK, getResponse.StatusCode);
+        AssertOnlyExpectedChecksumHeader(getResponse.Headers, trailerHeaderName, checksum);
+        Assert.Equal(payload, await getResponse.Content.ReadAsStringAsync());
+    }
+
+    [Theory]
+    [InlineData("SHA1", "x-amz-checksum-sha1", "aws-chunked-signed-trailer-sha1-bad-digest-bucket", "docs/signed-trailer-sha1-bad-digest.txt", "hello from signed aws chunked sha1 trailer bad digest")]
+    [InlineData("CRC32", "x-amz-checksum-crc32", "aws-chunked-signed-trailer-crc32-bad-digest-bucket", "docs/signed-trailer-crc32-bad-digest.txt", "hello from signed aws chunked crc32 trailer bad digest")]
+    [InlineData("CRC32C", "x-amz-checksum-crc32c", "aws-chunked-signed-trailer-crc32c-bad-digest-bucket", "docs/signed-trailer-crc32c-bad-digest.txt", "hello from signed aws chunked crc32c trailer bad digest")]
+    public async Task PutObject_WithSigV4AwsChunkedTrailerSignatureAndNonSha256ChecksumMismatch_ReturnsBadDigest(
+        string sdkChecksumAlgorithm,
+        string trailerHeaderName,
+        string bucketName,
+        string objectKey,
+        string payload)
+    {
+        const string accessKeyId = "sigv4-http-chunked-signed-trailer-access";
+        const string secretAccessKey = "sigv4-http-chunked-signed-trailer-secret";
+        var mismatchedChecksum = ComputeTrailerChecksumBase64(trailerHeaderName, "different payload");
+
+        await using var isolatedClient = await CreateSigV4AuthenticatedClientAsync(accessKeyId, secretAccessKey);
+        using var client = isolatedClient.Client;
+
+        using var createBucketRequest = CreateSigV4HeaderSignedRequest(HttpMethod.Put, $"/integrated-s3/buckets/{bucketName}", accessKeyId, secretAccessKey);
+        Assert.Equal(HttpStatusCode.Created, (await client.SendAsync(createBucketRequest)).StatusCode);
+
+        using var putRequest = CreateSigV4AwsChunkedTrailerRequest(
+            $"/integrated-s3/{bucketName}/{objectKey}",
+            accessKeyId,
+            secretAccessKey,
+            payload,
+            new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+            {
+                [trailerHeaderName] = mismatchedChecksum
+            });
+        await AssertSigV4AwsChunkedTrailerRequestAsync(putRequest, sdkChecksumAlgorithm, trailerHeaderName);
+
+        var response = await client.SendAsync(putRequest);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal("application/xml", response.Content.Headers.ContentType?.MediaType);
+
+        var document = XDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal("BadDigest", GetRequiredElementValue(document, "Code"));
+        var message = GetRequiredElementValue(document, "Message");
+        Assert.Contains(sdkChecksumAlgorithm, message, StringComparison.Ordinal);
+        Assert.Contains(objectKey, message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task PutObject_WithAwsChunkedTrailerChecksumWithoutTrailerDeclaration_ReturnsInvalidRequest()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        const string bucketName = "aws-chunked-trailer-missing-declaration-bucket";
+        const string objectKey = "docs/trailer-missing-declaration.txt";
+        const string payload = "hello from aws chunked trailer declaration";
+        var checksum = ComputeSha256Base64(payload);
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync($"/integrated-s3/buckets/{bucketName}", content: null)).StatusCode);
+
+        using var putRequest = CreateAwsChunkedPutObjectRequest(
+            $"/integrated-s3/{bucketName}/{objectKey}",
+            payload,
+            sdkChecksumAlgorithm: "SHA256",
+            trailerHeaders: new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["x-amz-checksum-sha256"] = checksum
+            },
+            declaredTrailerHeaderNames: []);
+
+        var response = await client.SendAsync(putRequest);
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal("application/xml", response.Content.Headers.ContentType?.MediaType);
+
+        var document = XDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal("InvalidRequest", GetRequiredElementValue(document, "Code"));
+        Assert.Equal("Missing required header for this request: x-amz-trailer", GetRequiredElementValue(document, "Message"));
+    }
+
+    [Fact]
+    public async Task PutObject_WithAwsChunkedTrailerMultipleChecksums_ReturnsInvalidRequest()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        const string bucketName = "aws-chunked-trailer-multi-checksum-bucket";
+        const string objectKey = "docs/trailer-multi.txt";
+        const string payload = "multiple trailer checksum headers";
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync($"/integrated-s3/buckets/{bucketName}", content: null)).StatusCode);
+
+        using var putRequest = CreateAwsChunkedPutObjectRequest(
+            $"/integrated-s3/{bucketName}/{objectKey}",
+            payload,
+            trailerHeaders: new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["x-amz-checksum-sha256"] = ComputeSha256Base64(payload),
+                ["x-amz-checksum-sha1"] = ComputeSha1Base64(payload)
+            });
+
+        var response = await client.SendAsync(putRequest);
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal("application/xml", response.Content.Headers.ContentType?.MediaType);
+
+        var document = XDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal("InvalidRequest", GetRequiredElementValue(document, "Code"));
+        Assert.Equal("Expecting a single x-amz-checksum-* header. Multiple checksum types are not allowed.", GetRequiredElementValue(document, "Message"));
+    }
+
+    [Fact]
+    public async Task PutObject_WithDuplicateAwsChunkedChecksumTrailer_ReturnsInvalidRequest()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        const string bucketName = "aws-chunked-trailer-duplicate-bucket";
+        const string objectKey = "docs/trailer-duplicate.txt";
+        const string payload = "duplicate trailer checksum headers";
+        var checksum = ComputeSha256Base64(payload);
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync($"/integrated-s3/buckets/{bucketName}", content: null)).StatusCode);
+
+        using var putRequest = CreateAwsChunkedPutObjectRequest(
+            $"/integrated-s3/{bucketName}/{objectKey}",
+            payload,
+            sdkChecksumAlgorithm: "SHA256",
+            declaredTrailerHeaderNames: ["x-amz-checksum-sha256"],
+            trailerHeaderEntries:
+            [
+                new KeyValuePair<string, string>("x-amz-checksum-sha256", checksum),
+                new KeyValuePair<string, string>("x-amz-checksum-sha256", ComputeSha256Base64("different payload"))
+            ]);
+
+        var response = await client.SendAsync(putRequest);
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal("application/xml", response.Content.Headers.ContentType?.MediaType);
+
+        var document = XDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal("InvalidRequest", GetRequiredElementValue(document, "Code"));
+        Assert.Equal(
+            "The aws-chunked trailer header 'x-amz-checksum-sha256' must not be repeated.",
+            GetRequiredElementValue(document, "Message"));
+    }
+
+    [Fact]
+    public async Task PutObject_WithAwsChunkedTrailerChecksumMismatch_ReturnsBadDigest()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        const string bucketName = "aws-chunked-trailer-bad-digest-bucket";
+        const string objectKey = "docs/trailer-bad.txt";
+        const string payload = "aws chunked trailer checksum mismatch";
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync($"/integrated-s3/buckets/{bucketName}", content: null)).StatusCode);
+
+        using var putRequest = CreateAwsChunkedPutObjectRequest(
+            $"/integrated-s3/{bucketName}/{objectKey}",
+            payload,
+            sdkChecksumAlgorithm: "SHA256",
+            trailerHeaders: new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["x-amz-checksum-sha256"] = ComputeSha256Base64("different payload")
+            });
+
+        var response = await client.SendAsync(putRequest);
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal("application/xml", response.Content.Headers.ContentType?.MediaType);
+
+        var document = XDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal("BadDigest", GetRequiredElementValue(document, "Code"));
+        var message = GetRequiredElementValue(document, "Message");
+        Assert.Contains("SHA256", message, StringComparison.Ordinal);
+        Assert.Contains(objectKey, message, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -1812,6 +2444,81 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
     }
 
     [Fact]
+    public async Task S3CompatibleCopyObject_WithChecksumAlgorithmHeader_EchoesRequestedChecksumAlgorithmAndPersistsRequestedChecksum()
+    {
+        using var client = await _factory.CreateClientAsync();
+        const string payload = "copy object checksum algorithm";
+        var expectedChecksumSha1 = ComputeSha1Base64(payload);
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync("/integrated-s3/buckets/copy-checksum-source", content: null)).StatusCode);
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync("/integrated-s3/buckets/copy-checksum-target", content: null)).StatusCode);
+
+        using var sourceUploadRequest = new HttpRequestMessage(HttpMethod.Put, "/integrated-s3/copy-checksum-source/docs/source.txt")
+        {
+            Content = new StringContent(payload, Encoding.UTF8, "text/plain")
+        };
+
+        var sourceUploadResponse = await client.SendAsync(sourceUploadRequest);
+        Assert.Equal(HttpStatusCode.OK, sourceUploadResponse.StatusCode);
+
+        using var copyRequest = new HttpRequestMessage(HttpMethod.Put, "/integrated-s3/copy-checksum-target/docs/copied.txt");
+        copyRequest.Headers.TryAddWithoutValidation("x-amz-copy-source", "/copy-checksum-source/docs/source.txt");
+        copyRequest.Headers.TryAddWithoutValidation("x-amz-checksum-algorithm", "SHA1");
+
+        var copyResponse = await client.SendAsync(copyRequest);
+
+        Assert.Equal(HttpStatusCode.OK, copyResponse.StatusCode);
+        Assert.Equal("application/xml", copyResponse.Content.Headers.ContentType?.MediaType);
+        Assert.Equal("SHA1", Assert.Single(copyResponse.Headers.GetValues("x-amz-checksum-algorithm")));
+        Assert.Equal(expectedChecksumSha1, Assert.Single(copyResponse.Headers.GetValues("x-amz-checksum-sha1")));
+        var copyDocument = XDocument.Parse(await copyResponse.Content.ReadAsStringAsync());
+        Assert.Equal("CopyObjectResult", copyDocument.Root?.Name.LocalName);
+        Assert.Equal(expectedChecksumSha1, GetRequiredElementValue(copyDocument, "ChecksumSHA1"));
+
+        using var headRequest = new HttpRequestMessage(HttpMethod.Head, "/integrated-s3/copy-checksum-target/docs/copied.txt");
+        var headResponse = await client.SendAsync(headRequest);
+        Assert.Equal(HttpStatusCode.OK, headResponse.StatusCode);
+        Assert.Equal(expectedChecksumSha1, Assert.Single(headResponse.Headers.GetValues("x-amz-checksum-sha1")));
+
+        var downloadResponse = await client.GetAsync("/integrated-s3/copy-checksum-target/docs/copied.txt");
+        Assert.Equal(HttpStatusCode.OK, downloadResponse.StatusCode);
+        Assert.Equal(expectedChecksumSha1, Assert.Single(downloadResponse.Headers.GetValues("x-amz-checksum-sha1")));
+        Assert.Equal(payload, await downloadResponse.Content.ReadAsStringAsync());
+    }
+
+    [Fact]
+    public async Task S3CompatibleCopyObject_WithMismatchedChecksumAlgorithmHeaders_ReturnsInvalidRequest()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync("/integrated-s3/buckets/copy-checksum-mismatch-source", content: null)).StatusCode);
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync("/integrated-s3/buckets/copy-checksum-mismatch-target", content: null)).StatusCode);
+
+        using var sourceUploadRequest = new HttpRequestMessage(HttpMethod.Put, "/integrated-s3/copy-checksum-mismatch-source/docs/source.txt")
+        {
+            Content = new StringContent("copy checksum mismatch", Encoding.UTF8, "text/plain")
+        };
+
+        var sourceUploadResponse = await client.SendAsync(sourceUploadRequest);
+        Assert.Equal(HttpStatusCode.OK, sourceUploadResponse.StatusCode);
+
+        using var copyRequest = new HttpRequestMessage(HttpMethod.Put, "/integrated-s3/copy-checksum-mismatch-target/docs/copied.txt");
+        copyRequest.Headers.TryAddWithoutValidation("x-amz-copy-source", "/copy-checksum-mismatch-source/docs/source.txt");
+        copyRequest.Headers.TryAddWithoutValidation("x-amz-sdk-checksum-algorithm", "CRC32C");
+        copyRequest.Headers.TryAddWithoutValidation("x-amz-checksum-algorithm", "SHA256");
+
+        var response = await client.SendAsync(copyRequest);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal("application/xml", response.Content.Headers.ContentType?.MediaType);
+        var document = XDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal("InvalidRequest", GetRequiredElementValue(document, "Code"));
+        Assert.Equal(
+            "The 'x-amz-sdk-checksum-algorithm' and 'x-amz-checksum-algorithm' headers must match when both are supplied.",
+            GetRequiredElementValue(document, "Message"));
+    }
+
+    [Fact]
     public async Task S3CompatibleCopyObject_WithMetadataDirectiveReplace_ReplacesHeadersAndMetadata()
     {
         using var client = await _factory.CreateClientAsync();
@@ -1885,6 +2592,60 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
     }
 
     [Fact]
+    public async Task S3CompatibleCopyObject_CopyingObjectOntoItselfWithMetadataDirectiveReplace_UpdatesMtimeMetadata()
+    {
+        using var client = await _factory.CreateClientAsync();
+        const string bucketName = "copy-self-replace-bucket";
+        const string objectKey = "docs/rclone.txt";
+        const string payload = "same-key copy keeps the payload";
+        const string originalMtime = "2024-10-11T12:13:14.123456789Z";
+        const string replacementMtime = "2025-01-02T03:04:05.987654321Z";
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync($"/integrated-s3/buckets/{bucketName}", content: null)).StatusCode);
+
+        using var sourceUploadRequest = new HttpRequestMessage(HttpMethod.Put, $"/integrated-s3/{bucketName}/{objectKey}")
+        {
+            Content = new StringContent(payload, Encoding.UTF8, "text/plain")
+        };
+        sourceUploadRequest.Headers.TryAddWithoutValidation("x-amz-meta-mtime", originalMtime);
+        sourceUploadRequest.Headers.TryAddWithoutValidation("x-amz-meta-source-only", "remove-me");
+
+        var sourceUploadResponse = await client.SendAsync(sourceUploadRequest);
+        Assert.Equal(HttpStatusCode.OK, sourceUploadResponse.StatusCode);
+
+        using var copyRequest = new HttpRequestMessage(HttpMethod.Put, $"/integrated-s3/{bucketName}/{objectKey}")
+        {
+            Content = new ByteArrayContent([])
+        };
+        copyRequest.Headers.TryAddWithoutValidation("x-amz-copy-source", $"/{bucketName}/{objectKey}");
+        copyRequest.Headers.TryAddWithoutValidation("x-amz-metadata-directive", "REPLACE");
+        copyRequest.Content.Headers.ContentType = new MediaTypeHeaderValue("text/plain");
+        copyRequest.Headers.TryAddWithoutValidation("x-amz-meta-mtime", replacementMtime);
+        copyRequest.Headers.TryAddWithoutValidation("x-amz-meta-updated-by", "rclone");
+
+        var copyResponse = await client.SendAsync(copyRequest);
+        Assert.Equal(HttpStatusCode.OK, copyResponse.StatusCode);
+        var copyDocument = XDocument.Parse(await copyResponse.Content.ReadAsStringAsync());
+        Assert.Equal("CopyObjectResult", copyDocument.Root?.Name.LocalName);
+        Assert.False(string.IsNullOrWhiteSpace(GetRequiredElementValue(copyDocument, "LastModified")));
+        Assert.False(string.IsNullOrWhiteSpace(GetRequiredElementValue(copyDocument, "ETag")));
+
+        using var headRequest = new HttpRequestMessage(HttpMethod.Head, $"/integrated-s3/{bucketName}/{objectKey}");
+        var headResponse = await client.SendAsync(headRequest);
+        Assert.Equal(HttpStatusCode.OK, headResponse.StatusCode);
+        Assert.Equal(replacementMtime, Assert.Single(headResponse.Headers.GetValues("x-amz-meta-mtime")));
+        Assert.Equal("rclone", Assert.Single(headResponse.Headers.GetValues("x-amz-meta-updated-by")));
+        Assert.False(headResponse.Headers.Contains("x-amz-meta-source-only"));
+
+        var downloadResponse = await client.GetAsync($"/integrated-s3/{bucketName}/{objectKey}");
+        Assert.Equal(HttpStatusCode.OK, downloadResponse.StatusCode);
+        Assert.Equal(replacementMtime, Assert.Single(downloadResponse.Headers.GetValues("x-amz-meta-mtime")));
+        Assert.Equal("rclone", Assert.Single(downloadResponse.Headers.GetValues("x-amz-meta-updated-by")));
+        Assert.False(downloadResponse.Headers.Contains("x-amz-meta-source-only"));
+        Assert.Equal(payload, await downloadResponse.Content.ReadAsStringAsync());
+    }
+
+    [Fact]
     public async Task PutObject_WithCopySourcePreconditionHeader_ReturnsPreconditionFailed()
     {
         using var client = await _factory.CreateClientAsync();
@@ -1917,19 +2678,53 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
         var noneMatchCopyError = XDocument.Parse(await noneMatchCopyResponse.Content.ReadAsStringAsync());
         Assert.Equal("PreconditionFailed", GetRequiredElementValue(noneMatchCopyError, "Code"));
 
-        using var modifiedSinceCopyRequest = new HttpRequestMessage(HttpMethod.Put, "/integrated-s3/buckets/copy-precondition-target/objects/docs/copied.txt");
-        modifiedSinceCopyRequest.Headers.TryAddWithoutValidation("x-amz-copy-source", "/copy-precondition-source/docs/source.txt");
-        modifiedSinceCopyRequest.Headers.TryAddWithoutValidation("x-amz-copy-source-if-none-match", "\"different\"");
-        modifiedSinceCopyRequest.Headers.TryAddWithoutValidation("x-amz-copy-source-if-modified-since", sourceObject!.LastModifiedUtc.AddMinutes(5).ToString("R"));
-
-        var modifiedSinceCopyResponse = await client.SendAsync(modifiedSinceCopyRequest);
-        Assert.Equal(HttpStatusCode.PreconditionFailed, modifiedSinceCopyResponse.StatusCode);
-        Assert.Equal("application/xml", modifiedSinceCopyResponse.Content.Headers.ContentType?.MediaType);
-        var modifiedSinceCopyError = XDocument.Parse(await modifiedSinceCopyResponse.Content.ReadAsStringAsync());
-        Assert.Equal("PreconditionFailed", GetRequiredElementValue(modifiedSinceCopyError, "Code"));
-
         var targetHead = await client.SendAsync(new HttpRequestMessage(HttpMethod.Head, "/integrated-s3/buckets/copy-precondition-target/objects/docs/copied.txt"));
         Assert.Equal(HttpStatusCode.NotFound, targetHead.StatusCode);
+    }
+
+    [Fact]
+    public async Task PutObject_WithCopySourceConditionalPrecedenceHeaders_UsesS3PrecedenceRules()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        await client.PutAsync("/integrated-s3/buckets/copy-precedence-source", content: null);
+        await client.PutAsync("/integrated-s3/buckets/copy-precedence-target", content: null);
+
+        var uploadResponse = await client.PutAsync(
+            "/integrated-s3/buckets/copy-precedence-source/objects/docs/source.txt",
+            new StringContent("precedence payload", Encoding.UTF8, "text/plain"));
+        Assert.Equal(HttpStatusCode.OK, uploadResponse.StatusCode);
+        var sourceObject = await uploadResponse.Content.ReadFromJsonAsync<ObjectInfo>(JsonOptions);
+        Assert.NotNull(sourceObject);
+
+        using var ifMatchPrecedenceCopyRequest = new HttpRequestMessage(HttpMethod.Put, "/integrated-s3/buckets/copy-precedence-target/objects/docs/if-match-copy.txt");
+        ifMatchPrecedenceCopyRequest.Headers.TryAddWithoutValidation("x-amz-copy-source", "/copy-precedence-source/docs/source.txt");
+        ifMatchPrecedenceCopyRequest.Headers.TryAddWithoutValidation("x-amz-copy-source-if-match", $"\"{sourceObject!.ETag}\"");
+        ifMatchPrecedenceCopyRequest.Headers.TryAddWithoutValidation("x-amz-copy-source-if-unmodified-since", sourceObject.LastModifiedUtc.AddMinutes(-5).ToString("R"));
+
+        var ifMatchPrecedenceCopyResponse = await client.SendAsync(ifMatchPrecedenceCopyRequest);
+        Assert.Equal(HttpStatusCode.OK, ifMatchPrecedenceCopyResponse.StatusCode);
+        Assert.Equal("application/xml", ifMatchPrecedenceCopyResponse.Content.Headers.ContentType?.MediaType);
+        var ifMatchPrecedenceCopyDocument = XDocument.Parse(await ifMatchPrecedenceCopyResponse.Content.ReadAsStringAsync());
+        Assert.Equal("CopyObjectResult", ifMatchPrecedenceCopyDocument.Root?.Name.LocalName);
+
+        var copiedObjectResponse = await client.GetAsync("/integrated-s3/buckets/copy-precedence-target/objects/docs/if-match-copy.txt");
+        Assert.Equal(HttpStatusCode.OK, copiedObjectResponse.StatusCode);
+        Assert.Equal("precedence payload", await copiedObjectResponse.Content.ReadAsStringAsync());
+
+        using var ifNoneMatchPrecedenceCopyRequest = new HttpRequestMessage(HttpMethod.Put, "/integrated-s3/buckets/copy-precedence-target/objects/docs/if-none-match-copy.txt");
+        ifNoneMatchPrecedenceCopyRequest.Headers.TryAddWithoutValidation("x-amz-copy-source", "/copy-precedence-source/docs/source.txt");
+        ifNoneMatchPrecedenceCopyRequest.Headers.TryAddWithoutValidation("x-amz-copy-source-if-none-match", $"\"{sourceObject.ETag}\"");
+        ifNoneMatchPrecedenceCopyRequest.Headers.TryAddWithoutValidation("x-amz-copy-source-if-modified-since", sourceObject.LastModifiedUtc.AddMinutes(-5).ToString("R"));
+
+        var ifNoneMatchPrecedenceCopyResponse = await client.SendAsync(ifNoneMatchPrecedenceCopyRequest);
+        Assert.Equal(HttpStatusCode.PreconditionFailed, ifNoneMatchPrecedenceCopyResponse.StatusCode);
+        Assert.Equal("application/xml", ifNoneMatchPrecedenceCopyResponse.Content.Headers.ContentType?.MediaType);
+        var ifNoneMatchPrecedenceCopyError = XDocument.Parse(await ifNoneMatchPrecedenceCopyResponse.Content.ReadAsStringAsync());
+        Assert.Equal("PreconditionFailed", GetRequiredElementValue(ifNoneMatchPrecedenceCopyError, "Code"));
+
+        var blockedTargetHead = await client.SendAsync(new HttpRequestMessage(HttpMethod.Head, "/integrated-s3/buckets/copy-precedence-target/objects/docs/if-none-match-copy.txt"));
+        Assert.Equal(HttpStatusCode.NotFound, blockedTargetHead.StatusCode);
     }
 
     [Fact]
@@ -3683,11 +4478,99 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
         Assert.Equal("The specified version does not exist.", GetRequiredElementValue(errorDocument, "Message"));
     }
 
+    [Theory]
+    [InlineData("x-amz-sdk-checksum-algorithm")]
+    [InlineData("x-amz-checksum-algorithm")]
+    public async Task S3CompatibleMultipartUpload_UploadPartCopy_WithRequestedChecksumAlgorithm_ReturnsRequestedChecksum(string algorithmHeaderName)
+    {
+        using var client = await _factory.CreateClientAsync();
+        var bucketName = algorithmHeaderName.Contains("sdk", StringComparison.Ordinal)
+            ? $"multipart-copy-sdk-requested-checksum-{Guid.NewGuid():N}"
+            : $"multipart-copy-requested-checksum-{Guid.NewGuid():N}";
+        const string sourceKey = "docs/source.txt";
+        const string destinationKey = "docs/copied.txt";
+        const string sourcePayload = "hello world";
+        const string copiedPayload = "world";
+        var expectedChecksumSha1 = ComputeSha1Base64(copiedPayload);
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync($"/integrated-s3/buckets/{bucketName}", content: null)).StatusCode);
+
+        var putSource = await client.PutAsync(
+            $"/integrated-s3/{bucketName}/{sourceKey}",
+            new StringContent(sourcePayload, Encoding.UTF8, "text/plain"));
+        Assert.Equal(HttpStatusCode.OK, putSource.StatusCode);
+        var sourceETag = putSource.Headers.ETag?.Tag ?? throw new Xunit.Sdk.XunitException("Expected source object ETag.");
+
+        using var initiateRequest = new HttpRequestMessage(HttpMethod.Post, $"/integrated-s3/{bucketName}/{destinationKey}?uploads");
+        var initiateResponse = await client.SendAsync(initiateRequest);
+        Assert.Equal(HttpStatusCode.OK, initiateResponse.StatusCode);
+        var uploadId = GetRequiredElementValue(XDocument.Parse(await initiateResponse.Content.ReadAsStringAsync()), "UploadId");
+
+        using var copyPartRequest = new HttpRequestMessage(HttpMethod.Put, $"/integrated-s3/{bucketName}/{destinationKey}?partNumber=1&uploadId={Uri.EscapeDataString(uploadId)}");
+        copyPartRequest.Headers.TryAddWithoutValidation("x-amz-copy-source", $"/{bucketName}/{sourceKey}");
+        copyPartRequest.Headers.TryAddWithoutValidation("x-amz-copy-source-if-match", sourceETag);
+        copyPartRequest.Headers.TryAddWithoutValidation("x-amz-copy-source-range", "bytes=6-10");
+        copyPartRequest.Headers.TryAddWithoutValidation(algorithmHeaderName, "SHA1");
+
+        var copyPartResponse = await client.SendAsync(copyPartRequest);
+
+        Assert.Equal(HttpStatusCode.OK, copyPartResponse.StatusCode);
+        Assert.Equal("application/xml", copyPartResponse.Content.Headers.ContentType?.MediaType);
+        Assert.Equal(expectedChecksumSha1, Assert.Single(copyPartResponse.Headers.GetValues("x-amz-checksum-sha1")));
+        Assert.False(copyPartResponse.Headers.Contains("x-amz-checksum-sha256"));
+
+        var copyPartDocument = XDocument.Parse(await copyPartResponse.Content.ReadAsStringAsync());
+        Assert.Equal("CopyPartResult", copyPartDocument.Root?.Name.LocalName);
+        Assert.Equal(expectedChecksumSha1, GetRequiredElementValue(copyPartDocument, "ChecksumSHA1"));
+        Assert.DoesNotContain(copyPartDocument.Root!.Elements(), static element => string.Equals(element.Name.LocalName, "ChecksumSHA256", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task S3CompatibleMultipartUpload_UploadPartCopy_WithMismatchedChecksumAlgorithmHeaders_ReturnsInvalidRequest()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        var bucketName = $"multipart-copy-checksum-mismatch-{Guid.NewGuid():N}";
+        const string sourceKey = "docs/source.txt";
+        const string destinationKey = "docs/copied.txt";
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync($"/integrated-s3/buckets/{bucketName}", content: null)).StatusCode);
+
+        var putSource = await client.PutAsync(
+            $"/integrated-s3/{bucketName}/{sourceKey}",
+            new StringContent("copy part checksum mismatch", Encoding.UTF8, "text/plain"));
+        Assert.Equal(HttpStatusCode.OK, putSource.StatusCode);
+
+        using var initiateRequest = new HttpRequestMessage(HttpMethod.Post, $"/integrated-s3/{bucketName}/{destinationKey}?uploads");
+        var initiateResponse = await client.SendAsync(initiateRequest);
+        Assert.Equal(HttpStatusCode.OK, initiateResponse.StatusCode);
+        var uploadId = GetRequiredElementValue(XDocument.Parse(await initiateResponse.Content.ReadAsStringAsync()), "UploadId");
+
+        using var copyPartRequest = new HttpRequestMessage(HttpMethod.Put, $"/integrated-s3/{bucketName}/{destinationKey}?partNumber=1&uploadId={Uri.EscapeDataString(uploadId)}");
+        copyPartRequest.Headers.TryAddWithoutValidation("x-amz-copy-source", $"/{bucketName}/{sourceKey}");
+        copyPartRequest.Headers.TryAddWithoutValidation("x-amz-sdk-checksum-algorithm", "CRC32C");
+        copyPartRequest.Headers.TryAddWithoutValidation("x-amz-checksum-algorithm", "SHA256");
+
+        var response = await client.SendAsync(copyPartRequest);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal("application/xml", response.Content.Headers.ContentType?.MediaType);
+
+        var document = XDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal("InvalidRequest", GetRequiredElementValue(document, "Code"));
+        Assert.Equal(
+            "The 'x-amz-sdk-checksum-algorithm' and 'x-amz-checksum-algorithm' headers must match when both are supplied.",
+            GetRequiredElementValue(document, "Message"));
+    }
+
     [Fact]
     public async Task S3CompatibleMultipartUpload_RoundTripsXmlWorkflow()
     {
         using var client = await _factory.CreateClientAsync();
         var expiresUtc = new DateTimeOffset(2026, 3, 14, 17, 0, 0, TimeSpan.Zero);
+        const string completedPayload = "hello world";
+        var expectedChecksumSha256 = ComputeSha256Base64(completedPayload);
+        var expectedChecksumCrc32c = ChecksumTestAlgorithms.ComputeCrc32cBase64(completedPayload);
 
         await client.PutAsync("/integrated-s3/buckets/multipart-bucket", content: null);
 
@@ -3748,11 +4631,21 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
         var completeResponse = await client.SendAsync(completeRequest);
         Assert.Equal(HttpStatusCode.OK, completeResponse.StatusCode);
         Assert.Equal("application/xml", completeResponse.Content.Headers.ContentType?.MediaType);
+        Assert.Equal(expectedChecksumSha256, Assert.Single(completeResponse.Headers.GetValues("x-amz-checksum-sha256")));
+        Assert.Equal(expectedChecksumCrc32c, Assert.Single(completeResponse.Headers.GetValues("x-amz-checksum-crc32c")));
 
         var completeDocument = XDocument.Parse(await completeResponse.Content.ReadAsStringAsync());
         Assert.Equal("CompleteMultipartUploadResult", completeDocument.Root?.Name.LocalName);
         Assert.Equal("multipart-bucket", GetRequiredElementValue(completeDocument, "Bucket"));
         Assert.Equal("docs/multipart.txt", GetRequiredElementValue(completeDocument, "Key"));
+        Assert.Equal(expectedChecksumSha256, GetRequiredElementValue(completeDocument, "ChecksumSHA256"));
+        Assert.Equal(expectedChecksumCrc32c, GetRequiredElementValue(completeDocument, "ChecksumCRC32C"));
+
+        using var headRequest = new HttpRequestMessage(HttpMethod.Head, "/integrated-s3/multipart-bucket/docs/multipart.txt");
+        var headResponse = await client.SendAsync(headRequest);
+        Assert.Equal(HttpStatusCode.OK, headResponse.StatusCode);
+        Assert.Equal(expectedChecksumSha256, Assert.Single(headResponse.Headers.GetValues("x-amz-checksum-sha256")));
+        Assert.Equal(expectedChecksumCrc32c, Assert.Single(headResponse.Headers.GetValues("x-amz-checksum-crc32c")));
 
         var downloadResponse = await client.GetAsync("/integrated-s3/multipart-bucket/docs/multipart.txt");
         Assert.Equal(HttpStatusCode.OK, downloadResponse.StatusCode);
@@ -3764,9 +4657,9 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
         Assert.Contains("identity", downloadResponse.Content.Headers.ContentEncoding);
         Assert.Contains("en-US", downloadResponse.Content.Headers.ContentLanguage);
         Assert.Equal(expiresUtc, downloadResponse.Content.Headers.Expires);
-        var multipartChecksum = Assert.Single(downloadResponse.Headers.GetValues("x-amz-checksum-sha256"));
-        Assert.False(string.IsNullOrWhiteSpace(multipartChecksum));
-        Assert.Equal("hello world", await downloadResponse.Content.ReadAsStringAsync());
+        Assert.Equal(expectedChecksumSha256, Assert.Single(downloadResponse.Headers.GetValues("x-amz-checksum-sha256")));
+        Assert.Equal(expectedChecksumCrc32c, Assert.Single(downloadResponse.Headers.GetValues("x-amz-checksum-crc32c")));
+        Assert.Equal(completedPayload, await downloadResponse.Content.ReadAsStringAsync());
     }
 
     [Fact]
@@ -3810,6 +4703,800 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
         var tags = await GetObjectTagsAsync(client, "multipart-tagging-bucket", "docs/tagged.txt");
         Assert.Equal("test", tags["environment"]);
         Assert.Equal("copilot", tags["owner"]);
+    }
+
+    [Theory]
+    [InlineData("x-amz-sdk-checksum-algorithm")]
+    [InlineData("x-amz-checksum-algorithm")]
+    public async Task S3CompatibleMultipartUpload_UploadPartWithDeclaredChecksumAlgorithmButMissingChecksumValue_ReturnsInvalidRequest(string algorithmHeaderName)
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        var bucketName = algorithmHeaderName.Contains("sdk", StringComparison.Ordinal)
+            ? "multipart-uploadpart-sdk-checksum-bucket"
+            : "multipart-uploadpart-checksum-bucket";
+        const string objectKey = "docs/missing-checksum.txt";
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync($"/integrated-s3/buckets/{bucketName}", content: null)).StatusCode);
+
+        using var initiateRequest = new HttpRequestMessage(HttpMethod.Post, $"/integrated-s3/{bucketName}/{objectKey}?uploads");
+        initiateRequest.Headers.TryAddWithoutValidation("Content-Type", "text/plain");
+
+        var initiateResponse = await client.SendAsync(initiateRequest);
+        Assert.Equal(HttpStatusCode.OK, initiateResponse.StatusCode);
+
+        var initiateDocument = XDocument.Parse(await initiateResponse.Content.ReadAsStringAsync());
+        var uploadId = GetRequiredElementValue(initiateDocument, "UploadId");
+
+        using var partRequest = new HttpRequestMessage(HttpMethod.Put, $"/integrated-s3/{bucketName}/{objectKey}?partNumber=1&uploadId={Uri.EscapeDataString(uploadId)}")
+        {
+            Content = new StringContent("part payload", Encoding.UTF8, "text/plain")
+        };
+        partRequest.Headers.TryAddWithoutValidation(algorithmHeaderName, "SHA256");
+
+        var response = await client.SendAsync(partRequest);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal("application/xml", response.Content.Headers.ContentType?.MediaType);
+
+        var document = XDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal("InvalidRequest", GetRequiredElementValue(document, "Code"));
+        Assert.Equal(
+            "The 'x-amz-checksum-sha256' header is required when either 'x-amz-sdk-checksum-algorithm=SHA256' or 'x-amz-checksum-algorithm=SHA256' is supplied.",
+            GetRequiredElementValue(document, "Message"));
+    }
+
+    [Theory]
+    [InlineData("x-amz-sdk-checksum-algorithm")]
+    [InlineData("x-amz-checksum-algorithm")]
+    public async Task S3CompatibleMultipartUpload_UploadPartWithDeclaredChecksumAlgorithmButMissingChecksumTrailer_ReturnsInvalidRequest(string algorithmHeaderName)
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        var bucketName = algorithmHeaderName.Contains("sdk", StringComparison.Ordinal)
+            ? "multipart-uploadpart-sdk-checksum-trailer-bucket"
+            : "multipart-uploadpart-checksum-trailer-bucket";
+        const string objectKey = "docs/missing-checksum-trailer.txt";
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync($"/integrated-s3/buckets/{bucketName}", content: null)).StatusCode);
+
+        using var initiateRequest = new HttpRequestMessage(HttpMethod.Post, $"/integrated-s3/{bucketName}/{objectKey}?uploads");
+        initiateRequest.Headers.TryAddWithoutValidation("Content-Type", "text/plain");
+
+        var initiateResponse = await client.SendAsync(initiateRequest);
+        Assert.Equal(HttpStatusCode.OK, initiateResponse.StatusCode);
+
+        var initiateDocument = XDocument.Parse(await initiateResponse.Content.ReadAsStringAsync());
+        var uploadId = GetRequiredElementValue(initiateDocument, "UploadId");
+
+        using var partRequest = CreateAwsChunkedPutObjectRequest(
+            $"/integrated-s3/{bucketName}/{objectKey}?partNumber=1&uploadId={Uri.EscapeDataString(uploadId)}",
+            "part payload");
+        partRequest.Headers.TryAddWithoutValidation(algorithmHeaderName, "SHA256");
+
+        var response = await client.SendAsync(partRequest);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal("application/xml", response.Content.Headers.ContentType?.MediaType);
+
+        var document = XDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal("InvalidRequest", GetRequiredElementValue(document, "Code"));
+        Assert.Equal(
+            "The 'x-amz-checksum-sha256' header is required when either 'x-amz-sdk-checksum-algorithm=SHA256' or 'x-amz-checksum-algorithm=SHA256' is supplied.",
+            GetRequiredElementValue(document, "Message"));
+    }
+
+    [Fact]
+    public async Task S3CompatibleMultipartUpload_UploadPartWithDeclaredChecksumTrailerButMissingTrailerValue_ReturnsInvalidRequest()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        const string bucketName = "multipart-uploadpart-declared-trailer-missing-bucket";
+        const string objectKey = "docs/missing-declared-trailer-checksum.txt";
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync($"/integrated-s3/buckets/{bucketName}", content: null)).StatusCode);
+
+        using var initiateRequest = new HttpRequestMessage(HttpMethod.Post, $"/integrated-s3/{bucketName}/{objectKey}?uploads");
+        initiateRequest.Headers.TryAddWithoutValidation("Content-Type", "text/plain");
+
+        var initiateResponse = await client.SendAsync(initiateRequest);
+        Assert.Equal(HttpStatusCode.OK, initiateResponse.StatusCode);
+
+        var initiateDocument = XDocument.Parse(await initiateResponse.Content.ReadAsStringAsync());
+        var uploadId = GetRequiredElementValue(initiateDocument, "UploadId");
+
+        using var partRequest = CreateAwsChunkedPutObjectRequest(
+            $"/integrated-s3/{bucketName}/{objectKey}?partNumber=1&uploadId={Uri.EscapeDataString(uploadId)}",
+            "part payload",
+            declaredTrailerHeaderNames: ["x-amz-checksum-sha256"]);
+
+        var response = await client.SendAsync(partRequest);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal("application/xml", response.Content.Headers.ContentType?.MediaType);
+
+        var document = XDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal("InvalidRequest", GetRequiredElementValue(document, "Code"));
+        Assert.Equal(
+            "The 'x-amz-trailer' header declared 'x-amz-checksum-sha256', but the aws-chunked trailer did not include that checksum header.",
+            GetRequiredElementValue(document, "Message"));
+    }
+
+    [Fact]
+    public async Task S3CompatibleMultipartUpload_UploadPartWithDuplicateAwsChunkedChecksumTrailer_ReturnsInvalidRequest()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        const string bucketName = "multipart-uploadpart-duplicate-trailer-bucket";
+        const string objectKey = "docs/duplicate-trailer-checksum.txt";
+        const string payload = "part payload";
+        var checksum = ComputeSha256Base64(payload);
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync($"/integrated-s3/buckets/{bucketName}", content: null)).StatusCode);
+
+        using var initiateRequest = new HttpRequestMessage(HttpMethod.Post, $"/integrated-s3/{bucketName}/{objectKey}?uploads");
+        initiateRequest.Headers.TryAddWithoutValidation("Content-Type", "text/plain");
+        initiateRequest.Headers.TryAddWithoutValidation("x-amz-checksum-algorithm", "SHA256");
+
+        var initiateResponse = await client.SendAsync(initiateRequest);
+        Assert.Equal(HttpStatusCode.OK, initiateResponse.StatusCode);
+
+        var initiateDocument = XDocument.Parse(await initiateResponse.Content.ReadAsStringAsync());
+        var uploadId = GetRequiredElementValue(initiateDocument, "UploadId");
+
+        using var partRequest = CreateAwsChunkedPutObjectRequest(
+            $"/integrated-s3/{bucketName}/{objectKey}?partNumber=1&uploadId={Uri.EscapeDataString(uploadId)}",
+            payload,
+            sdkChecksumAlgorithm: "SHA256",
+            declaredTrailerHeaderNames: ["x-amz-checksum-sha256"],
+            trailerHeaderEntries:
+            [
+                new KeyValuePair<string, string>("x-amz-checksum-sha256", checksum),
+                new KeyValuePair<string, string>("x-amz-checksum-sha256", ComputeSha256Base64("different payload"))
+            ]);
+
+        var response = await client.SendAsync(partRequest);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal("application/xml", response.Content.Headers.ContentType?.MediaType);
+
+        var document = XDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal("InvalidRequest", GetRequiredElementValue(document, "Code"));
+        Assert.Equal(
+            "The aws-chunked trailer header 'x-amz-checksum-sha256' must not be repeated.",
+            GetRequiredElementValue(document, "Message"));
+    }
+
+    [Fact]
+    public async Task S3CompatibleMultipartUpload_UploadPartWithTrailerBackedPayloadHashWithoutTrailerSignature_ReturnsInvalidRequest()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        const string bucketName = "multipart-uploadpart-trailer-signature-missing-bucket";
+        const string objectKey = "docs/trailer-signature-missing.txt";
+        const string payload = "part payload";
+        var checksum = ComputeSha256Base64(payload);
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync($"/integrated-s3/buckets/{bucketName}", content: null)).StatusCode);
+
+        using var initiateRequest = new HttpRequestMessage(HttpMethod.Post, $"/integrated-s3/{bucketName}/{objectKey}?uploads");
+        initiateRequest.Headers.TryAddWithoutValidation("Content-Type", "text/plain");
+
+        var initiateResponse = await client.SendAsync(initiateRequest);
+        Assert.Equal(HttpStatusCode.OK, initiateResponse.StatusCode);
+
+        var initiateDocument = XDocument.Parse(await initiateResponse.Content.ReadAsStringAsync());
+        var uploadId = GetRequiredElementValue(initiateDocument, "UploadId");
+
+        using var partRequest = CreateAwsChunkedPutObjectRequest(
+            $"/integrated-s3/{bucketName}/{objectKey}?partNumber=1&uploadId={Uri.EscapeDataString(uploadId)}",
+            payload,
+            sdkChecksumAlgorithm: "SHA256",
+            trailerHeaders: new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["x-amz-checksum-sha256"] = checksum
+            },
+            declaredTrailerHeaderNames: ["x-amz-checksum-sha256"]);
+        partRequest.Headers.TryAddWithoutValidation("x-amz-content-sha256", "STREAMING-AWS4-HMAC-SHA256-PAYLOAD-TRAILER");
+
+        var response = await client.SendAsync(partRequest);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal("application/xml", response.Content.Headers.ContentType?.MediaType);
+
+        var document = XDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal("InvalidRequest", GetRequiredElementValue(document, "Code"));
+        Assert.Contains("x-amz-trailer-signature", GetRequiredElementValue(document, "Message"), StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("SHA1", "x-amz-checksum-sha1", "multipart-uploadpart-signed-trailer-sha1-valid-bucket", "docs/signed-uploadpart-sha1.txt", "hello multipart signed trailer sha1 checksum")]
+    [InlineData("CRC32", "x-amz-checksum-crc32", "multipart-uploadpart-signed-trailer-crc32-valid-bucket", "docs/signed-uploadpart-crc32.txt", "hello multipart signed trailer crc32 checksum")]
+    [InlineData("CRC32C", "x-amz-checksum-crc32c", "multipart-uploadpart-signed-trailer-crc32c-valid-bucket", "docs/signed-uploadpart-crc32c.txt", "hello multipart signed trailer crc32c checksum")]
+    public async Task S3CompatibleMultipartUpload_UploadPartWithSigV4AwsChunkedTrailerSignatureAndNonSha256Checksum_PersistsAndListsChecksum(
+        string sdkChecksumAlgorithm,
+        string trailerHeaderName,
+        string bucketName,
+        string objectKey,
+        string payload)
+    {
+        const string accessKeyId = "sigv4-http-uploadpart-chunked-signed-trailer-access";
+        const string secretAccessKey = "sigv4-http-uploadpart-chunked-signed-trailer-secret";
+        var checksum = ComputeTrailerChecksumBase64(trailerHeaderName, payload);
+
+        await using var isolatedClient = await CreateSigV4AuthenticatedClientAsync(accessKeyId, secretAccessKey);
+        using var client = isolatedClient.Client;
+
+        using var createBucketRequest = CreateSigV4HeaderSignedRequest(HttpMethod.Put, $"/integrated-s3/buckets/{bucketName}", accessKeyId, secretAccessKey);
+        Assert.Equal(HttpStatusCode.Created, (await client.SendAsync(createBucketRequest)).StatusCode);
+
+        using var initiateRequest = new HttpRequestMessage(HttpMethod.Post, $"/integrated-s3/{bucketName}/{objectKey}?uploads");
+        initiateRequest.Headers.TryAddWithoutValidation("x-amz-checksum-algorithm", sdkChecksumAlgorithm);
+        SignSigV4HeaderRequest(
+            initiateRequest,
+            $"/integrated-s3/{bucketName}/{objectKey}?uploads",
+            accessKeyId,
+            secretAccessKey,
+            Convert.ToHexStringLower(SHA256.HashData(Array.Empty<byte>())),
+            additionalSignedHeaders: ["x-amz-checksum-algorithm"]);
+
+        var initiateResponse = await client.SendAsync(initiateRequest);
+
+        Assert.Equal(HttpStatusCode.OK, initiateResponse.StatusCode);
+        Assert.Equal(sdkChecksumAlgorithm, Assert.Single(initiateResponse.Headers.GetValues("x-amz-checksum-algorithm")));
+
+        var initiateDocument = XDocument.Parse(await initiateResponse.Content.ReadAsStringAsync());
+        var uploadId = GetRequiredElementValue(initiateDocument, "UploadId");
+
+        using var partRequest = CreateSigV4AwsChunkedTrailerRequest(
+            $"/integrated-s3/{bucketName}/{objectKey}?partNumber=1&uploadId={Uri.EscapeDataString(uploadId)}",
+            accessKeyId,
+            secretAccessKey,
+            payload,
+            new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+            {
+                [trailerHeaderName] = checksum
+            });
+        await AssertSigV4AwsChunkedTrailerRequestAsync(partRequest, sdkChecksumAlgorithm, trailerHeaderName);
+
+        var partResponse = await client.SendAsync(partRequest);
+
+        Assert.Equal(HttpStatusCode.OK, partResponse.StatusCode);
+        AssertOnlyExpectedChecksumHeader(partResponse.Headers, trailerHeaderName, checksum);
+        var partETag = partResponse.Headers.ETag?.Tag ?? throw new Xunit.Sdk.XunitException("Expected multipart part ETag header.");
+
+        using var listPartsRequest = CreateSigV4HeaderSignedRequest(
+            HttpMethod.Get,
+            $"/integrated-s3/{bucketName}/{objectKey}?uploadId={Uri.EscapeDataString(uploadId)}",
+            accessKeyId,
+            secretAccessKey);
+        var listPartsResponse = await client.SendAsync(listPartsRequest);
+
+        Assert.Equal(HttpStatusCode.OK, listPartsResponse.StatusCode);
+
+        var listPartsDocument = XDocument.Parse(await listPartsResponse.Content.ReadAsStringAsync());
+        Assert.Equal(sdkChecksumAlgorithm, GetRequiredElementValue(listPartsDocument, "ChecksumAlgorithm"));
+        Assert.Equal("COMPOSITE", GetRequiredElementValue(listPartsDocument, "ChecksumType"));
+
+        var listedPart = Assert.Single(listPartsDocument.Root!.Elements("Part"));
+        Assert.Equal("1", listedPart.Element("PartNumber")?.Value);
+        Assert.Equal(partETag, listedPart.Element("ETag")?.Value);
+        AssertOnlyExpectedMultipartChecksumElement(listedPart, GetMultipartChecksumElementName(trailerHeaderName), checksum);
+    }
+
+    [Theory]
+    [InlineData("SHA1", "x-amz-checksum-sha1", "multipart-uploadpart-signed-trailer-sha1-bad-digest-bucket", "docs/signed-uploadpart-sha1-bad-digest.txt", "hello multipart signed trailer sha1 bad digest")]
+    [InlineData("CRC32", "x-amz-checksum-crc32", "multipart-uploadpart-signed-trailer-crc32-bad-digest-bucket", "docs/signed-uploadpart-crc32-bad-digest.txt", "hello multipart signed trailer crc32 bad digest")]
+    [InlineData("CRC32C", "x-amz-checksum-crc32c", "multipart-uploadpart-signed-trailer-crc32c-bad-digest-bucket", "docs/signed-uploadpart-crc32c-bad-digest.txt", "hello multipart signed trailer crc32c bad digest")]
+    public async Task S3CompatibleMultipartUpload_UploadPartWithSigV4AwsChunkedTrailerSignatureAndNonSha256ChecksumMismatch_ReturnsBadDigest(
+        string sdkChecksumAlgorithm,
+        string trailerHeaderName,
+        string bucketName,
+        string objectKey,
+        string payload)
+    {
+        const string accessKeyId = "sigv4-http-uploadpart-chunked-signed-trailer-access";
+        const string secretAccessKey = "sigv4-http-uploadpart-chunked-signed-trailer-secret";
+        var mismatchedChecksum = ComputeTrailerChecksumBase64(trailerHeaderName, "different payload");
+
+        await using var isolatedClient = await CreateSigV4AuthenticatedClientAsync(accessKeyId, secretAccessKey);
+        using var client = isolatedClient.Client;
+
+        using var createBucketRequest = CreateSigV4HeaderSignedRequest(HttpMethod.Put, $"/integrated-s3/buckets/{bucketName}", accessKeyId, secretAccessKey);
+        Assert.Equal(HttpStatusCode.Created, (await client.SendAsync(createBucketRequest)).StatusCode);
+
+        using var initiateRequest = new HttpRequestMessage(HttpMethod.Post, $"/integrated-s3/{bucketName}/{objectKey}?uploads");
+        initiateRequest.Headers.TryAddWithoutValidation("x-amz-checksum-algorithm", sdkChecksumAlgorithm);
+        SignSigV4HeaderRequest(
+            initiateRequest,
+            $"/integrated-s3/{bucketName}/{objectKey}?uploads",
+            accessKeyId,
+            secretAccessKey,
+            Convert.ToHexStringLower(SHA256.HashData(Array.Empty<byte>())),
+            additionalSignedHeaders: ["x-amz-checksum-algorithm"]);
+
+        var initiateResponse = await client.SendAsync(initiateRequest);
+
+        Assert.Equal(HttpStatusCode.OK, initiateResponse.StatusCode);
+        Assert.Equal(sdkChecksumAlgorithm, Assert.Single(initiateResponse.Headers.GetValues("x-amz-checksum-algorithm")));
+
+        var initiateDocument = XDocument.Parse(await initiateResponse.Content.ReadAsStringAsync());
+        var uploadId = GetRequiredElementValue(initiateDocument, "UploadId");
+
+        using var partRequest = CreateSigV4AwsChunkedTrailerRequest(
+            $"/integrated-s3/{bucketName}/{objectKey}?partNumber=1&uploadId={Uri.EscapeDataString(uploadId)}",
+            accessKeyId,
+            secretAccessKey,
+            payload,
+            new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+            {
+                [trailerHeaderName] = mismatchedChecksum
+            });
+        await AssertSigV4AwsChunkedTrailerRequestAsync(partRequest, sdkChecksumAlgorithm, trailerHeaderName);
+
+        var response = await client.SendAsync(partRequest);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal("application/xml", response.Content.Headers.ContentType?.MediaType);
+
+        var document = XDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal("BadDigest", GetRequiredElementValue(document, "Code"));
+        var message = GetRequiredElementValue(document, "Message");
+        Assert.Contains(sdkChecksumAlgorithm, message, StringComparison.Ordinal);
+        Assert.Contains(objectKey, message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task S3CompatibleMultipartUpload_UploadPartWithUnsignedTrailerBackedPayloadHashWithoutTrailerSignature_Succeeds()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        const string bucketName = "multipart-uploadpart-unsigned-trailer-valid-bucket";
+        const string objectKey = "docs/unsigned-trailer-checksum.txt";
+        const string payload = "hello multipart unsigned trailer checksum";
+        var checksum = ComputeSha256Base64(payload);
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync($"/integrated-s3/buckets/{bucketName}", content: null)).StatusCode);
+
+        using var initiateRequest = new HttpRequestMessage(HttpMethod.Post, $"/integrated-s3/{bucketName}/{objectKey}?uploads");
+        initiateRequest.Headers.TryAddWithoutValidation("Content-Type", "text/plain");
+        initiateRequest.Headers.TryAddWithoutValidation("x-amz-checksum-algorithm", "SHA256");
+
+        var initiateResponse = await client.SendAsync(initiateRequest);
+        Assert.Equal(HttpStatusCode.OK, initiateResponse.StatusCode);
+        Assert.Equal("SHA256", Assert.Single(initiateResponse.Headers.GetValues("x-amz-checksum-algorithm")));
+
+        var initiateDocument = XDocument.Parse(await initiateResponse.Content.ReadAsStringAsync());
+        var uploadId = GetRequiredElementValue(initiateDocument, "UploadId");
+
+        using var partRequest = CreateAwsChunkedPutObjectRequest(
+            $"/integrated-s3/{bucketName}/{objectKey}?partNumber=1&uploadId={Uri.EscapeDataString(uploadId)}",
+            payload,
+            trailerHeaders: new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["x-amz-checksum-sha256"] = checksum
+            },
+            declaredTrailerHeaderNames: ["x-amz-checksum-sha256"]);
+        partRequest.Headers.TryAddWithoutValidation("x-amz-content-sha256", "STREAMING-UNSIGNED-PAYLOAD-TRAILER");
+        partRequest.Headers.TryAddWithoutValidation("x-amz-checksum-algorithm", "SHA256");
+
+        var partResponse = await client.SendAsync(partRequest);
+
+        Assert.Equal(HttpStatusCode.OK, partResponse.StatusCode);
+        Assert.Equal(checksum, Assert.Single(partResponse.Headers.GetValues("x-amz-checksum-sha256")));
+        var partETag = partResponse.Headers.ETag?.Tag ?? throw new Xunit.Sdk.XunitException("Expected multipart part ETag header.");
+
+        var listPartsResponse = await client.GetAsync($"/integrated-s3/{bucketName}/{objectKey}?uploadId={Uri.EscapeDataString(uploadId)}");
+        Assert.Equal(HttpStatusCode.OK, listPartsResponse.StatusCode);
+
+        var listPartsDocument = XDocument.Parse(await listPartsResponse.Content.ReadAsStringAsync());
+        Assert.Equal("SHA256", GetRequiredElementValue(listPartsDocument, "ChecksumAlgorithm"));
+        Assert.Equal("COMPOSITE", GetRequiredElementValue(listPartsDocument, "ChecksumType"));
+
+        var listedPart = Assert.Single(listPartsDocument.Root!.Elements("Part"));
+        Assert.Equal("1", listedPart.Element("PartNumber")?.Value);
+        Assert.Equal(partETag, listedPart.Element("ETag")?.Value);
+        Assert.Equal(checksum, listedPart.Element("ChecksumSHA256")?.Value);
+    }
+
+    [Fact]
+    public async Task S3CompatibleMultipartUpload_UploadPartWithUnsignedTrailerBackedSha1Checksum_PersistsAndListsSha1Checksum()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        const string bucketName = "multipart-uploadpart-unsigned-trailer-sha1-valid-bucket";
+        const string objectKey = "docs/unsigned-trailer-sha1-checksum.txt";
+        const string payload = "hello multipart unsigned trailer sha1 checksum";
+        var checksum = ComputeSha1Base64(payload);
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync($"/integrated-s3/buckets/{bucketName}", content: null)).StatusCode);
+
+        using var initiateRequest = new HttpRequestMessage(HttpMethod.Post, $"/integrated-s3/{bucketName}/{objectKey}?uploads");
+        initiateRequest.Headers.TryAddWithoutValidation("Content-Type", "text/plain");
+        initiateRequest.Headers.TryAddWithoutValidation("x-amz-checksum-algorithm", "SHA1");
+
+        var initiateResponse = await client.SendAsync(initiateRequest);
+        Assert.Equal(HttpStatusCode.OK, initiateResponse.StatusCode);
+        Assert.Equal("SHA1", Assert.Single(initiateResponse.Headers.GetValues("x-amz-checksum-algorithm")));
+
+        var initiateDocument = XDocument.Parse(await initiateResponse.Content.ReadAsStringAsync());
+        var uploadId = GetRequiredElementValue(initiateDocument, "UploadId");
+
+        using var partRequest = CreateAwsChunkedPutObjectRequest(
+            $"/integrated-s3/{bucketName}/{objectKey}?partNumber=1&uploadId={Uri.EscapeDataString(uploadId)}",
+            payload,
+            trailerHeaders: new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["x-amz-checksum-sha1"] = checksum
+            },
+            declaredTrailerHeaderNames: ["x-amz-checksum-sha1"]);
+        partRequest.Headers.TryAddWithoutValidation("x-amz-content-sha256", "STREAMING-UNSIGNED-PAYLOAD-TRAILER");
+        partRequest.Headers.TryAddWithoutValidation("x-amz-checksum-algorithm", "SHA1");
+
+        var partResponse = await client.SendAsync(partRequest);
+
+        Assert.Equal(HttpStatusCode.OK, partResponse.StatusCode);
+        Assert.Equal(checksum, Assert.Single(partResponse.Headers.GetValues("x-amz-checksum-sha1")));
+        Assert.False(partResponse.Headers.Contains("x-amz-checksum-sha256"));
+        var partETag = partResponse.Headers.ETag?.Tag ?? throw new Xunit.Sdk.XunitException("Expected multipart part ETag header.");
+
+        var listPartsResponse = await client.GetAsync($"/integrated-s3/{bucketName}/{objectKey}?uploadId={Uri.EscapeDataString(uploadId)}");
+        Assert.Equal(HttpStatusCode.OK, listPartsResponse.StatusCode);
+
+        var listPartsDocument = XDocument.Parse(await listPartsResponse.Content.ReadAsStringAsync());
+        Assert.Equal("SHA1", GetRequiredElementValue(listPartsDocument, "ChecksumAlgorithm"));
+        Assert.Equal("COMPOSITE", GetRequiredElementValue(listPartsDocument, "ChecksumType"));
+
+        var listedPart = Assert.Single(listPartsDocument.Root!.Elements("Part"));
+        Assert.Equal("1", listedPart.Element("PartNumber")?.Value);
+        Assert.Equal(partETag, listedPart.Element("ETag")?.Value);
+        Assert.Equal(checksum, listedPart.Element("ChecksumSHA1")?.Value);
+        Assert.Null(listedPart.Element("ChecksumSHA256"));
+    }
+
+    [Fact]
+    public async Task S3CompatibleMultipartUpload_UploadPartWithUnsignedTrailerBackedCrc32cChecksum_PersistsAndListsCrc32cChecksum()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        const string bucketName = "multipart-uploadpart-unsigned-trailer-crc32c-valid-bucket";
+        const string objectKey = "docs/unsigned-trailer-crc32c-checksum.txt";
+        const string payload = "hello multipart unsigned trailer crc32c checksum";
+        var checksum = ChecksumTestAlgorithms.ComputeCrc32cBase64(payload);
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync($"/integrated-s3/buckets/{bucketName}", content: null)).StatusCode);
+
+        using var initiateRequest = new HttpRequestMessage(HttpMethod.Post, $"/integrated-s3/{bucketName}/{objectKey}?uploads");
+        initiateRequest.Headers.TryAddWithoutValidation("Content-Type", "text/plain");
+        initiateRequest.Headers.TryAddWithoutValidation("x-amz-checksum-algorithm", "CRC32C");
+
+        var initiateResponse = await client.SendAsync(initiateRequest);
+        Assert.Equal(HttpStatusCode.OK, initiateResponse.StatusCode);
+        Assert.Equal("CRC32C", Assert.Single(initiateResponse.Headers.GetValues("x-amz-checksum-algorithm")));
+
+        var initiateDocument = XDocument.Parse(await initiateResponse.Content.ReadAsStringAsync());
+        var uploadId = GetRequiredElementValue(initiateDocument, "UploadId");
+
+        using var partRequest = CreateAwsChunkedPutObjectRequest(
+            $"/integrated-s3/{bucketName}/{objectKey}?partNumber=1&uploadId={Uri.EscapeDataString(uploadId)}",
+            payload,
+            trailerHeaders: new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["x-amz-checksum-crc32c"] = checksum
+            },
+            declaredTrailerHeaderNames: ["x-amz-checksum-crc32c"]);
+        partRequest.Headers.TryAddWithoutValidation("x-amz-content-sha256", "STREAMING-UNSIGNED-PAYLOAD-TRAILER");
+        partRequest.Headers.TryAddWithoutValidation("x-amz-checksum-algorithm", "CRC32C");
+
+        var partResponse = await client.SendAsync(partRequest);
+
+        Assert.Equal(HttpStatusCode.OK, partResponse.StatusCode);
+        Assert.Equal(checksum, Assert.Single(partResponse.Headers.GetValues("x-amz-checksum-crc32c")));
+        Assert.False(partResponse.Headers.Contains("x-amz-checksum-sha256"));
+        var partETag = partResponse.Headers.ETag?.Tag ?? throw new Xunit.Sdk.XunitException("Expected multipart part ETag header.");
+
+        var listPartsResponse = await client.GetAsync($"/integrated-s3/{bucketName}/{objectKey}?uploadId={Uri.EscapeDataString(uploadId)}");
+        Assert.Equal(HttpStatusCode.OK, listPartsResponse.StatusCode);
+
+        var listPartsDocument = XDocument.Parse(await listPartsResponse.Content.ReadAsStringAsync());
+        Assert.Equal("CRC32C", GetRequiredElementValue(listPartsDocument, "ChecksumAlgorithm"));
+        Assert.Equal("COMPOSITE", GetRequiredElementValue(listPartsDocument, "ChecksumType"));
+
+        var listedPart = Assert.Single(listPartsDocument.Root!.Elements("Part"));
+        Assert.Equal("1", listedPart.Element("PartNumber")?.Value);
+        Assert.Equal(partETag, listedPart.Element("ETag")?.Value);
+        Assert.Equal(checksum, listedPart.Element("ChecksumCRC32C")?.Value);
+        Assert.Null(listedPart.Element("ChecksumSHA256"));
+    }
+
+    [Fact]
+    public async Task S3CompatibleMultipartUpload_UploadPartWithUnsignedTrailerBackedCrc32Checksum_PersistsAndListsCrc32Checksum()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        const string bucketName = "multipart-uploadpart-unsigned-trailer-crc32-valid-bucket";
+        const string objectKey = "docs/unsigned-trailer-crc32-checksum.txt";
+        const string payload = "hello multipart unsigned trailer crc32 checksum";
+        var checksum = ComputeCrc32Base64(payload);
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync($"/integrated-s3/buckets/{bucketName}", content: null)).StatusCode);
+
+        using var initiateRequest = new HttpRequestMessage(HttpMethod.Post, $"/integrated-s3/{bucketName}/{objectKey}?uploads");
+        initiateRequest.Headers.TryAddWithoutValidation("Content-Type", "text/plain");
+        initiateRequest.Headers.TryAddWithoutValidation("x-amz-checksum-algorithm", "CRC32");
+
+        var initiateResponse = await client.SendAsync(initiateRequest);
+        Assert.Equal(HttpStatusCode.OK, initiateResponse.StatusCode);
+        Assert.Equal("CRC32", Assert.Single(initiateResponse.Headers.GetValues("x-amz-checksum-algorithm")));
+
+        var initiateDocument = XDocument.Parse(await initiateResponse.Content.ReadAsStringAsync());
+        var uploadId = GetRequiredElementValue(initiateDocument, "UploadId");
+
+        using var partRequest = CreateAwsChunkedPutObjectRequest(
+            $"/integrated-s3/{bucketName}/{objectKey}?partNumber=1&uploadId={Uri.EscapeDataString(uploadId)}",
+            payload,
+            trailerHeaders: new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["x-amz-checksum-crc32"] = checksum
+            },
+            declaredTrailerHeaderNames: ["x-amz-checksum-crc32"]);
+        partRequest.Headers.TryAddWithoutValidation("x-amz-content-sha256", "STREAMING-UNSIGNED-PAYLOAD-TRAILER");
+        partRequest.Headers.TryAddWithoutValidation("x-amz-checksum-algorithm", "CRC32");
+
+        var partResponse = await client.SendAsync(partRequest);
+
+        Assert.Equal(HttpStatusCode.OK, partResponse.StatusCode);
+        Assert.Equal(checksum, Assert.Single(partResponse.Headers.GetValues("x-amz-checksum-crc32")));
+        Assert.False(partResponse.Headers.Contains("x-amz-checksum-sha256"));
+        Assert.False(partResponse.Headers.Contains("x-amz-checksum-sha1"));
+        Assert.False(partResponse.Headers.Contains("x-amz-checksum-crc32c"));
+        var partETag = partResponse.Headers.ETag?.Tag ?? throw new Xunit.Sdk.XunitException("Expected multipart part ETag header.");
+
+        var listPartsResponse = await client.GetAsync($"/integrated-s3/{bucketName}/{objectKey}?uploadId={Uri.EscapeDataString(uploadId)}");
+        Assert.Equal(HttpStatusCode.OK, listPartsResponse.StatusCode);
+
+        var listPartsDocument = XDocument.Parse(await listPartsResponse.Content.ReadAsStringAsync());
+        Assert.Equal("CRC32", GetRequiredElementValue(listPartsDocument, "ChecksumAlgorithm"));
+        Assert.Equal("COMPOSITE", GetRequiredElementValue(listPartsDocument, "ChecksumType"));
+
+        var listedPart = Assert.Single(listPartsDocument.Root!.Elements("Part"));
+        Assert.Equal("1", listedPart.Element("PartNumber")?.Value);
+        Assert.Equal(partETag, listedPart.Element("ETag")?.Value);
+        Assert.Equal(checksum, listedPart.Element("ChecksumCRC32")?.Value);
+        Assert.Null(listedPart.Element("ChecksumSHA256"));
+        Assert.Null(listedPart.Element("ChecksumCRC32C"));
+    }
+
+    [Fact]
+    public async Task S3CompatibleMultipartUpload_UploadPartWithUnsignedTrailerBackedChecksumMismatch_ReturnsBadDigest()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        const string bucketName = "multipart-uploadpart-unsigned-trailer-bad-digest-bucket";
+        const string objectKey = "docs/unsigned-trailer-bad-digest.txt";
+        const string payload = "hello multipart unsigned trailer checksum";
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync($"/integrated-s3/buckets/{bucketName}", content: null)).StatusCode);
+
+        using var initiateRequest = new HttpRequestMessage(HttpMethod.Post, $"/integrated-s3/{bucketName}/{objectKey}?uploads");
+        initiateRequest.Headers.TryAddWithoutValidation("Content-Type", "text/plain");
+        initiateRequest.Headers.TryAddWithoutValidation("x-amz-checksum-algorithm", "SHA256");
+
+        var initiateResponse = await client.SendAsync(initiateRequest);
+        Assert.Equal(HttpStatusCode.OK, initiateResponse.StatusCode);
+        Assert.Equal("SHA256", Assert.Single(initiateResponse.Headers.GetValues("x-amz-checksum-algorithm")));
+
+        var initiateDocument = XDocument.Parse(await initiateResponse.Content.ReadAsStringAsync());
+        var uploadId = GetRequiredElementValue(initiateDocument, "UploadId");
+
+        using var partRequest = CreateAwsChunkedPutObjectRequest(
+            $"/integrated-s3/{bucketName}/{objectKey}?partNumber=1&uploadId={Uri.EscapeDataString(uploadId)}",
+            payload,
+            trailerHeaders: new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["x-amz-checksum-sha256"] = ComputeSha256Base64("different payload")
+            },
+            declaredTrailerHeaderNames: ["x-amz-checksum-sha256"]);
+        partRequest.Headers.TryAddWithoutValidation("x-amz-content-sha256", "STREAMING-UNSIGNED-PAYLOAD-TRAILER");
+        partRequest.Headers.TryAddWithoutValidation("x-amz-checksum-algorithm", "SHA256");
+
+        var response = await client.SendAsync(partRequest);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal("application/xml", response.Content.Headers.ContentType?.MediaType);
+
+        var document = XDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal("BadDigest", GetRequiredElementValue(document, "Code"));
+        var message = GetRequiredElementValue(document, "Message");
+        Assert.Contains("SHA256", message, StringComparison.Ordinal);
+        Assert.Contains(objectKey, message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task S3CompatibleMultipartUpload_UploadPartWithUnsignedTrailerBackedSha1ChecksumMismatch_ReturnsBadDigest()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        const string bucketName = "multipart-uploadpart-unsigned-trailer-sha1-bad-digest-bucket";
+        const string objectKey = "docs/unsigned-trailer-sha1-bad-digest.txt";
+        const string payload = "hello multipart unsigned trailer sha1 checksum";
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync($"/integrated-s3/buckets/{bucketName}", content: null)).StatusCode);
+
+        using var initiateRequest = new HttpRequestMessage(HttpMethod.Post, $"/integrated-s3/{bucketName}/{objectKey}?uploads");
+        initiateRequest.Headers.TryAddWithoutValidation("Content-Type", "text/plain");
+        initiateRequest.Headers.TryAddWithoutValidation("x-amz-checksum-algorithm", "SHA1");
+
+        var initiateResponse = await client.SendAsync(initiateRequest);
+        Assert.Equal(HttpStatusCode.OK, initiateResponse.StatusCode);
+        Assert.Equal("SHA1", Assert.Single(initiateResponse.Headers.GetValues("x-amz-checksum-algorithm")));
+
+        var initiateDocument = XDocument.Parse(await initiateResponse.Content.ReadAsStringAsync());
+        var uploadId = GetRequiredElementValue(initiateDocument, "UploadId");
+
+        using var partRequest = CreateAwsChunkedPutObjectRequest(
+            $"/integrated-s3/{bucketName}/{objectKey}?partNumber=1&uploadId={Uri.EscapeDataString(uploadId)}",
+            payload,
+            trailerHeaders: new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["x-amz-checksum-sha1"] = ComputeSha1Base64("different payload")
+            },
+            declaredTrailerHeaderNames: ["x-amz-checksum-sha1"]);
+        partRequest.Headers.TryAddWithoutValidation("x-amz-content-sha256", "STREAMING-UNSIGNED-PAYLOAD-TRAILER");
+        partRequest.Headers.TryAddWithoutValidation("x-amz-checksum-algorithm", "SHA1");
+
+        var response = await client.SendAsync(partRequest);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal("application/xml", response.Content.Headers.ContentType?.MediaType);
+
+        var document = XDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal("BadDigest", GetRequiredElementValue(document, "Code"));
+        var message = GetRequiredElementValue(document, "Message");
+        Assert.Contains("SHA1", message, StringComparison.Ordinal);
+        Assert.Contains(objectKey, message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task S3CompatibleMultipartUpload_UploadPartWithUnsignedTrailerBackedCrc32cChecksumMismatch_ReturnsBadDigest()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        const string bucketName = "multipart-uploadpart-unsigned-trailer-crc32c-bad-digest-bucket";
+        const string objectKey = "docs/unsigned-trailer-crc32c-bad-digest.txt";
+        const string payload = "hello multipart unsigned trailer crc32c checksum";
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync($"/integrated-s3/buckets/{bucketName}", content: null)).StatusCode);
+
+        using var initiateRequest = new HttpRequestMessage(HttpMethod.Post, $"/integrated-s3/{bucketName}/{objectKey}?uploads");
+        initiateRequest.Headers.TryAddWithoutValidation("Content-Type", "text/plain");
+        initiateRequest.Headers.TryAddWithoutValidation("x-amz-checksum-algorithm", "CRC32C");
+
+        var initiateResponse = await client.SendAsync(initiateRequest);
+        Assert.Equal(HttpStatusCode.OK, initiateResponse.StatusCode);
+        Assert.Equal("CRC32C", Assert.Single(initiateResponse.Headers.GetValues("x-amz-checksum-algorithm")));
+
+        var initiateDocument = XDocument.Parse(await initiateResponse.Content.ReadAsStringAsync());
+        var uploadId = GetRequiredElementValue(initiateDocument, "UploadId");
+
+        using var partRequest = CreateAwsChunkedPutObjectRequest(
+            $"/integrated-s3/{bucketName}/{objectKey}?partNumber=1&uploadId={Uri.EscapeDataString(uploadId)}",
+            payload,
+            trailerHeaders: new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["x-amz-checksum-crc32c"] = ChecksumTestAlgorithms.ComputeCrc32cBase64("different payload")
+            },
+            declaredTrailerHeaderNames: ["x-amz-checksum-crc32c"]);
+        partRequest.Headers.TryAddWithoutValidation("x-amz-content-sha256", "STREAMING-UNSIGNED-PAYLOAD-TRAILER");
+        partRequest.Headers.TryAddWithoutValidation("x-amz-checksum-algorithm", "CRC32C");
+
+        var response = await client.SendAsync(partRequest);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal("application/xml", response.Content.Headers.ContentType?.MediaType);
+
+        var document = XDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal("BadDigest", GetRequiredElementValue(document, "Code"));
+        var message = GetRequiredElementValue(document, "Message");
+        Assert.Contains("CRC32C", message, StringComparison.Ordinal);
+        Assert.Contains(objectKey, message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task S3CompatibleMultipartUpload_UploadPartWithUnsignedTrailerBackedCrc32ChecksumMismatch_ReturnsBadDigest()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        const string bucketName = "multipart-uploadpart-unsigned-trailer-crc32-bad-digest-bucket";
+        const string objectKey = "docs/unsigned-trailer-crc32-bad-digest.txt";
+        const string payload = "hello multipart unsigned trailer crc32 checksum";
+        var checksum = ComputeCrc32Base64("different payload");
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync($"/integrated-s3/buckets/{bucketName}", content: null)).StatusCode);
+
+        using var initiateRequest = new HttpRequestMessage(HttpMethod.Post, $"/integrated-s3/{bucketName}/{objectKey}?uploads");
+        initiateRequest.Headers.TryAddWithoutValidation("Content-Type", "text/plain");
+        initiateRequest.Headers.TryAddWithoutValidation("x-amz-checksum-algorithm", "CRC32");
+
+        var initiateResponse = await client.SendAsync(initiateRequest);
+        Assert.Equal(HttpStatusCode.OK, initiateResponse.StatusCode);
+        Assert.Equal("CRC32", Assert.Single(initiateResponse.Headers.GetValues("x-amz-checksum-algorithm")));
+
+        var initiateDocument = XDocument.Parse(await initiateResponse.Content.ReadAsStringAsync());
+        var uploadId = GetRequiredElementValue(initiateDocument, "UploadId");
+
+        using var partRequest = CreateAwsChunkedPutObjectRequest(
+            $"/integrated-s3/{bucketName}/{objectKey}?partNumber=1&uploadId={Uri.EscapeDataString(uploadId)}",
+            payload,
+            trailerHeaders: new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["x-amz-checksum-crc32"] = checksum
+            },
+            declaredTrailerHeaderNames: ["x-amz-checksum-crc32"]);
+        partRequest.Headers.TryAddWithoutValidation("x-amz-content-sha256", "STREAMING-UNSIGNED-PAYLOAD-TRAILER");
+        partRequest.Headers.TryAddWithoutValidation("x-amz-checksum-algorithm", "CRC32");
+
+        var response = await client.SendAsync(partRequest);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal("application/xml", response.Content.Headers.ContentType?.MediaType);
+
+        var document = XDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal("BadDigest", GetRequiredElementValue(document, "Code"));
+        var message = GetRequiredElementValue(document, "Message");
+        Assert.Contains("CRC32", message, StringComparison.Ordinal);
+        Assert.Contains(objectKey, message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task S3CompatibleMultipartUpload_UploadPartWithChecksumAlgorithmHeaderAndChecksumTrailer_Succeeds()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        const string bucketName = "multipart-uploadpart-trailer-checksum-valid-bucket";
+        const string objectKey = "docs/trailer-checksum.txt";
+        const string payload = "hello multipart trailer checksum";
+        var checksum = ComputeSha256Base64(payload);
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync($"/integrated-s3/buckets/{bucketName}", content: null)).StatusCode);
+
+        using var initiateRequest = new HttpRequestMessage(HttpMethod.Post, $"/integrated-s3/{bucketName}/{objectKey}?uploads");
+        initiateRequest.Headers.TryAddWithoutValidation("Content-Type", "text/plain");
+        initiateRequest.Headers.TryAddWithoutValidation("x-amz-checksum-algorithm", "SHA256");
+
+        var initiateResponse = await client.SendAsync(initiateRequest);
+        Assert.Equal(HttpStatusCode.OK, initiateResponse.StatusCode);
+        Assert.Equal("SHA256", Assert.Single(initiateResponse.Headers.GetValues("x-amz-checksum-algorithm")));
+
+        var initiateDocument = XDocument.Parse(await initiateResponse.Content.ReadAsStringAsync());
+        var uploadId = GetRequiredElementValue(initiateDocument, "UploadId");
+
+        using var partRequest = CreateAwsChunkedPutObjectRequest(
+            $"/integrated-s3/{bucketName}/{objectKey}?partNumber=1&uploadId={Uri.EscapeDataString(uploadId)}",
+            payload,
+            trailerHeaders: new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["x-amz-checksum-sha256"] = checksum
+            });
+        partRequest.Headers.TryAddWithoutValidation("x-amz-checksum-algorithm", "SHA256");
+
+        var partResponse = await client.SendAsync(partRequest);
+
+        Assert.Equal(HttpStatusCode.OK, partResponse.StatusCode);
+        Assert.Equal(checksum, Assert.Single(partResponse.Headers.GetValues("x-amz-checksum-sha256")));
+        var partETag = partResponse.Headers.ETag?.Tag ?? throw new Xunit.Sdk.XunitException("Expected multipart part ETag header.");
+
+        var listPartsResponse = await client.GetAsync($"/integrated-s3/{bucketName}/{objectKey}?uploadId={Uri.EscapeDataString(uploadId)}");
+        Assert.Equal(HttpStatusCode.OK, listPartsResponse.StatusCode);
+
+        var listPartsDocument = XDocument.Parse(await listPartsResponse.Content.ReadAsStringAsync());
+        Assert.Equal("SHA256", GetRequiredElementValue(listPartsDocument, "ChecksumAlgorithm"));
+        Assert.Equal("COMPOSITE", GetRequiredElementValue(listPartsDocument, "ChecksumType"));
+
+        var listedPart = Assert.Single(listPartsDocument.Root!.Elements("Part"));
+        Assert.Equal("1", listedPart.Element("PartNumber")?.Value);
+        Assert.Equal(partETag, listedPart.Element("ETag")?.Value);
+        Assert.Equal(checksum, listedPart.Element("ChecksumSHA256")?.Value);
     }
 
     [Fact]
@@ -4224,7 +5911,327 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
     }
 
     [Fact]
-    public async Task S3CompatiblePutObject_WithUnsupportedServerSideEncryptionHeader_ReturnsNotImplemented()
+    public async Task S3CompatiblePutObject_WithCustomerEncryptionHeaders_ParsesRequestAndEmitsResponseHeaders()
+    {
+        var storageService = new RecordingStorageService();
+        await using var isolatedClient = await CreateStorageServiceIsolatedClientAsync(storageService);
+        using var client = isolatedClient.Client;
+
+        var keyBytes = new byte[32];
+        System.Security.Cryptography.RandomNumberGenerator.Fill(keyBytes);
+        var key = Convert.ToBase64String(keyBytes);
+        var keyMd5 = Convert.ToBase64String(System.Security.Cryptography.MD5.HashData(keyBytes));
+
+        using var request = new HttpRequestMessage(HttpMethod.Put, "/integrated-s3/sse-c-bucket/docs/encrypted.txt")
+        {
+            Content = new StringContent("customer encrypted payload", Encoding.UTF8, "text/plain")
+        };
+        request.Headers.TryAddWithoutValidation("x-amz-server-side-encryption-customer-algorithm", "AES256");
+        request.Headers.TryAddWithoutValidation("x-amz-server-side-encryption-customer-key", key);
+        request.Headers.TryAddWithoutValidation("x-amz-server-side-encryption-customer-key-MD5", keyMd5);
+
+        var response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal("AES256", Assert.Single(response.Headers.GetValues("x-amz-server-side-encryption-customer-algorithm")));
+        Assert.Equal(keyMd5, Assert.Single(response.Headers.GetValues("x-amz-server-side-encryption-customer-key-MD5")));
+
+        var putRequest = storageService.LastPutObjectRequest ?? throw new Xunit.Sdk.XunitException("Expected PUT request to reach the storage service.");
+        var customerEncryption = putRequest.CustomerEncryption ?? throw new Xunit.Sdk.XunitException("Expected customer encryption settings.");
+        Assert.Equal("AES256", customerEncryption.Algorithm);
+        Assert.Equal(key, customerEncryption.Key);
+        Assert.Equal(keyMd5, customerEncryption.KeyMd5);
+    }
+
+    [Fact]
+    public async Task S3CompatiblePutObject_WithIncompleteCustomerEncryptionHeaders_IgnoredGracefully()
+    {
+        var storageService = new RecordingStorageService();
+        await using var isolatedClient = await CreateStorageServiceIsolatedClientAsync(storageService);
+        using var client = isolatedClient.Client;
+
+        using var request = new HttpRequestMessage(HttpMethod.Put, "/integrated-s3/sse-c-partial-bucket/docs/partial.txt")
+        {
+            Content = new StringContent("partial sse-c headers", Encoding.UTF8, "text/plain")
+        };
+        request.Headers.TryAddWithoutValidation("x-amz-server-side-encryption-customer-algorithm", "AES256");
+
+        var response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var putRequest = storageService.LastPutObjectRequest ?? throw new Xunit.Sdk.XunitException("Expected PUT request to reach the storage service.");
+        Assert.Null(putRequest.CustomerEncryption);
+    }
+
+    [Fact]
+    public async Task S3CompatibleGetObject_WithCustomerEncryptionHeaders_ParsesAndDelegates()
+    {
+        var storageService = new RecordingStorageService();
+        await using var isolatedClient = await CreateStorageServiceIsolatedClientAsync(storageService);
+        using var client = isolatedClient.Client;
+
+        var keyBytes = new byte[32];
+        System.Security.Cryptography.RandomNumberGenerator.Fill(keyBytes);
+        var key = Convert.ToBase64String(keyBytes);
+        var keyMd5 = Convert.ToBase64String(System.Security.Cryptography.MD5.HashData(keyBytes));
+
+        using var request = new HttpRequestMessage(HttpMethod.Get, "/integrated-s3/sse-c-get-bucket/docs/encrypted.txt");
+        request.Headers.TryAddWithoutValidation("x-amz-server-side-encryption-customer-algorithm", "AES256");
+        request.Headers.TryAddWithoutValidation("x-amz-server-side-encryption-customer-key", key);
+        request.Headers.TryAddWithoutValidation("x-amz-server-side-encryption-customer-key-MD5", keyMd5);
+
+        var response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal("AES256", Assert.Single(response.Headers.GetValues("x-amz-server-side-encryption-customer-algorithm")));
+        Assert.Equal(keyMd5, Assert.Single(response.Headers.GetValues("x-amz-server-side-encryption-customer-key-MD5")));
+
+        var getRequest = storageService.LastGetObjectRequest ?? throw new Xunit.Sdk.XunitException("Expected GET request to reach the storage service.");
+        var customerEncryption = getRequest.CustomerEncryption ?? throw new Xunit.Sdk.XunitException("Expected customer encryption settings.");
+        Assert.Equal("AES256", customerEncryption.Algorithm);
+        Assert.Equal(key, customerEncryption.Key);
+        Assert.Equal(keyMd5, customerEncryption.KeyMd5);
+    }
+
+    [Fact]
+    public async Task S3CompatibleHeadObject_WithCustomerEncryptionHeaders_ParsesAndDelegates()
+    {
+        var storageService = new RecordingStorageService();
+        await using var isolatedClient = await CreateStorageServiceIsolatedClientAsync(storageService);
+        using var client = isolatedClient.Client;
+
+        var keyBytes = new byte[32];
+        System.Security.Cryptography.RandomNumberGenerator.Fill(keyBytes);
+        var key = Convert.ToBase64String(keyBytes);
+        var keyMd5 = Convert.ToBase64String(System.Security.Cryptography.MD5.HashData(keyBytes));
+
+        using var request = new HttpRequestMessage(HttpMethod.Head, "/integrated-s3/sse-c-head-bucket/docs/encrypted.txt");
+        request.Headers.TryAddWithoutValidation("x-amz-server-side-encryption-customer-algorithm", "AES256");
+        request.Headers.TryAddWithoutValidation("x-amz-server-side-encryption-customer-key", key);
+        request.Headers.TryAddWithoutValidation("x-amz-server-side-encryption-customer-key-MD5", keyMd5);
+
+        var response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal("AES256", Assert.Single(response.Headers.GetValues("x-amz-server-side-encryption-customer-algorithm")));
+        Assert.Equal(keyMd5, Assert.Single(response.Headers.GetValues("x-amz-server-side-encryption-customer-key-MD5")));
+
+        var headRequest = storageService.LastHeadObjectRequest ?? throw new Xunit.Sdk.XunitException("Expected HEAD request to reach the storage service.");
+        var customerEncryption = headRequest.CustomerEncryption ?? throw new Xunit.Sdk.XunitException("Expected customer encryption settings.");
+        Assert.Equal("AES256", customerEncryption.Algorithm);
+        Assert.Equal(key, customerEncryption.Key);
+        Assert.Equal(keyMd5, customerEncryption.KeyMd5);
+    }
+
+    [Fact]
+    public async Task S3CompatibleCopyObject_WithSourceCustomerEncryptionHeaders_ParsesAndDelegates()
+    {
+        var storageService = new RecordingStorageService();
+        await using var isolatedClient = await CreateStorageServiceIsolatedClientAsync(storageService);
+        using var client = isolatedClient.Client;
+
+        var keyBytes = new byte[32];
+        System.Security.Cryptography.RandomNumberGenerator.Fill(keyBytes);
+        var sourceKey = Convert.ToBase64String(keyBytes);
+        var sourceKeyMd5 = Convert.ToBase64String(System.Security.Cryptography.MD5.HashData(keyBytes));
+
+        using var request = new HttpRequestMessage(HttpMethod.Put, "/integrated-s3/sse-c-copy-dest/docs/copied.txt");
+        request.Headers.TryAddWithoutValidation("x-amz-copy-source", "/sse-c-copy-src/docs/source.txt");
+        request.Headers.TryAddWithoutValidation("x-amz-copy-source-server-side-encryption-customer-algorithm", "AES256");
+        request.Headers.TryAddWithoutValidation("x-amz-copy-source-server-side-encryption-customer-key", sourceKey);
+        request.Headers.TryAddWithoutValidation("x-amz-copy-source-server-side-encryption-customer-key-MD5", sourceKeyMd5);
+
+        var response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        var copyRequest = storageService.LastCopyObjectRequest ?? throw new Xunit.Sdk.XunitException("Expected COPY request to reach the storage service.");
+        var sourceEncryption = copyRequest.SourceCustomerEncryption ?? throw new Xunit.Sdk.XunitException("Expected source customer encryption settings.");
+        Assert.Equal("AES256", sourceEncryption.Algorithm);
+        Assert.Equal(sourceKey, sourceEncryption.Key);
+        Assert.Equal(sourceKeyMd5, sourceEncryption.KeyMd5);
+        Assert.Null(copyRequest.DestinationCustomerEncryption);
+    }
+
+    [Fact]
+    public async Task S3CompatibleCopyObject_WithDestinationCustomerEncryptionHeaders_ParsesAndDelegates()
+    {
+        var storageService = new RecordingStorageService();
+        await using var isolatedClient = await CreateStorageServiceIsolatedClientAsync(storageService);
+        using var client = isolatedClient.Client;
+
+        var keyBytes = new byte[32];
+        System.Security.Cryptography.RandomNumberGenerator.Fill(keyBytes);
+        var destKey = Convert.ToBase64String(keyBytes);
+        var destKeyMd5 = Convert.ToBase64String(System.Security.Cryptography.MD5.HashData(keyBytes));
+
+        using var request = new HttpRequestMessage(HttpMethod.Put, "/integrated-s3/sse-c-copy-dest2/docs/copied.txt");
+        request.Headers.TryAddWithoutValidation("x-amz-copy-source", "/sse-c-copy-src2/docs/source.txt");
+        request.Headers.TryAddWithoutValidation("x-amz-server-side-encryption-customer-algorithm", "AES256");
+        request.Headers.TryAddWithoutValidation("x-amz-server-side-encryption-customer-key", destKey);
+        request.Headers.TryAddWithoutValidation("x-amz-server-side-encryption-customer-key-MD5", destKeyMd5);
+
+        var response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal("AES256", Assert.Single(response.Headers.GetValues("x-amz-server-side-encryption-customer-algorithm")));
+        Assert.Equal(destKeyMd5, Assert.Single(response.Headers.GetValues("x-amz-server-side-encryption-customer-key-MD5")));
+
+        var copyRequest = storageService.LastCopyObjectRequest ?? throw new Xunit.Sdk.XunitException("Expected COPY request to reach the storage service.");
+        Assert.Null(copyRequest.SourceCustomerEncryption);
+        var destEncryption = copyRequest.DestinationCustomerEncryption ?? throw new Xunit.Sdk.XunitException("Expected destination customer encryption settings.");
+        Assert.Equal("AES256", destEncryption.Algorithm);
+        Assert.Equal(destKey, destEncryption.Key);
+        Assert.Equal(destKeyMd5, destEncryption.KeyMd5);
+    }
+
+    [Fact]
+    public async Task S3CompatibleCopyObject_WithBothSourceAndDestinationCustomerEncryptionHeaders_ParsesAndDelegates()
+    {
+        var storageService = new RecordingStorageService();
+        await using var isolatedClient = await CreateStorageServiceIsolatedClientAsync(storageService);
+        using var client = isolatedClient.Client;
+
+        var srcKeyBytes = new byte[32];
+        System.Security.Cryptography.RandomNumberGenerator.Fill(srcKeyBytes);
+        var srcKey = Convert.ToBase64String(srcKeyBytes);
+        var srcKeyMd5 = Convert.ToBase64String(System.Security.Cryptography.MD5.HashData(srcKeyBytes));
+
+        var destKeyBytes = new byte[32];
+        System.Security.Cryptography.RandomNumberGenerator.Fill(destKeyBytes);
+        var destKey = Convert.ToBase64String(destKeyBytes);
+        var destKeyMd5 = Convert.ToBase64String(System.Security.Cryptography.MD5.HashData(destKeyBytes));
+
+        using var request = new HttpRequestMessage(HttpMethod.Put, "/integrated-s3/sse-c-copy-both-dest/docs/copied.txt");
+        request.Headers.TryAddWithoutValidation("x-amz-copy-source", "/sse-c-copy-both-src/docs/source.txt");
+        request.Headers.TryAddWithoutValidation("x-amz-copy-source-server-side-encryption-customer-algorithm", "AES256");
+        request.Headers.TryAddWithoutValidation("x-amz-copy-source-server-side-encryption-customer-key", srcKey);
+        request.Headers.TryAddWithoutValidation("x-amz-copy-source-server-side-encryption-customer-key-MD5", srcKeyMd5);
+        request.Headers.TryAddWithoutValidation("x-amz-server-side-encryption-customer-algorithm", "AES256");
+        request.Headers.TryAddWithoutValidation("x-amz-server-side-encryption-customer-key", destKey);
+        request.Headers.TryAddWithoutValidation("x-amz-server-side-encryption-customer-key-MD5", destKeyMd5);
+
+        var response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        var copyRequest = storageService.LastCopyObjectRequest ?? throw new Xunit.Sdk.XunitException("Expected COPY request to reach the storage service.");
+        var sourceEncryption = copyRequest.SourceCustomerEncryption ?? throw new Xunit.Sdk.XunitException("Expected source customer encryption settings.");
+        Assert.Equal("AES256", sourceEncryption.Algorithm);
+        Assert.Equal(srcKey, sourceEncryption.Key);
+        Assert.Equal(srcKeyMd5, sourceEncryption.KeyMd5);
+
+        var destEncryption = copyRequest.DestinationCustomerEncryption ?? throw new Xunit.Sdk.XunitException("Expected destination customer encryption settings.");
+        Assert.Equal("AES256", destEncryption.Algorithm);
+        Assert.Equal(destKey, destEncryption.Key);
+        Assert.Equal(destKeyMd5, destEncryption.KeyMd5);
+    }
+
+    [Fact]
+    public async Task S3CompatibleInitiateMultipartUpload_WithCustomerEncryptionHeaders_ParsesAndDelegates()
+    {
+        var storageService = new RecordingStorageService();
+        await using var isolatedClient = await CreateStorageServiceIsolatedClientAsync(storageService);
+        using var client = isolatedClient.Client;
+
+        var keyBytes = new byte[32];
+        System.Security.Cryptography.RandomNumberGenerator.Fill(keyBytes);
+        var key = Convert.ToBase64String(keyBytes);
+        var keyMd5 = Convert.ToBase64String(System.Security.Cryptography.MD5.HashData(keyBytes));
+
+        using var request = new HttpRequestMessage(HttpMethod.Post, "/integrated-s3/sse-c-mp-bucket/docs/encrypted.txt?uploads");
+        request.Headers.TryAddWithoutValidation("x-amz-server-side-encryption-customer-algorithm", "AES256");
+        request.Headers.TryAddWithoutValidation("x-amz-server-side-encryption-customer-key", key);
+        request.Headers.TryAddWithoutValidation("x-amz-server-side-encryption-customer-key-MD5", keyMd5);
+
+        var response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal("AES256", Assert.Single(response.Headers.GetValues("x-amz-server-side-encryption-customer-algorithm")));
+        Assert.Equal(keyMd5, Assert.Single(response.Headers.GetValues("x-amz-server-side-encryption-customer-key-MD5")));
+
+        var initiateRequest = storageService.LastInitiateMultipartUploadRequest ?? throw new Xunit.Sdk.XunitException("Expected initiate multipart request to reach the storage service.");
+        var customerEncryption = initiateRequest.CustomerEncryption ?? throw new Xunit.Sdk.XunitException("Expected customer encryption settings.");
+        Assert.Equal("AES256", customerEncryption.Algorithm);
+        Assert.Equal(key, customerEncryption.Key);
+        Assert.Equal(keyMd5, customerEncryption.KeyMd5);
+    }
+
+    [Fact]
+    public async Task S3CompatibleUploadPart_WithCustomerEncryptionHeaders_ParsesAndDelegates()
+    {
+        var storageService = new RecordingStorageService();
+        await using var isolatedClient = await CreateStorageServiceIsolatedClientAsync(storageService);
+        using var client = isolatedClient.Client;
+
+        var keyBytes = new byte[32];
+        System.Security.Cryptography.RandomNumberGenerator.Fill(keyBytes);
+        var key = Convert.ToBase64String(keyBytes);
+        var keyMd5 = Convert.ToBase64String(System.Security.Cryptography.MD5.HashData(keyBytes));
+
+        using var request = new HttpRequestMessage(HttpMethod.Put, "/integrated-s3/sse-c-part-bucket/docs/encrypted.txt?uploadId=upload-123&partNumber=1")
+        {
+            Content = new StringContent("part data", Encoding.UTF8, "application/octet-stream")
+        };
+        request.Headers.TryAddWithoutValidation("x-amz-server-side-encryption-customer-algorithm", "AES256");
+        request.Headers.TryAddWithoutValidation("x-amz-server-side-encryption-customer-key", key);
+        request.Headers.TryAddWithoutValidation("x-amz-server-side-encryption-customer-key-MD5", keyMd5);
+
+        var response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        var uploadPartRequest = storageService.LastUploadMultipartPartRequest ?? throw new Xunit.Sdk.XunitException("Expected upload part request to reach the storage service.");
+        var customerEncryption = uploadPartRequest.CustomerEncryption ?? throw new Xunit.Sdk.XunitException("Expected customer encryption settings.");
+        Assert.Equal("AES256", customerEncryption.Algorithm);
+        Assert.Equal(key, customerEncryption.Key);
+        Assert.Equal(keyMd5, customerEncryption.KeyMd5);
+    }
+
+    [Fact]
+    public async Task S3CompatibleUploadPartCopy_WithCustomerEncryptionHeaders_ParsesAndDelegates()
+    {
+        var storageService = new RecordingStorageService();
+        await using var isolatedClient = await CreateStorageServiceIsolatedClientAsync(storageService);
+        using var client = isolatedClient.Client;
+
+        var srcKeyBytes = new byte[32];
+        System.Security.Cryptography.RandomNumberGenerator.Fill(srcKeyBytes);
+        var srcKey = Convert.ToBase64String(srcKeyBytes);
+        var srcKeyMd5 = Convert.ToBase64String(System.Security.Cryptography.MD5.HashData(srcKeyBytes));
+
+        var destKeyBytes = new byte[32];
+        System.Security.Cryptography.RandomNumberGenerator.Fill(destKeyBytes);
+        var destKey = Convert.ToBase64String(destKeyBytes);
+        var destKeyMd5 = Convert.ToBase64String(System.Security.Cryptography.MD5.HashData(destKeyBytes));
+
+        using var request = new HttpRequestMessage(HttpMethod.Put, "/integrated-s3/sse-c-partcopy-bucket/docs/copied.txt?uploadId=upload-456&partNumber=1");
+        request.Headers.TryAddWithoutValidation("x-amz-copy-source", "/sse-c-partcopy-src/docs/source.txt");
+        request.Headers.TryAddWithoutValidation("x-amz-copy-source-server-side-encryption-customer-algorithm", "AES256");
+        request.Headers.TryAddWithoutValidation("x-amz-copy-source-server-side-encryption-customer-key", srcKey);
+        request.Headers.TryAddWithoutValidation("x-amz-copy-source-server-side-encryption-customer-key-MD5", srcKeyMd5);
+        request.Headers.TryAddWithoutValidation("x-amz-server-side-encryption-customer-algorithm", "AES256");
+        request.Headers.TryAddWithoutValidation("x-amz-server-side-encryption-customer-key", destKey);
+        request.Headers.TryAddWithoutValidation("x-amz-server-side-encryption-customer-key-MD5", destKeyMd5);
+
+        var response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        var partCopyRequest = storageService.LastUploadPartCopyRequest ?? throw new Xunit.Sdk.XunitException("Expected upload part copy request to reach the storage service.");
+        var sourceEncryption = partCopyRequest.SourceCustomerEncryption ?? throw new Xunit.Sdk.XunitException("Expected source customer encryption settings.");
+        Assert.Equal("AES256", sourceEncryption.Algorithm);
+        Assert.Equal(srcKey, sourceEncryption.Key);
+        Assert.Equal(srcKeyMd5, sourceEncryption.KeyMd5);
+
+        var destEncryption = partCopyRequest.DestinationCustomerEncryption ?? throw new Xunit.Sdk.XunitException("Expected destination customer encryption settings.");
+        Assert.Equal("AES256", destEncryption.Algorithm);
+        Assert.Equal(destKey, destEncryption.Key);
+        Assert.Equal(destKeyMd5, destEncryption.KeyMd5);
+    }
+
+    [Fact]
+    public async Task S3CompatiblePutObject_WithTrulyUnsupportedServerSideEncryptionHeader_ReturnsNotImplemented()
     {
         var storageService = new RecordingStorageService();
         await using var isolatedClient = await CreateStorageServiceIsolatedClientAsync(storageService);
@@ -4234,7 +6241,7 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
         {
             Content = new StringContent("unsupported encryption request", Encoding.UTF8, "text/plain")
         };
-        request.Headers.TryAddWithoutValidation("x-amz-server-side-encryption-customer-algorithm", "AES256");
+        request.Headers.TryAddWithoutValidation("x-amz-server-side-encryption-bucket-key-enabled", "true");
 
         var response = await client.SendAsync(request);
 
@@ -4264,10 +6271,114 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
         Assert.Equal(ObjectServerSideEncryptionAlgorithm.Aes256, serverSideEncryption.Algorithm);
     }
 
+    [Theory]
+    [InlineData("x-amz-sdk-checksum-algorithm")]
+    [InlineData("x-amz-checksum-algorithm")]
+    public async Task S3CompatibleCopyObject_WithChecksumAlgorithmHeader_ParsesRequestWithoutChecksumValue(string algorithmHeaderName)
+    {
+        var storageService = new RecordingStorageService();
+        await using var isolatedClient = await CreateStorageServiceIsolatedClientAsync(storageService);
+        using var client = isolatedClient.Client;
+
+        using var request = new HttpRequestMessage(HttpMethod.Put, "/integrated-s3/checksum-copy-bucket/docs/copied.txt");
+        request.Headers.TryAddWithoutValidation("x-amz-copy-source", "/checksum-source-bucket/docs/source.txt");
+        request.Headers.TryAddWithoutValidation(algorithmHeaderName, "CRC32C");
+
+        var response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        var copyRequest = storageService.LastCopyObjectRequest ?? throw new Xunit.Sdk.XunitException("Expected COPY request to reach the storage service.");
+        Assert.Equal("crc32c", copyRequest.ChecksumAlgorithm);
+        Assert.Null(copyRequest.Checksums);
+    }
+
+    [Fact]
+    public async Task S3CompatibleCopyObject_WithChecksumHeaders_ParsesChecksumAlgorithmAndValue()
+    {
+        var storageService = new RecordingStorageService();
+        await using var isolatedClient = await CreateStorageServiceIsolatedClientAsync(storageService);
+        using var client = isolatedClient.Client;
+
+        const string checksum = "47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=";
+
+        using var request = new HttpRequestMessage(HttpMethod.Put, "/integrated-s3/checksum-copy-bucket/docs/copied.txt");
+        request.Headers.TryAddWithoutValidation("x-amz-copy-source", "/checksum-source-bucket/docs/source.txt");
+        request.Headers.TryAddWithoutValidation("x-amz-sdk-checksum-algorithm", "SHA256");
+        request.Headers.TryAddWithoutValidation("x-amz-checksum-sha256", checksum);
+
+        var response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        var copyRequest = storageService.LastCopyObjectRequest ?? throw new Xunit.Sdk.XunitException("Expected COPY request to reach the storage service.");
+        Assert.Equal("sha256", copyRequest.ChecksumAlgorithm);
+        Assert.Equal(checksum, copyRequest.Checksums!["sha256"]);
+    }
+
+    [Theory]
+    [InlineData("x-amz-sdk-checksum-algorithm")]
+    [InlineData("x-amz-checksum-algorithm")]
+    public async Task S3CompatibleMultipartUpload_UploadPartCopy_WithChecksumAlgorithmHeader_ParsesRequestWithoutChecksumValue(string algorithmHeaderName)
+    {
+        var storageService = new RecordingStorageService();
+        await using var isolatedClient = await CreateStorageServiceIsolatedClientAsync(storageService);
+        using var client = isolatedClient.Client;
+
+        using var request = new HttpRequestMessage(HttpMethod.Put, "/integrated-s3/checksum-copy-bucket/docs/copied.txt?partNumber=1&uploadId=upload-123");
+        request.Headers.TryAddWithoutValidation("x-amz-copy-source", "/checksum-source-bucket/docs/source.txt");
+        request.Headers.TryAddWithoutValidation(algorithmHeaderName, "CRC32C");
+
+        var response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        var copyRequest = storageService.LastUploadPartCopyRequest ?? throw new Xunit.Sdk.XunitException("Expected multipart COPY request to reach the storage service.");
+        Assert.Equal("crc32c", copyRequest.ChecksumAlgorithm);
+        Assert.Null(copyRequest.Checksums);
+    }
+
+    [Fact]
+    public async Task S3CompatibleMultipartUpload_UploadPartCopy_WithChecksumHeaders_ParsesChecksumAlgorithmAndValue()
+    {
+        var storageService = new RecordingStorageService();
+        await using var isolatedClient = await CreateStorageServiceIsolatedClientAsync(storageService);
+        using var client = isolatedClient.Client;
+
+        const string checksum = "2jmj7l5rSw0yVb/vlWAYkK/YBwk=";
+
+        using var request = new HttpRequestMessage(HttpMethod.Put, "/integrated-s3/checksum-copy-bucket/docs/copied.txt?partNumber=1&uploadId=upload-123");
+        request.Headers.TryAddWithoutValidation("x-amz-copy-source", "/checksum-source-bucket/docs/source.txt");
+        request.Headers.TryAddWithoutValidation("x-amz-sdk-checksum-algorithm", "SHA1");
+        request.Headers.TryAddWithoutValidation("x-amz-checksum-sha1", checksum);
+
+        var response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        var copyRequest = storageService.LastUploadPartCopyRequest ?? throw new Xunit.Sdk.XunitException("Expected multipart COPY request to reach the storage service.");
+        Assert.Equal("sha1", copyRequest.ChecksumAlgorithm);
+        Assert.Equal(checksum, copyRequest.Checksums!["sha1"]);
+    }
+
     [Fact]
     public async Task S3CompatibleInitiateMultipartUpload_WithServerSideEncryptionHeaders_ParsesRequest()
     {
-        var storageService = new RecordingStorageService();
+        var storageService = new RecordingStorageService
+        {
+            InitiateMultipartUploadResult = new MultipartUploadInfo
+            {
+                BucketName = "multipart-sse-bucket",
+                Key = "docs/upload.txt",
+                UploadId = "upload-123",
+                InitiatedAtUtc = DateTimeOffset.Parse("2026-03-01T00:00:00Z", CultureInfo.InvariantCulture),
+                ServerSideEncryption = new ObjectServerSideEncryptionInfo
+                {
+                    Algorithm = ObjectServerSideEncryptionAlgorithm.Kms,
+                    KeyId = "alias/multipart-key"
+                }
+            }
+        };
         await using var isolatedClient = await CreateStorageServiceIsolatedClientAsync(storageService);
         using var client = isolatedClient.Client;
 
@@ -4281,6 +6392,8 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
         var response = await client.SendAsync(request);
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal("aws:kms", Assert.Single(response.Headers.GetValues("x-amz-server-side-encryption")));
+        Assert.Equal("alias/multipart-key", Assert.Single(response.Headers.GetValues("x-amz-server-side-encryption-aws-kms-key-id")));
 
         var document = XDocument.Parse(await response.Content.ReadAsStringAsync());
         Assert.Equal("upload-123", GetRequiredElementValue(document, "UploadId"));
@@ -4904,7 +7017,7 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
     public async Task EndpointFeatureToggles_RespectConfiguredEndpointOptions()
     {
         await using var isolatedClient = await _factory.CreateIsolatedClientAsync(builder => {
-            builder.Services.PostConfigure<IntegratedS3EndpointOptions>(options => {
+            builder.Services.PostConfigure<IntegratedS3EndpointConfigurationOptions>(options => {
                 options.EnableAdminEndpoints = false;
                 options.EnableObjectEndpoints = false;
                 options.EnableMultipartEndpoints = false;
@@ -4934,7 +7047,7 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
     {
         await using var isolatedClient = await _factory.CreateIsolatedClientAsync(
             builder => {
-                builder.Services.PostConfigure<IntegratedS3EndpointOptions>(options => {
+                builder.Services.PostConfigure<IntegratedS3EndpointConfigurationOptions>(options => {
                     options.EnableAdminEndpoints = false;
                     options.EnableObjectEndpoints = false;
                     options.EnableMultipartEndpoints = false;
@@ -5548,6 +7661,415 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
         Assert.Equal(StorageReplicaRepairStatus.Failed, filteredRepair.Status);
     }
 
+    [Fact]
+    public async Task DeleteObject_WithVersioningEnabled_ReturnsDeleteMarkerWithHeaders()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync("/integrated-s3/buckets/delete-marker-bucket", content: null)).StatusCode);
+        await EnableBucketVersioningAsync(client, "delete-marker-bucket");
+
+        var putResponse = await client.PutAsync(
+            "/integrated-s3/delete-marker-bucket/test.txt",
+            new StringContent("content", Encoding.UTF8, "text/plain"));
+        Assert.Equal(HttpStatusCode.OK, putResponse.StatusCode);
+
+        var deleteResponse = await client.DeleteAsync("/integrated-s3/delete-marker-bucket/test.txt");
+        Assert.Equal(HttpStatusCode.NoContent, deleteResponse.StatusCode);
+        Assert.Equal("true", Assert.Single(deleteResponse.Headers.GetValues("x-amz-delete-marker")));
+        var deleteMarkerVersionId = Assert.Single(deleteResponse.Headers.GetValues("x-amz-version-id"));
+        Assert.False(string.IsNullOrWhiteSpace(deleteMarkerVersionId));
+    }
+
+    [Fact]
+    public async Task DeleteObject_AfterDeleteMarkerCreation_HeadAndGetReflectDeleteMarker()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync("/integrated-s3/buckets/delete-marker-response-bucket", content: null)).StatusCode);
+        await EnableBucketVersioningAsync(client, "delete-marker-response-bucket");
+
+        var putResponse = await client.PutAsync(
+            "/integrated-s3/delete-marker-response-bucket/obj.txt",
+            new StringContent("data", Encoding.UTF8, "text/plain"));
+        Assert.Equal(HttpStatusCode.OK, putResponse.StatusCode);
+
+        var deleteResponse = await client.DeleteAsync("/integrated-s3/delete-marker-response-bucket/obj.txt");
+        Assert.Equal(HttpStatusCode.NoContent, deleteResponse.StatusCode);
+        var deleteMarkerVersionId = Assert.Single(deleteResponse.Headers.GetValues("x-amz-version-id"));
+
+        var headResponse = await client.SendAsync(new HttpRequestMessage(HttpMethod.Head, "/integrated-s3/delete-marker-response-bucket/obj.txt"));
+        Assert.Equal(HttpStatusCode.NotFound, headResponse.StatusCode);
+        Assert.Equal("true", Assert.Single(headResponse.Headers.GetValues("x-amz-delete-marker")));
+        Assert.Equal(deleteMarkerVersionId, Assert.Single(headResponse.Headers.GetValues("x-amz-version-id")));
+
+        var getResponse = await client.GetAsync("/integrated-s3/delete-marker-response-bucket/obj.txt");
+        Assert.Equal(HttpStatusCode.NotFound, getResponse.StatusCode);
+        Assert.Equal("true", Assert.Single(getResponse.Headers.GetValues("x-amz-delete-marker")));
+        Assert.Equal(deleteMarkerVersionId, Assert.Single(getResponse.Headers.GetValues("x-amz-version-id")));
+    }
+
+    [Fact]
+    public async Task DeleteObject_WithVersionId_RemovesSpecificVersionAndReturnsDeleteMarkerInfo()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync("/integrated-s3/buckets/delete-version-bucket", content: null)).StatusCode);
+        await EnableBucketVersioningAsync(client, "delete-version-bucket");
+
+        var v1 = await client.PutAsync(
+            "/integrated-s3/delete-version-bucket/file.txt",
+            new StringContent("v1", Encoding.UTF8, "text/plain"));
+        var v1VersionId = Assert.Single(v1.Headers.GetValues("x-amz-version-id"));
+
+        var v2 = await client.PutAsync(
+            "/integrated-s3/delete-version-bucket/file.txt",
+            new StringContent("v2", Encoding.UTF8, "text/plain"));
+        var v2VersionId = Assert.Single(v2.Headers.GetValues("x-amz-version-id"));
+
+        var deleteV1Response = await client.DeleteAsync($"/integrated-s3/delete-version-bucket/file.txt?versionId={Uri.EscapeDataString(v1VersionId)}");
+        Assert.Equal(HttpStatusCode.NoContent, deleteV1Response.StatusCode);
+        Assert.False(deleteV1Response.Headers.Contains("x-amz-delete-marker"));
+        Assert.Equal(v1VersionId, Assert.Single(deleteV1Response.Headers.GetValues("x-amz-version-id")));
+
+        var currentGet = await client.GetAsync("/integrated-s3/delete-version-bucket/file.txt");
+        Assert.Equal(HttpStatusCode.OK, currentGet.StatusCode);
+        Assert.Equal("v2", await currentGet.Content.ReadAsStringAsync());
+        Assert.Equal(v2VersionId, Assert.Single(currentGet.Headers.GetValues("x-amz-version-id")));
+    }
+
+    [Fact]
+    public async Task GetObject_WithVersionId_ReturnsSpecificVersion()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync("/integrated-s3/buckets/version-recovery-bucket", content: null)).StatusCode);
+        await EnableBucketVersioningAsync(client, "version-recovery-bucket");
+
+        var v1 = await client.PutAsync(
+            "/integrated-s3/version-recovery-bucket/doc.txt",
+            new StringContent("version one", Encoding.UTF8, "text/plain"));
+        var v1VersionId = Assert.Single(v1.Headers.GetValues("x-amz-version-id"));
+
+        var v2 = await client.PutAsync(
+            "/integrated-s3/version-recovery-bucket/doc.txt",
+            new StringContent("version two", Encoding.UTF8, "text/plain"));
+        var v2VersionId = Assert.Single(v2.Headers.GetValues("x-amz-version-id"));
+
+        var currentGet = await client.GetAsync("/integrated-s3/version-recovery-bucket/doc.txt");
+        Assert.Equal(HttpStatusCode.OK, currentGet.StatusCode);
+        Assert.Equal("version two", await currentGet.Content.ReadAsStringAsync());
+        Assert.Equal(v2VersionId, Assert.Single(currentGet.Headers.GetValues("x-amz-version-id")));
+
+        var v1Get = await client.GetAsync($"/integrated-s3/version-recovery-bucket/doc.txt?versionId={Uri.EscapeDataString(v1VersionId)}");
+        Assert.Equal(HttpStatusCode.OK, v1Get.StatusCode);
+        Assert.Equal("version one", await v1Get.Content.ReadAsStringAsync());
+        Assert.Equal(v1VersionId, Assert.Single(v1Get.Headers.GetValues("x-amz-version-id")));
+    }
+
+    [Fact]
+    public async Task HeadObject_WithVersionId_ReturnsVersionHeaders()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync("/integrated-s3/buckets/head-version-bucket", content: null)).StatusCode);
+        await EnableBucketVersioningAsync(client, "head-version-bucket");
+
+        var v1 = await client.PutAsync(
+            "/integrated-s3/head-version-bucket/content.bin",
+            new StringContent("v1 binary", Encoding.UTF8, "application/octet-stream"));
+        var v1VersionId = Assert.Single(v1.Headers.GetValues("x-amz-version-id"));
+
+        var v2 = await client.PutAsync(
+            "/integrated-s3/head-version-bucket/content.bin",
+            new StringContent("v2 binary", Encoding.UTF8, "application/octet-stream"));
+        var v2VersionId = Assert.Single(v2.Headers.GetValues("x-amz-version-id"));
+
+        var v1Head = await client.SendAsync(new HttpRequestMessage(HttpMethod.Head, $"/integrated-s3/head-version-bucket/content.bin?versionId={Uri.EscapeDataString(v1VersionId)}"));
+        Assert.Equal(HttpStatusCode.OK, v1Head.StatusCode);
+        Assert.Equal(v1VersionId, Assert.Single(v1Head.Headers.GetValues("x-amz-version-id")));
+        Assert.Equal("application/octet-stream", v1Head.Content.Headers.ContentType?.MediaType);
+
+        var v2Head = await client.SendAsync(new HttpRequestMessage(HttpMethod.Head, $"/integrated-s3/head-version-bucket/content.bin?versionId={Uri.EscapeDataString(v2VersionId)}"));
+        Assert.Equal(HttpStatusCode.OK, v2Head.StatusCode);
+        Assert.Equal(v2VersionId, Assert.Single(v2Head.Headers.GetValues("x-amz-version-id")));
+    }
+
+    [Fact]
+    public async Task GetObject_WithInvalidVersionId_ReturnsNotFound()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync("/integrated-s3/buckets/invalid-version-bucket", content: null)).StatusCode);
+        await EnableBucketVersioningAsync(client, "invalid-version-bucket");
+
+        await client.PutAsync(
+            "/integrated-s3/invalid-version-bucket/test.txt",
+            new StringContent("data", Encoding.UTF8, "text/plain"));
+
+        var response = await client.GetAsync("/integrated-s3/invalid-version-bucket/test.txt?versionId=nonexistent");
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+        var error = XDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal("NoSuchVersion", GetRequiredElementValue(error, "Code"));
+    }
+
+    [Fact]
+    public async Task HeadObject_WithInvalidVersionId_ReturnsNotFound()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync("/integrated-s3/buckets/invalid-head-version-bucket", content: null)).StatusCode);
+        await EnableBucketVersioningAsync(client, "invalid-head-version-bucket");
+
+        await client.PutAsync(
+            "/integrated-s3/invalid-head-version-bucket/test.txt",
+            new StringContent("data", Encoding.UTF8, "text/plain"));
+
+        var response = await client.SendAsync(new HttpRequestMessage(HttpMethod.Head, "/integrated-s3/invalid-head-version-bucket/test.txt?versionId=invalid"));
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+        Assert.Equal("NoSuchVersion", Assert.Single(response.Headers.GetValues("x-amz-error-code")));
+    }
+
+    [Fact]
+    public async Task PutBucketVersioning_EnablesVersioning()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync("/integrated-s3/buckets/enable-versioning-bucket", content: null)).StatusCode);
+
+        using var enableRequest = new HttpRequestMessage(HttpMethod.Put, "/integrated-s3/enable-versioning-bucket?versioning")
+        {
+            Content = new StringContent("""
+<VersioningConfiguration>
+  <Status>Enabled</Status>
+</VersioningConfiguration>
+""", Encoding.UTF8, "application/xml")
+        };
+        var enableResponse = await client.SendAsync(enableRequest);
+        Assert.Equal(HttpStatusCode.OK, enableResponse.StatusCode);
+
+        var putV1 = await client.PutAsync(
+            "/integrated-s3/enable-versioning-bucket/file.txt",
+            new StringContent("v1", Encoding.UTF8, "text/plain"));
+        Assert.Equal(HttpStatusCode.OK, putV1.StatusCode);
+        var v1VersionId = Assert.Single(putV1.Headers.GetValues("x-amz-version-id"));
+
+        var putV2 = await client.PutAsync(
+            "/integrated-s3/enable-versioning-bucket/file.txt",
+            new StringContent("v2", Encoding.UTF8, "text/plain"));
+        Assert.Equal(HttpStatusCode.OK, putV2.StatusCode);
+        var v2VersionId = Assert.Single(putV2.Headers.GetValues("x-amz-version-id"));
+
+        Assert.NotEqual(v1VersionId, v2VersionId);
+    }
+
+    [Fact]
+    public async Task PutBucketVersioning_SuspendsVersioning()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync("/integrated-s3/buckets/suspend-versioning-bucket", content: null)).StatusCode);
+        await EnableBucketVersioningAsync(client, "suspend-versioning-bucket");
+
+        var v1 = await client.PutAsync(
+            "/integrated-s3/suspend-versioning-bucket/file.txt",
+            new StringContent("v1", Encoding.UTF8, "text/plain"));
+        var v1VersionId = Assert.Single(v1.Headers.GetValues("x-amz-version-id"));
+
+        using var suspendRequest = new HttpRequestMessage(HttpMethod.Put, "/integrated-s3/suspend-versioning-bucket?versioning")
+        {
+            Content = new StringContent("""
+<VersioningConfiguration>
+  <Status>Suspended</Status>
+</VersioningConfiguration>
+""", Encoding.UTF8, "application/xml")
+        };
+        var suspendResponse = await client.SendAsync(suspendRequest);
+        Assert.Equal(HttpStatusCode.OK, suspendResponse.StatusCode);
+
+        var v2 = await client.PutAsync(
+            "/integrated-s3/suspend-versioning-bucket/file.txt",
+            new StringContent("v2", Encoding.UTF8, "text/plain"));
+        Assert.Equal(HttpStatusCode.OK, v2.StatusCode);
+        var v2VersionId = Assert.Single(v2.Headers.GetValues("x-amz-version-id"));
+
+        Assert.NotEqual(v1VersionId, v2VersionId);
+    }
+
+    [Fact]
+    public async Task GetBucketVersioning_ReturnsCurrentStatus()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync("/integrated-s3/buckets/status-bucket", content: null)).StatusCode);
+
+        var getDisabledResponse = await client.GetAsync("/integrated-s3/status-bucket?versioning");
+        Assert.Equal(HttpStatusCode.OK, getDisabledResponse.StatusCode);
+        var disabledDocument = XDocument.Parse(await getDisabledResponse.Content.ReadAsStringAsync());
+        Assert.Equal("VersioningConfiguration", disabledDocument.Root?.Name.LocalName);
+
+        await EnableBucketVersioningAsync(client, "status-bucket");
+
+        var getEnabledResponse = await client.GetAsync("/integrated-s3/status-bucket?versioning");
+        Assert.Equal(HttpStatusCode.OK, getEnabledResponse.StatusCode);
+        var enabledDocument = XDocument.Parse(await getEnabledResponse.Content.ReadAsStringAsync());
+        Assert.Equal("Enabled", enabledDocument.Root?.Element("Status")?.Value);
+
+        using var suspendRequest = new HttpRequestMessage(HttpMethod.Put, "/integrated-s3/status-bucket?versioning")
+        {
+            Content = new StringContent("""
+<VersioningConfiguration>
+  <Status>Suspended</Status>
+</VersioningConfiguration>
+""", Encoding.UTF8, "application/xml")
+        };
+        await client.SendAsync(suspendRequest);
+
+        var getSuspendedResponse = await client.GetAsync("/integrated-s3/status-bucket?versioning");
+        Assert.Equal(HttpStatusCode.OK, getSuspendedResponse.StatusCode);
+        var suspendedDocument = XDocument.Parse(await getSuspendedResponse.Content.ReadAsStringAsync());
+        Assert.Equal("Suspended", suspendedDocument.Root?.Element("Status")?.Value);
+    }
+
+    [Fact]
+    public async Task ListObjectVersions_ReturnsAllVersionsAndDeleteMarkers()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync("/integrated-s3/buckets/list-versions-bucket", content: null)).StatusCode);
+        await EnableBucketVersioningAsync(client, "list-versions-bucket");
+
+        var v1 = await client.PutAsync(
+            "/integrated-s3/list-versions-bucket/docs/file.txt",
+            new StringContent("v1", Encoding.UTF8, "text/plain"));
+        var v1VersionId = Assert.Single(v1.Headers.GetValues("x-amz-version-id"));
+
+        var v2 = await client.PutAsync(
+            "/integrated-s3/list-versions-bucket/docs/file.txt",
+            new StringContent("v2", Encoding.UTF8, "text/plain"));
+        var v2VersionId = Assert.Single(v2.Headers.GetValues("x-amz-version-id"));
+
+        var deleteResponse = await client.DeleteAsync("/integrated-s3/list-versions-bucket/docs/file.txt");
+        var deleteMarkerVersionId = Assert.Single(deleteResponse.Headers.GetValues("x-amz-version-id"));
+
+        var listResponse = await client.GetAsync("/integrated-s3/list-versions-bucket?versions");
+        Assert.Equal(HttpStatusCode.OK, listResponse.StatusCode);
+        var versionsDocument = XDocument.Parse(await listResponse.Content.ReadAsStringAsync());
+
+        var versions = versionsDocument.Root!.Elements("Version").ToArray();
+        var deleteMarkers = versionsDocument.Root!.Elements("DeleteMarker").ToArray();
+
+        Assert.Equal(2, versions.Length);
+        Assert.Single(deleteMarkers);
+
+        Assert.Contains(versions, v => v.Element("VersionId")?.Value == v1VersionId);
+        Assert.Contains(versions, v => v.Element("VersionId")?.Value == v2VersionId);
+        Assert.Equal(deleteMarkerVersionId, Assert.Single(deleteMarkers).Element("VersionId")?.Value);
+        Assert.Equal("true", Assert.Single(deleteMarkers).Element("IsLatest")?.Value);
+    }
+
+    [Fact]
+    public async Task ListObjectVersions_WithPrefix_FiltersResults()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync("/integrated-s3/buckets/prefix-versions-bucket", content: null)).StatusCode);
+        await EnableBucketVersioningAsync(client, "prefix-versions-bucket");
+
+        await client.PutAsync(
+            "/integrated-s3/prefix-versions-bucket/docs/a.txt",
+            new StringContent("data", Encoding.UTF8, "text/plain"));
+
+        await client.PutAsync(
+            "/integrated-s3/prefix-versions-bucket/docs/b.txt",
+            new StringContent("data", Encoding.UTF8, "text/plain"));
+
+        await client.PutAsync(
+            "/integrated-s3/prefix-versions-bucket/other/c.txt",
+            new StringContent("data", Encoding.UTF8, "text/plain"));
+
+        var listDocsResponse = await client.GetAsync("/integrated-s3/prefix-versions-bucket?versions&prefix=docs/");
+        Assert.Equal(HttpStatusCode.OK, listDocsResponse.StatusCode);
+        var docsDocument = XDocument.Parse(await listDocsResponse.Content.ReadAsStringAsync());
+        var docsVersions = docsDocument.Root!.Elements("Version").ToArray();
+
+        Assert.Equal(2, docsVersions.Length);
+        Assert.Contains(docsVersions, v => v.Element("Key")?.Value == "docs/a.txt");
+        Assert.Contains(docsVersions, v => v.Element("Key")?.Value == "docs/b.txt");
+
+        var listOtherResponse = await client.GetAsync("/integrated-s3/prefix-versions-bucket?versions&prefix=other/");
+        Assert.Equal(HttpStatusCode.OK, listOtherResponse.StatusCode);
+        var otherDocument = XDocument.Parse(await listOtherResponse.Content.ReadAsStringAsync());
+        var otherVersions = otherDocument.Root!.Elements("Version").ToArray();
+
+        Assert.Single(otherVersions);
+        Assert.Equal("other/c.txt", Assert.Single(otherVersions).Element("Key")?.Value);
+    }
+
+    [Fact]
+    public async Task ListObjectVersions_WithKeyAndVersionMarkers_PaginatesCorrectly()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync("/integrated-s3/buckets/pagination-versions-bucket", content: null)).StatusCode);
+        await EnableBucketVersioningAsync(client, "pagination-versions-bucket");
+
+        var v1 = await client.PutAsync(
+            "/integrated-s3/pagination-versions-bucket/file.txt",
+            new StringContent("v1", Encoding.UTF8, "text/plain"));
+        var v1VersionId = Assert.Single(v1.Headers.GetValues("x-amz-version-id"));
+
+        var v2 = await client.PutAsync(
+            "/integrated-s3/pagination-versions-bucket/file.txt",
+            new StringContent("v2", Encoding.UTF8, "text/plain"));
+        var v2VersionId = Assert.Single(v2.Headers.GetValues("x-amz-version-id"));
+
+        var v3 = await client.PutAsync(
+            "/integrated-s3/pagination-versions-bucket/file.txt",
+            new StringContent("v3", Encoding.UTF8, "text/plain"));
+        var v3VersionId = Assert.Single(v3.Headers.GetValues("x-amz-version-id"));
+
+        var listAllResponse = await client.GetAsync("/integrated-s3/pagination-versions-bucket?versions");
+        Assert.Equal(HttpStatusCode.OK, listAllResponse.StatusCode);
+        var allDocument = XDocument.Parse(await listAllResponse.Content.ReadAsStringAsync());
+        var allVersions = allDocument.Root!.Elements("Version").ToArray();
+
+        Assert.Equal(3, allVersions.Length);
+    }
+
+    [Fact]
+    public async Task ListObjectVersions_DeleteMarkerNotInGetResponse_OnlyInVersionsList()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync("/integrated-s3/buckets/delete-marker-versions-bucket", content: null)).StatusCode);
+        await EnableBucketVersioningAsync(client, "delete-marker-versions-bucket");
+
+        var putResponse = await client.PutAsync(
+            "/integrated-s3/delete-marker-versions-bucket/file.txt",
+            new StringContent("content", Encoding.UTF8, "text/plain"));
+        var versionId = Assert.Single(putResponse.Headers.GetValues("x-amz-version-id"));
+
+        var deleteResponse = await client.DeleteAsync("/integrated-s3/delete-marker-versions-bucket/file.txt");
+        Assert.Equal(HttpStatusCode.NoContent, deleteResponse.StatusCode);
+        var deleteMarkerVersionId = Assert.Single(deleteResponse.Headers.GetValues("x-amz-version-id"));
+
+        var listResponse = await client.GetAsync("/integrated-s3/delete-marker-versions-bucket?versions");
+        Assert.Equal(HttpStatusCode.OK, listResponse.StatusCode);
+        var versionsDocument = XDocument.Parse(await listResponse.Content.ReadAsStringAsync());
+
+        var versions = versionsDocument.Root!.Elements("Version").ToArray();
+        var deleteMarkers = versionsDocument.Root!.Elements("DeleteMarker").ToArray();
+
+        Assert.Single(versions);
+        Assert.Equal(versionId, Assert.Single(versions).Element("VersionId")?.Value);
+        Assert.Equal("false", Assert.Single(versions).Element("IsLatest")?.Value);
+
+        Assert.Single(deleteMarkers);
+        Assert.Equal(deleteMarkerVersionId, Assert.Single(deleteMarkers).Element("VersionId")?.Value);
+        Assert.Equal("true", Assert.Single(deleteMarkers).Element("IsLatest")?.Value);
+    }
+
     private sealed class ScopeBasedIntegratedS3AuthorizationService : IIntegratedS3AuthorizationService
     {
         public ValueTask<StorageResult> AuthorizeAsync(ClaimsPrincipal principal, StorageAuthorizationRequest request, CancellationToken cancellationToken = default)
@@ -5593,6 +8115,26 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
         return _factory.CreateIsolatedClientAsync(builder => {
             builder.Services.AddAuthentication("TestHeader")
                 .AddScheme<AuthenticationSchemeOptions, TestHeaderAuthenticationHandler>("TestHeader", static _ => { });
+            builder.Services.AddSingleton<IIntegratedS3AuthorizationService, ScopeBasedIntegratedS3AuthorizationService>();
+        });
+    }
+
+    private Task<WebUiApplicationFactory.IsolatedWebUiClient> CreateSigV4AuthenticatedClientAsync(string accessKeyId, string secretAccessKey)
+    {
+        return _factory.CreateIsolatedClientAsync(builder => {
+            builder.Services.Configure<IntegratedS3Options>(options => {
+                options.EnableAwsSignatureV4Authentication = true;
+                options.AccessKeyCredentials =
+                [
+                    new IntegratedS3AccessKeyCredential
+                    {
+                        AccessKeyId = accessKeyId,
+                        SecretAccessKey = secretAccessKey,
+                        DisplayName = "sigv4-http-trailer-user",
+                        Scopes = ["storage.read", "storage.write"]
+                    }
+                ];
+            });
             builder.Services.AddSingleton<IIntegratedS3AuthorizationService, ScopeBasedIntegratedS3AuthorizationService>();
         });
     }
@@ -5728,7 +8270,8 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
             LastGetObjectRequest = request;
 
             return new ValueTask<StorageResult<GetObjectResponse>>(StorageResult<GetObjectResponse>.Success(
-                GetObjectResult ?? CreateGetObjectResponse(request.BucketName, request.Key, "recorded response", serverSideEncryption: null)));
+                GetObjectResult ?? CreateGetObjectResponse(request.BucketName, request.Key, "recorded response", serverSideEncryption: null,
+                    customerEncryption: ToCustomerEncryptionInfo(request.CustomerEncryption))));
         }
 
         public ValueTask<StorageResult<ObjectRetentionInfo>> GetObjectRetentionAsync(GetObjectRetentionRequest request, CancellationToken cancellationToken = default)
@@ -5768,7 +8311,8 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
                     request.DestinationBucketName,
                     request.DestinationKey,
                     contentType: null,
-                    ToServerSideEncryptionInfo(request.DestinationServerSideEncryption))));
+                    ToServerSideEncryptionInfo(request.DestinationServerSideEncryption),
+                    customerEncryption: ToCustomerEncryptionInfo(request.DestinationCustomerEncryption))));
         }
 
         public ValueTask<StorageResult<ObjectInfo>> PutObjectAsync(PutObjectRequest request, CancellationToken cancellationToken = default)
@@ -5780,7 +8324,8 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
                     request.BucketName,
                     request.Key,
                     request.ContentType,
-                    ToServerSideEncryptionInfo(request.ServerSideEncryption))));
+                    ToServerSideEncryptionInfo(request.ServerSideEncryption),
+                    customerEncryption: ToCustomerEncryptionInfo(request.CustomerEncryption))));
         }
 
         public ValueTask<StorageResult<ObjectTagSet>> PutObjectTagsAsync(PutObjectTagsRequest request, CancellationToken cancellationToken = default) => throw new NotSupportedException();
@@ -5798,11 +8343,26 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
                     Key = request.Key,
                     UploadId = "upload-123",
                     InitiatedAtUtc = DefaultTimestampUtc,
-                    ChecksumAlgorithm = request.ChecksumAlgorithm
+                    ChecksumAlgorithm = request.ChecksumAlgorithm,
+                    CustomerEncryption = ToCustomerEncryptionInfo(request.CustomerEncryption)
                 }));
         }
 
-        public ValueTask<StorageResult<MultipartUploadPart>> UploadMultipartPartAsync(UploadMultipartPartRequest request, CancellationToken cancellationToken = default) => throw new NotSupportedException();
+        public UploadMultipartPartRequest? LastUploadMultipartPartRequest { get; private set; }
+
+        public ValueTask<StorageResult<MultipartUploadPart>> UploadMultipartPartAsync(UploadMultipartPartRequest request, CancellationToken cancellationToken = default)
+        {
+            LastUploadMultipartPartRequest = request;
+
+            return new ValueTask<StorageResult<MultipartUploadPart>>(StorageResult<MultipartUploadPart>.Success(
+                new MultipartUploadPart
+                {
+                    PartNumber = request.PartNumber,
+                    ETag = "\"recorded-upload-part\"",
+                    ContentLength = request.ContentLength ?? 0,
+                    LastModifiedUtc = DefaultTimestampUtc
+                }));
+        }
 
         public ValueTask<StorageResult<MultipartUploadPart>> UploadPartCopyAsync(UploadPartCopyRequest request, CancellationToken cancellationToken = default)
         {
@@ -5829,23 +8389,24 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
             LastHeadObjectRequest = request;
 
             return new ValueTask<StorageResult<ObjectInfo>>(StorageResult<ObjectInfo>.Success(
-                HeadObjectResult ?? CreateObjectInfo(request.BucketName, request.Key, contentType: null, serverSideEncryption: null)));
+                HeadObjectResult ?? CreateObjectInfo(request.BucketName, request.Key, contentType: null, serverSideEncryption: null,
+                    customerEncryption: ToCustomerEncryptionInfo(request.CustomerEncryption))));
         }
 
         public ValueTask<StorageResult<DeleteObjectResult>> DeleteObjectAsync(DeleteObjectRequest request, CancellationToken cancellationToken = default) => throw new NotSupportedException();
 
-        private static GetObjectResponse CreateGetObjectResponse(string bucketName, string key, string payload, ObjectServerSideEncryptionInfo? serverSideEncryption)
+        private static GetObjectResponse CreateGetObjectResponse(string bucketName, string key, string payload, ObjectServerSideEncryptionInfo? serverSideEncryption, ObjectCustomerEncryptionInfo? customerEncryption = null)
         {
             var payloadBytes = Encoding.UTF8.GetBytes(payload);
             return new GetObjectResponse
             {
-                Object = CreateObjectInfo(bucketName, key, "text/plain", serverSideEncryption, payloadBytes.Length),
+                Object = CreateObjectInfo(bucketName, key, "text/plain", serverSideEncryption, payloadBytes.Length, customerEncryption),
                 Content = new MemoryStream(payloadBytes),
                 TotalContentLength = payloadBytes.Length
             };
         }
 
-        private static ObjectInfo CreateObjectInfo(string bucketName, string key, string? contentType, ObjectServerSideEncryptionInfo? serverSideEncryption, long contentLength = 0)
+        private static ObjectInfo CreateObjectInfo(string bucketName, string key, string? contentType, ObjectServerSideEncryptionInfo? serverSideEncryption, long contentLength = 0, ObjectCustomerEncryptionInfo? customerEncryption = null)
         {
             return new ObjectInfo
             {
@@ -5855,7 +8416,8 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
                 ContentType = contentType,
                 ETag = "recording-etag",
                 LastModifiedUtc = DefaultTimestampUtc,
-                ServerSideEncryption = serverSideEncryption
+                ServerSideEncryption = serverSideEncryption,
+                CustomerEncryption = customerEncryption
             };
         }
 
@@ -5897,6 +8459,17 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
                     Algorithm = settings.Algorithm,
                     KeyId = settings.KeyId
             };
+        }
+
+        private static ObjectCustomerEncryptionInfo? ToCustomerEncryptionInfo(ObjectCustomerEncryptionSettings? settings)
+        {
+            return settings is null
+                ? null
+                : new ObjectCustomerEncryptionInfo
+                {
+                    Algorithm = settings.Algorithm,
+                    KeyMd5 = settings.KeyMd5
+                };
         }
     }
 
@@ -6282,6 +8855,96 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
         return Convert.ToBase64String(SHA256.HashData(Encoding.UTF8.GetBytes(content)));
     }
 
+    private static string ComputeCrc32Base64(string content)
+    {
+        var current = 0xFFFFFFFFu;
+        foreach (var value in Encoding.UTF8.GetBytes(content)) {
+            current = (current >> 8) ^ Crc32Table[(byte)(current ^ value)];
+        }
+
+        var finalized = ~current;
+        return Convert.ToBase64String(
+        [
+            (byte)(finalized >> 24),
+            (byte)(finalized >> 16),
+            (byte)(finalized >> 8),
+            (byte)finalized
+        ]);
+    }
+
+    private static uint[] CreateCrc32Table()
+    {
+        var table = new uint[256];
+        for (uint i = 0; i < table.Length; i++) {
+            var value = i;
+            for (var bit = 0; bit < 8; bit++) {
+                value = (value & 1) == 0
+                    ? value >> 1
+                    : 0xEDB88320u ^ (value >> 1);
+            }
+
+            table[i] = value;
+        }
+
+        return table;
+    }
+
+    private static HttpRequestMessage CreateAwsChunkedPutObjectRequest(
+        string path,
+        string payload,
+        string? sdkChecksumAlgorithm = null,
+        IReadOnlyDictionary<string, string>? trailerHeaders = null,
+        IReadOnlyList<string>? declaredTrailerHeaderNames = null,
+        IReadOnlyList<KeyValuePair<string, string>>? trailerHeaderEntries = null)
+    {
+        var payloadBytes = Encoding.UTF8.GetBytes(payload);
+        var effectiveTrailerHeaderEntries = trailerHeaderEntries
+            ?? trailerHeaders?.ToArray();
+        var request = new HttpRequestMessage(HttpMethod.Put, path)
+        {
+            Content = new ByteArrayContent(BuildAwsChunkedPayload(payloadBytes, effectiveTrailerHeaderEntries))
+        };
+        request.Content.Headers.ContentType = new MediaTypeHeaderValue("text/plain");
+        request.Content.Headers.ContentEncoding.Add("aws-chunked");
+        request.Headers.TryAddWithoutValidation("x-amz-decoded-content-length", payloadBytes.Length.ToString(CultureInfo.InvariantCulture));
+        if (!string.IsNullOrWhiteSpace(sdkChecksumAlgorithm)) {
+            request.Headers.TryAddWithoutValidation("x-amz-sdk-checksum-algorithm", sdkChecksumAlgorithm);
+        }
+
+        var trailerHeaderNames = declaredTrailerHeaderNames
+            ?? effectiveTrailerHeaderEntries?
+                .Select(static trailerHeader => trailerHeader.Key)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+        if (trailerHeaderNames is not null && trailerHeaderNames.Count > 0) {
+            request.Headers.TryAddWithoutValidation("x-amz-trailer", string.Join(",", trailerHeaderNames));
+        }
+
+        return request;
+    }
+
+    private static byte[] BuildAwsChunkedPayload(byte[] payloadBytes, IReadOnlyList<KeyValuePair<string, string>>? trailerHeaderEntries)
+    {
+        using var stream = new MemoryStream();
+        WriteAscii(stream, $"{payloadBytes.Length:x}\r\n");
+        stream.Write(payloadBytes, 0, payloadBytes.Length);
+        WriteAscii(stream, "\r\n0\r\n");
+        if (trailerHeaderEntries is not null) {
+            foreach (var trailerHeader in trailerHeaderEntries) {
+                WriteAscii(stream, $"{trailerHeader.Key}:{trailerHeader.Value}\r\n");
+            }
+        }
+
+        WriteAscii(stream, "\r\n");
+        return stream.ToArray();
+    }
+
+    private static void WriteAscii(Stream stream, string value)
+    {
+        var bytes = Encoding.ASCII.GetBytes(value);
+        stream.Write(bytes, 0, bytes.Length);
+    }
+
     private static string ComputeMultipartSha256Base64(params string[] partChecksums)
     {
         using var checksum = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
@@ -6337,6 +9000,105 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
         return request;
     }
 
+    private static HttpRequestMessage CreateSigV4AwsChunkedTrailerRequest(
+        string pathAndQuery,
+        string accessKeyId,
+        string secretAccessKey,
+        string payload,
+        IReadOnlyDictionary<string, string> trailerHeaders,
+        string host = "localhost")
+    {
+        var timestampUtc = DateTimeOffset.UtcNow;
+        var payloadBytes = Encoding.UTF8.GetBytes(payload);
+        var request = new HttpRequestMessage(HttpMethod.Put, pathAndQuery)
+        {
+            Content = new ByteArrayContent(Array.Empty<byte>())
+        };
+        request.Content.Headers.TryAddWithoutValidation("Content-Type", "text/plain");
+        request.Content.Headers.ContentEncoding.Add("aws-chunked");
+        request.Headers.TryAddWithoutValidation("x-amz-decoded-content-length", payloadBytes.Length.ToString(CultureInfo.InvariantCulture));
+        request.Headers.TryAddWithoutValidation("x-amz-sdk-checksum-algorithm", ResolveSdkChecksumAlgorithm(trailerHeaders));
+        request.Headers.TryAddWithoutValidation("x-amz-trailer", string.Join(",", trailerHeaders.Keys));
+
+        SignSigV4HeaderRequest(
+            request,
+            pathAndQuery,
+            accessKeyId,
+            secretAccessKey,
+            "STREAMING-AWS4-HMAC-SHA256-PAYLOAD-TRAILER",
+            host: host,
+            signedAtUtc: timestampUtc,
+            additionalSignedHeaders:
+            [
+                "content-encoding",
+                "x-amz-decoded-content-length",
+                "x-amz-sdk-checksum-algorithm",
+                "x-amz-trailer"
+            ]);
+
+        request.Content = new ByteArrayContent(
+            BuildSigV4AwsChunkedPayload(
+                secretAccessKey,
+                CreateSigV4CredentialScope(accessKeyId, timestampUtc),
+                timestampUtc,
+                GetAuthorizationSignature(request),
+                payloadBytes,
+                trailerHeaders));
+        request.Content.Headers.TryAddWithoutValidation("Content-Type", "text/plain");
+        request.Content.Headers.ContentEncoding.Add("aws-chunked");
+
+        return request;
+    }
+
+    private static void SignSigV4HeaderRequest(
+        HttpRequestMessage request,
+        string pathAndQuery,
+        string accessKeyId,
+        string secretAccessKey,
+        string payloadHash,
+        string host = "localhost",
+        DateTimeOffset? signedAtUtc = null,
+        IEnumerable<string>? additionalSignedHeaders = null)
+    {
+        var timestampUtc = signedAtUtc ?? DateTimeOffset.UtcNow;
+        var timestampText = timestampUtc.ToString("yyyyMMdd'T'HHmmss'Z'");
+
+        request.Headers.Host = host;
+        request.Headers.Remove("x-amz-date");
+        request.Headers.TryAddWithoutValidation("x-amz-date", timestampText);
+        request.Headers.Remove("x-amz-content-sha256");
+        request.Headers.TryAddWithoutValidation("x-amz-content-sha256", payloadHash);
+
+        var credentialScope = CreateSigV4CredentialScope(accessKeyId, timestampUtc);
+        var signedHeaders = new List<string> { "host", "x-amz-content-sha256", "x-amz-date" };
+        if (additionalSignedHeaders is not null) {
+            signedHeaders.AddRange(additionalSignedHeaders);
+        }
+
+        var normalizedSignedHeaders = signedHeaders
+            .Select(static header => header.ToLowerInvariant())
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+        var canonicalHeaders = normalizedSignedHeaders
+            .Select(header => new KeyValuePair<string, string?>(header, GetHeaderValue(request, header, host)))
+            .ToList();
+
+        var requestUri = CreateUri(pathAndQuery, host);
+        var canonicalRequest = S3SigV4Signer.BuildCanonicalRequest(
+            request.Method.Method,
+            requestUri.AbsolutePath,
+            EnumerateQueryParameters(requestUri),
+            canonicalHeaders,
+            normalizedSignedHeaders,
+            payloadHash);
+
+        var stringToSign = S3SigV4Signer.BuildStringToSign("AWS4-HMAC-SHA256", timestampUtc, credentialScope, canonicalRequest.CanonicalRequestHashHex);
+        var signature = S3SigV4Signer.ComputeSignature(secretAccessKey, credentialScope, stringToSign);
+        var authorizationHeader = $"AWS4-HMAC-SHA256 Credential={accessKeyId}/{credentialScope.Scope}, SignedHeaders={string.Join(';', normalizedSignedHeaders)}, Signature={signature}";
+        request.Headers.Remove("Authorization");
+        request.Headers.TryAddWithoutValidation("Authorization", authorizationHeader);
+    }
+
     private static HttpRequestMessage CreateSigV4PresignedRequest(HttpMethod method, string pathAndQuery, string accessKeyId, string secretAccessKey, int expiresSeconds, string host = "localhost")
     {
         var timestampUtc = DateTimeOffset.UtcNow;
@@ -6381,6 +9143,182 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
         var request = new HttpRequestMessage(method, presignedUri);
         request.Headers.Host = host;
         return request;
+    }
+
+    private static async Task AssertSigV4AwsChunkedTrailerRequestAsync(HttpRequestMessage request, string expectedChecksumAlgorithm, string expectedTrailerHeaderName)
+    {
+        Assert.Equal("STREAMING-AWS4-HMAC-SHA256-PAYLOAD-TRAILER", Assert.Single(request.Headers.GetValues("x-amz-content-sha256")));
+        Assert.Equal(expectedChecksumAlgorithm, Assert.Single(request.Headers.GetValues("x-amz-sdk-checksum-algorithm")));
+        Assert.Equal(expectedTrailerHeaderName, Assert.Single(request.Headers.GetValues("x-amz-trailer")));
+
+        var bodyText = Encoding.ASCII.GetString(await request.Content!.ReadAsByteArrayAsync());
+        Assert.Contains("x-amz-trailer-signature:", bodyText, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static void AssertOnlyExpectedChecksumHeader(HttpHeaders headers, string expectedHeaderName, string expectedChecksum)
+    {
+        Assert.Equal(expectedChecksum, Assert.Single(headers.GetValues(expectedHeaderName)));
+
+        foreach (var headerName in new[] { "x-amz-checksum-sha256", "x-amz-checksum-sha1", "x-amz-checksum-crc32", "x-amz-checksum-crc32c" }) {
+            if (!string.Equals(headerName, expectedHeaderName, StringComparison.OrdinalIgnoreCase)) {
+                Assert.False(headers.Contains(headerName));
+            }
+        }
+    }
+
+    private static void AssertOnlyExpectedMultipartChecksumElement(XElement partElement, string expectedElementName, string expectedChecksum)
+    {
+        Assert.Equal(expectedChecksum, partElement.Element(expectedElementName)?.Value);
+
+        foreach (var elementName in new[] { "ChecksumSHA256", "ChecksumSHA1", "ChecksumCRC32", "ChecksumCRC32C" }) {
+            if (!string.Equals(elementName, expectedElementName, StringComparison.Ordinal)) {
+                Assert.Null(partElement.Element(elementName));
+            }
+        }
+    }
+
+    private static string ComputeTrailerChecksumBase64(string trailerHeaderName, string content)
+    {
+        return trailerHeaderName.ToLowerInvariant() switch
+        {
+            "x-amz-checksum-sha1" => ComputeSha1Base64(content),
+            "x-amz-checksum-crc32" => ComputeCrc32Base64(content),
+            "x-amz-checksum-crc32c" => ChecksumTestAlgorithms.ComputeCrc32cBase64(content),
+            _ => throw new Xunit.Sdk.XunitException($"Unsupported trailer checksum header '{trailerHeaderName}'.")
+        };
+    }
+
+    private static string GetMultipartChecksumElementName(string trailerHeaderName)
+    {
+        return trailerHeaderName.ToLowerInvariant() switch
+        {
+            "x-amz-checksum-sha1" => "ChecksumSHA1",
+            "x-amz-checksum-crc32" => "ChecksumCRC32",
+            "x-amz-checksum-crc32c" => "ChecksumCRC32C",
+            _ => throw new Xunit.Sdk.XunitException($"Unsupported trailer checksum header '{trailerHeaderName}'.")
+        };
+    }
+
+    private static string ResolveSdkChecksumAlgorithm(IReadOnlyDictionary<string, string> trailerHeaders)
+    {
+        foreach (var headerName in trailerHeaders.Keys) {
+            switch (headerName.ToLowerInvariant()) {
+                case "x-amz-checksum-crc32":
+                    return "CRC32";
+                case "x-amz-checksum-crc32c":
+                    return "CRC32C";
+                case "x-amz-checksum-sha1":
+                    return "SHA1";
+                case "x-amz-checksum-sha256":
+                    return "SHA256";
+            }
+        }
+
+        throw new Xunit.Sdk.XunitException("Expected a supported x-amz-checksum-* trailer header.");
+    }
+
+    private static string GetHeaderValue(HttpRequestMessage request, string headerName, string host)
+    {
+        if (string.Equals(headerName, "host", StringComparison.Ordinal)) {
+            return host;
+        }
+
+        if (request.Headers.TryGetValues(headerName, out var requestValues)) {
+            return string.Join(",", requestValues);
+        }
+
+        if (request.Content?.Headers.TryGetValues(headerName, out var contentValues) == true) {
+            return string.Join(",", contentValues);
+        }
+
+        throw new Xunit.Sdk.XunitException($"Expected signed header '{headerName}' to be present on the request.");
+    }
+
+    private static byte[] BuildSigV4AwsChunkedPayload(
+        string secretAccessKey,
+        S3SigV4CredentialScope credentialScope,
+        DateTimeOffset signedAtUtc,
+        string seedSignature,
+        byte[] payloadBytes,
+        IReadOnlyDictionary<string, string> trailerHeaders)
+    {
+        var payloadChunkSignature = ComputeSigV4ChunkSignature(secretAccessKey, credentialScope, signedAtUtc, seedSignature, payloadBytes);
+        var finalChunkSignature = ComputeSigV4ChunkSignature(secretAccessKey, credentialScope, signedAtUtc, payloadChunkSignature, Array.Empty<byte>());
+        var trailerSignature = ComputeSigV4TrailerSignature(secretAccessKey, credentialScope, signedAtUtc, finalChunkSignature, trailerHeaders);
+
+        using var stream = new MemoryStream();
+        WriteAscii(stream, $"{payloadBytes.Length:x};chunk-signature={payloadChunkSignature}\r\n");
+        stream.Write(payloadBytes, 0, payloadBytes.Length);
+        WriteAscii(stream, "\r\n");
+        WriteAscii(stream, $"0;chunk-signature={finalChunkSignature}\r\n");
+        foreach (var trailerHeader in trailerHeaders.OrderBy(static header => header.Key, StringComparer.Ordinal)) {
+            WriteAscii(stream, $"{trailerHeader.Key}:{trailerHeader.Value}\r\n");
+        }
+
+        WriteAscii(stream, $"x-amz-trailer-signature:{trailerSignature}\r\n");
+        WriteAscii(stream, "\r\n");
+        return stream.ToArray();
+    }
+
+    private static string ComputeSigV4ChunkSignature(
+        string secretAccessKey,
+        S3SigV4CredentialScope credentialScope,
+        DateTimeOffset signedAtUtc,
+        string previousSignature,
+        ReadOnlySpan<byte> chunkData)
+    {
+        const string emptyPayloadSha256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+        var stringToSign = string.Join('\n', [
+            "AWS4-HMAC-SHA256-PAYLOAD",
+            signedAtUtc.ToString("yyyyMMdd'T'HHmmss'Z'"),
+            credentialScope.Scope,
+            previousSignature,
+            emptyPayloadSha256,
+            S3SigV4Signer.ComputeSha256Hex(chunkData)
+        ]);
+
+        return S3SigV4Signer.ComputeSignature(secretAccessKey, credentialScope, stringToSign);
+    }
+
+    private static string ComputeSigV4TrailerSignature(
+        string secretAccessKey,
+        S3SigV4CredentialScope credentialScope,
+        DateTimeOffset signedAtUtc,
+        string previousSignature,
+        IReadOnlyDictionary<string, string> trailerHeaders)
+    {
+        var canonicalTrailerHeaders = S3SigV4Signer.BuildCanonicalStreamingTrailerHeaders(trailerHeaders);
+        var stringToSign = S3SigV4Signer.BuildStreamingTrailerStringToSign(
+            signedAtUtc,
+            credentialScope,
+            previousSignature,
+            S3SigV4Signer.ComputeSha256Hex(canonicalTrailerHeaders));
+
+        return S3SigV4Signer.ComputeSignature(secretAccessKey, credentialScope, stringToSign);
+    }
+
+    private static string GetAuthorizationSignature(HttpRequestMessage request)
+    {
+        var authorizationHeader = Assert.Single(request.Headers.GetValues("Authorization"));
+        const string signatureMarker = "Signature=";
+        var signatureIndex = authorizationHeader.LastIndexOf(signatureMarker, StringComparison.Ordinal);
+        if (signatureIndex < 0) {
+            throw new Xunit.Sdk.XunitException("Expected Authorization header to contain a Signature component.");
+        }
+
+        return authorizationHeader[(signatureIndex + signatureMarker.Length)..].Trim();
+    }
+
+    private static S3SigV4CredentialScope CreateSigV4CredentialScope(string accessKeyId, DateTimeOffset signedAtUtc)
+    {
+        return new S3SigV4CredentialScope
+        {
+            AccessKeyId = accessKeyId,
+            DateStamp = signedAtUtc.ToString("yyyyMMdd"),
+            Region = "us-east-1",
+            Service = "s3",
+            Terminator = "aws4_request"
+        };
     }
 
     private static string CreateCorruptedAuthorizationHeader(HttpMethod method, string pathAndQuery, string accessKeyId, string secretAccessKey)
