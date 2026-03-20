@@ -5944,7 +5944,7 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
     }
 
     [Fact]
-    public async Task S3CompatiblePutObject_WithIncompleteCustomerEncryptionHeaders_IgnoredGracefully()
+    public async Task S3CompatiblePutObject_WithIncompleteCustomerEncryptionHeaders_Returns400()
     {
         var storageService = new RecordingStorageService();
         await using var isolatedClient = await CreateStorageServiceIsolatedClientAsync(storageService);
@@ -5958,9 +5958,162 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
 
         var response = await client.SendAsync(request);
 
+        await AssertErrorResponseAsync(response, HttpStatusCode.BadRequest, "InvalidArgument");
+        Assert.Null(storageService.LastPutObjectRequest);
+    }
+
+    [Fact]
+    public async Task S3CompatiblePutObject_WithCustomerEncryptionInvalidAlgorithm_Returns400()
+    {
+        var storageService = new RecordingStorageService();
+        await using var isolatedClient = await CreateStorageServiceIsolatedClientAsync(storageService);
+        using var client = isolatedClient.Client;
+
+        var keyBytes = new byte[32];
+        System.Security.Cryptography.RandomNumberGenerator.Fill(keyBytes);
+        var key = Convert.ToBase64String(keyBytes);
+        var keyMd5 = Convert.ToBase64String(System.Security.Cryptography.MD5.HashData(keyBytes));
+
+        using var request = new HttpRequestMessage(HttpMethod.Put, "/integrated-s3/sse-c-invalid-algo-bucket/docs/encrypted.txt")
+        {
+            Content = new StringContent("invalid algo payload", Encoding.UTF8, "text/plain")
+        };
+        request.Headers.TryAddWithoutValidation("x-amz-server-side-encryption-customer-algorithm", "AES128");
+        request.Headers.TryAddWithoutValidation("x-amz-server-side-encryption-customer-key", key);
+        request.Headers.TryAddWithoutValidation("x-amz-server-side-encryption-customer-key-MD5", keyMd5);
+
+        var response = await client.SendAsync(request);
+
+        await AssertErrorResponseAsync(response, HttpStatusCode.BadRequest, "InvalidArgument");
+        Assert.Null(storageService.LastPutObjectRequest);
+    }
+
+    [Fact]
+    public async Task S3CompatiblePutObject_WithBothManagedAndCustomerEncryption_Returns400()
+    {
+        var storageService = new RecordingStorageService();
+        await using var isolatedClient = await CreateStorageServiceIsolatedClientAsync(storageService);
+        using var client = isolatedClient.Client;
+
+        var keyBytes = new byte[32];
+        System.Security.Cryptography.RandomNumberGenerator.Fill(keyBytes);
+        var key = Convert.ToBase64String(keyBytes);
+        var keyMd5 = Convert.ToBase64String(System.Security.Cryptography.MD5.HashData(keyBytes));
+
+        using var request = new HttpRequestMessage(HttpMethod.Put, "/integrated-s3/sse-c-mutual-bucket/docs/conflict.txt")
+        {
+            Content = new StringContent("mutual exclusion payload", Encoding.UTF8, "text/plain")
+        };
+        request.Headers.TryAddWithoutValidation("x-amz-server-side-encryption", "AES256");
+        request.Headers.TryAddWithoutValidation("x-amz-server-side-encryption-customer-algorithm", "AES256");
+        request.Headers.TryAddWithoutValidation("x-amz-server-side-encryption-customer-key", key);
+        request.Headers.TryAddWithoutValidation("x-amz-server-side-encryption-customer-key-MD5", keyMd5);
+
+        var response = await client.SendAsync(request);
+
+        await AssertErrorResponseAsync(response, HttpStatusCode.BadRequest, "InvalidArgument");
+        Assert.Null(storageService.LastPutObjectRequest);
+    }
+
+    [Fact]
+    public async Task S3CompatibleUploadPart_WithCustomerEncryption_EmitsSseCResponseHeaders()
+    {
+        var storageService = new RecordingStorageService();
+        await using var isolatedClient = await CreateStorageServiceIsolatedClientAsync(storageService);
+        using var client = isolatedClient.Client;
+
+        var keyBytes = new byte[32];
+        System.Security.Cryptography.RandomNumberGenerator.Fill(keyBytes);
+        var key = Convert.ToBase64String(keyBytes);
+        var keyMd5 = Convert.ToBase64String(System.Security.Cryptography.MD5.HashData(keyBytes));
+
+        using var request = new HttpRequestMessage(HttpMethod.Put, "/integrated-s3/sse-c-part-resp-bucket/docs/encrypted.txt?uploadId=upload-resp-123&partNumber=1")
+        {
+            Content = new StringContent("part data", Encoding.UTF8, "application/octet-stream")
+        };
+        request.Headers.TryAddWithoutValidation("x-amz-server-side-encryption-customer-algorithm", "AES256");
+        request.Headers.TryAddWithoutValidation("x-amz-server-side-encryption-customer-key", key);
+        request.Headers.TryAddWithoutValidation("x-amz-server-side-encryption-customer-key-MD5", keyMd5);
+
+        var response = await client.SendAsync(request);
+
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
-        var putRequest = storageService.LastPutObjectRequest ?? throw new Xunit.Sdk.XunitException("Expected PUT request to reach the storage service.");
-        Assert.Null(putRequest.CustomerEncryption);
+        Assert.Equal("AES256", Assert.Single(response.Headers.GetValues("x-amz-server-side-encryption-customer-algorithm")));
+        Assert.Equal(keyMd5, Assert.Single(response.Headers.GetValues("x-amz-server-side-encryption-customer-key-MD5")));
+    }
+
+    [Fact]
+    public async Task S3CompatibleUploadPartCopy_WithCustomerEncryption_EmitsSseCResponseHeaders()
+    {
+        var storageService = new RecordingStorageService();
+        await using var isolatedClient = await CreateStorageServiceIsolatedClientAsync(storageService);
+        using var client = isolatedClient.Client;
+
+        var srcKeyBytes = new byte[32];
+        System.Security.Cryptography.RandomNumberGenerator.Fill(srcKeyBytes);
+        var srcKey = Convert.ToBase64String(srcKeyBytes);
+        var srcKeyMd5 = Convert.ToBase64String(System.Security.Cryptography.MD5.HashData(srcKeyBytes));
+
+        var destKeyBytes = new byte[32];
+        System.Security.Cryptography.RandomNumberGenerator.Fill(destKeyBytes);
+        var destKey = Convert.ToBase64String(destKeyBytes);
+        var destKeyMd5 = Convert.ToBase64String(System.Security.Cryptography.MD5.HashData(destKeyBytes));
+
+        using var request = new HttpRequestMessage(HttpMethod.Put, "/integrated-s3/sse-c-partcopy-resp-bucket/docs/copied.txt?uploadId=upload-resp-456&partNumber=1");
+        request.Headers.TryAddWithoutValidation("x-amz-copy-source", "/sse-c-partcopy-resp-src/docs/source.txt");
+        request.Headers.TryAddWithoutValidation("x-amz-copy-source-server-side-encryption-customer-algorithm", "AES256");
+        request.Headers.TryAddWithoutValidation("x-amz-copy-source-server-side-encryption-customer-key", srcKey);
+        request.Headers.TryAddWithoutValidation("x-amz-copy-source-server-side-encryption-customer-key-MD5", srcKeyMd5);
+        request.Headers.TryAddWithoutValidation("x-amz-server-side-encryption-customer-algorithm", "AES256");
+        request.Headers.TryAddWithoutValidation("x-amz-server-side-encryption-customer-key", destKey);
+        request.Headers.TryAddWithoutValidation("x-amz-server-side-encryption-customer-key-MD5", destKeyMd5);
+
+        var response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal("AES256", Assert.Single(response.Headers.GetValues("x-amz-server-side-encryption-customer-algorithm")));
+        Assert.Equal(destKeyMd5, Assert.Single(response.Headers.GetValues("x-amz-server-side-encryption-customer-key-MD5")));
+    }
+
+    [Fact]
+    public async Task S3CompatibleCopyObject_WithSourceInvalidAlgorithm_Returns400()
+    {
+        var storageService = new RecordingStorageService();
+        await using var isolatedClient = await CreateStorageServiceIsolatedClientAsync(storageService);
+        using var client = isolatedClient.Client;
+
+        var srcKeyBytes = new byte[32];
+        System.Security.Cryptography.RandomNumberGenerator.Fill(srcKeyBytes);
+        var srcKey = Convert.ToBase64String(srcKeyBytes);
+        var srcKeyMd5 = Convert.ToBase64String(System.Security.Cryptography.MD5.HashData(srcKeyBytes));
+
+        using var request = new HttpRequestMessage(HttpMethod.Put, "/integrated-s3/sse-c-copy-bad-algo/docs/copied.txt");
+        request.Headers.TryAddWithoutValidation("x-amz-copy-source", "/sse-c-copy-bad-algo-src/docs/source.txt");
+        request.Headers.TryAddWithoutValidation("x-amz-copy-source-server-side-encryption-customer-algorithm", "AES128");
+        request.Headers.TryAddWithoutValidation("x-amz-copy-source-server-side-encryption-customer-key", srcKey);
+        request.Headers.TryAddWithoutValidation("x-amz-copy-source-server-side-encryption-customer-key-MD5", srcKeyMd5);
+
+        var response = await client.SendAsync(request);
+
+        await AssertErrorResponseAsync(response, HttpStatusCode.BadRequest, "InvalidArgument");
+        Assert.Null(storageService.LastCopyObjectRequest);
+    }
+
+    [Fact]
+    public async Task S3CompatibleCopyObject_WithIncompleteSourceHeaders_Returns400()
+    {
+        var storageService = new RecordingStorageService();
+        await using var isolatedClient = await CreateStorageServiceIsolatedClientAsync(storageService);
+        using var client = isolatedClient.Client;
+
+        using var request = new HttpRequestMessage(HttpMethod.Put, "/integrated-s3/sse-c-copy-partial/docs/copied.txt");
+        request.Headers.TryAddWithoutValidation("x-amz-copy-source", "/sse-c-copy-partial-src/docs/source.txt");
+        request.Headers.TryAddWithoutValidation("x-amz-copy-source-server-side-encryption-customer-algorithm", "AES256");
+
+        var response = await client.SendAsync(request);
+
+        await AssertErrorResponseAsync(response, HttpStatusCode.BadRequest, "InvalidArgument");
+        Assert.Null(storageService.LastCopyObjectRequest);
     }
 
     [Fact]

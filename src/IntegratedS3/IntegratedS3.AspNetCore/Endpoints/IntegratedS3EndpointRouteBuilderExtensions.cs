@@ -1087,6 +1087,16 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
                             return copyChecksumErrorResult!;
                         }
 
+                        var (sourceCustomerEncryption, sourceCustomerEncryptionError) = TryParseCopySourceCustomerEncryptionSettings(request, BuildObjectResource(bucketName, key), bucketName, key);
+                        if (sourceCustomerEncryptionError is not null) {
+                            return sourceCustomerEncryptionError;
+                        }
+
+                        var (destinationCustomerEncryption, destinationCustomerEncryptionError) = TryParseCustomerEncryptionSettings(request, BuildObjectResource(bucketName, key), bucketName, key);
+                        if (destinationCustomerEncryptionError is not null) {
+                            return destinationCustomerEncryptionError;
+                        }
+
                         var copyResult = await storageService.CopyObjectAsync(new CopyObjectRequest
                         {
                             SourceBucketName = copySource!.BucketName,
@@ -1111,8 +1121,8 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
                             ChecksumAlgorithm = copyChecksumAlgorithm,
                             Checksums = requestedCopyChecksums,
                             DestinationServerSideEncryption = copyServerSideEncryption,
-                            SourceCustomerEncryption = TryParseCopySourceCustomerEncryptionSettings(request),
-                            DestinationCustomerEncryption = TryParseCustomerEncryptionSettings(request)
+                            SourceCustomerEncryption = sourceCustomerEncryption,
+                            DestinationCustomerEncryption = destinationCustomerEncryption
                         }, innerCancellationToken);
 
                         if (!copyResult.IsSuccess) {
@@ -1141,6 +1151,17 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
                         return serverSideEncryptionErrorResult!;
                     }
 
+                    var (customerEncryption, customerEncryptionError) = TryParseCustomerEncryptionSettings(request, BuildObjectResource(bucketName, key), bucketName, key);
+                    if (customerEncryptionError is not null) {
+                        return customerEncryptionError;
+                    }
+
+                    if (serverSideEncryption is not null && customerEncryption is not null) {
+                        return ToErrorResult(httpContext, StatusCodes.Status400BadRequest, "InvalidArgument",
+                            "Server-side encryption with a customer-provided key (SSE-C) and managed server-side encryption (SSE-S3/SSE-KMS) are mutually exclusive.",
+                            BuildObjectResource(bucketName, key), bucketName, key);
+                    }
+
                     var result = await storageService.PutObjectAsync(new PutObjectRequest
                     {
                         BucketName = bucketName,
@@ -1157,7 +1178,7 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
                         Tags = tags,
                         Checksums = requestedChecksums,
                         ServerSideEncryption = serverSideEncryption,
-                        CustomerEncryption = TryParseCustomerEncryptionSettings(request)
+                        CustomerEncryption = customerEncryption
                     }, innerCancellationToken);
 
                     if (!result.IsSuccess) {
@@ -1210,6 +1231,12 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
                 }
 
                 var versionId = ParseVersionId(request);
+
+                var (customerEncryption, customerEncryptionError) = TryParseCustomerEncryptionSettings(request, BuildObjectResource(bucketName, key), bucketName, key);
+                if (customerEncryptionError is not null) {
+                    return customerEncryptionError;
+                }
+
                 var result = await storageService.GetObjectAsync(new GetObjectRequest
                 {
                     BucketName = bucketName,
@@ -1220,7 +1247,7 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
                     IfNoneMatchETag = request.Headers.IfNoneMatch.ToString(),
                     IfModifiedSinceUtc = headers.IfModifiedSince,
                     IfUnmodifiedSinceUtc = headers.IfUnmodifiedSince,
-                    CustomerEncryption = TryParseCustomerEncryptionSettings(request)
+                    CustomerEncryption = customerEncryption
                 }, innerCancellationToken);
 
                 if (!result.IsSuccess) {
@@ -1258,6 +1285,12 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
                 }
 
                 var versionId = ParseVersionId(httpContext.Request);
+
+                var (customerEncryption, customerEncryptionError) = TryParseCustomerEncryptionSettings(httpContext.Request, BuildObjectResource(bucketName, key), bucketName, key);
+                if (customerEncryptionError is not null) {
+                    return customerEncryptionError;
+                }
+
                 var result = await storageService.HeadObjectAsync(new HeadObjectRequest
                 {
                     BucketName = bucketName,
@@ -1267,7 +1300,7 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
                     IfNoneMatchETag = httpContext.Request.Headers.IfNoneMatch.ToString(),
                     IfModifiedSinceUtc = headers.IfModifiedSince,
                     IfUnmodifiedSinceUtc = headers.IfUnmodifiedSince,
-                    CustomerEncryption = TryParseCustomerEncryptionSettings(httpContext.Request)
+                    CustomerEncryption = customerEncryption
                 }, innerCancellationToken);
 
                 if (!result.IsSuccess) {
@@ -2446,6 +2479,17 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
                     return serverSideEncryptionErrorResult!;
                 }
 
+                var (customerEncryption, customerEncryptionError) = TryParseCustomerEncryptionSettings(httpContext.Request, BuildObjectResource(bucketName, key), bucketName, key);
+                if (customerEncryptionError is not null) {
+                    return customerEncryptionError;
+                }
+
+                if (serverSideEncryption is not null && customerEncryption is not null) {
+                    return ToErrorResult(httpContext, StatusCodes.Status400BadRequest, "InvalidArgument",
+                        "Server-side encryption with a customer-provided key (SSE-C) and managed server-side encryption (SSE-S3/SSE-KMS) are mutually exclusive.",
+                        BuildObjectResource(bucketName, key), bucketName, key);
+                }
+
                 var result = await storageService.InitiateMultipartUploadAsync(new InitiateMultipartUploadRequest
                 {
                     BucketName = bucketName,
@@ -2460,7 +2504,7 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
                     Tags = tags,
                     ChecksumAlgorithm = checksumAlgorithm,
                     ServerSideEncryption = serverSideEncryption,
-                    CustomerEncryption = TryParseCustomerEncryptionSettings(httpContext.Request)
+                    CustomerEncryption = customerEncryption
                 }, innerCancellationToken);
 
                 if (!result.IsSuccess) {
@@ -2517,6 +2561,11 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
                 }
 
                 return await ExecuteWithRequestContextAsync(httpContext, requestContextAccessor, async innerCancellationToken => {
+                    var (customerEncryption, customerEncryptionError) = TryParseCustomerEncryptionSettings(httpContext.Request, BuildObjectResource(bucketName, key), bucketName, key);
+                    if (customerEncryptionError is not null) {
+                        return customerEncryptionError;
+                    }
+
                     var result = await storageService.UploadMultipartPartAsync(new UploadMultipartPartRequest
                     {
                         BucketName = bucketName,
@@ -2527,7 +2576,7 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
                         ContentLength = preparedBody.ContentLength,
                         ChecksumAlgorithm = checksumAlgorithm,
                         Checksums = requestedChecksums,
-                        CustomerEncryption = TryParseCustomerEncryptionSettings(httpContext.Request)
+                        CustomerEncryption = customerEncryption
                     }, innerCancellationToken);
 
                     if (!result.IsSuccess) {
@@ -2536,6 +2585,10 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
 
                     httpContext.Response.Headers.ETag = QuoteETag(result.Value!.ETag);
                     ApplyChecksumHeaders(httpContext.Response, result.Value.Checksums);
+                    if (customerEncryption is not null) {
+                        httpContext.Response.Headers[ServerSideEncryptionCustomerAlgorithmHeaderName] = customerEncryption.Algorithm;
+                        httpContext.Response.Headers[ServerSideEncryptionCustomerKeyMd5HeaderName] = customerEncryption.KeyMd5;
+                    }
                     return TypedResults.Ok();
                 }, cancellationToken);
             }
@@ -2587,6 +2640,16 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
             return serverSideEncryptionErrorResult!;
         }
 
+        var (sourceCustomerEncryption, sourceCustomerEncryptionError) = TryParseCopySourceCustomerEncryptionSettings(httpContext.Request, BuildObjectResource(bucketName, key), bucketName, key);
+        if (sourceCustomerEncryptionError is not null) {
+            return sourceCustomerEncryptionError;
+        }
+
+        var (destinationCustomerEncryption, destinationCustomerEncryptionError) = TryParseCustomerEncryptionSettings(httpContext.Request, BuildObjectResource(bucketName, key), bucketName, key);
+        if (destinationCustomerEncryptionError is not null) {
+            return destinationCustomerEncryptionError;
+        }
+
         try {
             return await ExecuteWithRequestContextAsync(httpContext, requestContextAccessor, async innerCancellationToken => {
                 var result = await storageService.UploadPartCopyAsync(new UploadPartCopyRequest
@@ -2605,8 +2668,8 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
                     SourceRange = sourceRange,
                     ChecksumAlgorithm = checksumAlgorithm,
                     Checksums = requestedChecksums,
-                    SourceCustomerEncryption = TryParseCopySourceCustomerEncryptionSettings(httpContext.Request),
-                    DestinationCustomerEncryption = TryParseCustomerEncryptionSettings(httpContext.Request)
+                    SourceCustomerEncryption = sourceCustomerEncryption,
+                    DestinationCustomerEncryption = destinationCustomerEncryption
                 }, innerCancellationToken);
 
                 if (!result.IsSuccess) {
@@ -2615,6 +2678,11 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
                         result.Error,
                         resourceOverride: BuildObjectResource(bucketName, key),
                         explicitVersionId: copySource.VersionId);
+                }
+
+                if (destinationCustomerEncryption is not null) {
+                    httpContext.Response.Headers[ServerSideEncryptionCustomerAlgorithmHeaderName] = destinationCustomerEncryption.Algorithm;
+                    httpContext.Response.Headers[ServerSideEncryptionCustomerKeyMd5HeaderName] = destinationCustomerEncryption.KeyMd5;
                 }
 
                 return ToCopyPartResult(httpContext, result.Value!, copySource.VersionId);
@@ -6319,44 +6387,76 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
         return null;
     }
 
-    private static ObjectCustomerEncryptionSettings? TryParseCustomerEncryptionSettings(HttpRequest request)
+    private static (ObjectCustomerEncryptionSettings? Settings, IResult? Error) TryParseCustomerEncryptionSettings(
+        HttpRequest request, string? resource = null, string? bucketName = null, string? key = null)
     {
         var algorithm = request.Headers[ServerSideEncryptionCustomerAlgorithmHeaderName].FirstOrDefault();
         if (string.IsNullOrEmpty(algorithm))
-            return null;
+            return (null, null);
 
-        var key = request.Headers[ServerSideEncryptionCustomerKeyHeaderName].FirstOrDefault();
+        if (!string.Equals(algorithm, "AES256", StringComparison.OrdinalIgnoreCase)) {
+            return (null, ToErrorResult(
+                request.HttpContext,
+                StatusCodes.Status400BadRequest,
+                "InvalidArgument",
+                $"The SSE customer algorithm '{algorithm}' is not supported. Only AES256 is supported.",
+                resource, bucketName, key));
+        }
+
+        var keyValue = request.Headers[ServerSideEncryptionCustomerKeyHeaderName].FirstOrDefault();
         var keyMd5 = request.Headers[ServerSideEncryptionCustomerKeyMd5HeaderName].FirstOrDefault();
 
-        if (string.IsNullOrEmpty(key) || string.IsNullOrEmpty(keyMd5))
-            return null;
+        if (string.IsNullOrEmpty(keyValue) || string.IsNullOrEmpty(keyMd5)) {
+            return (null, ToErrorResult(
+                request.HttpContext,
+                StatusCodes.Status400BadRequest,
+                "InvalidArgument",
+                "SSE-C requires x-amz-server-side-encryption-customer-algorithm, x-amz-server-side-encryption-customer-key, and x-amz-server-side-encryption-customer-key-MD5 headers.",
+                resource, bucketName, key));
+        }
 
-        return new ObjectCustomerEncryptionSettings
+        return (new ObjectCustomerEncryptionSettings
         {
             Algorithm = algorithm,
-            Key = key,
+            Key = keyValue,
             KeyMd5 = keyMd5
-        };
+        }, null);
     }
 
-    private static ObjectCustomerEncryptionSettings? TryParseCopySourceCustomerEncryptionSettings(HttpRequest request)
+    private static (ObjectCustomerEncryptionSettings? Settings, IResult? Error) TryParseCopySourceCustomerEncryptionSettings(
+        HttpRequest request, string? resource = null, string? bucketName = null, string? key = null)
     {
         var algorithm = request.Headers[CopySourceServerSideEncryptionCustomerAlgorithmHeaderName].FirstOrDefault();
         if (string.IsNullOrEmpty(algorithm))
-            return null;
+            return (null, null);
 
-        var key = request.Headers[CopySourceServerSideEncryptionCustomerKeyHeaderName].FirstOrDefault();
+        if (!string.Equals(algorithm, "AES256", StringComparison.OrdinalIgnoreCase)) {
+            return (null, ToErrorResult(
+                request.HttpContext,
+                StatusCodes.Status400BadRequest,
+                "InvalidArgument",
+                $"The SSE-C copy source algorithm '{algorithm}' is not supported. Only AES256 is supported.",
+                resource, bucketName, key));
+        }
+
+        var keyValue = request.Headers[CopySourceServerSideEncryptionCustomerKeyHeaderName].FirstOrDefault();
         var keyMd5 = request.Headers[CopySourceServerSideEncryptionCustomerKeyMd5HeaderName].FirstOrDefault();
 
-        if (string.IsNullOrEmpty(key) || string.IsNullOrEmpty(keyMd5))
-            return null;
+        if (string.IsNullOrEmpty(keyValue) || string.IsNullOrEmpty(keyMd5)) {
+            return (null, ToErrorResult(
+                request.HttpContext,
+                StatusCodes.Status400BadRequest,
+                "InvalidArgument",
+                "SSE-C copy source requires x-amz-copy-source-server-side-encryption-customer-algorithm, x-amz-copy-source-server-side-encryption-customer-key, and x-amz-copy-source-server-side-encryption-customer-key-MD5 headers.",
+                resource, bucketName, key));
+        }
 
-        return new ObjectCustomerEncryptionSettings
+        return (new ObjectCustomerEncryptionSettings
         {
             Algorithm = algorithm,
-            Key = key,
+            Key = keyValue,
             KeyMd5 = keyMd5
-        };
+        }, null);
     }
 
     private static bool TryNormalizeServerSideEncryptionAlgorithm(string rawValue, out ObjectServerSideEncryptionAlgorithm algorithm)
