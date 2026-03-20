@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using IntegratedS3.AspNetCore;
 using IntegratedS3.AspNetCore.DependencyInjection;
 using IntegratedS3.AspNetCore.Endpoints;
@@ -43,6 +44,8 @@ public static class WebUiApplication
                 ? "/integrated-s3"
                 : options.RoutePrefix;
         });
+        builder.Services.PostConfigure<IntegratedS3EndpointConfigurationOptions>(
+            options => ApplyConfiguredRoutePolicies(options, referenceHostOptions.RoutePolicies));
 
         if (HasConfiguredRoutePolicies(referenceHostOptions.RoutePolicies)) {
             builder.Services.AddAuthorization();
@@ -65,13 +68,39 @@ public static class WebUiApplication
     }
 
     /// <summary>
-    /// Configures the HTTP pipeline for the IntegratedS3 reference host.
-    /// </summary>
-    /// <param name="app">The application instance.</param>
-    /// <param name="configureIntegratedS3Endpoints">
-    /// Optional endpoint customization used by the sample host and isolated test hosts.
-    /// </param>
-    public static void ConfigurePipeline(WebApplication app, Action<IntegratedS3EndpointOptions>? configureIntegratedS3Endpoints = null)
+     /// Configures the HTTP pipeline for the IntegratedS3 reference host.
+     /// </summary>
+     /// <param name="app">The application instance.</param>
+     public static void ConfigurePipeline(WebApplication app)
+    {
+        ArgumentNullException.ThrowIfNull(app);
+
+        ConfigureSharedPipeline(app);
+
+        var endpointConfiguration = app.Services.GetRequiredService<IOptions<IntegratedS3EndpointConfigurationOptions>>().Value;
+        app.MapIntegratedS3Endpoints(endpointConfiguration);
+    }
+
+    /// <summary>
+     /// Configures the HTTP pipeline for the IntegratedS3 reference host with additional endpoint customization.
+     /// </summary>
+     /// <param name="app">The application instance.</param>
+     /// <param name="configureIntegratedS3Endpoints">
+     /// Additional endpoint customization used by isolated test hosts or callback-driven consumers.
+     /// </param>
+    [RequiresUnreferencedCode("Endpoint customization callbacks may register additional Minimal API conventions or handlers that are not trimming-safe.")]
+    [RequiresDynamicCode("Endpoint customization callbacks may register additional Minimal API conventions or handlers that are not AOT-safe.")]
+    public static void ConfigurePipeline(WebApplication app, Action<IntegratedS3EndpointOptions> configureIntegratedS3Endpoints)
+    {
+        ArgumentNullException.ThrowIfNull(app);
+        ArgumentNullException.ThrowIfNull(configureIntegratedS3Endpoints);
+
+        ConfigureSharedPipeline(app);
+
+        app.MapIntegratedS3Endpoints(configureIntegratedS3Endpoints);
+    }
+
+    private static void ConfigureSharedPipeline(WebApplication app)
     {
         ArgumentNullException.ThrowIfNull(app);
 
@@ -91,12 +120,6 @@ public static class WebUiApplication
 
         app.MapGet("/", (IOptions<IntegratedS3Options> options) => TypedResults.Redirect(options.Value.RoutePrefix))
             .ExcludeFromDescription();
-
-        var referenceHostOptions = app.Services.GetRequiredService<IOptions<WebUiReferenceHostOptions>>().Value;
-        app.MapIntegratedS3Endpoints(options => {
-            ApplyConfiguredRoutePolicies(options, referenceHostOptions.RoutePolicies);
-            configureIntegratedS3Endpoints?.Invoke(options);
-        });
     }
 
     private static DiskStorageOptions ResolveDiskStorageOptions(WebApplicationBuilder builder)
@@ -133,42 +156,40 @@ public static class WebUiApplication
                 $"Unsupported {ReferenceHostSectionPath}:StorageProvider value '{configuredValue}'. Supported values are 'Disk' and 'S3'.");
     }
 
-    private static void ApplyConfiguredRoutePolicies(IntegratedS3EndpointOptions endpointOptions, WebUiReferenceHostRoutePolicyOptions routePolicies)
+    private static void ApplyConfiguredRoutePolicies(
+        IntegratedS3EndpointConfigurationOptions endpointOptions,
+        WebUiReferenceHostRoutePolicyOptions routePolicies)
     {
         ArgumentNullException.ThrowIfNull(endpointOptions);
         ArgumentNullException.ThrowIfNull(routePolicies);
 
-        if (routePolicies.Route is { Length: > 0 } routePolicy) {
-            endpointOptions.ConfigureRouteGroup = group => group.RequireAuthorization(routePolicy);
+        endpointOptions.RouteAuthorization = AppendAuthorizationPolicy(endpointOptions.RouteAuthorization, routePolicies.Route);
+        endpointOptions.RootRouteAuthorization = AppendAuthorizationPolicy(endpointOptions.RootRouteAuthorization, routePolicies.Root);
+        endpointOptions.CompatibilityRouteAuthorization = AppendAuthorizationPolicy(endpointOptions.CompatibilityRouteAuthorization, routePolicies.Compatibility);
+        endpointOptions.ServiceRouteAuthorization = AppendAuthorizationPolicy(endpointOptions.ServiceRouteAuthorization, routePolicies.Service);
+        endpointOptions.BucketRouteAuthorization = AppendAuthorizationPolicy(endpointOptions.BucketRouteAuthorization, routePolicies.Bucket);
+        endpointOptions.ObjectRouteAuthorization = AppendAuthorizationPolicy(endpointOptions.ObjectRouteAuthorization, routePolicies.Object);
+        endpointOptions.MultipartRouteAuthorization = AppendAuthorizationPolicy(endpointOptions.MultipartRouteAuthorization, routePolicies.Multipart);
+        endpointOptions.AdminRouteAuthorization = AppendAuthorizationPolicy(endpointOptions.AdminRouteAuthorization, routePolicies.Admin);
+    }
+
+    private static IntegratedS3EndpointAuthorizationOptions? AppendAuthorizationPolicy(
+        IntegratedS3EndpointAuthorizationOptions? authorizationOptions,
+        string? policyName)
+    {
+        if (string.IsNullOrWhiteSpace(policyName) || authorizationOptions?.AllowAnonymous == true) {
+            return authorizationOptions;
         }
 
-        if (routePolicies.Root is { Length: > 0 } rootPolicy) {
-            endpointOptions.ConfigureRootRouteGroup = group => group.RequireAuthorization(rootPolicy);
-        }
+        authorizationOptions ??= new();
+        authorizationOptions.PolicyNames = (authorizationOptions.PolicyNames ?? [])
+            .Append(policyName)
+            .Where(static configuredPolicyName => !string.IsNullOrWhiteSpace(configuredPolicyName))
+            .Select(static configuredPolicyName => configuredPolicyName.Trim())
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
 
-        if (routePolicies.Compatibility is { Length: > 0 } compatibilityPolicy) {
-            endpointOptions.ConfigureCompatibilityRouteGroup = group => group.RequireAuthorization(compatibilityPolicy);
-        }
-
-        if (routePolicies.Service is { Length: > 0 } servicePolicy) {
-            endpointOptions.ConfigureServiceRouteGroup = group => group.RequireAuthorization(servicePolicy);
-        }
-
-        if (routePolicies.Bucket is { Length: > 0 } bucketPolicy) {
-            endpointOptions.ConfigureBucketRouteGroup = group => group.RequireAuthorization(bucketPolicy);
-        }
-
-        if (routePolicies.Object is { Length: > 0 } objectPolicy) {
-            endpointOptions.ConfigureObjectRouteGroup = group => group.RequireAuthorization(objectPolicy);
-        }
-
-        if (routePolicies.Multipart is { Length: > 0 } multipartPolicy) {
-            endpointOptions.ConfigureMultipartRouteGroup = group => group.RequireAuthorization(multipartPolicy);
-        }
-
-        if (routePolicies.Admin is { Length: > 0 } adminPolicy) {
-            endpointOptions.ConfigureAdminRouteGroup = group => group.RequireAuthorization(adminPolicy);
-        }
+        return authorizationOptions;
     }
 
     private static bool HasConfiguredRoutePolicies(WebUiReferenceHostRoutePolicyOptions routePolicies)

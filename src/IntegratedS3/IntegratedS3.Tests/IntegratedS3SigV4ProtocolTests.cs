@@ -89,6 +89,77 @@ public sealed class IntegratedS3SigV4ProtocolTests
     }
 
     [Fact]
+    public void CanonicalRequestBuilder_PreservesExistingEscapedPathSegments()
+    {
+        var decodedCanonicalRequest = S3SigV4Signer.BuildCanonicalRequest(
+            "GET",
+            "/integrated-s3/demo-bucket/docs/report 2026.txt",
+            [],
+            [
+                new KeyValuePair<string, string?>("host", "example.test")
+            ],
+            ["host"],
+            "UNSIGNED-PAYLOAD");
+
+        var escapedCanonicalRequest = S3SigV4Signer.BuildCanonicalRequest(
+            "GET",
+            "/integrated-s3/demo-bucket/docs/report%202026.txt",
+            [],
+            [
+                new KeyValuePair<string, string?>("host", "example.test")
+            ],
+            ["host"],
+            "UNSIGNED-PAYLOAD");
+
+        Assert.Equal("/integrated-s3/demo-bucket/docs/report%202026.txt", escapedCanonicalRequest.CanonicalUri);
+        Assert.Equal(decodedCanonicalRequest.CanonicalUri, escapedCanonicalRequest.CanonicalUri);
+        Assert.Equal(decodedCanonicalRequest.CanonicalRequest, escapedCanonicalRequest.CanonicalRequest);
+    }
+
+    [Fact]
+    public void StreamingTrailerCanonicalization_LowercasesNamesSortsAndExcludesTrailerSignature()
+    {
+        KeyValuePair<string, string>[] trailerHeaders =
+        [
+            new("X-Amz-Checksum-Sha256", "  AbCdEf+/0123==  "),
+            new("x-amz-trailer-signature", new string('0', 64)),
+            new("x-amz-checksum-crc32", "\tZYxw987=\t"),
+            new("X-Amz-Checksum-Crc32C", "TeSt+VaLuE==")
+        ];
+
+        var canonicalTrailerHeaders = S3SigV4Signer.BuildCanonicalStreamingTrailerHeaders(trailerHeaders);
+
+        var expected = string.Join('\n', [
+            "x-amz-checksum-crc32:ZYxw987=",
+            "x-amz-checksum-crc32c:TeSt+VaLuE==",
+            "x-amz-checksum-sha256:AbCdEf+/0123==",
+            string.Empty
+        ]);
+
+        Assert.Equal(expected, canonicalTrailerHeaders);
+    }
+
+    [Fact]
+    public void PresignedRequestParser_RejectsZeroExpiry()
+    {
+        var parsed = S3SigV4RequestParser.TryParsePresignedRequest(
+            [
+                new KeyValuePair<string, string?>("X-Amz-Algorithm", "AWS4-HMAC-SHA256"),
+                new KeyValuePair<string, string?>("X-Amz-Credential", "demo-access/20260311/us-east-1/s3/aws4_request"),
+                new KeyValuePair<string, string?>("X-Amz-Date", "20260311T180000Z"),
+                new KeyValuePair<string, string?>("X-Amz-Expires", "0"),
+                new KeyValuePair<string, string?>("X-Amz-SignedHeaders", "host"),
+                new KeyValuePair<string, string?>("X-Amz-Signature", "0123456789abcdef")
+            ],
+            out var presignedRequest,
+            out var error);
+
+        Assert.True(parsed);
+        Assert.Null(presignedRequest);
+        Assert.Equal("The presigned request must include a valid X-Amz-Expires value.", error);
+    }
+
+    [Fact]
     public void Presigner_BuildsExpectedQueryParametersAndExpiry()
     {
         var signedAtUtc = new DateTimeOffset(2026, 3, 11, 18, 0, 0, TimeSpan.Zero);

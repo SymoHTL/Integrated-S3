@@ -13,9 +13,16 @@ public static class HotPathBenchmarkScenarioCatalog
         Create(static () => new MirroredWriteScenario()),
         Create(static () => new ListObjectsScenario()),
         Create(static () => new PresignScenario()),
+        Create(static () => new HttpHeadObjectScenario()),
         Create(static () => new HttpPutObjectScenario()),
+        Create(static () => new HttpUploadMultipartPartScenario()),
         Create(static () => new HttpGetObjectScenario()),
-        Create(static () => new HttpListObjectsScenario())
+        Create(static () => new HttpListObjectsScenario()),
+        Create(static () => new AwsSdkGetObjectMetadataScenario()),
+        Create(static () => new AwsSdkPutObjectScenario()),
+        Create(static () => new AwsSdkUploadMultipartPartScenario()),
+        Create(static () => new AwsSdkGetObjectScenario()),
+        Create(static () => new AwsSdkListObjectsScenario())
     ];
 
     public static IReadOnlyList<BenchmarkScenarioRegistration> All => Scenarios;

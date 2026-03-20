@@ -870,6 +870,13 @@ internal sealed class OrchestratedStorageService(
         Func<IStorageBackend, CancellationToken, ValueTask<StorageError?>> replicaOperation,
         CancellationToken cancellationToken)
     {
+        var coalesceAcrossVersions = await CanCoalesceReplicaRepairsAcrossVersionsAsync(
+            primaryBackend,
+            operation,
+            bucketName,
+            objectKey,
+            cancellationToken);
+
         for (var index = 0; index < replicaBackends.Count; index++) {
             var replicaBackend = replicaBackends[index];
             var replicaError = await replicaOperation(replicaBackend, cancellationToken);
@@ -891,6 +898,7 @@ internal sealed class OrchestratedStorageService(
                 bucketName,
                 objectKey,
                 versionId,
+                coalesceAcrossVersions,
                 replicaError);
 
             return CreateReplicationError(replicaBackend, replicaError, bucketName, objectKey, versionId);
@@ -910,6 +918,12 @@ internal sealed class OrchestratedStorageService(
         CancellationToken cancellationToken)
     {
         StorageError? trackingError = null;
+        var coalesceAcrossVersions = await CanCoalesceReplicaRepairsAcrossVersionsAsync(
+            primaryBackend,
+            operation,
+            bucketName,
+            objectKey,
+            cancellationToken);
 
         foreach (var replicaBackend in replicaBackends) {
             var repairEntry = CreateRepairEntry(
@@ -923,7 +937,11 @@ internal sealed class OrchestratedStorageService(
                 versionId);
 
             try {
-                if (await replicaRepairBacklog.HasOutstandingRepairsAsync(replicaBackend.Name, cancellationToken)) {
+                var outstandingRepairs = await replicaRepairBacklog.ListOutstandingAsync(replicaBackend.Name, cancellationToken);
+                var supersededRepairs = GetSupersededReplicaRepairs(outstandingRepairs, repairEntry, coalesceAcrossVersions);
+                var hasOutstandingRepairs = outstandingRepairs.Count > supersededRepairs.Length;
+
+                if (hasOutstandingRepairs) {
                     logger.LogInformation(
                         "Queuing async replica repair for {StorageOperation} on {ReplicaProvider} because outstanding repairs already exist.",
                         operation,
@@ -936,6 +954,7 @@ internal sealed class OrchestratedStorageService(
                         repairEntry.Origin,
                         repairEntry.Status);
                     await replicaRepairBacklog.AddAsync(repairEntry, cancellationToken);
+                    await CompleteSupersededReplicaRepairsAsync(repairEntry, supersededRepairs, CancellationToken.None);
                     continue;
                 }
 
@@ -953,6 +972,7 @@ internal sealed class OrchestratedStorageService(
                         repairEntry.Origin,
                         repairEntry.Status);
                     await replicaRepairBacklog.AddAsync(repairEntry, cancellationToken);
+                    await CompleteSupersededReplicaRepairsAsync(repairEntry, supersededRepairs, CancellationToken.None);
                     continue;
                 }
 
@@ -960,6 +980,7 @@ internal sealed class OrchestratedStorageService(
                     repairEntry,
                     ct => replicaOperation(replicaBackend, ct),
                     cancellationToken);
+                await CompleteSupersededReplicaRepairsAsync(repairEntry, supersededRepairs, CancellationToken.None);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) {
                 throw;
@@ -984,6 +1005,7 @@ internal sealed class OrchestratedStorageService(
         string bucketName,
         string? objectKey,
         string? versionId,
+        bool coalesceAcrossVersions,
         StorageError error)
     {
         for (var index = failedReplicaIndex; index < replicaBackends.Count; index++) {
@@ -999,6 +1021,8 @@ internal sealed class OrchestratedStorageService(
                 versionId,
                 attemptCount: index == failedReplicaIndex ? 1 : 0,
                 lastError: index == failedReplicaIndex ? error : null);
+            var outstandingRepairs = await replicaRepairBacklog.ListOutstandingAsync(replicaBackend.Name, CancellationToken.None);
+            var supersededRepairs = GetSupersededReplicaRepairs(outstandingRepairs, repairEntry, coalesceAcrossVersions);
 
             IntegratedS3CoreTelemetry.AddReplicaEvent(
                 Activity.Current,
@@ -1009,6 +1033,7 @@ internal sealed class OrchestratedStorageService(
                 repairEntry.Status,
                 index == failedReplicaIndex ? error : null);
             await replicaRepairBacklog.AddAsync(repairEntry, CancellationToken.None);
+            await CompleteSupersededReplicaRepairsAsync(repairEntry, supersededRepairs, CancellationToken.None);
         }
     }
 
@@ -1022,7 +1047,8 @@ internal sealed class OrchestratedStorageService(
         string? versionId,
         StorageError? error,
         StorageReplicaRepairStatus status,
-        int attemptCount)
+        int attemptCount,
+        bool coalesceAcrossVersions)
     {
         foreach (var replicaBackend in replicaBackends) {
             var repairEntry = CreateRepairEntry(
@@ -1036,6 +1062,8 @@ internal sealed class OrchestratedStorageService(
                 versionId,
                 attemptCount,
                 error);
+            var outstandingRepairs = await replicaRepairBacklog.ListOutstandingAsync(replicaBackend.Name, CancellationToken.None);
+            var supersededRepairs = GetSupersededReplicaRepairs(outstandingRepairs, repairEntry, coalesceAcrossVersions);
             logger.LogInformation(
                 "Recording replica backlog for {StorageOperation} on {ReplicaProvider}. Origin {Origin}. Status {Status}.",
                 operation,
@@ -1051,6 +1079,7 @@ internal sealed class OrchestratedStorageService(
                 status,
                 error);
             await replicaRepairBacklog.AddAsync(repairEntry, CancellationToken.None);
+            await CompleteSupersededReplicaRepairsAsync(repairEntry, supersededRepairs, CancellationToken.None);
         }
     }
 
@@ -1072,6 +1101,12 @@ internal sealed class OrchestratedStorageService(
             versionId,
             cancellationToken);
         if (!sourceResponseResult.IsSuccess || sourceResponseResult.Value is null) {
+            var coalesceAcrossVersions = await CanCoalesceReplicaRepairsAcrossVersionsAsync(
+                primaryBackend,
+                StorageOperationType.CopyObject,
+                request.DestinationBucketName,
+                request.DestinationKey,
+                cancellationToken);
             var sourceError = sourceResponseResult.Error ?? CreatePrimaryReplicationSourceError(primaryBackend, request.DestinationBucketName, request.DestinationKey, versionId);
             await RecordReplicaBacklogAsync(
                 StorageOperationType.CopyObject,
@@ -1083,7 +1118,8 @@ internal sealed class OrchestratedStorageService(
                 versionId,
                 sourceError,
                 StorageReplicaRepairStatus.Pending,
-                attemptCount: 0);
+                attemptCount: 0,
+                coalesceAcrossVersions);
             return CreateReplicationError(primaryBackend, sourceError, request.DestinationBucketName, request.DestinationKey, versionId);
         }
 
@@ -1227,6 +1263,10 @@ internal sealed class OrchestratedStorageService(
         var primaryVersioningResult = await primaryBackend.GetBucketVersioningAsync(bucketName, cancellationToken);
         ObserveResult(primaryBackend, primaryVersioningResult);
         if (!primaryVersioningResult.IsSuccess || primaryVersioningResult.Value is null) {
+            if (primaryVersioningResult.Error?.Code == StorageErrorCode.BucketNotFound) {
+                return await RepairReplicaBucketDeleteAsync(replicaBackend, bucketName, cancellationToken);
+            }
+
             return primaryVersioningResult.Error ?? CreatePrimaryReplicationSourceError(primaryBackend, bucketName, objectKey: null, versionId: null, message: "Primary bucket versioning state could not be resolved for replica repair.");
         }
 
@@ -1275,6 +1315,10 @@ internal sealed class OrchestratedStorageService(
             }, cancellationToken);
         }
 
+        if (primaryCorsResult.Error?.Code == StorageErrorCode.BucketNotFound) {
+            return await RepairReplicaBucketDeleteAsync(replicaBackend, bucketName, cancellationToken);
+        }
+
         if (primaryCorsResult.Error?.Code == StorageErrorCode.CorsConfigurationNotFound) {
             return await WriteReplicaDeleteBucketCorsAsync(replicaBackend, new DeleteBucketCorsRequest
             {
@@ -1321,6 +1365,10 @@ internal sealed class OrchestratedStorageService(
                 BucketName = bucketName,
                 Rule = CloneBucketDefaultEncryptionRule(primaryEncryptionResult.Value.Rule)
             }, cancellationToken);
+        }
+
+        if (primaryEncryptionResult.Error?.Code == StorageErrorCode.BucketNotFound) {
+            return await RepairReplicaBucketDeleteAsync(replicaBackend, bucketName, cancellationToken);
         }
 
         if (primaryEncryptionResult.Error?.Code == StorageErrorCode.BucketEncryptionConfigurationNotFound) {
@@ -1393,6 +1441,14 @@ internal sealed class OrchestratedStorageService(
     {
         var sourceResponseResult = await GetObjectForReplicationAsync(primaryBackend, bucketName, key, versionId, cancellationToken);
         if (!sourceResponseResult.IsSuccess || sourceResponseResult.Value is null) {
+            if (sourceResponseResult.Error?.Code is StorageErrorCode.ObjectNotFound or StorageErrorCode.BucketNotFound) {
+                return await WriteReplicaDeleteObjectAsync(replicaBackend, new DeleteObjectRequest
+                {
+                    BucketName = bucketName,
+                    Key = key
+                }, cancellationToken);
+            }
+
             return sourceResponseResult.Error ?? CreatePrimaryReplicationSourceError(primaryBackend, bucketName, key, versionId);
         }
 
@@ -1458,6 +1514,15 @@ internal sealed class OrchestratedStorageService(
         }, cancellationToken);
         ObserveResult(primaryBackend, primaryTagResult);
         if (!primaryTagResult.IsSuccess || primaryTagResult.Value is null) {
+            if (primaryTagResult.Error?.Code is StorageErrorCode.ObjectNotFound or StorageErrorCode.BucketNotFound) {
+                return await WriteReplicaDeleteObjectAsync(replicaBackend, new DeleteObjectRequest
+                {
+                    BucketName = bucketName,
+                    Key = key,
+                    VersionId = requestedVersionId
+                }, cancellationToken);
+            }
+
             return primaryTagResult.Error ?? CreatePrimaryReplicationSourceError(primaryBackend, bucketName, key, requestedVersionId, "Primary object tags could not be resolved for replica repair.");
         }
 
@@ -1608,6 +1673,79 @@ internal sealed class OrchestratedStorageService(
             LastErrorCode = lastError?.Code,
             LastErrorMessage = lastError?.Message
         };
+    }
+
+    private async ValueTask<bool> CanCoalesceReplicaRepairsAcrossVersionsAsync(
+        IStorageBackend primaryBackend,
+        StorageOperationType operation,
+        string bucketName,
+        string? objectKey,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(objectKey)) {
+            return true;
+        }
+
+        if (operation is not (
+            StorageOperationType.CopyObject
+            or StorageOperationType.DeleteObject
+            or StorageOperationType.DeleteObjectTags
+            or StorageOperationType.PutObject
+            or StorageOperationType.PutObjectTags)) {
+            return false;
+        }
+
+        var versioningResult = await primaryBackend.GetBucketVersioningAsync(bucketName, cancellationToken);
+        if (!versioningResult.IsSuccess || versioningResult.Value is null) {
+            logger.LogDebug(
+                "Skipping replica repair coalescing across versions for bucket {BucketName} because versioning state could not be resolved. ErrorCode {ErrorCode}.",
+                bucketName,
+                versioningResult.Error?.Code);
+            return false;
+        }
+
+        return versioningResult.Value.Status == BucketVersioningStatus.Disabled;
+    }
+
+    private async ValueTask CompleteSupersededReplicaRepairsAsync(
+        StorageReplicaRepairEntry repairEntry,
+        IReadOnlyList<StorageReplicaRepairEntry> supersededRepairs,
+        CancellationToken cancellationToken)
+    {
+        foreach (var supersededRepair in supersededRepairs) {
+            logger.LogInformation(
+                "Coalescing superseded replica repair {SupersededRepairId} for {ReplicaProvider} into repair {RepairId}.",
+                supersededRepair.Id,
+                repairEntry.ReplicaBackendName,
+                repairEntry.Id);
+            await replicaRepairBacklog.MarkCompletedAsync(supersededRepair.Id, cancellationToken);
+        }
+    }
+
+    private static StorageReplicaRepairEntry[] GetSupersededReplicaRepairs(
+        IReadOnlyList<StorageReplicaRepairEntry> outstandingRepairs,
+        StorageReplicaRepairEntry repairEntry,
+        bool coalesceAcrossVersions)
+    {
+        return outstandingRepairs
+            .Where(existingRepair => IsSupersededReplicaRepair(existingRepair, repairEntry, coalesceAcrossVersions))
+            .ToArray();
+    }
+
+    private static bool IsSupersededReplicaRepair(
+        StorageReplicaRepairEntry existingRepair,
+        StorageReplicaRepairEntry repairEntry,
+        bool coalesceAcrossVersions)
+    {
+        if (!string.Equals(existingRepair.ReplicaBackendName, repairEntry.ReplicaBackendName, StringComparison.Ordinal)
+            || existingRepair.Operation != repairEntry.Operation
+            || !string.Equals(existingRepair.BucketName, repairEntry.BucketName, StringComparison.Ordinal)
+            || !string.Equals(existingRepair.ObjectKey, repairEntry.ObjectKey, StringComparison.Ordinal)) {
+            return false;
+        }
+
+        return string.Equals(existingRepair.VersionId, repairEntry.VersionId, StringComparison.Ordinal)
+            || coalesceAcrossVersions;
     }
 
     private async ValueTask<StorageError?> RefreshCatalogBucketAsync(IStorageBackend backend, string bucketName, CancellationToken cancellationToken)

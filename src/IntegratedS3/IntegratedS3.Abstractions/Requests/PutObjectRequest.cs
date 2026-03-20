@@ -32,5 +32,7 @@ public sealed class PutObjectRequest
 
     public ObjectServerSideEncryptionSettings? ServerSideEncryption { get; init; }
 
+    public ObjectCustomerEncryptionSettings? CustomerEncryption { get; init; }
+
     public bool OverwriteIfExists { get; init; } = true;
 }

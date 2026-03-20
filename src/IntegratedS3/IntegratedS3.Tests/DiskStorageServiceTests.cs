@@ -217,7 +217,10 @@ public sealed class DiskStorageServiceTests
         });
 
         Assert.True(putResult.IsSuccess);
-        Assert.Equal(checksum, putResult.Value!.Checksums!["sha1"]);
+        Assert.NotNull(putResult.Value!.Checksums);
+        Assert.Single(putResult.Value.Checksums!);
+        Assert.Equal(checksum, putResult.Value.Checksums["sha1"]);
+        Assert.False(putResult.Value.Checksums.ContainsKey("sha256"));
 
         var headResult = await storageService.HeadObjectAsync(new HeadObjectRequest
         {
@@ -226,7 +229,10 @@ public sealed class DiskStorageServiceTests
         });
 
         Assert.True(headResult.IsSuccess);
-        Assert.Equal(checksum, headResult.Value!.Checksums!["sha1"]);
+        Assert.NotNull(headResult.Value!.Checksums);
+        Assert.Single(headResult.Value.Checksums!);
+        Assert.Equal(checksum, headResult.Value.Checksums["sha1"]);
+        Assert.False(headResult.Value.Checksums.ContainsKey("sha256"));
 
         var getResult = await storageService.GetObjectAsync(new GetObjectRequest
         {
@@ -238,7 +244,10 @@ public sealed class DiskStorageServiceTests
         await using (var response = getResult.Value!) {
             using var reader = new StreamReader(response.Content, Encoding.UTF8, leaveOpen: false);
             Assert.Equal(payload, await reader.ReadToEndAsync());
-            Assert.Equal(checksum, response.Object.Checksums!["sha1"]);
+            Assert.NotNull(response.Object.Checksums);
+            Assert.Single(response.Object.Checksums!);
+            Assert.Equal(checksum, response.Object.Checksums["sha1"]);
+            Assert.False(response.Object.Checksums.ContainsKey("sha256"));
         }
 
         await using var invalidUploadStream = new MemoryStream(Encoding.UTF8.GetBytes("sha1 checksum mismatch"));
@@ -295,7 +304,10 @@ public sealed class DiskStorageServiceTests
         });
 
         Assert.True(putResult.IsSuccess);
-        Assert.Equal(checksum, putResult.Value!.Checksums!["crc32c"]);
+        Assert.NotNull(putResult.Value!.Checksums);
+        Assert.Single(putResult.Value.Checksums!);
+        Assert.Equal(checksum, putResult.Value.Checksums["crc32c"]);
+        Assert.False(putResult.Value.Checksums.ContainsKey("sha256"));
 
         var headResult = await storageService.HeadObjectAsync(new HeadObjectRequest
         {
@@ -304,7 +316,10 @@ public sealed class DiskStorageServiceTests
         });
 
         Assert.True(headResult.IsSuccess);
-        Assert.Equal(checksum, headResult.Value!.Checksums!["crc32c"]);
+        Assert.NotNull(headResult.Value!.Checksums);
+        Assert.Single(headResult.Value.Checksums!);
+        Assert.Equal(checksum, headResult.Value.Checksums["crc32c"]);
+        Assert.False(headResult.Value.Checksums.ContainsKey("sha256"));
 
         var getResult = await storageService.GetObjectAsync(new GetObjectRequest
         {
@@ -316,7 +331,10 @@ public sealed class DiskStorageServiceTests
         await using (var response = getResult.Value!) {
             using var reader = new StreamReader(response.Content, Encoding.UTF8, leaveOpen: false);
             Assert.Equal(payload, await reader.ReadToEndAsync());
-            Assert.Equal(checksum, response.Object.Checksums!["crc32c"]);
+            Assert.NotNull(response.Object.Checksums);
+            Assert.Single(response.Object.Checksums!);
+            Assert.Equal(checksum, response.Object.Checksums["crc32c"]);
+            Assert.False(response.Object.Checksums.ContainsKey("sha256"));
         }
 
         await using var invalidUploadStream = new MemoryStream(Encoding.UTF8.GetBytes("crc32c checksum mismatch"));
@@ -1298,6 +1316,7 @@ public sealed class DiskStorageServiceTests
         Assert.Equal("tests", copyResult.Value.Metadata!["origin"]);
         Assert.Equal("true", copyResult.Value.Tags!["copied"]);
         Assert.Equal(ComputeSha256Base64("copy me"), copyResult.Value.Checksums!["sha256"]);
+        Assert.Equal(ComputeCrc32cBase64("copy me"), copyResult.Value!.Checksums!["crc32c"]);
 
         var downloaded = await storageService.GetObjectAsync(new GetObjectRequest
         {
@@ -1312,7 +1331,177 @@ public sealed class DiskStorageServiceTests
         Assert.Equal("tests", response.Object.Metadata!["origin"]);
         Assert.Equal("true", response.Object.Tags!["copied"]);
         Assert.Equal(ComputeSha256Base64("copy me"), response.Object.Checksums!["sha256"]);
+        Assert.Equal(ComputeCrc32cBase64("copy me"), response.Object.Checksums!["crc32c"]);
         Assert.NotEqual(putResult.Value!.BucketName, copyResult.Value.BucketName);
+    }
+
+    [Fact]
+    public async Task DiskStorage_CopyObject_SelfCopyWithMetadataDirectiveReplace_UpdatesMtimeMetadataWithoutChangingContent()
+    {
+        await using var fixture = new DiskStorageFixture();
+        var storageService = fixture.Services.GetRequiredService<IStorageBackend>();
+        await storageService.CreateBucketAsync(new CreateBucketRequest { BucketName = "source" });
+
+        await using var uploadStream = new MemoryStream(Encoding.UTF8.GetBytes("copy me"));
+        var putResult = await storageService.PutObjectAsync(new PutObjectRequest
+        {
+            BucketName = "source",
+            Key = "docs/source.txt",
+            Content = uploadStream,
+            ContentType = "text/plain",
+            Metadata = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["mtime"] = "1700000000",
+                ["source-only"] = "remove-me"
+            }
+        });
+
+        Assert.True(putResult.IsSuccess);
+
+        var copyResult = await storageService.CopyObjectAsync(new CopyObjectRequest
+        {
+            SourceBucketName = "source",
+            SourceKey = "docs/source.txt",
+            DestinationBucketName = "source",
+            DestinationKey = "docs/source.txt",
+            MetadataDirective = CopyObjectMetadataDirective.Replace,
+            ContentType = "text/plain",
+            Metadata = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["mtime"] = "1712345678",
+                ["updated-by"] = "rclone"
+            }
+        });
+
+        Assert.True(copyResult.IsSuccess);
+        Assert.Equal("text/plain", copyResult.Value!.ContentType);
+        Assert.Equal("1712345678", copyResult.Value.Metadata["mtime"]);
+        Assert.Equal("rclone", copyResult.Value.Metadata["updated-by"]);
+        Assert.False(copyResult.Value.Metadata.ContainsKey("source-only"));
+        Assert.Equal(ComputeSha256Base64("copy me"), copyResult.Value.Checksums!["sha256"]);
+        Assert.Equal(ComputeCrc32cBase64("copy me"), copyResult.Value.Checksums["crc32c"]);
+        Assert.NotEqual(putResult.Value!.VersionId, copyResult.Value.VersionId);
+
+        var downloaded = await storageService.GetObjectAsync(new GetObjectRequest
+        {
+            BucketName = "source",
+            Key = "docs/source.txt"
+        });
+
+        Assert.True(downloaded.IsSuccess);
+        await using var response = downloaded.Value!;
+        using var reader = new StreamReader(response.Content, Encoding.UTF8);
+        Assert.Equal("copy me", await reader.ReadToEndAsync());
+        Assert.Equal("text/plain", response.Object.ContentType);
+        Assert.Equal("1712345678", response.Object.Metadata["mtime"]);
+        Assert.Equal("rclone", response.Object.Metadata["updated-by"]);
+        Assert.False(response.Object.Metadata.ContainsKey("source-only"));
+    }
+
+    [Fact]
+    public async Task DiskStorage_CopyObject_WithChecksumAlgorithm_RecomputesRequestedDestinationChecksum()
+    {
+        await using var fixture = new DiskStorageFixture();
+        var storageService = fixture.Services.GetRequiredService<IStorageBackend>();
+        await storageService.CreateBucketAsync(new CreateBucketRequest { BucketName = "source" });
+        await storageService.CreateBucketAsync(new CreateBucketRequest { BucketName = "target" });
+
+        const string sourceKey = "docs/source.txt";
+        const string destinationKey = "docs/copied.txt";
+        const string part1Payload = "hello ";
+        const string part2Payload = "world";
+        const string fullPayload = part1Payload + part2Payload;
+
+        var initiateResult = await storageService.InitiateMultipartUploadAsync(new InitiateMultipartUploadRequest
+        {
+            BucketName = "source",
+            Key = sourceKey,
+            ContentType = "text/plain",
+            ChecksumAlgorithm = "SHA256"
+        });
+
+        Assert.True(initiateResult.IsSuccess);
+
+        var part1Checksum = ComputeSha256Base64(part1Payload);
+        await using var part1Stream = new MemoryStream(Encoding.UTF8.GetBytes(part1Payload));
+        var part1 = await storageService.UploadMultipartPartAsync(new UploadMultipartPartRequest
+        {
+            BucketName = "source",
+            Key = sourceKey,
+            UploadId = initiateResult.Value!.UploadId,
+            PartNumber = 1,
+            Content = part1Stream,
+            ChecksumAlgorithm = "SHA256",
+            Checksums = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["sha256"] = part1Checksum
+            }
+        });
+
+        var part2Checksum = ComputeSha256Base64(part2Payload);
+        await using var part2Stream = new MemoryStream(Encoding.UTF8.GetBytes(part2Payload));
+        var part2 = await storageService.UploadMultipartPartAsync(new UploadMultipartPartRequest
+        {
+            BucketName = "source",
+            Key = sourceKey,
+            UploadId = initiateResult.Value.UploadId,
+            PartNumber = 2,
+            Content = part2Stream,
+            ChecksumAlgorithm = "SHA256",
+            Checksums = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["sha256"] = part2Checksum
+            }
+        });
+
+        Assert.True(part1.IsSuccess);
+        Assert.True(part2.IsSuccess);
+
+        var completeResult = await storageService.CompleteMultipartUploadAsync(new CompleteMultipartUploadRequest
+        {
+            BucketName = "source",
+            Key = sourceKey,
+            UploadId = initiateResult.Value.UploadId,
+            Parts = [part1.Value!, part2.Value!]
+        });
+
+        Assert.True(completeResult.IsSuccess);
+        Assert.NotNull(completeResult.Value!.Checksums);
+        Assert.Equal(part1Checksum, part1.Value!.Checksums!["sha256"]);
+        Assert.Equal(part2Checksum, part2.Value!.Checksums!["sha256"]);
+        Assert.True(completeResult.Value.Checksums.ContainsKey("sha256"));
+        Assert.False(completeResult.Value.Checksums.ContainsKey("crc32c"));
+
+        var expectedCopyChecksum = ComputeCrc32cBase64(fullPayload);
+        var copyResult = await storageService.CopyObjectAsync(new CopyObjectRequest
+        {
+            SourceBucketName = "source",
+            SourceKey = sourceKey,
+            DestinationBucketName = "target",
+            DestinationKey = destinationKey,
+            ChecksumAlgorithm = "CRC32C"
+        });
+
+        Assert.True(copyResult.IsSuccess);
+        Assert.NotNull(copyResult.Value!.Checksums);
+        Assert.Single(copyResult.Value.Checksums);
+        Assert.Equal(expectedCopyChecksum, copyResult.Value.Checksums["crc32c"]);
+        Assert.False(copyResult.Value.Checksums.ContainsKey("sha256"));
+
+        var getResult = await storageService.GetObjectAsync(new GetObjectRequest
+        {
+            BucketName = "target",
+            Key = destinationKey
+        });
+
+        Assert.True(getResult.IsSuccess);
+        await using var response = getResult.Value!;
+        using var reader = new StreamReader(response.Content, Encoding.UTF8);
+        Assert.Equal(fullPayload, await reader.ReadToEndAsync());
+        Assert.NotNull(response.Object.Checksums);
+        Assert.Single(response.Object.Checksums!);
+        Assert.Equal(expectedCopyChecksum, response.Object.Checksums["crc32c"]);
+        Assert.False(response.Object.Checksums.ContainsKey("sha256"));
     }
 
     [Fact]
@@ -1501,18 +1690,6 @@ public sealed class DiskStorageServiceTests
         Assert.False(failedIfNoneMatchCopy.IsSuccess);
         Assert.Equal(IntegratedS3.Abstractions.Errors.StorageErrorCode.PreconditionFailed, failedIfNoneMatchCopy.Error!.Code);
 
-        var failedIfModifiedSinceCopy = await storageService.CopyObjectAsync(new CopyObjectRequest
-        {
-            SourceBucketName = "source",
-            SourceKey = "docs/source.txt",
-            DestinationBucketName = "target",
-            DestinationKey = "docs/copied.txt",
-            SourceIfNoneMatchETag = "\"different\"",
-            SourceIfModifiedSinceUtc = putResult.Value.LastModifiedUtc.AddMinutes(5)
-        });
-
-        Assert.False(failedIfModifiedSinceCopy.IsSuccess);
-        Assert.Equal(IntegratedS3.Abstractions.Errors.StorageErrorCode.PreconditionFailed, failedIfModifiedSinceCopy.Error!.Code);
         Assert.False((await storageService.HeadObjectAsync(new HeadObjectRequest
         {
             BucketName = "target",
@@ -1583,6 +1760,71 @@ public sealed class DiskStorageServiceTests
             BucketName = "target",
             Key = "docs/blocked-copy.txt"
         })).IsSuccess);
+    }
+
+    [Fact]
+    public async Task DiskStorage_CopyObject_SourceIfNoneMatchTakesPrecedenceOverSourceIfModifiedSince()
+    {
+        await using var fixture = new DiskStorageFixture();
+        var storageService = fixture.Services.GetRequiredService<IStorageBackend>();
+
+        await storageService.CreateBucketAsync(new CreateBucketRequest { BucketName = "source" });
+        await storageService.CreateBucketAsync(new CreateBucketRequest { BucketName = "target" });
+
+        await using var uploadStream = new MemoryStream(Encoding.UTF8.GetBytes("copy me"));
+        var putResult = await storageService.PutObjectAsync(new PutObjectRequest
+        {
+            BucketName = "source",
+            Key = "docs/source.txt",
+            Content = uploadStream,
+            ContentType = "text/plain"
+        });
+
+        Assert.True(putResult.IsSuccess);
+        var currentETag = $"\"{putResult.Value!.ETag}\"";
+        var lastModifiedUtc = putResult.Value.LastModifiedUtc;
+
+        var failedMixedConditions = await storageService.CopyObjectAsync(new CopyObjectRequest
+        {
+            SourceBucketName = "source",
+            SourceKey = "docs/source.txt",
+            DestinationBucketName = "target",
+            DestinationKey = "docs/blocked-copy.txt",
+            SourceIfNoneMatchETag = currentETag,
+            SourceIfModifiedSinceUtc = lastModifiedUtc.AddMinutes(-5)
+        });
+
+        Assert.False(failedMixedConditions.IsSuccess);
+        Assert.Equal(IntegratedS3.Abstractions.Errors.StorageErrorCode.PreconditionFailed, failedMixedConditions.Error!.Code);
+        Assert.False((await storageService.HeadObjectAsync(new HeadObjectRequest
+        {
+            BucketName = "target",
+            Key = "docs/blocked-copy.txt"
+        })).IsSuccess);
+
+        var successfulCopy = await storageService.CopyObjectAsync(new CopyObjectRequest
+        {
+            SourceBucketName = "source",
+            SourceKey = "docs/source.txt",
+            DestinationBucketName = "target",
+            DestinationKey = "docs/precedence-copy.txt",
+            SourceIfNoneMatchETag = "\"different\"",
+            SourceIfModifiedSinceUtc = lastModifiedUtc.AddMinutes(5)
+        });
+
+        Assert.True(successfulCopy.IsSuccess);
+
+        var copiedObject = await storageService.GetObjectAsync(new GetObjectRequest
+        {
+            BucketName = "target",
+            Key = "docs/precedence-copy.txt"
+        });
+
+        Assert.True(copiedObject.IsSuccess);
+        await using (var response = copiedObject.Value!) {
+            using var reader = new StreamReader(response.Content, Encoding.UTF8);
+            Assert.Equal("copy me", await reader.ReadToEndAsync());
+        }
     }
 
     [Fact]
@@ -2036,7 +2278,7 @@ public sealed class DiskStorageServiceTests
         {
             BucketName = "multipart",
             Key = "docs/assembled.txt",
-            UploadId = initiateResult.Value.UploadId,
+            UploadId = initiateResult.Value!.UploadId,
             Parts = [part1.Value!, part2.Value!]
         });
 
@@ -2060,6 +2302,87 @@ public sealed class DiskStorageServiceTests
         Assert.Equal("multipart", response.Object.Metadata!["source"]);
         Assert.Equal("multipart", response.Object.Tags!["upload"]);
         Assert.Equal(multipartChecksum, response.Object.Checksums!["sha256"]);
+    }
+
+    [Fact]
+    public async Task DiskStorage_MultipartUpload_WithCrc32cChecksum_ComputesCompositeChecksum()
+    {
+        await using var fixture = new DiskStorageFixture();
+        var storageService = fixture.Services.GetRequiredService<IStorageBackend>();
+        await storageService.CreateBucketAsync(new CreateBucketRequest { BucketName = "multipart-crc32c" });
+
+        var initiateResult = await storageService.InitiateMultipartUploadAsync(new InitiateMultipartUploadRequest
+        {
+            BucketName = "multipart-crc32c",
+            Key = "docs/assembled.txt",
+            ContentType = "text/plain",
+            ChecksumAlgorithm = "CRC32C"
+        });
+
+        Assert.True(initiateResult.IsSuccess);
+
+        const string part1Payload = "hello ";
+        var part1Checksum = ComputeCrc32cBase64(part1Payload);
+        await using var part1Stream = new MemoryStream(Encoding.UTF8.GetBytes(part1Payload));
+        var part1 = await storageService.UploadMultipartPartAsync(new UploadMultipartPartRequest
+        {
+            BucketName = "multipart-crc32c",
+            Key = "docs/assembled.txt",
+            UploadId = initiateResult.Value!.UploadId,
+            PartNumber = 1,
+            Content = part1Stream,
+            ChecksumAlgorithm = "CRC32C",
+            Checksums = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["crc32c"] = part1Checksum
+            }
+        });
+
+        const string part2Payload = "world";
+        var part2Checksum = ComputeCrc32cBase64(part2Payload);
+        await using var part2Stream = new MemoryStream(Encoding.UTF8.GetBytes(part2Payload));
+        var part2 = await storageService.UploadMultipartPartAsync(new UploadMultipartPartRequest
+        {
+            BucketName = "multipart-crc32c",
+            Key = "docs/assembled.txt",
+            UploadId = initiateResult.Value.UploadId,
+            PartNumber = 2,
+            Content = part2Stream,
+            ChecksumAlgorithm = "CRC32C",
+            Checksums = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["crc32c"] = part2Checksum
+            }
+        });
+
+        Assert.True(part1.IsSuccess);
+        Assert.True(part2.IsSuccess);
+        Assert.Equal(part1Checksum, part1.Value!.Checksums!["crc32c"]);
+        Assert.Equal(part2Checksum, part2.Value!.Checksums!["crc32c"]);
+
+        var completeResult = await storageService.CompleteMultipartUploadAsync(new CompleteMultipartUploadRequest
+        {
+            BucketName = "multipart-crc32c",
+            Key = "docs/assembled.txt",
+            UploadId = initiateResult.Value!.UploadId,
+            Parts = [part1.Value!, part2.Value!]
+        });
+
+        Assert.True(completeResult.IsSuccess);
+        var compositeChecksum = ComputeMultipartCrc32cBase64(part1Checksum, part2Checksum);
+        Assert.Equal(compositeChecksum, completeResult.Value!.Checksums!["crc32c"]);
+
+        var getResult = await storageService.GetObjectAsync(new GetObjectRequest
+        {
+            BucketName = "multipart-crc32c",
+            Key = "docs/assembled.txt"
+        });
+
+        Assert.True(getResult.IsSuccess);
+        await using var response = getResult.Value!;
+        using var reader = new StreamReader(response.Content, Encoding.UTF8);
+        Assert.Equal("hello world", await reader.ReadToEndAsync());
+        Assert.Equal(compositeChecksum, response.Object.Checksums!["crc32c"]);
     }
 
     [Fact]
@@ -3076,6 +3399,215 @@ public sealed class DiskStorageServiceTests
         Assert.Equal(IntegratedS3.Abstractions.Capabilities.StorageSupportStateOwnership.PlatformManaged, supportState.MultipartState);
     }
 
+    // --- Customer Encryption (SSE-C) Rejection ---
+
+    [Fact]
+    public async Task DiskStorage_PutObject_RejectsCustomerEncryptionRequests()
+    {
+        await using var fixture = new DiskStorageFixture();
+        var storageService = fixture.Services.GetRequiredService<IStorageBackend>();
+
+        Assert.True((await storageService.CreateBucketAsync(new CreateBucketRequest
+        {
+            BucketName = "ssec-put"
+        })).IsSuccess);
+
+        await using var uploadStream = new MemoryStream(Encoding.UTF8.GetBytes("ssec payload"));
+        var putResult = await storageService.PutObjectAsync(new PutObjectRequest
+        {
+            BucketName = "ssec-put",
+            Key = "docs/object.txt",
+            Content = uploadStream,
+            CustomerEncryption = CreateCustomerEncryptionSettings()
+        });
+
+        Assert.False(putResult.IsSuccess);
+        AssertUnsupportedCustomerEncryption(putResult.Error, "ssec-put", "docs/object.txt");
+
+        var headResult = await storageService.HeadObjectAsync(new HeadObjectRequest
+        {
+            BucketName = "ssec-put",
+            Key = "docs/object.txt"
+        });
+
+        Assert.False(headResult.IsSuccess);
+        Assert.Equal(StorageErrorCode.ObjectNotFound, headResult.Error!.Code);
+    }
+
+    [Fact]
+    public async Task DiskStorage_GetObject_RejectsCustomerEncryptionRequests()
+    {
+        await using var fixture = new DiskStorageFixture();
+        var storageService = fixture.Services.GetRequiredService<IStorageBackend>();
+
+        Assert.True((await storageService.CreateBucketAsync(new CreateBucketRequest
+        {
+            BucketName = "ssec-get"
+        })).IsSuccess);
+
+        await using var uploadStream = new MemoryStream(Encoding.UTF8.GetBytes("read me"));
+        var putResult = await storageService.PutObjectAsync(new PutObjectRequest
+        {
+            BucketName = "ssec-get",
+            Key = "docs/object.txt",
+            Content = uploadStream,
+            ContentType = "text/plain"
+        });
+
+        Assert.True(putResult.IsSuccess);
+
+        var getResult = await storageService.GetObjectAsync(new GetObjectRequest
+        {
+            BucketName = "ssec-get",
+            Key = "docs/object.txt",
+            CustomerEncryption = CreateCustomerEncryptionSettings()
+        });
+
+        Assert.False(getResult.IsSuccess);
+        AssertUnsupportedCustomerEncryption(getResult.Error, "ssec-get", "docs/object.txt");
+    }
+
+    [Fact]
+    public async Task DiskStorage_HeadObject_RejectsCustomerEncryptionRequests()
+    {
+        await using var fixture = new DiskStorageFixture();
+        var storageService = fixture.Services.GetRequiredService<IStorageBackend>();
+
+        Assert.True((await storageService.CreateBucketAsync(new CreateBucketRequest
+        {
+            BucketName = "ssec-head"
+        })).IsSuccess);
+
+        await using var uploadStream = new MemoryStream(Encoding.UTF8.GetBytes("head me"));
+        var putResult = await storageService.PutObjectAsync(new PutObjectRequest
+        {
+            BucketName = "ssec-head",
+            Key = "docs/object.txt",
+            Content = uploadStream,
+            ContentType = "text/plain"
+        });
+
+        Assert.True(putResult.IsSuccess);
+
+        var headResult = await storageService.HeadObjectAsync(new HeadObjectRequest
+        {
+            BucketName = "ssec-head",
+            Key = "docs/object.txt",
+            CustomerEncryption = CreateCustomerEncryptionSettings()
+        });
+
+        Assert.False(headResult.IsSuccess);
+        AssertUnsupportedCustomerEncryption(headResult.Error, "ssec-head", "docs/object.txt");
+
+        var plainHeadResult = await storageService.HeadObjectAsync(new HeadObjectRequest
+        {
+            BucketName = "ssec-head",
+            Key = "docs/object.txt"
+        });
+
+        Assert.True(plainHeadResult.IsSuccess);
+        Assert.Equal(putResult.Value!.VersionId, plainHeadResult.Value!.VersionId);
+    }
+
+    [Fact]
+    public async Task DiskStorage_CopyObject_RejectsSourceCustomerEncryptionRequests()
+    {
+        await using var fixture = new DiskStorageFixture();
+        var storageService = fixture.Services.GetRequiredService<IStorageBackend>();
+        await storageService.CreateBucketAsync(new CreateBucketRequest { BucketName = "ssec-src" });
+        await storageService.CreateBucketAsync(new CreateBucketRequest { BucketName = "ssec-dst" });
+
+        await using var uploadStream = new MemoryStream(Encoding.UTF8.GetBytes("copy me"));
+        var putResult = await storageService.PutObjectAsync(new PutObjectRequest
+        {
+            BucketName = "ssec-src",
+            Key = "docs/source.txt",
+            Content = uploadStream,
+            ContentType = "text/plain"
+        });
+
+        Assert.True(putResult.IsSuccess);
+
+        var sourceEncryptedCopy = await storageService.CopyObjectAsync(new CopyObjectRequest
+        {
+            SourceBucketName = "ssec-src",
+            SourceKey = "docs/source.txt",
+            DestinationBucketName = "ssec-dst",
+            DestinationKey = "docs/source-encrypted.txt",
+            SourceCustomerEncryption = CreateCustomerEncryptionSettings()
+        });
+
+        Assert.False(sourceEncryptedCopy.IsSuccess);
+        AssertUnsupportedCustomerEncryption(sourceEncryptedCopy.Error, "ssec-src", "docs/source.txt");
+
+        Assert.False((await storageService.HeadObjectAsync(new HeadObjectRequest
+        {
+            BucketName = "ssec-dst",
+            Key = "docs/source-encrypted.txt"
+        })).IsSuccess);
+    }
+
+    [Fact]
+    public async Task DiskStorage_CopyObject_RejectsDestinationCustomerEncryptionRequests()
+    {
+        await using var fixture = new DiskStorageFixture();
+        var storageService = fixture.Services.GetRequiredService<IStorageBackend>();
+        await storageService.CreateBucketAsync(new CreateBucketRequest { BucketName = "ssec-src2" });
+        await storageService.CreateBucketAsync(new CreateBucketRequest { BucketName = "ssec-dst2" });
+
+        await using var uploadStream = new MemoryStream(Encoding.UTF8.GetBytes("copy me"));
+        var putResult = await storageService.PutObjectAsync(new PutObjectRequest
+        {
+            BucketName = "ssec-src2",
+            Key = "docs/source.txt",
+            Content = uploadStream,
+            ContentType = "text/plain"
+        });
+
+        Assert.True(putResult.IsSuccess);
+
+        var destinationEncryptedCopy = await storageService.CopyObjectAsync(new CopyObjectRequest
+        {
+            SourceBucketName = "ssec-src2",
+            SourceKey = "docs/source.txt",
+            DestinationBucketName = "ssec-dst2",
+            DestinationKey = "docs/destination-encrypted.txt",
+            DestinationCustomerEncryption = CreateCustomerEncryptionSettings()
+        });
+
+        Assert.False(destinationEncryptedCopy.IsSuccess);
+        AssertUnsupportedCustomerEncryption(destinationEncryptedCopy.Error, "ssec-dst2", "docs/destination-encrypted.txt");
+
+        Assert.False((await storageService.HeadObjectAsync(new HeadObjectRequest
+        {
+            BucketName = "ssec-dst2",
+            Key = "docs/destination-encrypted.txt"
+        })).IsSuccess);
+    }
+
+    [Fact]
+    public async Task DiskStorage_InitiateMultipartUpload_RejectsCustomerEncryptionRequests()
+    {
+        await using var fixture = new DiskStorageFixture();
+        var storageService = fixture.Services.GetRequiredService<IStorageBackend>();
+
+        Assert.True((await storageService.CreateBucketAsync(new CreateBucketRequest
+        {
+            BucketName = "ssec-multipart"
+        })).IsSuccess);
+
+        var initiateResult = await storageService.InitiateMultipartUploadAsync(new InitiateMultipartUploadRequest
+        {
+            BucketName = "ssec-multipart",
+            Key = "docs/multipart.bin",
+            ContentType = "application/octet-stream",
+            CustomerEncryption = CreateCustomerEncryptionSettings()
+        });
+
+        Assert.False(initiateResult.IsSuccess);
+        AssertUnsupportedCustomerEncryption(initiateResult.Error, "ssec-multipart", "docs/multipart.bin");
+    }
+
     private static void AssertUnsupportedServerSideEncryption(StorageError? error, string bucketName, string objectKey)
     {
         var actual = Assert.IsType<StorageError>(error);
@@ -3084,6 +3616,16 @@ public sealed class DiskStorageServiceTests
         Assert.Equal(objectKey, actual.ObjectKey);
         Assert.Equal(501, actual.SuggestedHttpStatusCode);
         Assert.Contains("server-side encryption", actual.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static void AssertUnsupportedCustomerEncryption(StorageError? error, string bucketName, string objectKey)
+    {
+        var actual = Assert.IsType<StorageError>(error);
+        Assert.Equal(StorageErrorCode.UnsupportedCapability, actual.Code);
+        Assert.Equal(bucketName, actual.BucketName);
+        Assert.Equal(objectKey, actual.ObjectKey);
+        Assert.Equal(501, actual.SuggestedHttpStatusCode);
+        Assert.Contains("customer-provided encryption", actual.Message, StringComparison.OrdinalIgnoreCase);
     }
 
     private static ObjectServerSideEncryptionSettings CreateServerSideEncryptionSettings()
@@ -3096,6 +3638,18 @@ public sealed class DiskStorageServiceTests
             {
                 ["tenant"] = "tests"
             }
+        };
+    }
+
+    private static ObjectCustomerEncryptionSettings CreateCustomerEncryptionSettings()
+    {
+        var keyBytes = new byte[32];
+        System.Security.Cryptography.RandomNumberGenerator.Fill(keyBytes);
+        return new ObjectCustomerEncryptionSettings
+        {
+            Algorithm = "AES256",
+            Key = Convert.ToBase64String(keyBytes),
+            KeyMd5 = Convert.ToBase64String(System.Security.Cryptography.MD5.HashData(keyBytes))
         };
     }
 }

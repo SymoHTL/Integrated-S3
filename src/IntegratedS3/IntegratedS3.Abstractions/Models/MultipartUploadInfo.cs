@@ -11,4 +11,8 @@ public sealed class MultipartUploadInfo
     public DateTimeOffset InitiatedAtUtc { get; init; }
 
     public string? ChecksumAlgorithm { get; init; }
+
+    public ObjectServerSideEncryptionInfo? ServerSideEncryption { get; init; }
+
+    public ObjectCustomerEncryptionInfo? CustomerEncryption { get; init; }
 }

@@ -6790,6 +6790,14 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
             return false;
         }
 
+        // Content-MD5 is the standard HTTP integrity header used by rclone and other S3 clients.
+        // Unlike x-amz-checksum-* headers, Content-MD5 can coexist with them, so it is added
+        // after the multiple-checksum-type validation.
+        var contentMd5 = request.Headers[HeaderNames.ContentMD5].ToString();
+        if (!string.IsNullOrWhiteSpace(contentMd5)) {
+            parsedChecksums["md5"] = contentMd5.Trim();
+        }
+
         if (parsedChecksums.Count == 0) {
             checksums = null;
             errorResult = null;

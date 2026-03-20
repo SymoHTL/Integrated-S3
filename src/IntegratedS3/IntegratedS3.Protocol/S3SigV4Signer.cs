@@ -5,6 +5,8 @@ namespace IntegratedS3.Protocol;
 
 public static class S3SigV4Signer
 {
+    private const string TrailerSignatureHeaderName = "x-amz-trailer-signature";
+
     public static S3SigV4CanonicalRequest BuildCanonicalRequest(
         string httpMethod,
         string path,
@@ -57,6 +59,59 @@ public static class S3SigV4Signer
             credentialScope.Scope,
             canonicalRequestHashHex
         ]);
+    }
+
+    public static string BuildStreamingPayloadStringToSign(
+        DateTimeOffset requestTimestampUtc,
+        S3SigV4CredentialScope credentialScope,
+        string previousSignature,
+        string chunkContentHashHex)
+    {
+        ArgumentNullException.ThrowIfNull(credentialScope);
+        ArgumentException.ThrowIfNullOrWhiteSpace(previousSignature);
+        ArgumentException.ThrowIfNullOrWhiteSpace(chunkContentHashHex);
+
+        return string.Join('\n', [
+            "AWS4-HMAC-SHA256-PAYLOAD",
+            requestTimestampUtc.ToUniversalTime().ToString("yyyyMMdd'T'HHmmss'Z'"),
+            credentialScope.Scope,
+            previousSignature,
+            ComputeSha256Hex(string.Empty),
+            chunkContentHashHex
+        ]);
+    }
+
+    public static string BuildStreamingTrailerStringToSign(
+        DateTimeOffset requestTimestampUtc,
+        S3SigV4CredentialScope credentialScope,
+        string previousSignature,
+        string trailerHeadersHashHex)
+    {
+        ArgumentNullException.ThrowIfNull(credentialScope);
+        ArgumentException.ThrowIfNullOrWhiteSpace(previousSignature);
+        ArgumentException.ThrowIfNullOrWhiteSpace(trailerHeadersHashHex);
+
+        return string.Join('\n', [
+            "AWS4-HMAC-SHA256-TRAILER",
+            requestTimestampUtc.ToUniversalTime().ToString("yyyyMMdd'T'HHmmss'Z'"),
+            credentialScope.Scope,
+            previousSignature,
+            trailerHeadersHashHex
+        ]);
+    }
+
+    public static string BuildCanonicalStreamingTrailerHeaders(IEnumerable<KeyValuePair<string, string>> trailerHeaders)
+    {
+        ArgumentNullException.ThrowIfNull(trailerHeaders);
+
+        var canonicalTrailerHeaders = trailerHeaders
+            .Where(header => !string.Equals(header.Key, TrailerSignatureHeaderName, StringComparison.OrdinalIgnoreCase))
+            .Select(static header => new KeyValuePair<string, string>(header.Key.ToLowerInvariant(), NormalizeHeaderValue(header.Value)))
+            .GroupBy(static header => header.Key, StringComparer.Ordinal)
+            .OrderBy(static group => group.Key, StringComparer.Ordinal)
+            .Select(static group => $"{group.Key}:{string.Join(',', group.Select(static header => header.Value))}\n");
+
+        return string.Concat(canonicalTrailerHeaders);
     }
 
     public static string ComputeSignature(string secretAccessKey, S3SigV4CredentialScope credentialScope, string stringToSign)
@@ -139,7 +194,23 @@ public static class S3SigV4Signer
             return string.Empty;
         }
 
-        return AwsEncodeComponent(segment, encodeSlash: false);
+        var builder = new StringBuilder(segment.Length * 2);
+        var buffer = new byte[8];
+        for (var index = 0; index < segment.Length;) {
+            if (IsEncodedOctet(segment, index)) {
+                builder.Append('%');
+                builder.Append(char.ToUpperInvariant(segment[index + 1]));
+                builder.Append(char.ToUpperInvariant(segment[index + 2]));
+                index += 3;
+                continue;
+            }
+
+            var rune = Rune.GetRuneAt(segment, index);
+            index += rune.Utf16SequenceLength;
+            AppendEncodedRune(builder, buffer, rune, encodeSlash: false);
+        }
+
+        return builder.ToString();
     }
 
     private static string AwsEncodeQueryComponent(string value)
@@ -152,24 +223,37 @@ public static class S3SigV4Signer
         var builder = new StringBuilder(value.Length * 2);
         var buffer = new byte[8];
         foreach (var rune in value.EnumerateRunes()) {
-            if (IsUnreserved(rune)) {
-                builder.Append(rune.ToString());
-                continue;
-            }
-
-            if (!encodeSlash && rune.Value == '/') {
-                builder.Append('/');
-                continue;
-            }
-
-            var written = Encoding.UTF8.GetBytes(rune.ToString(), buffer);
-            for (var index = 0; index < written; index++) {
-                builder.Append('%');
-                builder.Append(buffer[index].ToString("X2"));
-            }
+            AppendEncodedRune(builder, buffer, rune, encodeSlash);
         }
 
         return builder.ToString();
+    }
+
+    private static bool IsEncodedOctet(string value, int index)
+    {
+        return index <= value.Length - 3
+            && value[index] == '%'
+            && Uri.IsHexDigit(value[index + 1])
+            && Uri.IsHexDigit(value[index + 2]);
+    }
+
+    private static void AppendEncodedRune(StringBuilder builder, byte[] buffer, Rune rune, bool encodeSlash)
+    {
+        if (IsUnreserved(rune)) {
+            builder.Append(rune.ToString());
+            return;
+        }
+
+        if (!encodeSlash && rune.Value == '/') {
+            builder.Append('/');
+            return;
+        }
+
+        var written = Encoding.UTF8.GetBytes(rune.ToString(), buffer);
+        for (var index = 0; index < written; index++) {
+            builder.Append('%');
+            builder.Append(buffer[index].ToString("X2"));
+        }
     }
 
     private static bool IsUnreserved(Rune rune)

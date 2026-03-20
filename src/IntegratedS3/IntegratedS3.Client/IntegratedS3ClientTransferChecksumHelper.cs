@@ -72,12 +72,20 @@ internal static class IntegratedS3ClientTransferChecksumHelper
     {
         ArgumentNullException.ThrowIfNull(response);
 
+        if (HasCompositeChecksumType(response)) {
+            return;
+        }
+
         if (!TryGetSingleHeaderValue(response, checksum.ChecksumHeaderName, out var actualChecksum)
             || string.IsNullOrWhiteSpace(actualChecksum)) {
             return;
         }
 
         var trimmedActualChecksum = actualChecksum.Trim();
+        if (IsCompositeChecksumValue(trimmedActualChecksum)) {
+            return;
+        }
+
         if (string.Equals(trimmedActualChecksum, checksum.ChecksumValue, StringComparison.Ordinal)) {
             return;
         }
@@ -90,8 +98,7 @@ internal static class IntegratedS3ClientTransferChecksumHelper
     {
         ArgumentNullException.ThrowIfNull(response);
 
-        if (TryGetSingleHeaderValue(response, ChecksumTypeHeaderName, out var checksumType)
-            && string.Equals(checksumType, "COMPOSITE", StringComparison.OrdinalIgnoreCase)) {
+        if (HasCompositeChecksumType(response)) {
             return null;
         }
 
@@ -256,6 +263,14 @@ internal static class IntegratedS3ClientTransferChecksumHelper
 
         value = null;
         return false;
+    }
+
+    private static bool HasCompositeChecksumType(HttpResponseMessage response)
+    {
+        ArgumentNullException.ThrowIfNull(response);
+
+        return TryGetSingleHeaderValue(response, ChecksumTypeHeaderName, out var checksumType)
+            && string.Equals(checksumType, "COMPOSITE", StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool IsCompositeChecksumValue(string? checksum)

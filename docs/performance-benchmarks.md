@@ -19,11 +19,18 @@ The current scenario catalog covers these hot paths:
 | `disk-mirror-put-object` | mirrored writes | write-through `PutObjectAsync(...)` across primary + replica disk backends |
 | `disk-list-objects` | list operations | `IStorageService.ListObjectsAsync(...)` against disk |
 | `service-presign-get-object` | presign generation | `IStoragePresignService.PresignObjectAsync(...)` |
+| `http-head-object-metadata` | metadata lookup | loopback HTTP `HEAD` object request with SigV4 auth |
 | `http-put-object` | object upload | loopback HTTP `PUT` object request with SigV4 auth |
+| `http-upload-multipart-part` | multipart part upload | loopback HTTP `UploadPart` request with SigV4 auth |
 | `http-get-object` | object download | loopback HTTP `GET` object request with SigV4 auth |
 | `http-list-objects` | list operations | loopback HTTP list request with SigV4 auth |
+| `aws-sdk-path-get-object-metadata` | metadata lookup | `AmazonS3Client.GetObjectMetadataAsync(...)` path-style request against the loopback S3-compatible endpoint |
+| `aws-sdk-path-put-object` | object upload | `AmazonS3Client.PutObjectAsync(...)` path-style request against the loopback S3-compatible endpoint |
+| `aws-sdk-path-upload-multipart-part` | multipart part upload | `AmazonS3Client.UploadPartAsync(...)` path-style request against the loopback S3-compatible endpoint |
+| `aws-sdk-path-get-object` | object download | `AmazonS3Client.GetObjectAsync(...)` path-style request against the loopback S3-compatible endpoint |
+| `aws-sdk-path-list-objects-v2` | list operations | `AmazonS3Client.ListObjectsV2Async(...)` path-style request against the loopback S3-compatible endpoint |
 
-The disk scenarios provide the representative provider baselines requested by Track H, while the loopback HTTP scenarios add the representative host-level `GET` / `PUT` / `LIST` baselines called out in the implementation plan.
+The disk scenarios provide the representative provider baselines requested by Track H, the loopback HTTP scenarios add the representative host-level `HEAD` / `GET` / `PUT` / multipart `UploadPart` / `LIST` baselines called out in the implementation plan, and the AWS SDK path-style scenarios now provide a broader reproducible repo-local client-comparison slice that covers both metadata lookup and request/response body flows against the S3-compatible endpoint surface.
 
 ## Running the benchmarks
 
@@ -57,11 +64,11 @@ Each scenario records:
 - thread-pool pressure snapshots
 - provider breakdown
 
-Provider-backed service scenarios record backend timing through `ProfilingStorageBackend`. Loopback HTTP scenarios bridge the server-side provider timings back to the client-side harness through a benchmark-only response header, so the resulting report can show both backend time and the remaining `application-overhead` time for the request.
+Provider-backed service scenarios record backend timing through `ProfilingStorageBackend`. Loopback HTTP scenarios bridge the server-side provider timings back to the client-side harness through a benchmark-only response header, and the AWS SDK path-style scenarios read that same header from the SDK response pipeline, so the resulting report can show both backend time and the remaining `application-overhead` time for metadata-only and body-bearing request shapes.
 
 ## Limitations
 
 - The committed baselines are machine- and environment-specific snapshots. They are intended for regression tracking, not as hard pass/fail thresholds.
 - `p95` and `p99` are only as stable as the configured iteration counts. Increase `-MeasuredIterations` when you need a stricter refresh.
 - Temp-file churn only covers benchmark-owned roots. Provider activity outside those roots is intentionally excluded.
-- The current provider-breakdown baselines focus on disk, mirrored disk, and loopback HTTP over disk. Native-S3 benchmarking can be added later once a reproducible repo-local S3 environment is part of the supported validation story.
+- The current provider-breakdown baselines focus on disk, mirrored disk, loopback HTTP over disk, and AWS SDK path-style loopback access over disk, including metadata lookup comparisons. Native-S3 benchmarking can be added later once a reproducible repo-local S3 environment is part of the supported validation story.

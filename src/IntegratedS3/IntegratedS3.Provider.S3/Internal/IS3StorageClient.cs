@@ -54,6 +54,7 @@ internal interface IS3StorageClient : IDisposable
         string bucketName,
         string key,
         string? versionId,
+        ObjectCustomerEncryptionSettings? customerEncryption,
         CancellationToken cancellationToken = default);
 
     Task<Uri> CreatePresignedGetObjectUrlAsync(
@@ -79,6 +80,7 @@ internal interface IS3StorageClient : IDisposable
         string? ifNoneMatchETag,
         DateTimeOffset? ifModifiedSinceUtc,
         DateTimeOffset? ifUnmodifiedSinceUtc,
+        ObjectCustomerEncryptionSettings? customerEncryption,
         CancellationToken cancellationToken = default);
 
     Task<ObjectRetentionInfo> GetObjectRetentionAsync(
@@ -108,6 +110,7 @@ internal interface IS3StorageClient : IDisposable
         IReadOnlyDictionary<string, string>? tags,
         IReadOnlyDictionary<string, string>? checksums,
         ObjectServerSideEncryptionSettings? serverSideEncryption,
+        ObjectCustomerEncryptionSettings? customerEncryption,
         CancellationToken cancellationToken = default);
 
     Task<S3DeleteObjectResult> DeleteObjectAsync(
@@ -138,7 +141,11 @@ internal interface IS3StorageClient : IDisposable
         bool overwriteIfExists,
         ObjectTaggingDirective taggingDirective,
         IReadOnlyDictionary<string, string>? tags,
+        string? checksumAlgorithm,
+        IReadOnlyDictionary<string, string>? checksums,
         ObjectServerSideEncryptionSettings? destinationServerSideEncryption,
+        ObjectCustomerEncryptionSettings? sourceCustomerEncryption,
+        ObjectCustomerEncryptionSettings? destinationCustomerEncryption,
         CancellationToken cancellationToken = default);
 
     Task<MultipartUploadInfo> InitiateMultipartUploadAsync(
@@ -154,6 +161,7 @@ internal interface IS3StorageClient : IDisposable
         IReadOnlyDictionary<string, string>? tags,
         string? checksumAlgorithm,
         ObjectServerSideEncryptionSettings? serverSideEncryption,
+        ObjectCustomerEncryptionSettings? customerEncryption,
         CancellationToken cancellationToken = default);
 
     Task<MultipartUploadPart> UploadMultipartPartAsync(
@@ -165,6 +173,7 @@ internal interface IS3StorageClient : IDisposable
         long? contentLength,
         string? checksumAlgorithm,
         IReadOnlyDictionary<string, string>? checksums,
+        ObjectCustomerEncryptionSettings? customerEncryption,
         CancellationToken cancellationToken = default);
 
     Task<MultipartUploadPart> UploadPartCopyAsync(

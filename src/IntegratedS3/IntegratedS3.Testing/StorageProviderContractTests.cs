@@ -391,6 +391,41 @@ public abstract class StorageProviderContractTests
             Key = "docs/history.txt"
         }), StorageErrorCode.ObjectNotFound);
 
+        RequireFailure(await storage.HeadObjectAsync(new HeadObjectRequest
+        {
+            BucketName = "contract-version-history",
+            Key = "docs/history.txt"
+        }), StorageErrorCode.ObjectNotFound);
+
+        var latestHistoricalHead = RequireSuccess(await storage.HeadObjectAsync(new HeadObjectRequest
+        {
+            BucketName = "contract-version-history",
+            Key = "docs/history.txt",
+            VersionId = v2.VersionId
+        }));
+        Assert.Equal(v2.VersionId, latestHistoricalHead.VersionId);
+        Assert.False(latestHistoricalHead.IsDeleteMarker);
+
+        var latestHistoricalObject = RequireSuccess(await storage.GetObjectAsync(new GetObjectRequest
+        {
+            BucketName = "contract-version-history",
+            Key = "docs/history.txt",
+            VersionId = v2.VersionId
+        }));
+        await using (latestHistoricalObject) {
+            Assert.Equal("version two", await ReadUtf8Async(latestHistoricalObject));
+            Assert.Equal(v2.VersionId, latestHistoricalObject.Object.VersionId);
+        }
+
+        var earliestHistoricalHead = RequireSuccess(await storage.HeadObjectAsync(new HeadObjectRequest
+        {
+            BucketName = "contract-version-history",
+            Key = "docs/history.txt",
+            VersionId = v1.VersionId
+        }));
+        Assert.Equal(v1.VersionId, earliestHistoricalHead.VersionId);
+        Assert.False(earliestHistoricalHead.IsDeleteMarker);
+
         var versions = await storage.ListObjectVersionsAsync(new ListObjectVersionsRequest
         {
             BucketName = "contract-version-history",
@@ -401,6 +436,205 @@ public abstract class StorageProviderContractTests
         Assert.Contains(versions, version => version.VersionId == deleteCurrent.VersionId && version.IsDeleteMarker && version.IsLatest);
         Assert.Contains(versions, version => version.VersionId == v1.VersionId && !version.IsDeleteMarker);
         Assert.Contains(versions, version => version.VersionId == v2.VersionId && !version.IsDeleteMarker);
+    }
+
+    [Fact]
+    public async Task ProviderContract_DeletingDeleteMarkerVersion_RestoresPreviousLatestVersion()
+    {
+        await using var fixture = await CreateInitializedFixtureAsync();
+        var storage = fixture.Backend;
+        var capabilities = await storage.GetCapabilitiesAsync();
+
+        if (!Supports(capabilities.Versioning)) {
+            return;
+        }
+
+        RequireSuccess(await storage.CreateBucketAsync(new CreateBucketRequest
+        {
+            BucketName = "contract-delete-marker-restore",
+            EnableVersioning = true
+        }));
+
+        var v1 = RequireSuccess(await storage.PutObjectAsync(new PutObjectRequest
+        {
+            BucketName = "contract-delete-marker-restore",
+            Key = "docs/history.txt",
+            Content = CreateUtf8Stream("version one"),
+            ContentType = "text/plain"
+        }));
+
+        var v2 = RequireSuccess(await storage.PutObjectAsync(new PutObjectRequest
+        {
+            BucketName = "contract-delete-marker-restore",
+            Key = "docs/history.txt",
+            Content = CreateUtf8Stream("version two"),
+            ContentType = "text/plain"
+        }));
+
+        var deleteCurrent = RequireSuccess(await storage.DeleteObjectAsync(new DeleteObjectRequest
+        {
+            BucketName = "contract-delete-marker-restore",
+            Key = "docs/history.txt"
+        }));
+        Assert.True(deleteCurrent.IsDeleteMarker);
+
+        var deleteMarkerVersionId = Assert.IsType<string>(deleteCurrent.VersionId);
+
+        var deleteMarkerDelete = RequireSuccess(await storage.DeleteObjectAsync(new DeleteObjectRequest
+        {
+            BucketName = "contract-delete-marker-restore",
+            Key = "docs/history.txt",
+            VersionId = deleteMarkerVersionId
+        }));
+        Assert.True(deleteMarkerDelete.IsDeleteMarker);
+        Assert.Equal(deleteMarkerVersionId, deleteMarkerDelete.VersionId);
+
+        var currentHead = RequireSuccess(await storage.HeadObjectAsync(new HeadObjectRequest
+        {
+            BucketName = "contract-delete-marker-restore",
+            Key = "docs/history.txt"
+        }));
+        Assert.Equal(v2.VersionId, currentHead.VersionId);
+        Assert.True(currentHead.IsLatest);
+        Assert.False(currentHead.IsDeleteMarker);
+
+        var currentObject = RequireSuccess(await storage.GetObjectAsync(new GetObjectRequest
+        {
+            BucketName = "contract-delete-marker-restore",
+            Key = "docs/history.txt"
+        }));
+        await using (currentObject) {
+            Assert.Equal("version two", await ReadUtf8Async(currentObject));
+            Assert.Equal(v2.VersionId, currentObject.Object.VersionId);
+        }
+
+        var versions = await storage.ListObjectVersionsAsync(new ListObjectVersionsRequest
+        {
+            BucketName = "contract-delete-marker-restore",
+            Prefix = "docs/history.txt"
+        }).ToArrayAsync();
+
+        Assert.Equal(2, versions.Length);
+        Assert.DoesNotContain(versions, version => version.VersionId == deleteMarkerVersionId);
+        Assert.Contains(versions, version => version.VersionId == v2.VersionId && version.IsLatest && !version.IsDeleteMarker);
+        Assert.Contains(versions, version => version.VersionId == v1.VersionId && !version.IsDeleteMarker);
+    }
+
+    [Fact]
+    public async Task ProviderContract_ListObjectVersions_PaginatesAcrossDeleteMarkersWithoutRepeatingEntries()
+    {
+        await using var fixture = await CreateInitializedFixtureAsync();
+        var storage = fixture.Backend;
+        var capabilities = await storage.GetCapabilitiesAsync();
+
+        if (!Supports(capabilities.Versioning) || !Supports(capabilities.Pagination)) {
+            return;
+        }
+
+        RequireSuccess(await storage.CreateBucketAsync(new CreateBucketRequest
+        {
+            BucketName = "contract-version-pagination",
+            EnableVersioning = true
+        }));
+
+        var v1 = RequireSuccess(await storage.PutObjectAsync(new PutObjectRequest
+        {
+            BucketName = "contract-version-pagination",
+            Key = "docs/history.txt",
+            Content = CreateUtf8Stream("version one"),
+            ContentType = "text/plain"
+        }));
+
+        var v2 = RequireSuccess(await storage.PutObjectAsync(new PutObjectRequest
+        {
+            BucketName = "contract-version-pagination",
+            Key = "docs/history.txt",
+            Content = CreateUtf8Stream("version two"),
+            ContentType = "text/plain"
+        }));
+
+        var deleteCurrent = RequireSuccess(await storage.DeleteObjectAsync(new DeleteObjectRequest
+        {
+            BucketName = "contract-version-pagination",
+            Key = "docs/history.txt"
+        }));
+        Assert.True(deleteCurrent.IsDeleteMarker);
+
+        var v3 = RequireSuccess(await storage.PutObjectAsync(new PutObjectRequest
+        {
+            BucketName = "contract-version-pagination",
+            Key = "docs/history.txt",
+            Content = CreateUtf8Stream("version three"),
+            ContentType = "text/plain"
+        }));
+
+        var secondary = RequireSuccess(await storage.PutObjectAsync(new PutObjectRequest
+        {
+            BucketName = "contract-version-pagination",
+            Key = "docs/secondary.txt",
+            Content = CreateUtf8Stream("secondary version"),
+            ContentType = "text/plain"
+        }));
+
+        var fullListing = await storage.ListObjectVersionsAsync(new ListObjectVersionsRequest
+        {
+            BucketName = "contract-version-pagination",
+            Prefix = "docs/"
+        }).ToArrayAsync();
+
+        Assert.Equal(5, fullListing.Length);
+        Assert.Contains(fullListing, version => version.VersionId == deleteCurrent.VersionId && version.IsDeleteMarker && !version.IsLatest);
+        Assert.Contains(fullListing, version => version.VersionId == v3.VersionId && version.IsLatest && !version.IsDeleteMarker);
+        Assert.Contains(fullListing, version => version.VersionId == v2.VersionId && !version.IsDeleteMarker);
+        Assert.Contains(fullListing, version => version.VersionId == v1.VersionId && !version.IsDeleteMarker);
+        Assert.Contains(fullListing, version => version.VersionId == secondary.VersionId && version.Key == "docs/secondary.txt");
+
+        var firstPage = await storage.ListObjectVersionsAsync(new ListObjectVersionsRequest
+        {
+            BucketName = "contract-version-pagination",
+            Prefix = "docs/",
+            PageSize = 2
+        }).ToArrayAsync();
+        Assert.Equal(2, firstPage.Length);
+
+        var secondPage = await storage.ListObjectVersionsAsync(new ListObjectVersionsRequest
+        {
+            BucketName = "contract-version-pagination",
+            Prefix = "docs/",
+            KeyMarker = firstPage[^1].Key,
+            VersionIdMarker = firstPage[^1].VersionId,
+            PageSize = 2
+        }).ToArrayAsync();
+        Assert.Equal(2, secondPage.Length);
+
+        var thirdPage = await storage.ListObjectVersionsAsync(new ListObjectVersionsRequest
+        {
+            BucketName = "contract-version-pagination",
+            Prefix = "docs/",
+            KeyMarker = secondPage[^1].Key,
+            VersionIdMarker = secondPage[^1].VersionId,
+            PageSize = 2
+        }).ToArrayAsync();
+        Assert.Single(thirdPage);
+
+        var exhaustedPage = await storage.ListObjectVersionsAsync(new ListObjectVersionsRequest
+        {
+            BucketName = "contract-version-pagination",
+            Prefix = "docs/",
+            KeyMarker = thirdPage[^1].Key,
+            VersionIdMarker = thirdPage[^1].VersionId,
+            PageSize = 2
+        }).ToArrayAsync();
+        Assert.Empty(exhaustedPage);
+
+        var pagedListing = firstPage.Concat(secondPage).Concat(thirdPage)
+            .Select(static version => (version.Key, version.VersionId, version.IsDeleteMarker, version.IsLatest))
+            .ToArray();
+        var fullProjection = fullListing
+            .Select(static version => (version.Key, version.VersionId, version.IsDeleteMarker, version.IsLatest))
+            .ToArray();
+
+        Assert.Equal(fullProjection, pagedListing);
     }
 
     [Fact]
@@ -872,6 +1106,112 @@ public abstract class StorageProviderContractTests
             if (Supports(capabilities.ObjectMetadata)) {
                 Assert.Equal("contract-tests", downloaded.Object.Metadata!["origin"]);
             }
+        }
+    }
+
+    [Fact]
+    public async Task ProviderContract_CopyObject_SourcePreconditionsRespectPrecedence()
+    {
+        await using var fixture = await CreateInitializedFixtureAsync();
+        var storage = fixture.Backend;
+        var capabilities = await storage.GetCapabilitiesAsync();
+
+        if (!Supports(capabilities.CopyOperations) || !Supports(capabilities.ConditionalRequests)) {
+            return;
+        }
+
+        const string payload = "copy me";
+
+        RequireSuccess(await storage.CreateBucketAsync(new CreateBucketRequest
+        {
+            BucketName = "contract-copy-precedence-source"
+        }));
+        RequireSuccess(await storage.CreateBucketAsync(new CreateBucketRequest
+        {
+            BucketName = "contract-copy-precedence-target"
+        }));
+
+        var putObject = RequireSuccess(await storage.PutObjectAsync(new PutObjectRequest
+        {
+            BucketName = "contract-copy-precedence-source",
+            Key = "docs/source.txt",
+            Content = CreateUtf8Stream(payload),
+            ContentType = "text/plain"
+        }));
+
+        var currentETag = QuoteETag(putObject.ETag);
+        var lastModifiedUtc = putObject.LastModifiedUtc;
+
+        var copiedByIfMatch = RequireSuccess(await storage.CopyObjectAsync(new CopyObjectRequest
+        {
+            SourceBucketName = "contract-copy-precedence-source",
+            SourceKey = "docs/source.txt",
+            DestinationBucketName = "contract-copy-precedence-target",
+            DestinationKey = "docs/if-match.txt",
+            SourceIfMatchETag = currentETag,
+            SourceIfUnmodifiedSinceUtc = lastModifiedUtc.AddMinutes(-5)
+        }));
+        Assert.Equal("contract-copy-precedence-target", copiedByIfMatch.BucketName);
+        Assert.Equal("docs/if-match.txt", copiedByIfMatch.Key);
+
+        var copiedIfMatchPayload = RequireSuccess(await storage.GetObjectAsync(new GetObjectRequest
+        {
+            BucketName = "contract-copy-precedence-target",
+            Key = "docs/if-match.txt"
+        }));
+        await using (copiedIfMatchPayload) {
+            Assert.Equal(payload, await ReadUtf8Async(copiedIfMatchPayload));
+        }
+
+        RequireFailure(await storage.CopyObjectAsync(new CopyObjectRequest
+        {
+            SourceBucketName = "contract-copy-precedence-source",
+            SourceKey = "docs/source.txt",
+            DestinationBucketName = "contract-copy-precedence-target",
+            DestinationKey = "docs/blocked-if-match.txt",
+            SourceIfMatchETag = "\"different\"",
+            SourceIfUnmodifiedSinceUtc = lastModifiedUtc.AddMinutes(5)
+        }), StorageErrorCode.PreconditionFailed);
+        RequireFailure(await storage.HeadObjectAsync(new HeadObjectRequest
+        {
+            BucketName = "contract-copy-precedence-target",
+            Key = "docs/blocked-if-match.txt"
+        }), StorageErrorCode.ObjectNotFound);
+
+        RequireFailure(await storage.CopyObjectAsync(new CopyObjectRequest
+        {
+            SourceBucketName = "contract-copy-precedence-source",
+            SourceKey = "docs/source.txt",
+            DestinationBucketName = "contract-copy-precedence-target",
+            DestinationKey = "docs/blocked-if-none-match.txt",
+            SourceIfNoneMatchETag = currentETag,
+            SourceIfModifiedSinceUtc = lastModifiedUtc.AddMinutes(-5)
+        }), StorageErrorCode.PreconditionFailed);
+        RequireFailure(await storage.HeadObjectAsync(new HeadObjectRequest
+        {
+            BucketName = "contract-copy-precedence-target",
+            Key = "docs/blocked-if-none-match.txt"
+        }), StorageErrorCode.ObjectNotFound);
+
+        var copiedByIfNoneMatch = RequireSuccess(await storage.CopyObjectAsync(new CopyObjectRequest
+        {
+            SourceBucketName = "contract-copy-precedence-source",
+            SourceKey = "docs/source.txt",
+            DestinationBucketName = "contract-copy-precedence-target",
+            DestinationKey = "docs/if-none-match.txt",
+            SourceIfNoneMatchETag = "\"different\"",
+            SourceIfModifiedSinceUtc = lastModifiedUtc.AddMinutes(5)
+        }));
+        Assert.Equal("contract-copy-precedence-target", copiedByIfNoneMatch.BucketName);
+        Assert.Equal("docs/if-none-match.txt", copiedByIfNoneMatch.Key);
+
+        var copiedIfNoneMatchPayload = RequireSuccess(await storage.GetObjectAsync(new GetObjectRequest
+        {
+            BucketName = "contract-copy-precedence-target",
+            Key = "docs/if-none-match.txt"
+        }));
+        await using (copiedIfNoneMatchPayload) {
+            Assert.Equal(payload, await ReadUtf8Async(copiedIfNoneMatchPayload));
         }
     }
 

@@ -22,42 +22,42 @@ $warningRules = @(
     [pscustomobject]@{
         Name = 'WebUi parameterless endpoint trim warning'
         Pattern = 'WebUiApplication\.cs.*IL2026.*MapIntegratedS3Endpoints\(IEndpointRouteBuilder\)'
-        MaxCount = 2
+        MaxCount = 0
     },
     [pscustomobject]@{
         Name = 'WebUi parameterless endpoint AOT warning'
         Pattern = 'WebUiApplication\.cs.*IL3050.*MapIntegratedS3Endpoints\(IEndpointRouteBuilder\)'
-        MaxCount = 2
+        MaxCount = 0
     },
     [pscustomobject]@{
         Name = 'WebUi configured endpoint trim warning'
         Pattern = 'WebUiApplication\.cs.*IL2026.*MapIntegratedS3Endpoints\(IEndpointRouteBuilder,\s*(?:Action<IntegratedS3EndpointOptions>|Action`1<IntegratedS3EndpointOptions>)\)'
-        MaxCount = 2
+        MaxCount = 0
     },
     [pscustomobject]@{
         Name = 'WebUi configured endpoint AOT warning'
         Pattern = 'WebUiApplication\.cs.*IL3050.*MapIntegratedS3Endpoints\(IEndpointRouteBuilder,\s*(?:Action<IntegratedS3EndpointOptions>|Action`1<IntegratedS3EndpointOptions>)\)'
-        MaxCount = 2
+        MaxCount = 0
     },
     [pscustomobject]@{
         Name = 'IntegratedS3Options trim warning'
         Pattern = 'IntegratedS3ServiceCollectionExtensions\.cs.*IL2026.*Bind<IntegratedS3Options>'
-        MaxCount = 1
+        MaxCount = 0
     },
     [pscustomobject]@{
         Name = 'IntegratedS3Options AOT warning'
         Pattern = 'IntegratedS3ServiceCollectionExtensions\.cs.*IL3050.*Bind<IntegratedS3Options>'
-        MaxCount = 1
+        MaxCount = 0
     },
     [pscustomobject]@{
         Name = 'IntegratedS3EndpointOptions trim warning'
         Pattern = 'IntegratedS3ServiceCollectionExtensions\.cs.*IL2026.*Bind<IntegratedS3EndpointOptions>'
-        MaxCount = 1
+        MaxCount = 0
     },
     [pscustomobject]@{
         Name = 'IntegratedS3EndpointOptions AOT warning'
         Pattern = 'IntegratedS3ServiceCollectionExtensions\.cs.*IL3050.*Bind<IntegratedS3EndpointOptions>'
-        MaxCount = 1
+        MaxCount = 0
     }
 )
 
@@ -67,6 +67,7 @@ $publishArguments = @(
     $resolvedProjectPath.Path,
     '-c',
     $Configuration,
+    '-t:Rebuild',
     '--self-contained',
     '-tl:off',
     '-v',

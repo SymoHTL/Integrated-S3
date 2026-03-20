@@ -1,8 +1,8 @@
 ﻿{
-  "GeneratedAtUtc": "2026-03-14T09:46:23.7416501+00:00",
+  "GeneratedAtUtc": "2026-03-16T20:51:54.0293755+00:00",
   "Environment": {
     "OsDescription": "Microsoft Windows 10.0.26200",
-    "FrameworkDescription": ".NET 10.0.3",
+    "FrameworkDescription": ".NET 10.0.4",
     "ProcessArchitecture": "X64",
     "ProcessorCount": 32,
     "ServerGc": false
@@ -23,19 +23,19 @@
         "LogicalItemCount": null
       },
       "Latency": {
-        "MeanMilliseconds": 0.7503583333333333,
-        "P50Milliseconds": 0.7133,
-        "P95Milliseconds": 0.9599,
-        "P99Milliseconds": 0.9599
+        "MeanMilliseconds": 1.152575,
+        "P50Milliseconds": 0.8642,
+        "P95Milliseconds": 2.3255,
+        "P99Milliseconds": 2.3255
       },
       "Throughput": {
-        "OperationsPerSecond": 1332.6966005130882,
+        "OperationsPerSecond": 867.6224974513589,
         "PayloadMiBPerSecond": null,
         "LogicalItemsPerSecond": null
       },
       "Allocation": {
-        "MeanBytesPerOperation": 21616.666666666668,
-        "P95BytesPerOperation": 21928
+        "MeanBytesPerOperation": 23970,
+        "P95BytesPerOperation": 27400
       },
       "LohPressure": {
         "MeanDeltaBytes": 0,
@@ -50,21 +50,21 @@
       "ThreadPool": {
         "MaxPendingWorkItemsDelta": 0,
         "MaxThreadCountDelta": 0,
-        "MinAvailableWorkerThreads": 32764,
+        "MinAvailableWorkerThreads": 32765,
         "MinAvailableIoThreads": 1000
       },
       "ProviderBreakdown": [
         {
           "ProviderName": "http-disk-primary",
-          "MeanMilliseconds": 0.082575,
-          "P95Milliseconds": 0.1312,
-          "P99Milliseconds": 0.1312
+          "MeanMilliseconds": 0.10023333333333333,
+          "P95Milliseconds": 0.1563,
+          "P99Milliseconds": 0.1563
         },
         {
           "ProviderName": "application-overhead",
-          "MeanMilliseconds": 0.6677833333333333,
-          "P95Milliseconds": 0.8542,
-          "P99Milliseconds": 0.8542
+          "MeanMilliseconds": 1.0523416666666667,
+          "P95Milliseconds": 2.1692,
+          "P99Milliseconds": 2.1692
         }
       ]
     },
@@ -79,19 +79,19 @@
         "LogicalItemCount": null
       },
       "Latency": {
-        "MeanMilliseconds": 0.36998333333333333,
-        "P50Milliseconds": 0.3482,
-        "P95Milliseconds": 0.5619,
-        "P99Milliseconds": 0.5619
+        "MeanMilliseconds": 0.6294583333333333,
+        "P50Milliseconds": 0.4918,
+        "P95Milliseconds": 1.4055,
+        "P99Milliseconds": 1.4055
       },
       "Throughput": {
-        "OperationsPerSecond": 2702.824451551872,
-        "PayloadMiBPerSecond": 168.926528221992,
+        "OperationsPerSecond": 1588.6675051300722,
+        "PayloadMiBPerSecond": 99.29171907062951,
         "LogicalItemsPerSecond": null
       },
       "Allocation": {
-        "MeanBytesPerOperation": 8320,
-        "P95BytesPerOperation": 8320
+        "MeanBytesPerOperation": 11339.333333333334,
+        "P95BytesPerOperation": 29312
       },
       "LohPressure": {
         "MeanDeltaBytes": 0,
@@ -104,7 +104,7 @@
         "MeanNetBytesDelta": 0
       },
       "ThreadPool": {
-        "MaxPendingWorkItemsDelta": 1,
+        "MaxPendingWorkItemsDelta": 0,
         "MaxThreadCountDelta": 0,
         "MinAvailableWorkerThreads": 32765,
         "MinAvailableIoThreads": 1000
@@ -112,15 +112,15 @@
       "ProviderBreakdown": [
         {
           "ProviderName": "disk-primary",
-          "MeanMilliseconds": 0.33571666666666666,
-          "P95Milliseconds": 0.515,
-          "P99Milliseconds": 0.515
+          "MeanMilliseconds": 0.5477500000000001,
+          "P95Milliseconds": 1.3206,
+          "P99Milliseconds": 1.3206
         },
         {
           "ProviderName": "application-overhead",
-          "MeanMilliseconds": 0.03426666666666666,
-          "P95Milliseconds": 0.05569999999999997,
-          "P99Milliseconds": 0.05569999999999997
+          "MeanMilliseconds": 0.08170833333333333,
+          "P95Milliseconds": 0.10249999999999998,
+          "P99Milliseconds": 0.10249999999999998
         }
       ]
     },
@@ -135,19 +135,19 @@
         "LogicalItemCount": null
       },
       "Latency": {
-        "MeanMilliseconds": 15.9066,
-        "P50Milliseconds": 16.021,
-        "P95Milliseconds": 16.9927,
-        "P99Milliseconds": 16.9927
+        "MeanMilliseconds": 25.758566666666667,
+        "P50Milliseconds": 25.1613,
+        "P95Milliseconds": 28.8738,
+        "P99Milliseconds": 28.8738
       },
       "Throughput": {
-        "OperationsPerSecond": 62.8669860309557,
-        "PayloadMiBPerSecond": 62.8669860309557,
+        "OperationsPerSecond": 38.82203590520694,
+        "PayloadMiBPerSecond": 38.82203590520694,
         "LogicalItemsPerSecond": null
       },
       "Allocation": {
-        "MeanBytesPerOperation": 110759.33333333333,
-        "P95BytesPerOperation": 111064
+        "MeanBytesPerOperation": 116743.33333333333,
+        "P95BytesPerOperation": 150216
       },
       "LohPressure": {
         "MeanDeltaBytes": 0,
@@ -162,21 +162,21 @@
       "ThreadPool": {
         "MaxPendingWorkItemsDelta": 0,
         "MaxThreadCountDelta": 0,
-        "MinAvailableWorkerThreads": 32765,
+        "MinAvailableWorkerThreads": 32766,
         "MinAvailableIoThreads": 1000
       },
       "ProviderBreakdown": [
         {
           "ProviderName": "disk-primary",
-          "MeanMilliseconds": 15.862783333333333,
-          "P95Milliseconds": 16.9592,
-          "P99Milliseconds": 16.9592
+          "MeanMilliseconds": 25.645375,
+          "P95Milliseconds": 28.7848,
+          "P99Milliseconds": 28.7848
         },
         {
           "ProviderName": "application-overhead",
-          "MeanMilliseconds": 0.04381666666666698,
-          "P95Milliseconds": 0.056699999999999307,
-          "P99Milliseconds": 0.056699999999999307
+          "MeanMilliseconds": 0.11319166666666607,
+          "P95Milliseconds": 0.1819000000000024,
+          "P99Milliseconds": 0.1819000000000024
         }
       ]
     },
@@ -191,19 +191,19 @@
         "LogicalItemCount": null
       },
       "Latency": {
-        "MeanMilliseconds": 1.1404833333333333,
-        "P50Milliseconds": 1.1563,
-        "P95Milliseconds": 1.4165,
-        "P99Milliseconds": 1.4165
+        "MeanMilliseconds": 1.8426750000000005,
+        "P50Milliseconds": 1.7083,
+        "P95Milliseconds": 2.8784,
+        "P99Milliseconds": 2.8784
       },
       "Throughput": {
-        "OperationsPerSecond": 876.8212307647344,
-        "PayloadMiBPerSecond": 3507.2849230589377,
+        "OperationsPerSecond": 542.6892968103435,
+        "PayloadMiBPerSecond": 2170.757187241374,
         "LogicalItemsPerSecond": null
       },
       "Allocation": {
-        "MeanBytesPerOperation": 32216,
-        "P95BytesPerOperation": 150952
+        "MeanBytesPerOperation": 34974.666666666664,
+        "P95BytesPerOperation": 145248
       },
       "LohPressure": {
         "MeanDeltaBytes": 0,
@@ -224,15 +224,15 @@
       "ProviderBreakdown": [
         {
           "ProviderName": "disk-primary",
-          "MeanMilliseconds": 0.345825,
-          "P95Milliseconds": 0.5119,
-          "P99Milliseconds": 0.5119
+          "MeanMilliseconds": 0.4628083333333333,
+          "P95Milliseconds": 1.1418,
+          "P99Milliseconds": 1.1418
         },
         {
           "ProviderName": "application-overhead",
-          "MeanMilliseconds": 0.7946583333333334,
-          "P95Milliseconds": 1.0598999999999998,
-          "P99Milliseconds": 1.0598999999999998
+          "MeanMilliseconds": 1.3798666666666666,
+          "P95Milliseconds": 2.3106,
+          "P99Milliseconds": 2.3106
         }
       ]
     },
@@ -247,19 +247,19 @@
         "LogicalItemCount": null
       },
       "Latency": {
-        "MeanMilliseconds": 15.427425,
-        "P50Milliseconds": 15.4945,
-        "P95Milliseconds": 16.0554,
-        "P99Milliseconds": 16.0554
+        "MeanMilliseconds": 23.646575,
+        "P50Milliseconds": 23.0738,
+        "P95Milliseconds": 27.7132,
+        "P99Milliseconds": 27.7132
       },
       "Throughput": {
-        "OperationsPerSecond": 64.8196312735275,
-        "PayloadMiBPerSecond": 129.639262547055,
+        "OperationsPerSecond": 42.28942246392977,
+        "PayloadMiBPerSecond": 84.57884492785954,
         "LogicalItemsPerSecond": null
       },
       "Allocation": {
-        "MeanBytesPerOperation": 96690.66666666667,
-        "P95BytesPerOperation": 96896
+        "MeanBytesPerOperation": 99490.66666666667,
+        "P95BytesPerOperation": 114728
       },
       "LohPressure": {
         "MeanDeltaBytes": 0,
@@ -280,15 +280,15 @@
       "ProviderBreakdown": [
         {
           "ProviderName": "disk-primary",
-          "MeanMilliseconds": 15.392208333333336,
-          "P95Milliseconds": 16.0239,
-          "P99Milliseconds": 16.0239
+          "MeanMilliseconds": 23.559941666666663,
+          "P95Milliseconds": 27.6313,
+          "P99Milliseconds": 27.6313
         },
         {
           "ProviderName": "application-overhead",
-          "MeanMilliseconds": 0.0352166666666666,
-          "P95Milliseconds": 0.04290000000000127,
-          "P99Milliseconds": 0.04290000000000127
+          "MeanMilliseconds": 0.08663333333333305,
+          "P95Milliseconds": 0.15639999999999787,
+          "P99Milliseconds": 0.15639999999999787
         }
       ]
     },
@@ -303,19 +303,19 @@
         "LogicalItemCount": null
       },
       "Latency": {
-        "MeanMilliseconds": 27.360991666666667,
-        "P50Milliseconds": 27.4489,
-        "P95Milliseconds": 29.2261,
-        "P99Milliseconds": 29.2261
+        "MeanMilliseconds": 41.818191666666664,
+        "P50Milliseconds": 41.7194,
+        "P95Milliseconds": 50.6105,
+        "P99Milliseconds": 50.6105
       },
       "Throughput": {
-        "OperationsPerSecond": 36.54838290157003,
-        "PayloadMiBPerSecond": 109.64514870471008,
+        "OperationsPerSecond": 23.91303784656718,
+        "PayloadMiBPerSecond": 71.73911353970153,
         "LogicalItemsPerSecond": null
       },
       "Allocation": {
-        "MeanBytesPerOperation": 132026.66666666666,
-        "P95BytesPerOperation": 161968
+        "MeanBytesPerOperation": 165119.33333333334,
+        "P95BytesPerOperation": 279992
       },
       "LohPressure": {
         "MeanDeltaBytes": 0,
@@ -325,7 +325,7 @@
         "MeanFilesCreated": 2,
         "MeanFilesDeleted": 8,
         "MeanFilesRenamed": 2,
-        "MeanNetBytesDelta": -3145981.9166666665
+        "MeanNetBytesDelta": -3146103.8333333335
       },
       "ThreadPool": {
         "MaxPendingWorkItemsDelta": 0,
@@ -336,15 +336,15 @@
       "ProviderBreakdown": [
         {
           "ProviderName": "disk-primary",
-          "MeanMilliseconds": 27.329333333333327,
-          "P95Milliseconds": 29.2035,
-          "P99Milliseconds": 29.2035
+          "MeanMilliseconds": 41.75351666666667,
+          "P95Milliseconds": 50.5473,
+          "P99Milliseconds": 50.5473
         },
         {
           "ProviderName": "application-overhead",
-          "MeanMilliseconds": 0.031658333333332976,
-          "P95Milliseconds": 0.05010000000000048,
-          "P99Milliseconds": 0.05010000000000048
+          "MeanMilliseconds": 0.06467499999999937,
+          "P95Milliseconds": 0.08800000000000097,
+          "P99Milliseconds": 0.08800000000000097
         }
       ]
     },
@@ -359,19 +359,19 @@
         "LogicalItemCount": null
       },
       "Latency": {
-        "MeanMilliseconds": 35.853808333333326,
-        "P50Milliseconds": 35.7682,
-        "P95Milliseconds": 39.3295,
-        "P99Milliseconds": 39.3295
+        "MeanMilliseconds": 58.125683333333335,
+        "P50Milliseconds": 57.2482,
+        "P95Milliseconds": 63.8716,
+        "P99Milliseconds": 63.8716
       },
       "Throughput": {
-        "OperationsPerSecond": 27.891039933693705,
-        "PayloadMiBPerSecond": 27.891039933693705,
+        "OperationsPerSecond": 17.204098819196677,
+        "PayloadMiBPerSecond": 17.204098819196677,
         "LogicalItemsPerSecond": null
       },
       "Allocation": {
-        "MeanBytesPerOperation": 236326.66666666666,
-        "P95BytesPerOperation": 355096
+        "MeanBytesPerOperation": 264363.3333333333,
+        "P95BytesPerOperation": 379080
       },
       "LohPressure": {
         "MeanDeltaBytes": 0,
@@ -392,21 +392,21 @@
       "ProviderBreakdown": [
         {
           "ProviderName": "disk-primary",
-          "MeanMilliseconds": 15.332133333333331,
-          "P95Milliseconds": 16.339,
-          "P99Milliseconds": 16.339
+          "MeanMilliseconds": 24.244149999999994,
+          "P95Milliseconds": 27.2242,
+          "P99Milliseconds": 27.2242
         },
         {
           "ProviderName": "disk-replica",
-          "MeanMilliseconds": 15.282691666666667,
-          "P95Milliseconds": 17.0722,
-          "P99Milliseconds": 17.0722
+          "MeanMilliseconds": 24.32183333333333,
+          "P95Milliseconds": 28.1835,
+          "P99Milliseconds": 28.1835
         },
         {
           "ProviderName": "application-overhead",
-          "MeanMilliseconds": 5.238983333333333,
-          "P95Milliseconds": 5.918300000000009,
-          "P99Milliseconds": 5.918300000000009
+          "MeanMilliseconds": 9.5597,
+          "P95Milliseconds": 11.1233,
+          "P99Milliseconds": 11.1233
         }
       ]
     },
@@ -421,19 +421,19 @@
         "LogicalItemCount": 256
       },
       "Latency": {
-        "MeanMilliseconds": 25.689333333333334,
-        "P50Milliseconds": 24.2342,
-        "P95Milliseconds": 32.1662,
-        "P99Milliseconds": 32.1662
+        "MeanMilliseconds": 42.40915833333333,
+        "P50Milliseconds": 41.3576,
+        "P95Milliseconds": 52.1014,
+        "P99Milliseconds": 52.1014
       },
       "Throughput": {
-        "OperationsPerSecond": 38.92666216847459,
+        "OperationsPerSecond": 23.57981245796162,
         "PayloadMiBPerSecond": null,
-        "LogicalItemsPerSecond": 9965.225515129496
+        "LogicalItemsPerSecond": 6036.4319892381745
       },
       "Allocation": {
-        "MeanBytesPerOperation": 1384946.6666666667,
-        "P95BytesPerOperation": 1388760
+        "MeanBytesPerOperation": 1426045.3333333333,
+        "P95BytesPerOperation": 1433528
       },
       "LohPressure": {
         "MeanDeltaBytes": 0,
@@ -454,15 +454,15 @@
       "ProviderBreakdown": [
         {
           "ProviderName": "disk-primary",
-          "MeanMilliseconds": 25.656266666666667,
-          "P95Milliseconds": 32.1368,
-          "P99Milliseconds": 32.1368
+          "MeanMilliseconds": 42.34898333333333,
+          "P95Milliseconds": 51.979,
+          "P99Milliseconds": 51.979
         },
         {
           "ProviderName": "application-overhead",
-          "MeanMilliseconds": 0.033066666666667466,
-          "P95Milliseconds": 0.05270000000000152,
-          "P99Milliseconds": 0.05270000000000152
+          "MeanMilliseconds": 0.06017499999999979,
+          "P95Milliseconds": 0.12239999999999895,
+          "P99Milliseconds": 0.12239999999999895
         }
       ]
     },
@@ -477,19 +477,19 @@
         "LogicalItemCount": null
       },
       "Latency": {
-        "MeanMilliseconds": 0.232475,
-        "P50Milliseconds": 0.2381,
-        "P95Milliseconds": 0.3745,
-        "P99Milliseconds": 0.3745
+        "MeanMilliseconds": 0.308475,
+        "P50Milliseconds": 0.2845,
+        "P95Milliseconds": 0.461,
+        "P99Milliseconds": 0.461
       },
       "Throughput": {
-        "OperationsPerSecond": 4301.537799763415,
+        "OperationsPerSecond": 3241.7537887997405,
         "PayloadMiBPerSecond": null,
         "LogicalItemsPerSecond": null
       },
       "Allocation": {
-        "MeanBytesPerOperation": 26794.666666666668,
-        "P95BytesPerOperation": 27000
+        "MeanBytesPerOperation": 28114,
+        "P95BytesPerOperation": 32448
       },
       "LohPressure": {
         "MeanDeltaBytes": 0,
@@ -510,9 +510,65 @@
       "ProviderBreakdown": [
         {
           "ProviderName": "application-overhead",
-          "MeanMilliseconds": 0.232475,
-          "P95Milliseconds": 0.3745,
-          "P99Milliseconds": 0.3745
+          "MeanMilliseconds": 0.308475,
+          "P95Milliseconds": 0.461,
+          "P99Milliseconds": 0.461
+        }
+      ]
+    },
+    {
+      "Scenario": {
+        "Id": "http-head-object-metadata",
+        "HotPath": "metadata lookup",
+        "Transport": "loopback HTTP",
+        "ProviderTopology": "ASP.NET endpoint plus disk backend",
+        "WorkloadDescription": "Send a SigV4-signed HEAD object request through the loopback HTTP host.",
+        "PayloadBytes": 65536,
+        "LogicalItemCount": null
+      },
+      "Latency": {
+        "MeanMilliseconds": 1.6053916666666668,
+        "P50Milliseconds": 1.4656,
+        "P95Milliseconds": 2.6643,
+        "P99Milliseconds": 2.6643
+      },
+      "Throughput": {
+        "OperationsPerSecond": 622.900953557543,
+        "PayloadMiBPerSecond": 38.931309597346434,
+        "LogicalItemsPerSecond": null
+      },
+      "Allocation": {
+        "MeanBytesPerOperation": 37545.333333333336,
+        "P95BytesPerOperation": 50816
+      },
+      "LohPressure": {
+        "MeanDeltaBytes": 0,
+        "MaxDeltaBytes": 0
+      },
+      "TempFileChurn": {
+        "MeanFilesCreated": 0,
+        "MeanFilesDeleted": 0,
+        "MeanFilesRenamed": 0,
+        "MeanNetBytesDelta": 0
+      },
+      "ThreadPool": {
+        "MaxPendingWorkItemsDelta": 0,
+        "MaxThreadCountDelta": 0,
+        "MinAvailableWorkerThreads": 32765,
+        "MinAvailableIoThreads": 1000
+      },
+      "ProviderBreakdown": [
+        {
+          "ProviderName": "http-disk-primary",
+          "MeanMilliseconds": 0.39466666666666655,
+          "P95Milliseconds": 0.7139,
+          "P99Milliseconds": 0.7139
+        },
+        {
+          "ProviderName": "application-overhead",
+          "MeanMilliseconds": 1.210725,
+          "P95Milliseconds": 2.3005,
+          "P99Milliseconds": 2.3005
         }
       ]
     },
@@ -527,19 +583,19 @@
         "LogicalItemCount": null
       },
       "Latency": {
-        "MeanMilliseconds": 19.803125000000005,
-        "P50Milliseconds": 17.3515,
-        "P95Milliseconds": 33.0758,
-        "P99Milliseconds": 33.0758
+        "MeanMilliseconds": 31.493783333333337,
+        "P50Milliseconds": 27.9521,
+        "P95Milliseconds": 42.9572,
+        "P99Milliseconds": 42.9572
       },
       "Throughput": {
-        "OperationsPerSecond": 50.497080637525634,
-        "PayloadMiBPerSecond": 50.497080637525634,
+        "OperationsPerSecond": 31.752298204883818,
+        "PayloadMiBPerSecond": 31.752298204883818,
         "LogicalItemsPerSecond": null
       },
       "Allocation": {
-        "MeanBytesPerOperation": 235768.66666666666,
-        "P95BytesPerOperation": 238408
+        "MeanBytesPerOperation": 242640.66666666666,
+        "P95BytesPerOperation": 256296
       },
       "LohPressure": {
         "MeanDeltaBytes": 0,
@@ -560,15 +616,71 @@
       "ProviderBreakdown": [
         {
           "ProviderName": "http-disk-primary",
-          "MeanMilliseconds": 18.881858333333334,
-          "P95Milliseconds": 32.1236,
-          "P99Milliseconds": 32.1236
+          "MeanMilliseconds": 29.969008333333335,
+          "P95Milliseconds": 40.9504,
+          "P99Milliseconds": 40.9504
         },
         {
           "ProviderName": "application-overhead",
-          "MeanMilliseconds": 0.9212666666666669,
-          "P95Milliseconds": 1.0198,
-          "P99Milliseconds": 1.0198
+          "MeanMilliseconds": 1.5247749999999998,
+          "P95Milliseconds": 2.7571999999999974,
+          "P99Milliseconds": 2.7571999999999974
+        }
+      ]
+    },
+    {
+      "Scenario": {
+        "Id": "http-upload-multipart-part",
+        "HotPath": "multipart part upload",
+        "Transport": "loopback HTTP",
+        "ProviderTopology": "ASP.NET endpoint plus disk backend",
+        "WorkloadDescription": "Send a SigV4-signed 2 MiB UploadPart request through the loopback HTTP host.",
+        "PayloadBytes": 2097152,
+        "LogicalItemCount": null
+      },
+      "Latency": {
+        "MeanMilliseconds": 36.512883333333335,
+        "P50Milliseconds": 35.0357,
+        "P95Milliseconds": 48.9924,
+        "P99Milliseconds": 48.9924
+      },
+      "Throughput": {
+        "OperationsPerSecond": 27.387593328930016,
+        "PayloadMiBPerSecond": 54.77518665786003,
+        "LogicalItemsPerSecond": null
+      },
+      "Allocation": {
+        "MeanBytesPerOperation": 253794,
+        "P95BytesPerOperation": 265896
+      },
+      "LohPressure": {
+        "MeanDeltaBytes": 0,
+        "MaxDeltaBytes": 0
+      },
+      "TempFileChurn": {
+        "MeanFilesCreated": 2,
+        "MeanFilesDeleted": 2,
+        "MeanFilesRenamed": 2,
+        "MeanNetBytesDelta": 0
+      },
+      "ThreadPool": {
+        "MaxPendingWorkItemsDelta": 0,
+        "MaxThreadCountDelta": 0,
+        "MinAvailableWorkerThreads": 32765,
+        "MinAvailableIoThreads": 1000
+      },
+      "ProviderBreakdown": [
+        {
+          "ProviderName": "http-disk-primary",
+          "MeanMilliseconds": 35.369308333333336,
+          "P95Milliseconds": 47.2296,
+          "P99Milliseconds": 47.2296
+        },
+        {
+          "ProviderName": "application-overhead",
+          "MeanMilliseconds": 1.1435750000000005,
+          "P95Milliseconds": 1.7628000000000057,
+          "P99Milliseconds": 1.7628000000000057
         }
       ]
     },
@@ -583,19 +695,19 @@
         "LogicalItemCount": null
       },
       "Latency": {
-        "MeanMilliseconds": 3.706183333333333,
-        "P50Milliseconds": 3.5075,
-        "P95Milliseconds": 4.3153,
-        "P99Milliseconds": 4.3153
+        "MeanMilliseconds": 6.148291666666665,
+        "P50Milliseconds": 6.1275,
+        "P95Milliseconds": 8.3138,
+        "P99Milliseconds": 8.3138
       },
       "Throughput": {
-        "OperationsPerSecond": 269.8193559411974,
-        "PayloadMiBPerSecond": 1079.2774237647895,
+        "OperationsPerSecond": 162.6468056845059,
+        "PayloadMiBPerSecond": 650.5872227380236,
         "LogicalItemsPerSecond": null
       },
       "Allocation": {
-        "MeanBytesPerOperation": 53981.333333333336,
-        "P95BytesPerOperation": 66160
+        "MeanBytesPerOperation": 77941.33333333333,
+        "P95BytesPerOperation": 191664
       },
       "LohPressure": {
         "MeanDeltaBytes": 0,
@@ -616,15 +728,15 @@
       "ProviderBreakdown": [
         {
           "ProviderName": "http-disk-primary",
-          "MeanMilliseconds": 0.2758083333333334,
-          "P95Milliseconds": 0.4193,
-          "P99Milliseconds": 0.4193
+          "MeanMilliseconds": 0.41592499999999993,
+          "P95Milliseconds": 0.6044,
+          "P99Milliseconds": 0.6044
         },
         {
           "ProviderName": "application-overhead",
-          "MeanMilliseconds": 3.4303749999999997,
-          "P95Milliseconds": 4.0859,
-          "P99Milliseconds": 4.0859
+          "MeanMilliseconds": 5.732366666666667,
+          "P95Milliseconds": 7.8432,
+          "P99Milliseconds": 7.8432
         }
       ]
     },
@@ -639,19 +751,19 @@
         "LogicalItemCount": 256
       },
       "Latency": {
-        "MeanMilliseconds": 25.602974999999997,
-        "P50Milliseconds": 24.8721,
-        "P95Milliseconds": 30.1357,
-        "P99Milliseconds": 30.1357
+        "MeanMilliseconds": 42.82581666666667,
+        "P50Milliseconds": 43.1646,
+        "P95Milliseconds": 52.8476,
+        "P99Milliseconds": 52.8476
       },
       "Throughput": {
-        "OperationsPerSecond": 39.057961037730976,
+        "OperationsPerSecond": 23.35040117935093,
         "PayloadMiBPerSecond": null,
-        "LogicalItemsPerSecond": 9998.83802565913
+        "LogicalItemsPerSecond": 5977.702701913838
       },
       "Allocation": {
-        "MeanBytesPerOperation": 1463683.3333333333,
-        "P95BytesPerOperation": 1467832
+        "MeanBytesPerOperation": 1509914,
+        "P95BytesPerOperation": 1522424
       },
       "LohPressure": {
         "MeanDeltaBytes": 0,
@@ -672,15 +784,295 @@
       "ProviderBreakdown": [
         {
           "ProviderName": "http-disk-primary",
-          "MeanMilliseconds": 24.37928333333333,
-          "P95Milliseconds": 28.8083,
-          "P99Milliseconds": 28.8083
+          "MeanMilliseconds": 41.338791666666665,
+          "P95Milliseconds": 51.66,
+          "P99Milliseconds": 51.66
         },
         {
           "ProviderName": "application-overhead",
-          "MeanMilliseconds": 1.2236916666666662,
-          "P95Milliseconds": 1.6601,
-          "P99Milliseconds": 1.6601
+          "MeanMilliseconds": 1.4870249999999998,
+          "P95Milliseconds": 2.3353000000000037,
+          "P99Milliseconds": 2.3353000000000037
+        }
+      ]
+    },
+    {
+      "Scenario": {
+        "Id": "aws-sdk-path-get-object-metadata",
+        "HotPath": "metadata lookup",
+        "Transport": "AWS SDK path-style loopback HTTP",
+        "ProviderTopology": "ASP.NET S3-compatible endpoint plus disk backend",
+        "WorkloadDescription": "Fetch object metadata through AmazonS3Client.GetObjectMetadataAsync(...) against the loopback S3-compatible endpoint.",
+        "PayloadBytes": 65536,
+        "LogicalItemCount": null
+      },
+      "Latency": {
+        "MeanMilliseconds": 1.660525,
+        "P50Milliseconds": 1.6136,
+        "P95Milliseconds": 2.2364,
+        "P99Milliseconds": 2.2364
+      },
+      "Throughput": {
+        "OperationsPerSecond": 602.2191776697128,
+        "PayloadMiBPerSecond": 37.63869860435705,
+        "LogicalItemsPerSecond": null
+      },
+      "Allocation": {
+        "MeanBytesPerOperation": 109044.66666666667,
+        "P95BytesPerOperation": 124776
+      },
+      "LohPressure": {
+        "MeanDeltaBytes": 0,
+        "MaxDeltaBytes": 0
+      },
+      "TempFileChurn": {
+        "MeanFilesCreated": 0,
+        "MeanFilesDeleted": 0,
+        "MeanFilesRenamed": 0,
+        "MeanNetBytesDelta": 0
+      },
+      "ThreadPool": {
+        "MaxPendingWorkItemsDelta": 0,
+        "MaxThreadCountDelta": 0,
+        "MinAvailableWorkerThreads": 32765,
+        "MinAvailableIoThreads": 1000
+      },
+      "ProviderBreakdown": [
+        {
+          "ProviderName": "http-disk-primary",
+          "MeanMilliseconds": 0.3311416666666666,
+          "P95Milliseconds": 0.4773,
+          "P99Milliseconds": 0.4773
+        },
+        {
+          "ProviderName": "application-overhead",
+          "MeanMilliseconds": 1.3293833333333331,
+          "P95Milliseconds": 1.9826000000000001,
+          "P99Milliseconds": 1.9826000000000001
+        }
+      ]
+    },
+    {
+      "Scenario": {
+        "Id": "aws-sdk-path-put-object",
+        "HotPath": "object upload",
+        "Transport": "AWS SDK path-style loopback HTTP",
+        "ProviderTopology": "ASP.NET S3-compatible endpoint plus disk backend",
+        "WorkloadDescription": "Upload a 1 MiB object through AmazonS3Client against the loopback S3-compatible endpoint.",
+        "PayloadBytes": 1048576,
+        "LogicalItemCount": null
+      },
+      "Latency": {
+        "MeanMilliseconds": 32.036750000000005,
+        "P50Milliseconds": 31.4445,
+        "P95Milliseconds": 35.1904,
+        "P99Milliseconds": 35.1904
+      },
+      "Throughput": {
+        "OperationsPerSecond": 31.214152496742017,
+        "PayloadMiBPerSecond": 31.214152496742017,
+        "LogicalItemsPerSecond": null
+      },
+      "Allocation": {
+        "MeanBytesPerOperation": 332042.6666666667,
+        "P95BytesPerOperation": 403912
+      },
+      "LohPressure": {
+        "MeanDeltaBytes": 0,
+        "MaxDeltaBytes": 0
+      },
+      "TempFileChurn": {
+        "MeanFilesCreated": 2,
+        "MeanFilesDeleted": 2,
+        "MeanFilesRenamed": 2,
+        "MeanNetBytesDelta": 0
+      },
+      "ThreadPool": {
+        "MaxPendingWorkItemsDelta": 0,
+        "MaxThreadCountDelta": 1,
+        "MinAvailableWorkerThreads": 32765,
+        "MinAvailableIoThreads": 1000
+      },
+      "ProviderBreakdown": [
+        {
+          "ProviderName": "http-disk-primary",
+          "MeanMilliseconds": 25.928733333333327,
+          "P95Milliseconds": 28.7514,
+          "P99Milliseconds": 28.7514
+        },
+        {
+          "ProviderName": "application-overhead",
+          "MeanMilliseconds": 6.108016666666667,
+          "P95Milliseconds": 6.980600000000003,
+          "P99Milliseconds": 6.980600000000003
+        }
+      ]
+    },
+    {
+      "Scenario": {
+        "Id": "aws-sdk-path-upload-multipart-part",
+        "HotPath": "multipart part upload",
+        "Transport": "AWS SDK path-style loopback HTTP",
+        "ProviderTopology": "ASP.NET S3-compatible endpoint plus disk backend",
+        "WorkloadDescription": "Upload a 2 MiB multipart part through AmazonS3Client against the loopback S3-compatible endpoint.",
+        "PayloadBytes": 2097152,
+        "LogicalItemCount": null
+      },
+      "Latency": {
+        "MeanMilliseconds": 37.30927500000001,
+        "P50Milliseconds": 36.6316,
+        "P95Milliseconds": 47.9546,
+        "P99Milliseconds": 47.9546
+      },
+      "Throughput": {
+        "OperationsPerSecond": 26.802986656803167,
+        "PayloadMiBPerSecond": 53.605973313606334,
+        "LogicalItemsPerSecond": null
+      },
+      "Allocation": {
+        "MeanBytesPerOperation": 373804,
+        "P95BytesPerOperation": 725880
+      },
+      "LohPressure": {
+        "MeanDeltaBytes": 0,
+        "MaxDeltaBytes": 0
+      },
+      "TempFileChurn": {
+        "MeanFilesCreated": 1,
+        "MeanFilesDeleted": 1,
+        "MeanFilesRenamed": 1,
+        "MeanNetBytesDelta": 0
+      },
+      "ThreadPool": {
+        "MaxPendingWorkItemsDelta": 1,
+        "MaxThreadCountDelta": 0,
+        "MinAvailableWorkerThreads": 32765,
+        "MinAvailableIoThreads": 1000
+      },
+      "ProviderBreakdown": [
+        {
+          "ProviderName": "http-disk-primary",
+          "MeanMilliseconds": 26.417141666666666,
+          "P95Milliseconds": 35.2632,
+          "P99Milliseconds": 35.2632
+        },
+        {
+          "ProviderName": "application-overhead",
+          "MeanMilliseconds": 10.892133333333334,
+          "P95Milliseconds": 12.691400000000002,
+          "P99Milliseconds": 12.691400000000002
+        }
+      ]
+    },
+    {
+      "Scenario": {
+        "Id": "aws-sdk-path-get-object",
+        "HotPath": "object download",
+        "Transport": "AWS SDK path-style loopback HTTP",
+        "ProviderTopology": "ASP.NET S3-compatible endpoint plus disk backend",
+        "WorkloadDescription": "Download and drain a 4 MiB object through AmazonS3Client against the loopback S3-compatible endpoint.",
+        "PayloadBytes": 4194304,
+        "LogicalItemCount": null
+      },
+      "Latency": {
+        "MeanMilliseconds": 22.421475,
+        "P50Milliseconds": 18.2077,
+        "P95Milliseconds": 52.3871,
+        "P99Milliseconds": 52.3871
+      },
+      "Throughput": {
+        "OperationsPerSecond": 44.60009878921882,
+        "PayloadMiBPerSecond": 178.40039515687528,
+        "LogicalItemsPerSecond": null
+      },
+      "Allocation": {
+        "MeanBytesPerOperation": 188998,
+        "P95BytesPerOperation": 413792
+      },
+      "LohPressure": {
+        "MeanDeltaBytes": 0,
+        "MaxDeltaBytes": 0
+      },
+      "TempFileChurn": {
+        "MeanFilesCreated": 0,
+        "MeanFilesDeleted": 0,
+        "MeanFilesRenamed": 0,
+        "MeanNetBytesDelta": 0
+      },
+      "ThreadPool": {
+        "MaxPendingWorkItemsDelta": 0,
+        "MaxThreadCountDelta": 0,
+        "MinAvailableWorkerThreads": 32765,
+        "MinAvailableIoThreads": 1000
+      },
+      "ProviderBreakdown": [
+        {
+          "ProviderName": "http-disk-primary",
+          "MeanMilliseconds": 0.4650166666666666,
+          "P95Milliseconds": 0.9026,
+          "P99Milliseconds": 0.9026
+        },
+        {
+          "ProviderName": "application-overhead",
+          "MeanMilliseconds": 21.95645833333333,
+          "P95Milliseconds": 52.049699999999994,
+          "P99Milliseconds": 52.049699999999994
+        }
+      ]
+    },
+    {
+      "Scenario": {
+        "Id": "aws-sdk-path-list-objects-v2",
+        "HotPath": "list operations",
+        "Transport": "AWS SDK path-style loopback HTTP",
+        "ProviderTopology": "ASP.NET S3-compatible endpoint plus disk backend",
+        "WorkloadDescription": "List 256 objects through AmazonS3Client against the loopback S3-compatible endpoint.",
+        "PayloadBytes": null,
+        "LogicalItemCount": 256
+      },
+      "Latency": {
+        "MeanMilliseconds": 50.739475,
+        "P50Milliseconds": 49.962,
+        "P95Milliseconds": 59.6369,
+        "P99Milliseconds": 59.6369
+      },
+      "Throughput": {
+        "OperationsPerSecond": 19.70852083116745,
+        "PayloadMiBPerSecond": null,
+        "LogicalItemsPerSecond": 5045.3813327788675
+      },
+      "Allocation": {
+        "MeanBytesPerOperation": 2675332,
+        "P95BytesPerOperation": 2687976
+      },
+      "LohPressure": {
+        "MeanDeltaBytes": 25456,
+        "MaxDeltaBytes": 305472
+      },
+      "TempFileChurn": {
+        "MeanFilesCreated": 0,
+        "MeanFilesDeleted": 0,
+        "MeanFilesRenamed": 0,
+        "MeanNetBytesDelta": 0
+      },
+      "ThreadPool": {
+        "MaxPendingWorkItemsDelta": 0,
+        "MaxThreadCountDelta": 0,
+        "MinAvailableWorkerThreads": 32765,
+        "MinAvailableIoThreads": 1000
+      },
+      "ProviderBreakdown": [
+        {
+          "ProviderName": "http-disk-primary",
+          "MeanMilliseconds": 46.837825,
+          "P95Milliseconds": 54.1336,
+          "P99Milliseconds": 54.1336
+        },
+        {
+          "ProviderName": "application-overhead",
+          "MeanMilliseconds": 3.9016500000000005,
+          "P95Milliseconds": 6.724900000000005,
+          "P99Milliseconds": 6.724900000000005
         }
       ]
     }

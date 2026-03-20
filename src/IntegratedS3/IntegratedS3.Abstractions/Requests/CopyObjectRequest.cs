@@ -42,9 +42,17 @@ public sealed class CopyObjectRequest
 
     public ObjectServerSideEncryptionSettings? DestinationServerSideEncryption { get; init; }
 
+    public ObjectCustomerEncryptionSettings? SourceCustomerEncryption { get; init; }
+
+    public ObjectCustomerEncryptionSettings? DestinationCustomerEncryption { get; init; }
+
     public ObjectTaggingDirective TaggingDirective { get; init; } = ObjectTaggingDirective.Copy;
 
     public IReadOnlyDictionary<string, string>? Tags { get; init; }
+
+    public string? ChecksumAlgorithm { get; init; }
+
+    public IReadOnlyDictionary<string, string>? Checksums { get; init; }
 
     public bool OverwriteIfExists { get; init; } = true;
 }

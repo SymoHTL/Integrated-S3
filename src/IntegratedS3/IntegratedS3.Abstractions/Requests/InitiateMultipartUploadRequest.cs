@@ -27,4 +27,6 @@ public sealed class InitiateMultipartUploadRequest
     public string? ChecksumAlgorithm { get; init; }
 
     public ObjectServerSideEncryptionSettings? ServerSideEncryption { get; init; }
+
+    public ObjectCustomerEncryptionSettings? CustomerEncryption { get; init; }
 }

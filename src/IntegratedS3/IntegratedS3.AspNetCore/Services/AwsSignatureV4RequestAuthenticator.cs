@@ -20,9 +20,12 @@ internal sealed class AwsSignatureV4RequestAuthenticator(
     private const string AwsDateHeaderName = "x-amz-date";
     private const string AwsSecurityTokenHeaderName = "x-amz-security-token";
     private const string AwsSecurityTokenQueryKey = "X-Amz-Security-Token";
+    private const string AwsTrailerHeaderName = "x-amz-trailer";
     private const string PresignedSignatureQueryKey = "X-Amz-Signature";
     private const string UnsignedPayload = "UNSIGNED-PAYLOAD";
     private const string EmptyPayloadSha256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+    private const string StreamingAws4HmacSha256PayloadTrailer = "STREAMING-AWS4-HMAC-SHA256-PAYLOAD-TRAILER";
+    private const string StreamingUnsignedPayloadTrailer = "STREAMING-UNSIGNED-PAYLOAD-TRAILER";
 
     public ValueTask<IntegratedS3RequestAuthenticationResult> AuthenticateAsync(HttpContext httpContext, CancellationToken cancellationToken = default)
     {
@@ -125,6 +128,10 @@ internal sealed class AwsSignatureV4RequestAuthenticator(
             return IntegratedS3RequestAuthenticationResult.Failure("AuthorizationHeaderMalformed", "The authorization header must sign the 'host' header.", statusCode: 400);
         }
 
+        if (!TryValidateTrailerBackedStreamingHeaders(httpContext.Request, isPresigned: false, authorization.SignedHeaders, out var trailerHeaderErrorCode, out var trailerHeaderError, out statusCode)) {
+            return IntegratedS3RequestAuthenticationResult.Failure(trailerHeaderErrorCode!, trailerHeaderError!, statusCode);
+        }
+
         if (!TryValidateHeaderSecurityToken(authorization, credential!, out var securityTokenErrorCode, out var securityTokenError, out statusCode)) {
             return IntegratedS3RequestAuthenticationResult.Failure(securityTokenErrorCode!, securityTokenError!, statusCode);
         }
@@ -151,6 +158,7 @@ internal sealed class AwsSignatureV4RequestAuthenticator(
             return IntegratedS3RequestAuthenticationResult.Failure("SignatureDoesNotMatch", "The request signature we calculated does not match the signature you provided.");
         }
 
+        StoreAwsChunkedTrailerSigningContext(httpContext, payloadHash!, credential, authorization.CredentialScope, requestTimestampUtc);
         return IntegratedS3RequestAuthenticationResult.Success(CreatePrincipal(credential));
     }
 
@@ -189,6 +197,10 @@ internal sealed class AwsSignatureV4RequestAuthenticator(
             return IntegratedS3RequestAuthenticationResult.Failure("AuthorizationQueryParametersError", "The presigned request must sign the 'host' header.", statusCode: 400);
         }
 
+        if (!TryValidateTrailerBackedStreamingHeaders(httpContext.Request, isPresigned: true, presignedRequest.SignedHeaders, out var trailerHeaderErrorCode, out var trailerHeaderError, out statusCode)) {
+            return IntegratedS3RequestAuthenticationResult.Failure(trailerHeaderErrorCode!, trailerHeaderError!, statusCode);
+        }
+
         if (!TryValidatePresignedSecurityToken(presignedRequest, credential!, out var securityTokenErrorCode, out var securityTokenError, out statusCode)) {
             return IntegratedS3RequestAuthenticationResult.Failure(securityTokenErrorCode!, securityTokenError!, statusCode);
         }
@@ -207,6 +219,7 @@ internal sealed class AwsSignatureV4RequestAuthenticator(
             return IntegratedS3RequestAuthenticationResult.Failure("SignatureDoesNotMatch", "The presigned request signature does not match the expected signature.");
         }
 
+        StoreAwsChunkedTrailerSigningContext(httpContext, payloadHash!, credential, presignedRequest.CredentialScope, presignedRequest.SignedAtUtc);
         return IntegratedS3RequestAuthenticationResult.Success(CreatePrincipal(credential));
     }
 
@@ -285,6 +298,37 @@ internal sealed class AwsSignatureV4RequestAuthenticator(
         return true;
     }
 
+    private static bool TryValidateTrailerBackedStreamingHeaders(
+        HttpRequest request,
+        bool isPresigned,
+        IReadOnlyList<string> signedHeaders,
+        out string? errorCode,
+        out string? error,
+        out int statusCode)
+    {
+        var payloadHashHeaderValue = request.Headers[AwsContentSha256HeaderName].ToString().Trim();
+        if (!IsTrailerBackedStreamingPayloadHash(payloadHashHeaderValue)) {
+            errorCode = null;
+            error = null;
+            statusCode = 200;
+            return true;
+        }
+
+        if (signedHeaders.Contains(AwsTrailerHeaderName, StringComparer.Ordinal)) {
+            errorCode = null;
+            error = null;
+            statusCode = 200;
+            return true;
+        }
+
+        errorCode = isPresigned ? "AuthorizationQueryParametersError" : "AuthorizationHeaderMalformed";
+        error = isPresigned
+            ? $"The presigned request must sign the '{AwsTrailerHeaderName}' header when '{payloadHashHeaderValue}' is used."
+            : $"The authorization header must sign the '{AwsTrailerHeaderName}' header when '{payloadHashHeaderValue}' is used.";
+        statusCode = 400;
+        return false;
+    }
+
     private static ClaimsPrincipal CreatePrincipal(IntegratedS3AccessKeyCredential credential)
     {
         var claims = new List<Claim>
@@ -359,10 +403,34 @@ internal sealed class AwsSignatureV4RequestAuthenticator(
         out string? error,
         out int statusCode)
     {
-        var headerValue = request.Headers[AwsContentSha256HeaderName].ToString();
+        var headerValue = request.Headers[AwsContentSha256HeaderName].ToString().Trim();
         var signsPayloadHashHeader = signedHeaders.Contains(AwsContentSha256HeaderName, StringComparer.Ordinal);
+        var usesTrailerBackedPayloadHash = IsTrailerBackedStreamingPayloadHash(headerValue);
+
+        if (usesTrailerBackedPayloadHash) {
+            if (!IsAwsChunkedContent(request)) {
+                payloadHash = null;
+                error = $"The '{headerValue}' payload hash requires the 'aws-chunked' content encoding.";
+                statusCode = 400;
+                return false;
+            }
+
+            if (string.IsNullOrWhiteSpace(request.Headers[AwsTrailerHeaderName].ToString())) {
+                payloadHash = null;
+                error = $"The request must include the '{AwsTrailerHeaderName}' header when '{headerValue}' is used.";
+                statusCode = 400;
+                return false;
+            }
+        }
 
         if (isPresigned) {
+            if (usesTrailerBackedPayloadHash && !signsPayloadHashHeader) {
+                payloadHash = null;
+                error = $"The presigned request must sign the '{AwsContentSha256HeaderName}' header when '{headerValue}' is used.";
+                statusCode = 400;
+                return false;
+            }
+
             if (signsPayloadHashHeader) {
                 if (!string.IsNullOrWhiteSpace(headerValue)) {
                     payloadHash = headerValue.Trim();
@@ -401,6 +469,48 @@ internal sealed class AwsSignatureV4RequestAuthenticator(
         error = "The request must include the x-amz-content-sha256 header for signed payloads.";
         statusCode = 400;
         return false;
+    }
+
+    private static bool IsTrailerBackedStreamingPayloadHash(string? payloadHash)
+    {
+        return string.Equals(payloadHash, StreamingAws4HmacSha256PayloadTrailer, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(payloadHash, StreamingUnsignedPayloadTrailer, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsSignedTrailerBackedPayloadHash(string? payloadHash)
+    {
+        return string.Equals(payloadHash, StreamingAws4HmacSha256PayloadTrailer, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static void StoreAwsChunkedTrailerSigningContext(
+        HttpContext httpContext,
+        string payloadHash,
+        IntegratedS3AccessKeyCredential credential,
+        S3SigV4CredentialScope credentialScope,
+        DateTimeOffset requestTimestampUtc)
+    {
+        if (!IsSignedTrailerBackedPayloadHash(payloadHash)) {
+            return;
+        }
+
+        AwsChunkedTrailerSigningContextStore.Set(httpContext, new AwsChunkedTrailerSigningContext
+        {
+            CredentialScope = credentialScope,
+            SignedAtUtc = requestTimestampUtc,
+            SecretAccessKey = credential.SecretAccessKey
+        });
+    }
+
+    private static bool IsAwsChunkedContent(HttpRequest request)
+    {
+        if (!request.Headers.TryGetValue("content-encoding", out var contentEncodingValues)) {
+            return false;
+        }
+
+        return contentEncodingValues
+            .Where(static value => value is not null)
+            .SelectMany(static value => value!.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+            .Any(static value => string.Equals(value, "aws-chunked", StringComparison.OrdinalIgnoreCase));
     }
 
     private static bool TryBuildCanonicalRequest(

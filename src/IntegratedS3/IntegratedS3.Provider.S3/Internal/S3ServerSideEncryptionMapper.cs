@@ -150,4 +150,139 @@ internal static class S3ServerSideEncryptionMapper
 
     private static bool SupportsKmsKeyId(ObjectServerSideEncryptionAlgorithm algorithm)
         => algorithm is ObjectServerSideEncryptionAlgorithm.Kms or ObjectServerSideEncryptionAlgorithm.KmsDsse;
+
+    // ---------------------------------------------------------------------
+    // SSE-C (customer-provided key) mapping
+    // ---------------------------------------------------------------------
+
+    public static void ApplyCustomerEncryption(PutObjectRequest request, ObjectCustomerEncryptionSettings? settings)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        if (settings is null) return;
+
+        ApplyCustomerEncryptionCore(
+            settings,
+            m => request.ServerSideEncryptionCustomerMethod = m,
+            k => request.ServerSideEncryptionCustomerProvidedKey = k,
+            md5 => request.ServerSideEncryptionCustomerProvidedKeyMD5 = md5);
+    }
+
+    public static void ApplyCustomerEncryption(Amazon.S3.Model.GetObjectRequest request, ObjectCustomerEncryptionSettings? settings)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        if (settings is null) return;
+
+        ApplyCustomerEncryptionCore(
+            settings,
+            m => request.ServerSideEncryptionCustomerMethod = m,
+            k => request.ServerSideEncryptionCustomerProvidedKey = k,
+            md5 => request.ServerSideEncryptionCustomerProvidedKeyMD5 = md5);
+    }
+
+    public static void ApplyCustomerEncryption(GetObjectMetadataRequest request, ObjectCustomerEncryptionSettings? settings)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        if (settings is null) return;
+
+        ApplyCustomerEncryptionCore(
+            settings,
+            m => request.ServerSideEncryptionCustomerMethod = m,
+            k => request.ServerSideEncryptionCustomerProvidedKey = k,
+            md5 => request.ServerSideEncryptionCustomerProvidedKeyMD5 = md5);
+    }
+
+    public static void ApplyCustomerEncryption(InitiateMultipartUploadRequest request, ObjectCustomerEncryptionSettings? settings)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        if (settings is null) return;
+
+        ApplyCustomerEncryptionCore(
+            settings,
+            m => request.ServerSideEncryptionCustomerMethod = m,
+            k => request.ServerSideEncryptionCustomerProvidedKey = k,
+            md5 => request.ServerSideEncryptionCustomerProvidedKeyMD5 = md5);
+    }
+
+    public static void ApplyCustomerEncryption(UploadPartRequest request, ObjectCustomerEncryptionSettings? settings)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        if (settings is null) return;
+
+        ApplyCustomerEncryptionCore(
+            settings,
+            m => request.ServerSideEncryptionCustomerMethod = m,
+            k => request.ServerSideEncryptionCustomerProvidedKey = k,
+            md5 => request.ServerSideEncryptionCustomerProvidedKeyMD5 = md5);
+    }
+
+    public static void ApplyCustomerEncryption(CopyObjectRequest request, ObjectCustomerEncryptionSettings? destinationSettings)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        if (destinationSettings is null) return;
+
+        ApplyCustomerEncryptionCore(
+            destinationSettings,
+            m => request.ServerSideEncryptionCustomerMethod = m,
+            k => request.ServerSideEncryptionCustomerProvidedKey = k,
+            md5 => request.ServerSideEncryptionCustomerProvidedKeyMD5 = md5);
+    }
+
+    public static void ApplyCopySourceCustomerEncryption(CopyObjectRequest request, ObjectCustomerEncryptionSettings? sourceSettings)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        if (sourceSettings is null) return;
+
+        ApplyCustomerEncryptionCore(
+            sourceSettings,
+            m => request.CopySourceServerSideEncryptionCustomerMethod = m,
+            k => request.CopySourceServerSideEncryptionCustomerProvidedKey = k,
+            md5 => request.CopySourceServerSideEncryptionCustomerProvidedKeyMD5 = md5);
+    }
+
+    public static void ApplyCopySourceCustomerEncryption(CopyPartRequest request, ObjectCustomerEncryptionSettings? sourceSettings)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        if (sourceSettings is null) return;
+
+        ApplyCustomerEncryptionCore(
+            sourceSettings,
+            m => request.CopySourceServerSideEncryptionCustomerMethod = m,
+            k => request.CopySourceServerSideEncryptionCustomerProvidedKey = k,
+            md5 => request.CopySourceServerSideEncryptionCustomerProvidedKeyMD5 = md5);
+    }
+
+    public static void ApplyCustomerEncryption(CopyPartRequest request, ObjectCustomerEncryptionSettings? destinationSettings)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        if (destinationSettings is null) return;
+
+        ApplyCustomerEncryptionCore(
+            destinationSettings,
+            m => request.ServerSideEncryptionCustomerMethod = m,
+            k => request.ServerSideEncryptionCustomerProvidedKey = k,
+            md5 => request.ServerSideEncryptionCustomerProvidedKeyMD5 = md5);
+    }
+
+    public static ObjectCustomerEncryptionInfo? ToCustomerEncryptionInfo(string? customerAlgorithm, string? customerKeyMd5)
+    {
+        if (string.IsNullOrWhiteSpace(customerAlgorithm))
+            return null;
+
+        return new ObjectCustomerEncryptionInfo
+        {
+            Algorithm = customerAlgorithm,
+            KeyMd5 = customerKeyMd5 ?? string.Empty
+        };
+    }
+
+    private static void ApplyCustomerEncryptionCore(
+        ObjectCustomerEncryptionSettings settings,
+        Action<ServerSideEncryptionCustomerMethod> setMethod,
+        Action<string> setKey,
+        Action<string> setKeyMd5)
+    {
+        setMethod(ServerSideEncryptionCustomerMethod.AES256);
+        setKey(settings.Key);
+        setKeyMd5(settings.KeyMd5);
+    }
 }

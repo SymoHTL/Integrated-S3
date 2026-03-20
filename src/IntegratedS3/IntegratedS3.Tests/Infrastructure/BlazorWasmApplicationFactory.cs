@@ -66,6 +66,7 @@ public sealed class BlazorWasmApplicationFactory : IAsyncDisposable
         });
 
         builder.WebHost.UseTestServer();
+        builder.WebHost.UseSetting(WebHostDefaults.StaticWebAssetsKey, ResolveStaticWebAssetsManifestPath());
         builder.WebHost.UseStaticWebAssets();
         builder.Configuration.AddInMemoryCollection(new Dictionary<string, string?>
         {
@@ -93,6 +94,16 @@ public sealed class BlazorWasmApplicationFactory : IAsyncDisposable
         }
 
         return contentRootPath;
+    }
+
+    private static string ResolveStaticWebAssetsManifestPath()
+    {
+        var manifestPath = Path.Combine(AppContext.BaseDirectory, "WebUi.BlazorWasm.staticwebassets.runtime.json");
+        if (!File.Exists(manifestPath)) {
+            throw new FileNotFoundException($"Unable to locate the Blazor WebAssembly static web assets manifest at '{manifestPath}'.", manifestPath);
+        }
+
+        return manifestPath;
     }
 
     public sealed class IsolatedBlazorWasmClient(WebApplication application, string storageRootPath, HttpClient client) : IAsyncDisposable

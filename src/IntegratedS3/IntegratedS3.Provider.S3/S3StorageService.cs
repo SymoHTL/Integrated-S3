@@ -550,7 +550,7 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
 
         try
         {
-            var entry = await _client.HeadObjectAsync(request.BucketName, request.Key, request.VersionId, cancellationToken).ConfigureAwait(false);
+            var entry = await _client.HeadObjectAsync(request.BucketName, request.Key, request.VersionId, request.CustomerEncryption, cancellationToken).ConfigureAwait(false);
             if (entry is null)
             {
                 return StorageResult<ObjectInfo>.Failure(ObjectNotFound(request.BucketName, request.Key, request.VersionId));
@@ -594,6 +594,7 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
                 request.IfNoneMatchETag,
                 request.IfModifiedSinceUtc,
                 request.IfUnmodifiedSinceUtc,
+                request.CustomerEncryption,
                 cancellationToken).ConfigureAwait(false);
 
             var objectInfo = EntryToObjectInfo(request.BucketName, result.Entry);
@@ -611,7 +612,7 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
             // If-None-Match matched — not modified. Retrieve metadata to return a complete ObjectInfo.
             try
             {
-                var headEntry = await _client.HeadObjectAsync(request.BucketName, request.Key, request.VersionId, cancellationToken).ConfigureAwait(false);
+                var headEntry = await _client.HeadObjectAsync(request.BucketName, request.Key, request.VersionId, request.CustomerEncryption, cancellationToken).ConfigureAwait(false);
                 var objectInfo = headEntry is not null
                     ? EntryToObjectInfo(request.BucketName, headEntry)
                     : new ObjectInfo { BucketName = request.BucketName, Key = request.Key, VersionId = request.VersionId };
@@ -683,12 +684,18 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
 
     public async ValueTask<StorageResult<ObjectInfo>> PutObjectAsync(PutObjectRequest request, CancellationToken cancellationToken = default)
     {
-        var serverSideEncryptionError = ValidateWriteServerSideEncryptionRequest(request.ServerSideEncryption, request.BucketName, request.Key);
-        if (serverSideEncryptionError is not null)
-            return StorageResult<ObjectInfo>.Failure(serverSideEncryptionError);
-
         try
         {
+            var serverSideEncryption = request.CustomerEncryption is not null
+                ? request.ServerSideEncryption
+                : await ResolveWriteServerSideEncryptionAsync(
+                    request.BucketName,
+                    request.ServerSideEncryption,
+                    cancellationToken).ConfigureAwait(false);
+            var serverSideEncryptionError = ValidateWriteServerSideEncryptionRequest(serverSideEncryption, request.BucketName, request.Key);
+            if (serverSideEncryptionError is not null)
+                return StorageResult<ObjectInfo>.Failure(serverSideEncryptionError);
+
             var entry = await _client.PutObjectAsync(
                 request.BucketName,
                 request.Key,
@@ -703,7 +710,8 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
                 request.Metadata,
                 request.Tags,
                 request.Checksums,
-                request.ServerSideEncryption,
+                serverSideEncryption,
+                request.CustomerEncryption,
                 cancellationToken).ConfigureAwait(false);
 
             return StorageResult<ObjectInfo>.Success(EntryToObjectInfo(request.BucketName, entry));
@@ -814,15 +822,21 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
         if (sourceServerSideEncryptionError is not null)
             return StorageResult<ObjectInfo>.Failure(sourceServerSideEncryptionError);
 
-        var destinationServerSideEncryptionError = ValidateWriteServerSideEncryptionRequest(
-            request.DestinationServerSideEncryption,
-            request.DestinationBucketName,
-            request.DestinationKey);
-        if (destinationServerSideEncryptionError is not null)
-            return StorageResult<ObjectInfo>.Failure(destinationServerSideEncryptionError);
-
         try
         {
+            var destinationServerSideEncryption = request.DestinationCustomerEncryption is not null
+                ? request.DestinationServerSideEncryption
+                : await ResolveWriteServerSideEncryptionAsync(
+                    request.DestinationBucketName,
+                    request.DestinationServerSideEncryption,
+                    cancellationToken).ConfigureAwait(false);
+            var destinationServerSideEncryptionError = ValidateWriteServerSideEncryptionRequest(
+                destinationServerSideEncryption,
+                request.DestinationBucketName,
+                request.DestinationKey);
+            if (destinationServerSideEncryptionError is not null)
+                return StorageResult<ObjectInfo>.Failure(destinationServerSideEncryptionError);
+
             var copiedEntry = await _client.CopyObjectAsync(
                 request.SourceBucketName,
                 request.SourceKey,
@@ -844,13 +858,18 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
                 request.OverwriteIfExists,
                 request.TaggingDirective,
                 request.Tags,
-                request.DestinationServerSideEncryption,
+                request.ChecksumAlgorithm,
+                request.Checksums,
+                destinationServerSideEncryption,
+                request.SourceCustomerEncryption,
+                request.DestinationCustomerEncryption,
                 cancellationToken).ConfigureAwait(false);
 
             var enrichedEntry = await EnrichObjectEntryAsync(
                 request.DestinationBucketName,
                 request.DestinationKey,
                 copiedEntry,
+                request.DestinationCustomerEncryption,
                 cancellationToken).ConfigureAwait(false);
 
             return StorageResult<ObjectInfo>.Success(EntryToObjectInfo(request.DestinationBucketName, enrichedEntry));
@@ -869,12 +888,18 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
     {
         ArgumentNullException.ThrowIfNull(request);
 
-        var serverSideEncryptionError = ValidateWriteServerSideEncryptionRequest(request.ServerSideEncryption, request.BucketName, request.Key);
-        if (serverSideEncryptionError is not null)
-            return StorageResult<MultipartUploadInfo>.Failure(serverSideEncryptionError);
-
         try
         {
+            var serverSideEncryption = request.CustomerEncryption is not null
+                ? request.ServerSideEncryption
+                : await ResolveWriteServerSideEncryptionAsync(
+                    request.BucketName,
+                    request.ServerSideEncryption,
+                    cancellationToken).ConfigureAwait(false);
+            var serverSideEncryptionError = ValidateWriteServerSideEncryptionRequest(serverSideEncryption, request.BucketName, request.Key);
+            if (serverSideEncryptionError is not null)
+                return StorageResult<MultipartUploadInfo>.Failure(serverSideEncryptionError);
+
             var upload = await _client.InitiateMultipartUploadAsync(
                 request.BucketName,
                 request.Key,
@@ -887,7 +912,8 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
                 request.Metadata,
                 request.Tags,
                 request.ChecksumAlgorithm,
-                request.ServerSideEncryption,
+                serverSideEncryption,
+                request.CustomerEncryption,
                 cancellationToken).ConfigureAwait(false);
 
             return StorageResult<MultipartUploadInfo>.Success(upload);
@@ -917,6 +943,7 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
                 request.ContentLength,
                 request.ChecksumAlgorithm,
                 request.Checksums,
+                request.CustomerEncryption,
                 cancellationToken).ConfigureAwait(false);
 
             return StorageResult<MultipartUploadPart>.Success(part);
@@ -971,6 +998,7 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
                 request.BucketName,
                 request.Key,
                 completedEntry,
+                null,
                 cancellationToken).ConfigureAwait(false);
 
             return StorageResult<ObjectInfo>.Success(EntryToObjectInfo(request.BucketName, enrichedEntry));
@@ -1030,18 +1058,20 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
         RetentionMode = entry.RetentionMode,
         RetainUntilDateUtc = entry.RetainUntilDateUtc,
         LegalHoldStatus = entry.LegalHoldStatus,
-        ServerSideEncryption = entry.ServerSideEncryption
+        ServerSideEncryption = entry.ServerSideEncryption,
+        CustomerEncryption = entry.CustomerEncryption
     };
 
     private async Task<S3ObjectEntry> EnrichObjectEntryAsync(
         string bucketName,
         string key,
         S3ObjectEntry entry,
+        ObjectCustomerEncryptionSettings? customerEncryption,
         CancellationToken cancellationToken)
     {
         try
         {
-            var headEntry = await _client.HeadObjectAsync(bucketName, key, entry.VersionId, cancellationToken).ConfigureAwait(false);
+            var headEntry = await _client.HeadObjectAsync(bucketName, key, entry.VersionId, customerEncryption, cancellationToken).ConfigureAwait(false);
             return headEntry is null ? entry : MergeObjectEntries(headEntry, entry);
         }
         catch (AmazonS3Exception)
@@ -1121,7 +1151,8 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
             RetentionMode = preferred.RetentionMode ?? fallback.RetentionMode,
             RetainUntilDateUtc = preferred.RetainUntilDateUtc ?? fallback.RetainUntilDateUtc,
             LegalHoldStatus = preferred.LegalHoldStatus ?? fallback.LegalHoldStatus,
-            ServerSideEncryption = preferred.ServerSideEncryption ?? fallback.ServerSideEncryption
+            ServerSideEncryption = preferred.ServerSideEncryption ?? fallback.ServerSideEncryption,
+            CustomerEncryption = preferred.CustomerEncryption ?? fallback.CustomerEncryption
         };
     }
 
@@ -1182,6 +1213,39 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
                 $"Server-side encryption algorithm '{serverSideEncryption.Algorithm}' is not supported by the native S3 provider.",
                 bucketName,
                 key)
+        };
+    }
+
+    private async ValueTask<ObjectServerSideEncryptionSettings?> ResolveWriteServerSideEncryptionAsync(
+        string bucketName,
+        ObjectServerSideEncryptionSettings? requestedServerSideEncryption,
+        CancellationToken cancellationToken)
+    {
+        if (requestedServerSideEncryption is not null)
+            return requestedServerSideEncryption;
+
+        try
+        {
+            var bucketDefaultEncryption = await _client.GetBucketDefaultEncryptionAsync(bucketName, cancellationToken).ConfigureAwait(false);
+            return ToObjectServerSideEncryptionSettings(bucketDefaultEncryption.Rule);
+        }
+        catch (AmazonS3Exception ex) when (IsBucketDefaultEncryptionConfigurationNotFound(ex, bucketName))
+        {
+            return null;
+        }
+    }
+
+    private bool IsBucketDefaultEncryptionConfigurationNotFound(AmazonS3Exception ex, string bucketName)
+        => S3ErrorTranslator.Translate(ex, Name, bucketName).Code == StorageErrorCode.BucketEncryptionConfigurationNotFound;
+
+    private static ObjectServerSideEncryptionSettings ToObjectServerSideEncryptionSettings(BucketDefaultEncryptionRule rule)
+    {
+        ArgumentNullException.ThrowIfNull(rule);
+
+        return new ObjectServerSideEncryptionSettings
+        {
+            Algorithm = rule.Algorithm,
+            KeyId = rule.KeyId
         };
     }
 

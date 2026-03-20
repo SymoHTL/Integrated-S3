@@ -27,4 +27,12 @@ public sealed class UploadPartCopyRequest
     public DateTimeOffset? SourceIfUnmodifiedSinceUtc { get; init; }
 
     public ObjectRange? SourceRange { get; init; }
+
+    public string? ChecksumAlgorithm { get; init; }
+
+    public IReadOnlyDictionary<string, string>? Checksums { get; init; }
+
+    public ObjectCustomerEncryptionSettings? SourceCustomerEncryption { get; init; }
+
+    public ObjectCustomerEncryptionSettings? DestinationCustomerEncryption { get; init; }
 }

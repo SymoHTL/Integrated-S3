@@ -95,6 +95,48 @@ public sealed class WebUiApplicationTests
         }
     }
 
+    [Fact]
+    public async Task ConfigurePipeline_PreservesConfiguredAuthorizationWhenReferenceHostPoliciesAreAdded()
+    {
+        var rootPath = CreateRootPath();
+        Directory.CreateDirectory(rootPath);
+        WebApplication? application = null;
+
+        try {
+            var builder = CreateBuilder(rootPath, new Dictionary<string, string?>
+            {
+                ["IntegratedS3:Endpoints:BucketRouteAuthorization:RequireAuthorization"] = "true",
+                ["IntegratedS3:ReferenceHost:RoutePolicies:Bucket"] = "ReferenceHostBucketWrite"
+            });
+
+            WebUiApplication.ConfigureServices(builder);
+            ConfigureTestHeaderPassThroughPolicy(builder.Services, "ReferenceHostBucketWrite");
+
+            application = builder.Build();
+            WebUiApplication.ConfigurePipeline(application);
+            await application.StartAsync();
+
+            using var client = application.GetTestClient();
+
+            var anonymousResponse = await client.PutAsync("/integrated-s3/buckets/stacked-policy-bucket", content: null);
+            Assert.Equal(HttpStatusCode.Unauthorized, anonymousResponse.StatusCode);
+
+            client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("TestHeader", "any-value");
+
+            var authorizedResponse = await client.PutAsync("/integrated-s3/buckets/stacked-policy-bucket", content: null);
+            Assert.Equal(HttpStatusCode.Created, authorizedResponse.StatusCode);
+        }
+        finally {
+            if (application is not null) {
+                await application.DisposeAsync();
+            }
+
+            if (Directory.Exists(rootPath)) {
+                Directory.Delete(rootPath, recursive: true);
+            }
+        }
+    }
+
     private static WebApplicationBuilder CreateBuilder(string rootPath, IDictionary<string, string?> configurationValues)
     {
         ArgumentNullException.ThrowIfNull(rootPath);
@@ -133,6 +175,20 @@ public sealed class WebUiApplicationTests
                 policy.AddAuthenticationSchemes("TestHeader");
                 policy.RequireAuthenticatedUser();
                 policy.RequireClaim("scope", requiredScope);
+            });
+        });
+    }
+
+    private static void ConfigureTestHeaderPassThroughPolicy(IServiceCollection services, string policyName)
+    {
+        ArgumentNullException.ThrowIfNull(services);
+        ArgumentException.ThrowIfNullOrWhiteSpace(policyName);
+
+        services.AddAuthentication("TestHeader")
+            .AddScheme<AuthenticationSchemeOptions, TestHeaderAuthenticationHandler>("TestHeader", static _ => { });
+        services.AddAuthorization(options => {
+            options.AddPolicy(policyName, policy => {
+                policy.RequireAssertion(static _ => true);
             });
         });
     }

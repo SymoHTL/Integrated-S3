@@ -43,4 +43,6 @@ public sealed class ObjectInfo
     public ObjectLegalHoldStatus? LegalHoldStatus { get; init; }
 
     public ObjectServerSideEncryptionInfo? ServerSideEncryption { get; init; }
+
+    public ObjectCustomerEncryptionInfo? CustomerEncryption { get; init; }
 }

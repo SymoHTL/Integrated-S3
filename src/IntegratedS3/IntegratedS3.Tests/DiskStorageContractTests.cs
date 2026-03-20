@@ -9,7 +9,7 @@ public sealed class DiskStorageContractTests : StorageProviderContractTests
     {
         SupportsPlatformObjectStateStore = true,
         SupportsPlatformMultipartStateStore = true,
-        SupportedChecksumAlgorithms = ["sha256", "sha1"]
+        SupportedChecksumAlgorithms = ["crc32c", "sha256", "sha1"]
     };
 
     protected override StorageProviderContractFixture CreateFixture()

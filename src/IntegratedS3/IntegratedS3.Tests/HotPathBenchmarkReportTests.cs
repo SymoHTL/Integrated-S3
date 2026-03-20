@@ -8,16 +8,24 @@ namespace IntegratedS3.Tests;
 public sealed class HotPathBenchmarkReportTests
 {
     [Fact]
-    public void ScenarioCatalog_CoversTrackHHotPathsAndRepresentativeHttpScenarios()
+    public void ScenarioCatalog_CoversTrackHHotPathsAndRepresentativeHttpAndAwsSdkScenarios()
     {
         var scenarioIds = HotPathBenchmarkScenarioCatalog.All
             .Select(static registration => registration.Definition.Id)
             .ToArray();
 
+        Assert.Equal(19, scenarioIds.Length);
         Assert.Equal(scenarioIds.Length, scenarioIds.Distinct(StringComparer.Ordinal).Count());
+        Assert.Contains("http-head-object-metadata", scenarioIds);
         Assert.Contains("http-put-object", scenarioIds);
+        Assert.Contains("http-upload-multipart-part", scenarioIds);
         Assert.Contains("http-get-object", scenarioIds);
         Assert.Contains("http-list-objects", scenarioIds);
+        Assert.Contains("aws-sdk-path-get-object-metadata", scenarioIds);
+        Assert.Contains("aws-sdk-path-put-object", scenarioIds);
+        Assert.Contains("aws-sdk-path-upload-multipart-part", scenarioIds);
+        Assert.Contains("aws-sdk-path-get-object", scenarioIds);
+        Assert.Contains("aws-sdk-path-list-objects-v2", scenarioIds);
 
         var hotPaths = HotPathBenchmarkScenarioCatalog.All
             .Select(static registration => registration.Definition.HotPath)

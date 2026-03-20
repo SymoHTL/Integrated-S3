@@ -101,4 +101,159 @@ public sealed class S3ServerSideEncryptionMapperTests
             Assert.Equal(value, property.GetString());
         }
     }
+
+    // -----------------------------------------------------------------
+    // SSE-C (customer-provided key) tests
+    // -----------------------------------------------------------------
+
+    private static ObjectCustomerEncryptionSettings CreateTestCustomerEncryption() => new()
+    {
+        Algorithm = "AES256",
+        Key = Convert.ToBase64String(new byte[32]),
+        KeyMd5 = Convert.ToBase64String(new byte[16])
+    };
+
+    [Fact]
+    public void ApplyCustomerEncryption_PutObjectRequest_MapsAes256CustomerKey()
+    {
+        var request = new PutObjectRequest();
+        var settings = CreateTestCustomerEncryption();
+
+        S3ServerSideEncryptionMapper.ApplyCustomerEncryption(request, settings);
+
+        Assert.Equal(ServerSideEncryptionCustomerMethod.AES256, request.ServerSideEncryptionCustomerMethod);
+        Assert.Equal(settings.Key, request.ServerSideEncryptionCustomerProvidedKey);
+        Assert.Equal(settings.KeyMd5, request.ServerSideEncryptionCustomerProvidedKeyMD5);
+    }
+
+    [Fact]
+    public void ApplyCustomerEncryption_GetObjectRequest_MapsCustomerKey()
+    {
+        var request = new Amazon.S3.Model.GetObjectRequest();
+        var settings = CreateTestCustomerEncryption();
+
+        S3ServerSideEncryptionMapper.ApplyCustomerEncryption(request, settings);
+
+        Assert.Equal(ServerSideEncryptionCustomerMethod.AES256, request.ServerSideEncryptionCustomerMethod);
+        Assert.Equal(settings.Key, request.ServerSideEncryptionCustomerProvidedKey);
+        Assert.Equal(settings.KeyMd5, request.ServerSideEncryptionCustomerProvidedKeyMD5);
+    }
+
+    [Fact]
+    public void ApplyCustomerEncryption_HeadObjectRequest_MapsCustomerKey()
+    {
+        var request = new GetObjectMetadataRequest();
+        var settings = CreateTestCustomerEncryption();
+
+        S3ServerSideEncryptionMapper.ApplyCustomerEncryption(request, settings);
+
+        Assert.Equal(ServerSideEncryptionCustomerMethod.AES256, request.ServerSideEncryptionCustomerMethod);
+        Assert.Equal(settings.Key, request.ServerSideEncryptionCustomerProvidedKey);
+        Assert.Equal(settings.KeyMd5, request.ServerSideEncryptionCustomerProvidedKeyMD5);
+    }
+
+    [Fact]
+    public void ApplyCustomerEncryption_InitiateMultipartUploadRequest_MapsCustomerKey()
+    {
+        var request = new InitiateMultipartUploadRequest();
+        var settings = CreateTestCustomerEncryption();
+
+        S3ServerSideEncryptionMapper.ApplyCustomerEncryption(request, settings);
+
+        Assert.Equal(ServerSideEncryptionCustomerMethod.AES256, request.ServerSideEncryptionCustomerMethod);
+        Assert.Equal(settings.Key, request.ServerSideEncryptionCustomerProvidedKey);
+        Assert.Equal(settings.KeyMd5, request.ServerSideEncryptionCustomerProvidedKeyMD5);
+    }
+
+    [Fact]
+    public void ApplyCustomerEncryption_UploadPartRequest_MapsCustomerKey()
+    {
+        var request = new UploadPartRequest();
+        var settings = CreateTestCustomerEncryption();
+
+        S3ServerSideEncryptionMapper.ApplyCustomerEncryption(request, settings);
+
+        Assert.Equal(ServerSideEncryptionCustomerMethod.AES256, request.ServerSideEncryptionCustomerMethod);
+        Assert.Equal(settings.Key, request.ServerSideEncryptionCustomerProvidedKey);
+        Assert.Equal(settings.KeyMd5, request.ServerSideEncryptionCustomerProvidedKeyMD5);
+    }
+
+    [Fact]
+    public void ApplyCustomerEncryption_CopyObjectRequest_MapsDestinationCustomerKey()
+    {
+        var request = new CopyObjectRequest();
+        var settings = CreateTestCustomerEncryption();
+
+        S3ServerSideEncryptionMapper.ApplyCustomerEncryption(request, settings);
+
+        Assert.Equal(ServerSideEncryptionCustomerMethod.AES256, request.ServerSideEncryptionCustomerMethod);
+        Assert.Equal(settings.Key, request.ServerSideEncryptionCustomerProvidedKey);
+        Assert.Equal(settings.KeyMd5, request.ServerSideEncryptionCustomerProvidedKeyMD5);
+    }
+
+    [Fact]
+    public void ApplyCopySourceCustomerEncryption_CopyObjectRequest_MapsSourceCustomerKey()
+    {
+        var request = new CopyObjectRequest();
+        var settings = CreateTestCustomerEncryption();
+
+        S3ServerSideEncryptionMapper.ApplyCopySourceCustomerEncryption(request, settings);
+
+        Assert.Equal(ServerSideEncryptionCustomerMethod.AES256, request.CopySourceServerSideEncryptionCustomerMethod);
+        Assert.Equal(settings.Key, request.CopySourceServerSideEncryptionCustomerProvidedKey);
+        Assert.Equal(settings.KeyMd5, request.CopySourceServerSideEncryptionCustomerProvidedKeyMD5);
+    }
+
+    [Fact]
+    public void ApplyCopySourceCustomerEncryption_CopyPartRequest_MapsSourceCustomerKey()
+    {
+        var request = new CopyPartRequest();
+        var settings = CreateTestCustomerEncryption();
+
+        S3ServerSideEncryptionMapper.ApplyCopySourceCustomerEncryption(request, settings);
+
+        Assert.Equal(ServerSideEncryptionCustomerMethod.AES256, request.CopySourceServerSideEncryptionCustomerMethod);
+        Assert.Equal(settings.Key, request.CopySourceServerSideEncryptionCustomerProvidedKey);
+        Assert.Equal(settings.KeyMd5, request.CopySourceServerSideEncryptionCustomerProvidedKeyMD5);
+    }
+
+    [Fact]
+    public void ToCustomerEncryptionInfo_MapsAlgorithmAndKeyMd5()
+    {
+        var info = S3ServerSideEncryptionMapper.ToCustomerEncryptionInfo("AES256", "abc123==");
+
+        Assert.NotNull(info);
+        Assert.Equal("AES256", info!.Algorithm);
+        Assert.Equal("abc123==", info.KeyMd5);
+    }
+
+    [Fact]
+    public void ToCustomerEncryptionInfo_ReturnsNullWhenAlgorithmIsNull()
+    {
+        Assert.Null(S3ServerSideEncryptionMapper.ToCustomerEncryptionInfo(null, "abc123=="));
+        Assert.Null(S3ServerSideEncryptionMapper.ToCustomerEncryptionInfo("", "abc123=="));
+        Assert.Null(S3ServerSideEncryptionMapper.ToCustomerEncryptionInfo("  ", "abc123=="));
+    }
+
+    [Fact]
+    public void ApplyCustomerEncryption_NullSettings_DoesNothing()
+    {
+        var putRequest = new PutObjectRequest();
+        var getRequest = new Amazon.S3.Model.GetObjectRequest();
+        var headRequest = new GetObjectMetadataRequest();
+
+        S3ServerSideEncryptionMapper.ApplyCustomerEncryption(putRequest, null);
+        S3ServerSideEncryptionMapper.ApplyCustomerEncryption(getRequest, null);
+        S3ServerSideEncryptionMapper.ApplyCustomerEncryption(headRequest, null);
+
+        Assert.Null(putRequest.ServerSideEncryptionCustomerMethod);
+        Assert.Null(putRequest.ServerSideEncryptionCustomerProvidedKey);
+        Assert.Null(putRequest.ServerSideEncryptionCustomerProvidedKeyMD5);
+        Assert.Null(getRequest.ServerSideEncryptionCustomerMethod);
+        Assert.Null(getRequest.ServerSideEncryptionCustomerProvidedKey);
+        Assert.Null(getRequest.ServerSideEncryptionCustomerProvidedKeyMD5);
+        Assert.Null(headRequest.ServerSideEncryptionCustomerMethod);
+        Assert.Null(headRequest.ServerSideEncryptionCustomerProvidedKey);
+        Assert.Null(headRequest.ServerSideEncryptionCustomerProvidedKeyMD5);
+    }
 }

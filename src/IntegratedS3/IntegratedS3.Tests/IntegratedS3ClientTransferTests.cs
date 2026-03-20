@@ -656,6 +656,73 @@ public sealed class IntegratedS3ClientTransferTests(WebUiApplicationFactory fact
     }
 
     [Fact]
+    public async Task UploadStreamAsync_WithChecksumAndCompositeChecksumType_SkipsResponseChecksumValidation()
+    {
+        var capturingClient = new CapturingIntegratedS3Client();
+        await using var content = new MemoryStream(Encoding.UTF8.GetBytes("payload"));
+        using var transferClient = new HttpClient(new DelegateHttpMessageHandler((request, cancellationToken) => {
+            var response = new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new ByteArrayContent([])
+            };
+            response.Headers.TryAddWithoutValidation("x-amz-checksum-type", "COMPOSITE");
+            response.Headers.TryAddWithoutValidation("x-amz-checksum-sha256", "provider-reported-value");
+            return Task.FromResult(response);
+        }));
+
+        await capturingClient.UploadStreamAsync(
+            transferClient,
+            "bucket",
+            "key",
+            content,
+            expiresInSeconds: 60,
+            checksumAlgorithm: IntegratedS3TransferChecksumAlgorithm.Sha256,
+            contentType: "application/octet-stream");
+
+        Assert.Equal("sha256", capturingClient.LastRequest?.ChecksumAlgorithm);
+        Assert.NotNull(capturingClient.LastRequest?.Checksums);
+    }
+
+    [Fact]
+    public async Task UploadFileAsync_WithChecksumAndCompositeChecksumValue_SkipsResponseChecksumValidationAndForwardsAccessMode()
+    {
+        var capturingClient = new CapturingIntegratedS3Client();
+        var tempDir = CreateTransferTempDirectory();
+        Directory.CreateDirectory(tempDir);
+
+        try {
+            var filePath = Path.Combine(tempDir, "composite-upload.bin");
+            await File.WriteAllTextAsync(filePath, "payload");
+
+            using var transferClient = new HttpClient(new DelegateHttpMessageHandler((request, cancellationToken) => {
+                var response = new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new ByteArrayContent([])
+                };
+                response.Headers.TryAddWithoutValidation("x-amz-checksum-sha256", "multipart-checksum-3");
+                return Task.FromResult(response);
+            }));
+
+            await capturingClient.UploadFileAsync(
+                transferClient,
+                "bucket",
+                "key",
+                filePath,
+                expiresInSeconds: 60,
+                preferredAccessMode: StorageAccessMode.Delegated,
+                checksumAlgorithm: IntegratedS3TransferChecksumAlgorithm.Sha256,
+                contentType: "application/octet-stream");
+
+            Assert.Equal(StorageAccessMode.Delegated, capturingClient.LastRequest?.PreferredAccessMode);
+            Assert.Equal("sha256", capturingClient.LastRequest?.ChecksumAlgorithm);
+            Assert.NotNull(capturingClient.LastRequest?.Checksums);
+        }
+        finally {
+            Directory.Delete(tempDir, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task DownloadToStreamAsync_WithMismatchedChecksum_ThrowsInvalidDataException()
     {
         var capturingClient = new CapturingIntegratedS3Client();
@@ -745,6 +812,247 @@ public sealed class IntegratedS3ClientTransferTests(WebUiApplicationFactory fact
                 expiresInSeconds: 60);
 
             Assert.Equal("hello world", await File.ReadAllTextAsync(destPath));
+        }
+        finally {
+            Directory.Delete(tempDir, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task DownloadToFileWithResumeAsync_PartialContentWithUnexpectedRangeStart_RewritesFromStart()
+    {
+        var tempDir = CreateTransferTempDirectory();
+        Directory.CreateDirectory(tempDir);
+        try {
+            var destPath = Path.Combine(tempDir, "resume-unexpected-range-start.txt");
+            const string existingPayload = "stale-local-copy";
+            const string rewrittenPayload = "rewritten after unexpected range";
+            await File.WriteAllTextAsync(destPath, existingPayload);
+
+            var existingLength = new FileInfo(destPath).Length;
+            var capturingClient = new CapturingIntegratedS3Client();
+            var requestCount = 0;
+            using var transferClient = new HttpClient(new DelegateHttpMessageHandler((request, cancellationToken) => {
+                requestCount++;
+
+                if (requestCount == 1) {
+                    Assert.NotNull(request.Headers.Range);
+                    var range = Assert.Single(request.Headers.Range!.Ranges);
+                    Assert.Equal(existingLength, range.From);
+                    Assert.Null(range.To);
+
+                    var response = new HttpResponseMessage(HttpStatusCode.PartialContent)
+                    {
+                        Content = new ByteArrayContent(Encoding.UTF8.GetBytes("tail-only"))
+                    };
+                    response.Content.Headers.ContentRange = new ContentRangeHeaderValue(
+                        from: 0,
+                        to: "tail-only".Length - 1,
+                        length: rewrittenPayload.Length);
+                    return Task.FromResult(response);
+                }
+
+                Assert.Null(request.Headers.Range);
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new ByteArrayContent(Encoding.UTF8.GetBytes(rewrittenPayload))
+                });
+            }));
+
+            await capturingClient.DownloadToFileWithResumeAsync(
+                transferClient,
+                "bucket",
+                "key",
+                destPath,
+                expiresInSeconds: 60);
+
+            Assert.Equal(2, requestCount);
+            Assert.Equal(rewrittenPayload, await File.ReadAllTextAsync(destPath));
+        }
+        finally {
+            Directory.Delete(tempDir, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task DownloadToFileWithResumeAsync_PartialContentWithoutContentRange_RewritesFromStart()
+    {
+        var tempDir = CreateTransferTempDirectory();
+        Directory.CreateDirectory(tempDir);
+        try {
+            var destPath = Path.Combine(tempDir, "resume-missing-content-range.txt");
+            const string existingPayload = "stale-local-copy";
+            const string rewrittenPayload = "rewritten after missing content-range";
+            await File.WriteAllTextAsync(destPath, existingPayload);
+
+            var existingLength = new FileInfo(destPath).Length;
+            var capturingClient = new CapturingIntegratedS3Client();
+            var requestCount = 0;
+            using var transferClient = new HttpClient(new DelegateHttpMessageHandler((request, cancellationToken) => {
+                requestCount++;
+
+                if (requestCount == 1) {
+                    Assert.NotNull(request.Headers.Range);
+                    var range = Assert.Single(request.Headers.Range!.Ranges);
+                    Assert.Equal(existingLength, range.From);
+                    Assert.Null(range.To);
+
+                    return Task.FromResult(new HttpResponseMessage(HttpStatusCode.PartialContent)
+                    {
+                        Content = new ByteArrayContent(Encoding.UTF8.GetBytes("tail-only"))
+                    });
+                }
+
+                Assert.Null(request.Headers.Range);
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new ByteArrayContent(Encoding.UTF8.GetBytes(rewrittenPayload))
+                });
+            }));
+
+            await capturingClient.DownloadToFileWithResumeAsync(
+                transferClient,
+                "bucket",
+                "key",
+                destPath,
+                expiresInSeconds: 60);
+
+            Assert.Equal(2, requestCount);
+            Assert.Equal(rewrittenPayload, await File.ReadAllTextAsync(destPath));
+        }
+        finally {
+            Directory.Delete(tempDir, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task DownloadToFileWithResumeAsync_PartialContentWithUnexpectedRangeStart_RePresignsFollowOnRewrite()
+    {
+        var tempDir = CreateTransferTempDirectory();
+        Directory.CreateDirectory(tempDir);
+        try {
+            var destPath = Path.Combine(tempDir, "resume-unexpected-range-represign.txt");
+            const string existingPayload = "stale-local-copy";
+            const string rewrittenPayload = "rewritten after follow-on presign";
+            await File.WriteAllTextAsync(destPath, existingPayload);
+
+            var existingLength = new FileInfo(destPath).Length;
+            var capturingClient = new CapturingIntegratedS3Client(static (request, attempt) => new StoragePresignedRequest
+            {
+                Operation = request.Operation,
+                AccessMode = attempt == 1 ? StorageAccessMode.Direct : StorageAccessMode.Delegated,
+                Method = "GET",
+                Url = new Uri(
+                    attempt == 1
+                        ? "https://cdn.example.test/object.bin"
+                        : "https://provider.example.test/object.bin?retry=1",
+                    UriKind.Absolute),
+                ExpiresAtUtc = DateTimeOffset.UtcNow.AddMinutes(5),
+                BucketName = request.BucketName,
+                Key = request.Key,
+                VersionId = request.VersionId,
+                ContentType = request.ContentType
+            });
+
+            var requestCount = 0;
+            using var transferClient = new HttpClient(new DelegateHttpMessageHandler((request, cancellationToken) => {
+                requestCount++;
+
+                if (requestCount == 1) {
+                    Assert.Equal(new Uri("https://cdn.example.test/object.bin", UriKind.Absolute), request.RequestUri);
+                    Assert.NotNull(request.Headers.Range);
+                    var range = Assert.Single(request.Headers.Range!.Ranges);
+                    Assert.Equal(existingLength, range.From);
+                    Assert.Null(range.To);
+
+                    var response = new HttpResponseMessage(HttpStatusCode.PartialContent)
+                    {
+                        Content = new ByteArrayContent(Encoding.UTF8.GetBytes("tail-only"))
+                    };
+                    response.Content.Headers.ContentRange = new ContentRangeHeaderValue(
+                        from: 0,
+                        to: "tail-only".Length - 1,
+                        length: rewrittenPayload.Length);
+                    return Task.FromResult(response);
+                }
+
+                Assert.Equal(new Uri("https://provider.example.test/object.bin?retry=1", UriKind.Absolute), request.RequestUri);
+                Assert.Null(request.Headers.Range);
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new ByteArrayContent(Encoding.UTF8.GetBytes(rewrittenPayload))
+                });
+            }));
+
+            await capturingClient.DownloadToFileWithResumeAsync(
+                transferClient,
+                "bucket",
+                "key",
+                destPath,
+                expiresInSeconds: 60,
+                preferredAccessMode: StorageAccessMode.Direct);
+
+            Assert.Equal(2, requestCount);
+            Assert.Collection(
+                capturingClient.Requests,
+                request => {
+                    Assert.Equal(StoragePresignOperation.GetObject, request.Operation);
+                    Assert.Equal(StorageAccessMode.Direct, request.PreferredAccessMode);
+                },
+                request => {
+                    Assert.Equal(StoragePresignOperation.GetObject, request.Operation);
+                    Assert.Equal(StorageAccessMode.Direct, request.PreferredAccessMode);
+                });
+            Assert.Equal(rewrittenPayload, await File.ReadAllTextAsync(destPath));
+        }
+        finally {
+            Directory.Delete(tempDir, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task DownloadToFileWithResumeAsync_PartialContentChecksumMismatch_RestoresOriginalPartialFile()
+    {
+        var tempDir = CreateTransferTempDirectory();
+        Directory.CreateDirectory(tempDir);
+        try {
+            var destPath = Path.Combine(tempDir, "resume-checksum-mismatch.txt");
+            const string existingPayload = "hello ";
+            const string appendedPayload = "world";
+            await File.WriteAllTextAsync(destPath, existingPayload);
+
+            var capturingClient = new CapturingIntegratedS3Client();
+            var existingLength = new FileInfo(destPath).Length;
+            using var transferClient = new HttpClient(new DelegateHttpMessageHandler((request, cancellationToken) => {
+                Assert.Equal("GET", request.Method.Method);
+                Assert.NotNull(request.Headers.Range);
+                var range = Assert.Single(request.Headers.Range!.Ranges);
+                Assert.Equal(existingLength, range.From);
+                Assert.Null(range.To);
+
+                var response = new HttpResponseMessage(HttpStatusCode.PartialContent)
+                {
+                    Content = new ByteArrayContent(Encoding.UTF8.GetBytes(appendedPayload))
+                };
+                response.Content.Headers.ContentRange = new ContentRangeHeaderValue(
+                    existingLength,
+                    existingLength + appendedPayload.Length - 1,
+                    existingLength + appendedPayload.Length);
+                response.Headers.TryAddWithoutValidation("x-amz-checksum-sha256", ComputeSha256Base64("different-payload"));
+
+                return Task.FromResult(response);
+            }));
+
+            var exception = await Assert.ThrowsAsync<InvalidDataException>(() =>
+                capturingClient.DownloadToFileWithResumeAsync(
+                    transferClient,
+                    "bucket",
+                    "key",
+                    destPath,
+                    expiresInSeconds: 60));
+
+            Assert.Contains("SHA256", exception.Message, StringComparison.OrdinalIgnoreCase);
+            Assert.Equal(existingPayload, await File.ReadAllTextAsync(destPath));
         }
         finally {
             Directory.Delete(tempDir, recursive: true);
@@ -880,6 +1188,91 @@ public sealed class IntegratedS3ClientTransferTests(WebUiApplicationFactory fact
                 expiresInSeconds: 60);
 
             Assert.Equal(2, requestCount);
+            Assert.Equal(rewrittenPayload, await File.ReadAllTextAsync(destPath));
+        }
+        finally {
+            Directory.Delete(tempDir, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task DownloadToFileWithResumeAsync_RequestedRangeNotSatisfiableWithMismatchedLength_RePresignsFollowOnRewrite()
+    {
+        var tempDir = CreateTransferTempDirectory();
+        Directory.CreateDirectory(tempDir);
+        try {
+            var destPath = Path.Combine(tempDir, "range-mismatch-represign.txt");
+            const string existingPayload = "stale-local-copy";
+            const string rewrittenPayload = "rewritten after 416 follow-on presign";
+            await File.WriteAllTextAsync(destPath, existingPayload);
+
+            var existingLength = new FileInfo(destPath).Length;
+            var capturingClient = new CapturingIntegratedS3Client(static (request, attempt) => new StoragePresignedRequest
+            {
+                Operation = request.Operation,
+                AccessMode = attempt == 1 ? StorageAccessMode.Delegated : StorageAccessMode.Proxy,
+                Method = "GET",
+                Url = new Uri(
+                    attempt == 1
+                        ? "https://provider.example.test/object.bin?first=1"
+                        : "https://proxy.example.test/integrated-s3/object.bin?retry=1",
+                    UriKind.Absolute),
+                ExpiresAtUtc = DateTimeOffset.UtcNow.AddMinutes(5),
+                BucketName = request.BucketName,
+                Key = request.Key,
+                VersionId = request.VersionId,
+                ContentType = request.ContentType
+            });
+
+            var requestCount = 0;
+            using var transferClient = new HttpClient(new DelegateHttpMessageHandler((request, cancellationToken) => {
+                requestCount++;
+
+                if (requestCount == 1) {
+                    Assert.Equal(new Uri("https://provider.example.test/object.bin?first=1", UriKind.Absolute), request.RequestUri);
+                    Assert.NotNull(request.Headers.Range);
+                    var range = Assert.Single(request.Headers.Range!.Ranges);
+                    Assert.Equal(existingLength, range.From);
+                    Assert.Null(range.To);
+
+                    var response = new HttpResponseMessage(HttpStatusCode.RequestedRangeNotSatisfiable)
+                    {
+                        Content = new ByteArrayContent([])
+                    };
+                    response.Content.Headers.ContentRange = new ContentRangeHeaderValue(existingLength + 10);
+                    return Task.FromResult(response);
+                }
+
+                Assert.Equal(new Uri("https://proxy.example.test/integrated-s3/object.bin?retry=1", UriKind.Absolute), request.RequestUri);
+                Assert.Null(request.Headers.Range);
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new ByteArrayContent(Encoding.UTF8.GetBytes(rewrittenPayload))
+                });
+            }));
+
+            await capturingClient.DownloadToFileWithResumeAsync(
+                transferClient,
+                "bucket",
+                "key",
+                destPath,
+                expiresInSeconds: 60,
+                preferredAccessMode: StorageAccessMode.Delegated,
+                versionId: "v-42");
+
+            Assert.Equal(2, requestCount);
+            Assert.Collection(
+                capturingClient.Requests,
+                request => {
+                    Assert.Equal(StoragePresignOperation.GetObject, request.Operation);
+                    Assert.Equal(StorageAccessMode.Delegated, request.PreferredAccessMode);
+                    Assert.Equal("v-42", request.VersionId);
+                },
+                request => {
+                    Assert.Equal(StoragePresignOperation.GetObject, request.Operation);
+                    Assert.Equal(StorageAccessMode.Delegated, request.PreferredAccessMode);
+                    Assert.Equal("v-42", request.VersionId);
+                });
             Assert.Equal(rewrittenPayload, await File.ReadAllTextAsync(destPath));
         }
         finally {
@@ -1065,7 +1458,18 @@ public sealed class IntegratedS3ClientTransferTests(WebUiApplicationFactory fact
     /// </summary>
     private sealed class CapturingIntegratedS3Client : IIntegratedS3Client
     {
-        public StoragePresignRequest? LastRequest { get; private set; }
+        private readonly Func<StoragePresignRequest, int, StoragePresignedRequest>? _responseFactory;
+        private readonly List<StoragePresignRequest> _requests = [];
+
+        public CapturingIntegratedS3Client(
+            Func<StoragePresignRequest, int, StoragePresignedRequest>? responseFactory = null)
+        {
+            _responseFactory = responseFactory;
+        }
+
+        public StoragePresignRequest? LastRequest => _requests.LastOrDefault();
+
+        public IReadOnlyList<StoragePresignRequest> Requests => _requests;
 
         public ValueTask<StoragePresignedRequest> PresignObjectAsync(
             StoragePresignRequest request,
@@ -1074,8 +1478,8 @@ public sealed class IntegratedS3ClientTransferTests(WebUiApplicationFactory fact
             ArgumentNullException.ThrowIfNull(request);
             cancellationToken.ThrowIfCancellationRequested();
 
-            LastRequest = request;
-            return ValueTask.FromResult(new StoragePresignedRequest
+            _requests.Add(request);
+            return ValueTask.FromResult(_responseFactory?.Invoke(request, _requests.Count) ?? new StoragePresignedRequest
             {
                 Operation = request.Operation,
                 AccessMode = request.PreferredAccessMode ?? StorageAccessMode.Proxy,

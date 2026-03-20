@@ -1,25 +1,32 @@
 ﻿# IntegratedS3 hot-path benchmark baselines
 
-Generated: `2026-03-14T09:46:23.7416501+00:00`
+Generated: `2026-03-16T20:51:54.0293755+00:00`
 
-Environment: `Microsoft Windows 10.0.26200` | `.NET 10.0.3` | `X64` | `32` logical processors | server GC: `False`
+Environment: `Microsoft Windows 10.0.26200` | `.NET 10.0.4` | `X64` | `32` logical processors | server GC: `False`
 
 Configuration: warmup `2`, measured `12`
 
 | Scenario | Hot path | Transport | Topology | p50 ms | p95 ms | p99 ms | Ops/s | MiB/s | Items/s | Alloc KB/op |
 | --- | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| http-sigv4-head-bucket-auth | request auth/signature validation | loopback HTTP | ASP.NET endpoint plus disk backend | 0.713 | 0.96 | 0.96 | 1332.697 | - | - | 21.11 |
-| disk-head-object-metadata | metadata lookup | in-process service | single disk backend | 0.348 | 0.562 | 0.562 | 2702.824 | 168.927 | - | 8.125 |
-| disk-put-object | object upload | in-process service | single disk backend | 16.021 | 16.993 | 16.993 | 62.867 | 62.867 | - | 108.163 |
-| disk-get-object | object download | in-process service | single disk backend | 1.156 | 1.417 | 1.417 | 876.821 | 3507.285 | - | 31.461 |
-| disk-upload-multipart-part | multipart part upload | in-process service | single disk backend | 15.495 | 16.055 | 16.055 | 64.82 | 129.639 | - | 94.424 |
-| disk-complete-multipart-upload | multipart complete | in-process service | single disk backend | 27.449 | 29.226 | 29.226 | 36.548 | 109.645 | - | 128.932 |
-| disk-mirror-put-object | mirrored writes | in-process service | write-through primary plus replica disk backends | 35.768 | 39.33 | 39.33 | 27.891 | 27.891 | - | 230.788 |
-| disk-list-objects | list operations | in-process service | single disk backend | 24.234 | 32.166 | 32.166 | 38.927 | - | 9965.226 | 1352.487 |
-| service-presign-get-object | presign generation | in-process service | first-party HTTP presign strategy | 0.238 | 0.375 | 0.375 | 4301.538 | - | - | 26.167 |
-| http-put-object | object upload | loopback HTTP | ASP.NET endpoint plus disk backend | 17.352 | 33.076 | 33.076 | 50.497 | 50.497 | - | 230.243 |
-| http-get-object | object download | loopback HTTP | ASP.NET endpoint plus disk backend | 3.508 | 4.315 | 4.315 | 269.819 | 1079.277 | - | 52.716 |
-| http-list-objects | list operations | loopback HTTP | ASP.NET endpoint plus disk backend | 24.872 | 30.136 | 30.136 | 39.058 | - | 9998.838 | 1429.378 |
+| http-sigv4-head-bucket-auth | request auth/signature validation | loopback HTTP | ASP.NET endpoint plus disk backend | 0.864 | 2.326 | 2.326 | 867.622 | - | - | 23.408 |
+| disk-head-object-metadata | metadata lookup | in-process service | single disk backend | 0.492 | 1.406 | 1.406 | 1588.668 | 99.292 | - | 11.074 |
+| disk-put-object | object upload | in-process service | single disk backend | 25.161 | 28.874 | 28.874 | 38.822 | 38.822 | - | 114.007 |
+| disk-get-object | object download | in-process service | single disk backend | 1.708 | 2.878 | 2.878 | 542.689 | 2170.757 | - | 34.155 |
+| disk-upload-multipart-part | multipart part upload | in-process service | single disk backend | 23.074 | 27.713 | 27.713 | 42.289 | 84.579 | - | 97.159 |
+| disk-complete-multipart-upload | multipart complete | in-process service | single disk backend | 41.719 | 50.611 | 50.611 | 23.913 | 71.739 | - | 161.249 |
+| disk-mirror-put-object | mirrored writes | in-process service | write-through primary plus replica disk backends | 57.248 | 63.872 | 63.872 | 17.204 | 17.204 | - | 258.167 |
+| disk-list-objects | list operations | in-process service | single disk backend | 41.358 | 52.101 | 52.101 | 23.58 | - | 6036.432 | 1392.622 |
+| service-presign-get-object | presign generation | in-process service | first-party HTTP presign strategy | 0.285 | 0.461 | 0.461 | 3241.754 | - | - | 27.455 |
+| http-head-object-metadata | metadata lookup | loopback HTTP | ASP.NET endpoint plus disk backend | 1.466 | 2.664 | 2.664 | 622.901 | 38.931 | - | 36.665 |
+| http-put-object | object upload | loopback HTTP | ASP.NET endpoint plus disk backend | 27.952 | 42.957 | 42.957 | 31.752 | 31.752 | - | 236.954 |
+| http-upload-multipart-part | multipart part upload | loopback HTTP | ASP.NET endpoint plus disk backend | 35.036 | 48.992 | 48.992 | 27.388 | 54.775 | - | 247.846 |
+| http-get-object | object download | loopback HTTP | ASP.NET endpoint plus disk backend | 6.128 | 8.314 | 8.314 | 162.647 | 650.587 | - | 76.115 |
+| http-list-objects | list operations | loopback HTTP | ASP.NET endpoint plus disk backend | 43.165 | 52.848 | 52.848 | 23.35 | - | 5977.703 | 1474.525 |
+| aws-sdk-path-get-object-metadata | metadata lookup | AWS SDK path-style loopback HTTP | ASP.NET S3-compatible endpoint plus disk backend | 1.614 | 2.236 | 2.236 | 602.219 | 37.639 | - | 106.489 |
+| aws-sdk-path-put-object | object upload | AWS SDK path-style loopback HTTP | ASP.NET S3-compatible endpoint plus disk backend | 31.445 | 35.19 | 35.19 | 31.214 | 31.214 | - | 324.26 |
+| aws-sdk-path-upload-multipart-part | multipart part upload | AWS SDK path-style loopback HTTP | ASP.NET S3-compatible endpoint plus disk backend | 36.632 | 47.955 | 47.955 | 26.803 | 53.606 | - | 365.043 |
+| aws-sdk-path-get-object | object download | AWS SDK path-style loopback HTTP | ASP.NET S3-compatible endpoint plus disk backend | 18.208 | 52.387 | 52.387 | 44.6 | 178.4 | - | 184.568 |
+| aws-sdk-path-list-objects-v2 | list operations | AWS SDK path-style loopback HTTP | ASP.NET S3-compatible endpoint plus disk backend | 49.962 | 59.637 | 59.637 | 19.709 | - | 5045.381 | 2612.629 |
 
 ## Provider breakdown
 
@@ -29,17 +36,17 @@ Configuration: warmup `2`, measured `12`
 - LOH delta (mean/max bytes): `0` / `0`
 - Temp-file churn (created/deleted/renamed mean): `0` / `0` / `0`
 - Thread-pool pressure (max pending/thread delta): `0` / `0`
-  - `http-disk-primary` mean/p95/p99 ms: `0.083` / `0.131` / `0.131`
-  - `application-overhead` mean/p95/p99 ms: `0.668` / `0.854` / `0.854`
+  - `http-disk-primary` mean/p95/p99 ms: `0.1` / `0.156` / `0.156`
+  - `application-overhead` mean/p95/p99 ms: `1.052` / `2.169` / `2.169`
 
 ### `disk-head-object-metadata`
 
 - Workload: Head an existing disk-backed object through IStorageService.
 - LOH delta (mean/max bytes): `0` / `0`
 - Temp-file churn (created/deleted/renamed mean): `0` / `0` / `0`
-- Thread-pool pressure (max pending/thread delta): `1` / `0`
-  - `disk-primary` mean/p95/p99 ms: `0.336` / `0.515` / `0.515`
-  - `application-overhead` mean/p95/p99 ms: `0.034` / `0.056` / `0.056`
+- Thread-pool pressure (max pending/thread delta): `0` / `0`
+  - `disk-primary` mean/p95/p99 ms: `0.548` / `1.321` / `1.321`
+  - `application-overhead` mean/p95/p99 ms: `0.082` / `0.103` / `0.103`
 
 ### `disk-put-object`
 
@@ -47,8 +54,8 @@ Configuration: warmup `2`, measured `12`
 - LOH delta (mean/max bytes): `0` / `0`
 - Temp-file churn (created/deleted/renamed mean): `2` / `2` / `2`
 - Thread-pool pressure (max pending/thread delta): `0` / `0`
-  - `disk-primary` mean/p95/p99 ms: `15.863` / `16.959` / `16.959`
-  - `application-overhead` mean/p95/p99 ms: `0.044` / `0.057` / `0.057`
+  - `disk-primary` mean/p95/p99 ms: `25.645` / `28.785` / `28.785`
+  - `application-overhead` mean/p95/p99 ms: `0.113` / `0.182` / `0.182`
 
 ### `disk-get-object`
 
@@ -56,8 +63,8 @@ Configuration: warmup `2`, measured `12`
 - LOH delta (mean/max bytes): `0` / `0`
 - Temp-file churn (created/deleted/renamed mean): `0` / `0` / `0`
 - Thread-pool pressure (max pending/thread delta): `0` / `0`
-  - `disk-primary` mean/p95/p99 ms: `0.346` / `0.512` / `0.512`
-  - `application-overhead` mean/p95/p99 ms: `0.795` / `1.06` / `1.06`
+  - `disk-primary` mean/p95/p99 ms: `0.463` / `1.142` / `1.142`
+  - `application-overhead` mean/p95/p99 ms: `1.38` / `2.311` / `2.311`
 
 ### `disk-upload-multipart-part`
 
@@ -65,8 +72,8 @@ Configuration: warmup `2`, measured `12`
 - LOH delta (mean/max bytes): `0` / `0`
 - Temp-file churn (created/deleted/renamed mean): `1` / `1` / `1`
 - Thread-pool pressure (max pending/thread delta): `0` / `0`
-  - `disk-primary` mean/p95/p99 ms: `15.392` / `16.024` / `16.024`
-  - `application-overhead` mean/p95/p99 ms: `0.035` / `0.043` / `0.043`
+  - `disk-primary` mean/p95/p99 ms: `23.56` / `27.631` / `27.631`
+  - `application-overhead` mean/p95/p99 ms: `0.087` / `0.156` / `0.156`
 
 ### `disk-complete-multipart-upload`
 
@@ -74,8 +81,8 @@ Configuration: warmup `2`, measured `12`
 - LOH delta (mean/max bytes): `0` / `0`
 - Temp-file churn (created/deleted/renamed mean): `2` / `8` / `2`
 - Thread-pool pressure (max pending/thread delta): `0` / `0`
-  - `disk-primary` mean/p95/p99 ms: `27.329` / `29.204` / `29.204`
-  - `application-overhead` mean/p95/p99 ms: `0.032` / `0.05` / `0.05`
+  - `disk-primary` mean/p95/p99 ms: `41.754` / `50.547` / `50.547`
+  - `application-overhead` mean/p95/p99 ms: `0.065` / `0.088` / `0.088`
 
 ### `disk-mirror-put-object`
 
@@ -83,9 +90,9 @@ Configuration: warmup `2`, measured `12`
 - LOH delta (mean/max bytes): `0` / `0`
 - Temp-file churn (created/deleted/renamed mean): `4` / `4` / `4`
 - Thread-pool pressure (max pending/thread delta): `0` / `0`
-  - `disk-primary` mean/p95/p99 ms: `15.332` / `16.339` / `16.339`
-  - `disk-replica` mean/p95/p99 ms: `15.283` / `17.072` / `17.072`
-  - `application-overhead` mean/p95/p99 ms: `5.239` / `5.918` / `5.918`
+  - `disk-primary` mean/p95/p99 ms: `24.244` / `27.224` / `27.224`
+  - `disk-replica` mean/p95/p99 ms: `24.322` / `28.184` / `28.184`
+  - `application-overhead` mean/p95/p99 ms: `9.56` / `11.123` / `11.123`
 
 ### `disk-list-objects`
 
@@ -93,8 +100,8 @@ Configuration: warmup `2`, measured `12`
 - LOH delta (mean/max bytes): `0` / `0`
 - Temp-file churn (created/deleted/renamed mean): `0` / `0` / `0`
 - Thread-pool pressure (max pending/thread delta): `0` / `0`
-  - `disk-primary` mean/p95/p99 ms: `25.656` / `32.137` / `32.137`
-  - `application-overhead` mean/p95/p99 ms: `0.033` / `0.053` / `0.053`
+  - `disk-primary` mean/p95/p99 ms: `42.349` / `51.979` / `51.979`
+  - `application-overhead` mean/p95/p99 ms: `0.06` / `0.122` / `0.122`
 
 ### `service-presign-get-object`
 
@@ -102,7 +109,16 @@ Configuration: warmup `2`, measured `12`
 - LOH delta (mean/max bytes): `0` / `0`
 - Temp-file churn (created/deleted/renamed mean): `0` / `0` / `0`
 - Thread-pool pressure (max pending/thread delta): `0` / `0`
-  - `application-overhead` mean/p95/p99 ms: `0.232` / `0.375` / `0.375`
+  - `application-overhead` mean/p95/p99 ms: `0.308` / `0.461` / `0.461`
+
+### `http-head-object-metadata`
+
+- Workload: Send a SigV4-signed HEAD object request through the loopback HTTP host.
+- LOH delta (mean/max bytes): `0` / `0`
+- Temp-file churn (created/deleted/renamed mean): `0` / `0` / `0`
+- Thread-pool pressure (max pending/thread delta): `0` / `0`
+  - `http-disk-primary` mean/p95/p99 ms: `0.395` / `0.714` / `0.714`
+  - `application-overhead` mean/p95/p99 ms: `1.211` / `2.301` / `2.301`
 
 ### `http-put-object`
 
@@ -110,8 +126,17 @@ Configuration: warmup `2`, measured `12`
 - LOH delta (mean/max bytes): `0` / `0`
 - Temp-file churn (created/deleted/renamed mean): `2` / `2` / `2`
 - Thread-pool pressure (max pending/thread delta): `0` / `0`
-  - `http-disk-primary` mean/p95/p99 ms: `18.882` / `32.124` / `32.124`
-  - `application-overhead` mean/p95/p99 ms: `0.921` / `1.02` / `1.02`
+  - `http-disk-primary` mean/p95/p99 ms: `29.969` / `40.95` / `40.95`
+  - `application-overhead` mean/p95/p99 ms: `1.525` / `2.757` / `2.757`
+
+### `http-upload-multipart-part`
+
+- Workload: Send a SigV4-signed 2 MiB UploadPart request through the loopback HTTP host.
+- LOH delta (mean/max bytes): `0` / `0`
+- Temp-file churn (created/deleted/renamed mean): `2` / `2` / `2`
+- Thread-pool pressure (max pending/thread delta): `0` / `0`
+  - `http-disk-primary` mean/p95/p99 ms: `35.369` / `47.23` / `47.23`
+  - `application-overhead` mean/p95/p99 ms: `1.144` / `1.763` / `1.763`
 
 ### `http-get-object`
 
@@ -119,8 +144,8 @@ Configuration: warmup `2`, measured `12`
 - LOH delta (mean/max bytes): `0` / `0`
 - Temp-file churn (created/deleted/renamed mean): `0` / `0` / `0`
 - Thread-pool pressure (max pending/thread delta): `0` / `0`
-  - `http-disk-primary` mean/p95/p99 ms: `0.276` / `0.419` / `0.419`
-  - `application-overhead` mean/p95/p99 ms: `3.43` / `4.086` / `4.086`
+  - `http-disk-primary` mean/p95/p99 ms: `0.416` / `0.604` / `0.604`
+  - `application-overhead` mean/p95/p99 ms: `5.732` / `7.843` / `7.843`
 
 ### `http-list-objects`
 
@@ -128,8 +153,53 @@ Configuration: warmup `2`, measured `12`
 - LOH delta (mean/max bytes): `0` / `0`
 - Temp-file churn (created/deleted/renamed mean): `0` / `0` / `0`
 - Thread-pool pressure (max pending/thread delta): `0` / `0`
-  - `http-disk-primary` mean/p95/p99 ms: `24.379` / `28.808` / `28.808`
-  - `application-overhead` mean/p95/p99 ms: `1.224` / `1.66` / `1.66`
+  - `http-disk-primary` mean/p95/p99 ms: `41.339` / `51.66` / `51.66`
+  - `application-overhead` mean/p95/p99 ms: `1.487` / `2.335` / `2.335`
+
+### `aws-sdk-path-get-object-metadata`
+
+- Workload: Fetch object metadata through AmazonS3Client.GetObjectMetadataAsync(...) against the loopback S3-compatible endpoint.
+- LOH delta (mean/max bytes): `0` / `0`
+- Temp-file churn (created/deleted/renamed mean): `0` / `0` / `0`
+- Thread-pool pressure (max pending/thread delta): `0` / `0`
+  - `http-disk-primary` mean/p95/p99 ms: `0.331` / `0.477` / `0.477`
+  - `application-overhead` mean/p95/p99 ms: `1.329` / `1.983` / `1.983`
+
+### `aws-sdk-path-put-object`
+
+- Workload: Upload a 1 MiB object through AmazonS3Client against the loopback S3-compatible endpoint.
+- LOH delta (mean/max bytes): `0` / `0`
+- Temp-file churn (created/deleted/renamed mean): `2` / `2` / `2`
+- Thread-pool pressure (max pending/thread delta): `0` / `1`
+  - `http-disk-primary` mean/p95/p99 ms: `25.929` / `28.751` / `28.751`
+  - `application-overhead` mean/p95/p99 ms: `6.108` / `6.981` / `6.981`
+
+### `aws-sdk-path-upload-multipart-part`
+
+- Workload: Upload a 2 MiB multipart part through AmazonS3Client against the loopback S3-compatible endpoint.
+- LOH delta (mean/max bytes): `0` / `0`
+- Temp-file churn (created/deleted/renamed mean): `1` / `1` / `1`
+- Thread-pool pressure (max pending/thread delta): `1` / `0`
+  - `http-disk-primary` mean/p95/p99 ms: `26.417` / `35.263` / `35.263`
+  - `application-overhead` mean/p95/p99 ms: `10.892` / `12.691` / `12.691`
+
+### `aws-sdk-path-get-object`
+
+- Workload: Download and drain a 4 MiB object through AmazonS3Client against the loopback S3-compatible endpoint.
+- LOH delta (mean/max bytes): `0` / `0`
+- Temp-file churn (created/deleted/renamed mean): `0` / `0` / `0`
+- Thread-pool pressure (max pending/thread delta): `0` / `0`
+  - `http-disk-primary` mean/p95/p99 ms: `0.465` / `0.903` / `0.903`
+  - `application-overhead` mean/p95/p99 ms: `21.956` / `52.05` / `52.05`
+
+### `aws-sdk-path-list-objects-v2`
+
+- Workload: List 256 objects through AmazonS3Client against the loopback S3-compatible endpoint.
+- LOH delta (mean/max bytes): `25456` / `305472`
+- Temp-file churn (created/deleted/renamed mean): `0` / `0` / `0`
+- Thread-pool pressure (max pending/thread delta): `0` / `0`
+  - `http-disk-primary` mean/p95/p99 ms: `46.838` / `54.134` / `54.134`
+  - `application-overhead` mean/p95/p99 ms: `3.902` / `6.725` / `6.725`
 
 ## Notes
 

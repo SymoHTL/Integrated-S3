@@ -119,7 +119,7 @@ public static class S3SigV4RequestParser
 
         if (!TryGetQueryValue(query, "X-Amz-Expires", out var expiresText)
             || !int.TryParse(expiresText, NumberStyles.None, CultureInfo.InvariantCulture, out var expiresSeconds)
-            || expiresSeconds < 0) {
+            || expiresSeconds <= 0) {
             error = "The presigned request must include a valid X-Amz-Expires value.";
             return true;
         }

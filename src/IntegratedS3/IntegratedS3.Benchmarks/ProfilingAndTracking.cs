@@ -61,15 +61,42 @@ internal static class BenchmarkHttpProviderLatencyHeader
             return;
         }
 
-        foreach (var headerValue in headerValues) {
-            foreach (var segment in headerValue.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)) {
-                var parts = segment.Split('=', 2);
-                if (parts.Length != 2 || !long.TryParse(parts[1], NumberStyles.Integer, CultureInfo.InvariantCulture, out var elapsedTicks)) {
-                    continue;
-                }
+        RecordFromHeaderValues(headerValues);
+    }
 
-                StorageBackendProfilingContext.Record(Uri.UnescapeDataString(parts[0]), elapsedTicks);
+    public static void RecordFromHeaders(IEnumerable<KeyValuePair<string, string>> headers)
+    {
+        ArgumentNullException.ThrowIfNull(headers);
+
+        foreach (var (headerName, headerValue) in headers) {
+            if (!string.Equals(headerName, HeaderName, StringComparison.OrdinalIgnoreCase)) {
+                continue;
             }
+
+            RecordFromHeaderValue(headerValue);
+        }
+    }
+
+    private static void RecordFromHeaderValues(IEnumerable<string> headerValues)
+    {
+        foreach (var headerValue in headerValues) {
+            RecordFromHeaderValue(headerValue);
+        }
+    }
+
+    private static void RecordFromHeaderValue(string? headerValue)
+    {
+        if (string.IsNullOrWhiteSpace(headerValue)) {
+            return;
+        }
+
+        foreach (var segment in headerValue.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)) {
+            var parts = segment.Split('=', 2);
+            if (parts.Length != 2 || !long.TryParse(parts[1], NumberStyles.Integer, CultureInfo.InvariantCulture, out var elapsedTicks)) {
+                continue;
+            }
+
+            StorageBackendProfilingContext.Record(Uri.UnescapeDataString(parts[0]), elapsedTicks);
         }
     }
 }

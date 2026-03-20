@@ -22,6 +22,7 @@ internal sealed class DiskStorageService(
     private const string VersionStoreDirectoryName = ".integrateds3-versions";
     private const string MultipartUploadsDirectoryName = ".integrateds3-multipart";
     private const string MultipartStateFileName = "upload.json";
+    private const string Md5ChecksumAlgorithm = "md5";
     private const string Sha256ChecksumAlgorithm = "sha256";
     private const string Sha1ChecksumAlgorithm = "sha1";
     private const string Crc32ChecksumAlgorithm = "crc32";
@@ -522,6 +523,7 @@ internal sealed class DiskStorageService(
         if (!string.IsNullOrWhiteSpace(uploadChecksumAlgorithm)
             && !string.Equals(uploadChecksumAlgorithm, Sha256ChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)
             && !string.Equals(uploadChecksumAlgorithm, Sha1ChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)
+            && !string.Equals(uploadChecksumAlgorithm, Crc32ChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)
             && !string.Equals(uploadChecksumAlgorithm, Crc32cChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)) {
             throw new NotSupportedException(
                 $"Checksum algorithm '{uploadChecksumAlgorithm}' is not currently supported for multipart uploads.");
@@ -557,7 +559,11 @@ internal sealed class DiskStorageService(
                 ETag = BuildETag(fileInfo),
                 ContentLength = fileInfo.Length,
                 LastModifiedUtc = fileInfo.LastWriteTimeUtc,
-                Checksums = CreateMultipartPartResponseChecksums(actualChecksums, uploadChecksumAlgorithm, requestedChecksums: null)
+                Checksums = CreateMultipartPartResponseChecksums(
+                    actualChecksums,
+                    uploadChecksumAlgorithm,
+                    requestedChecksumAlgorithm: null,
+                    requestedChecksums: null)
             };
 
             yielded++;
@@ -576,6 +582,15 @@ internal sealed class DiskStorageService(
             "object retrieval");
         if (serverSideEncryptionError is not null) {
             return StorageResult<GetObjectResponse>.Failure(serverSideEncryptionError);
+        }
+
+        var customerEncryptionError = GetUnsupportedCustomerEncryptionError(
+            request.CustomerEncryption,
+            request.BucketName,
+            request.Key,
+            "object retrieval");
+        if (customerEncryptionError is not null) {
+            return StorageResult<GetObjectResponse>.Failure(customerEncryptionError);
         }
 
         var storedObjectResult = await ResolveStoredObjectAsync(request.BucketName, request.Key, request.VersionId, cancellationToken);
@@ -695,11 +710,36 @@ internal sealed class DiskStorageService(
             return StorageResult<ObjectInfo>.Failure(destinationServerSideEncryptionError);
         }
 
+        var sourceCustomerEncryptionError = GetUnsupportedCustomerEncryptionError(
+            request.SourceCustomerEncryption,
+            request.SourceBucketName,
+            request.SourceKey,
+            "copy source requests");
+        if (sourceCustomerEncryptionError is not null) {
+            return StorageResult<ObjectInfo>.Failure(sourceCustomerEncryptionError);
+        }
+
+        var destinationCustomerEncryptionError = GetUnsupportedCustomerEncryptionError(
+            request.DestinationCustomerEncryption,
+            request.DestinationBucketName,
+            request.DestinationKey,
+            "copy destination requests");
+        if (destinationCustomerEncryptionError is not null) {
+            return StorageResult<ObjectInfo>.Failure(destinationCustomerEncryptionError);
+        }
+
         var replacementTagValidationError = request.TaggingDirective == ObjectTaggingDirective.Replace
             ? ObjectTagValidation.Validate(request.Tags)
             : null;
         if (replacementTagValidationError is not null) {
             return StorageResult<ObjectInfo>.Failure(InvalidTag(replacementTagValidationError, request.DestinationBucketName, request.DestinationKey));
+        }
+
+        if (!TryNormalizeChecksumAlgorithm(request.ChecksumAlgorithm, out var checksumAlgorithm)) {
+            return StorageResult<ObjectInfo>.Failure(StorageError.Unsupported(
+                $"Checksum algorithm '{request.ChecksumAlgorithm}' is not currently supported for copy operations.",
+                request.DestinationBucketName,
+                request.DestinationKey));
         }
 
         var sourceObjectResult = await ResolveStoredObjectAsync(request.SourceBucketName, request.SourceKey, request.SourceVersionId, cancellationToken);
@@ -753,6 +793,20 @@ internal sealed class DiskStorageService(
                 await sourceStream.CopyToAsync(destinationStream, cancellationToken);
             }
 
+            var sourceMetadata = sourceObject.Metadata;
+            var requiresActualChecksums = checksumAlgorithm is not null
+                || sourceMetadata.Checksums is null
+                || request.Checksums is { Count: > 0 };
+            var actualChecksums = requiresActualChecksums
+                ? await ComputeChecksumsAsync(tempDestinationPath, cancellationToken)
+                : null;
+            var checksumValidationError = ValidateRequestedChecksums(request.Checksums, actualChecksums, request.DestinationBucketName, request.DestinationKey);
+            if (checksumValidationError is not null) {
+                return StorageResult<ObjectInfo>.Failure(checksumValidationError);
+            }
+
+            var checksums = CreateCopyObjectChecksums(actualChecksums, sourceMetadata.Checksums, checksumAlgorithm);
+
             if (await HasCurrentVersionStateAsync(request.DestinationBucketName, request.DestinationKey, cancellationToken)
                 && await IsVersioningEnabledAsync(request.DestinationBucketName, cancellationToken)) {
                 await ArchiveCurrentObjectVersionAsync(request.DestinationBucketName, request.DestinationKey, destinationPath, cancellationToken);
@@ -760,8 +814,6 @@ internal sealed class DiskStorageService(
 
             File.Move(tempDestinationPath, destinationPath, overwrite: true);
 
-            var sourceMetadata = sourceObject.Metadata;
-            var checksums = sourceMetadata.Checksums ?? await ComputeChecksumsAsync(destinationPath, cancellationToken);
             var tags = request.TaggingDirective == ObjectTaggingDirective.Replace
                 ? NormalizeTags(request.Tags)
                 : NormalizeTags(sourceMetadata.Tags);
@@ -813,6 +865,15 @@ internal sealed class DiskStorageService(
             return StorageResult<ObjectInfo>.Failure(serverSideEncryptionError);
         }
 
+        var customerEncryptionError = GetUnsupportedCustomerEncryptionError(
+            request.CustomerEncryption,
+            request.BucketName,
+            request.Key,
+            "object writes");
+        if (customerEncryptionError is not null) {
+            return StorageResult<ObjectInfo>.Failure(customerEncryptionError);
+        }
+
         var tagValidationError = ObjectTagValidation.Validate(request.Tags);
         if (tagValidationError is not null) {
             return StorageResult<ObjectInfo>.Failure(InvalidTag(tagValidationError, request.BucketName, request.Key));
@@ -851,6 +912,8 @@ internal sealed class DiskStorageService(
                 return StorageResult<ObjectInfo>.Failure(checksumValidationError);
             }
 
+            var persistedChecksums = CreatePutObjectChecksums(actualChecksums, request.Checksums);
+
             if (await HasCurrentVersionStateAsync(request.BucketName, request.Key, cancellationToken)
                 && await IsVersioningEnabledAsync(request.BucketName, cancellationToken)) {
                 await ArchiveCurrentObjectVersionAsync(request.BucketName, request.Key, objectPath, cancellationToken);
@@ -866,7 +929,7 @@ internal sealed class DiskStorageService(
                 string.IsNullOrWhiteSpace(request.ContentType) ? "application/octet-stream" : request.ContentType,
                 request.Metadata,
                 NormalizeTags(request.Tags),
-                actualChecksums,
+                persistedChecksums,
                 isDeleteMarker: false,
                 isLatest: true,
                 lastModifiedUtc: null,
@@ -990,6 +1053,15 @@ internal sealed class DiskStorageService(
             return ValueTask.FromResult(StorageResult<MultipartUploadInfo>.Failure(serverSideEncryptionError));
         }
 
+        var customerEncryptionError = GetUnsupportedCustomerEncryptionError(
+            request.CustomerEncryption,
+            request.BucketName,
+            request.Key,
+            "multipart upload initiation");
+        if (customerEncryptionError is not null) {
+            return ValueTask.FromResult(StorageResult<MultipartUploadInfo>.Failure(customerEncryptionError));
+        }
+
         var tagValidationError = ObjectTagValidation.Validate(request.Tags);
         if (tagValidationError is not null) {
             return ValueTask.FromResult(StorageResult<MultipartUploadInfo>.Failure(InvalidTag(tagValidationError, request.BucketName, request.Key)));
@@ -1009,6 +1081,7 @@ internal sealed class DiskStorageService(
         if (!string.IsNullOrWhiteSpace(checksumAlgorithm)
             && !string.Equals(checksumAlgorithm, Sha256ChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)
             && !string.Equals(checksumAlgorithm, Sha1ChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)
+            && !string.Equals(checksumAlgorithm, Crc32ChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)
             && !string.Equals(checksumAlgorithm, Crc32cChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)) {
             return ValueTask.FromResult(StorageResult<MultipartUploadInfo>.Failure(StorageError.Unsupported(
                 $"Checksum algorithm '{request.ChecksumAlgorithm}' is not currently supported for multipart uploads.",
@@ -1060,6 +1133,7 @@ internal sealed class DiskStorageService(
         if (!string.IsNullOrWhiteSpace(uploadChecksumAlgorithm)
             && !string.Equals(uploadChecksumAlgorithm, Sha256ChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)
             && !string.Equals(uploadChecksumAlgorithm, Sha1ChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)
+            && !string.Equals(uploadChecksumAlgorithm, Crc32ChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)
             && !string.Equals(uploadChecksumAlgorithm, Crc32cChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)) {
             return StorageResult<MultipartUploadPart>.Failure(StorageError.Unsupported(
                 $"Checksum algorithm '{uploadChecksumAlgorithm}' is not currently supported for multipart uploads.",
@@ -1121,7 +1195,11 @@ internal sealed class DiskStorageService(
             ETag = BuildETag(partInfo),
             ContentLength = partInfo.Length,
             LastModifiedUtc = partInfo.LastWriteTimeUtc,
-            Checksums = CreateMultipartPartResponseChecksums(actualChecksums, uploadChecksumAlgorithm, request.Checksums)
+            Checksums = CreateMultipartPartResponseChecksums(
+                actualChecksums,
+                uploadChecksumAlgorithm,
+                requestChecksumAlgorithm,
+                request.Checksums)
         });
     }
 
@@ -1183,9 +1261,26 @@ internal sealed class DiskStorageService(
         if (!string.IsNullOrWhiteSpace(uploadChecksumAlgorithm)
             && !string.Equals(uploadChecksumAlgorithm, Sha256ChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)
             && !string.Equals(uploadChecksumAlgorithm, Sha1ChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)
+            && !string.Equals(uploadChecksumAlgorithm, Crc32ChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)
             && !string.Equals(uploadChecksumAlgorithm, Crc32cChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)) {
             return StorageResult<MultipartUploadPart>.Failure(StorageError.Unsupported(
                 $"Checksum algorithm '{uploadChecksumAlgorithm}' is not currently supported for multipart uploads.",
+                request.BucketName,
+                request.Key));
+        }
+
+        if (!TryNormalizeChecksumAlgorithm(request.ChecksumAlgorithm, out var requestChecksumAlgorithm)) {
+            return StorageResult<MultipartUploadPart>.Failure(StorageError.Unsupported(
+                $"Checksum algorithm '{request.ChecksumAlgorithm}' is not currently supported for multipart uploads.",
+                request.BucketName,
+                request.Key));
+        }
+
+        if (!string.IsNullOrWhiteSpace(uploadChecksumAlgorithm)
+            && requestChecksumAlgorithm is not null
+            && !string.Equals(uploadChecksumAlgorithm, requestChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)) {
+            return StorageResult<MultipartUploadPart>.Failure(MultipartInvalidRequest(
+                $"Multipart upload '{request.UploadId}' requires checksum algorithm '{uploadChecksumAlgorithm.ToUpperInvariant()}'.",
                 request.BucketName,
                 request.Key));
         }
@@ -1216,6 +1311,10 @@ internal sealed class DiskStorageService(
 
         var partInfo = new FileInfo(partPath);
         var actualChecksums = await ComputeChecksumsAsync(partPath, cancellationToken);
+        var checksumValidationError = ValidateRequestedChecksums(request.Checksums, actualChecksums, request.BucketName, request.Key);
+        if (checksumValidationError is not null) {
+            return StorageResult<MultipartUploadPart>.Failure(checksumValidationError);
+        }
 
         return StorageResult<MultipartUploadPart>.Success(new MultipartUploadPart
         {
@@ -1223,7 +1322,11 @@ internal sealed class DiskStorageService(
             ETag = BuildETag(partInfo),
             ContentLength = partInfo.Length,
             LastModifiedUtc = partInfo.LastWriteTimeUtc,
-            Checksums = CreateMultipartPartResponseChecksums(actualChecksums, uploadChecksumAlgorithm, requestedChecksums: null)
+            Checksums = CreateMultipartPartResponseChecksums(
+                actualChecksums,
+                uploadChecksumAlgorithm,
+                requestChecksumAlgorithm,
+                request.Checksums)
         });
     }
 
@@ -1252,6 +1355,7 @@ internal sealed class DiskStorageService(
         if (!string.IsNullOrWhiteSpace(uploadChecksumAlgorithm)
             && !string.Equals(uploadChecksumAlgorithm, Sha256ChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)
             && !string.Equals(uploadChecksumAlgorithm, Sha1ChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)
+            && !string.Equals(uploadChecksumAlgorithm, Crc32ChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)
             && !string.Equals(uploadChecksumAlgorithm, Crc32cChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)) {
             return StorageResult<ObjectInfo>.Failure(StorageError.Unsupported(
                 $"Checksum algorithm '{uploadChecksumAlgorithm}' is not currently supported for multipart uploads.",
@@ -1266,6 +1370,7 @@ internal sealed class DiskStorageService(
         var tempObjectPath = $"{objectPath}.{Guid.NewGuid():N}.tmp";
         List<string>? compositePartChecksums = (string.Equals(uploadChecksumAlgorithm, Sha256ChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)
                 || string.Equals(uploadChecksumAlgorithm, Sha1ChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)
+                || string.Equals(uploadChecksumAlgorithm, Crc32ChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)
                 || string.Equals(uploadChecksumAlgorithm, Crc32cChecksumAlgorithm, StringComparison.OrdinalIgnoreCase))
             ? new List<string>(request.Parts.Count)
             : null;
@@ -1396,6 +1501,15 @@ internal sealed class DiskStorageService(
             "object metadata lookups");
         if (serverSideEncryptionError is not null) {
             return StorageResult<ObjectInfo>.Failure(serverSideEncryptionError);
+        }
+
+        var customerEncryptionError = GetUnsupportedCustomerEncryptionError(
+            request.CustomerEncryption,
+            request.BucketName,
+            request.Key,
+            "object metadata lookups");
+        if (customerEncryptionError is not null) {
+            return StorageResult<ObjectInfo>.Failure(customerEncryptionError);
         }
 
         var storedObjectResult = await ResolveStoredObjectAsync(request.BucketName, request.Key, request.VersionId, cancellationToken);
@@ -2888,6 +3002,7 @@ internal sealed class DiskStorageService(
     private static async Task<IReadOnlyDictionary<string, string>> ComputeChecksumsAsync(string objectPath, CancellationToken cancellationToken)
     {
         await using var stream = new FileStream(objectPath, FileMode.Open, FileAccess.Read, FileShare.Read, 81920, FileOptions.Asynchronous | FileOptions.SequentialScan);
+        using var md5 = IncrementalHash.CreateHash(HashAlgorithmName.MD5);
         using var sha256 = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
         using var sha1 = IncrementalHash.CreateHash(HashAlgorithmName.SHA1);
         var crc32 = Crc32Accumulator.Create();
@@ -2900,6 +3015,7 @@ internal sealed class DiskStorageService(
                 break;
             }
 
+            md5.AppendData(buffer, 0, read);
             sha256.AppendData(buffer, 0, read);
             sha1.AppendData(buffer, 0, read);
             crc32.Append(buffer.AsSpan(0, read));
@@ -2908,6 +3024,7 @@ internal sealed class DiskStorageService(
 
         return new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
         {
+            ["md5"] = Convert.ToBase64String(md5.GetHashAndReset()),
             ["sha256"] = Convert.ToBase64String(sha256.GetHashAndReset()),
             ["sha1"] = Convert.ToBase64String(sha1.GetHashAndReset()),
             ["crc32"] = Convert.ToBase64String(crc32.GetHashBytes()),
@@ -2936,6 +3053,20 @@ internal sealed class DiskStorageService(
                 objectKey);
     }
 
+    private static StorageError? GetUnsupportedCustomerEncryptionError(
+        ObjectCustomerEncryptionSettings? customerEncryption,
+        string bucketName,
+        string objectKey,
+        string operationDescription)
+    {
+        return customerEncryption is null
+            ? null
+            : StorageError.Unsupported(
+                $"Customer-provided encryption keys are not currently supported by the disk provider for {operationDescription}.",
+                bucketName,
+                objectKey);
+    }
+
     private StorageError? ValidateRequestedChecksums(
         IReadOnlyDictionary<string, string>? requestedChecksums,
         IReadOnlyDictionary<string, string>? actualChecksums,
@@ -2947,7 +3078,8 @@ internal sealed class DiskStorageService(
         }
 
         foreach (var requestedChecksum in requestedChecksums) {
-            if (!string.Equals(requestedChecksum.Key, Sha256ChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)
+            if (!string.Equals(requestedChecksum.Key, Md5ChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)
+                && !string.Equals(requestedChecksum.Key, Sha256ChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)
                 && !string.Equals(requestedChecksum.Key, Sha1ChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)
                 && !string.Equals(requestedChecksum.Key, Crc32ChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)
                 && !string.Equals(requestedChecksum.Key, Crc32cChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)) {
@@ -3037,6 +3169,7 @@ internal sealed class DiskStorageService(
     private static IReadOnlyDictionary<string, string>? CreateMultipartPartResponseChecksums(
         IReadOnlyDictionary<string, string> actualChecksums,
         string? uploadChecksumAlgorithm,
+        string? requestedChecksumAlgorithm,
         IReadOnlyDictionary<string, string>? requestedChecksums)
     {
         if (!string.IsNullOrWhiteSpace(uploadChecksumAlgorithm)
@@ -3047,20 +3180,64 @@ internal sealed class DiskStorageService(
             };
         }
 
+        if (!string.IsNullOrWhiteSpace(requestedChecksumAlgorithm)
+            && TryGetChecksumValue(actualChecksums, requestedChecksumAlgorithm, out var requestedChecksum)) {
+            return new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+            {
+                [requestedChecksumAlgorithm] = requestedChecksum
+            };
+        }
+
         if (requestedChecksums is null || requestedChecksums.Count == 0) {
             return null;
         }
 
         var responseChecksums = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var requestedChecksum in requestedChecksums) {
-            if (TryGetChecksumValue(actualChecksums, requestedChecksum.Key, out var actualChecksum)) {
-                responseChecksums[requestedChecksum.Key] = actualChecksum;
+        foreach (var requestedChecksumEntry in requestedChecksums) {
+            if (TryGetChecksumValue(actualChecksums, requestedChecksumEntry.Key, out var actualChecksum)) {
+                responseChecksums[requestedChecksumEntry.Key] = actualChecksum;
             }
         }
 
         return responseChecksums.Count == 0
             ? null
             : responseChecksums;
+    }
+
+    private static IReadOnlyDictionary<string, string> CreatePutObjectChecksums(
+        IReadOnlyDictionary<string, string> actualChecksums,
+        IReadOnlyDictionary<string, string>? requestedChecksums)
+    {
+        if (requestedChecksums is null || requestedChecksums.Count == 0) {
+            return actualChecksums;
+        }
+
+        var persistedChecksums = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var requestedChecksumEntry in requestedChecksums) {
+            if (TryGetChecksumValue(actualChecksums, requestedChecksumEntry.Key, out var actualChecksum)) {
+                persistedChecksums[requestedChecksumEntry.Key] = actualChecksum;
+            }
+        }
+
+        return persistedChecksums.Count == 0
+            ? actualChecksums
+            : persistedChecksums;
+    }
+
+    private static IReadOnlyDictionary<string, string>? CreateCopyObjectChecksums(
+        IReadOnlyDictionary<string, string>? actualChecksums,
+        IReadOnlyDictionary<string, string>? sourceChecksums,
+        string? checksumAlgorithm)
+    {
+        if (!string.IsNullOrWhiteSpace(checksumAlgorithm)
+            && TryGetChecksumValue(actualChecksums, checksumAlgorithm, out var checksumValue)) {
+            return new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+            {
+                [checksumAlgorithm] = checksumValue
+            };
+        }
+
+        return sourceChecksums ?? actualChecksums;
     }
 
     private static string BuildCompositeChecksum(string algorithm, IReadOnlyList<string> partChecksums)
@@ -3071,6 +3248,10 @@ internal sealed class DiskStorageService(
 
         if (string.Equals(algorithm, Sha1ChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)) {
             return BuildCompositeSha1Checksum(partChecksums);
+        }
+
+        if (string.Equals(algorithm, Crc32ChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)) {
+            return BuildCompositeCrc32Checksum(partChecksums);
         }
 
         if (string.Equals(algorithm, Crc32cChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)) {
@@ -3098,6 +3279,16 @@ internal sealed class DiskStorageService(
         }
 
         return $"{Convert.ToBase64String(checksum.GetHashAndReset())}-{partChecksums.Count}";
+    }
+
+    private static string BuildCompositeCrc32Checksum(IReadOnlyList<string> partChecksums)
+    {
+        var checksum = Crc32Accumulator.Create();
+        foreach (var partChecksum in partChecksums) {
+            checksum.Append(Convert.FromBase64String(partChecksum));
+        }
+
+        return $"{Convert.ToBase64String(checksum.GetHashBytes())}-{partChecksums.Count}";
     }
 
     private static string BuildCompositeCrc32cChecksum(IReadOnlyList<string> partChecksums)
@@ -3212,7 +3403,8 @@ internal sealed class DiskStorageService(
             };
         }
 
-        if (sourceIfModifiedSinceUtc is { } ifModifiedSinceUtc
+        if (string.IsNullOrWhiteSpace(sourceIfNoneMatchETag)
+            && sourceIfModifiedSinceUtc is { } ifModifiedSinceUtc
             && !WasModifiedAfter(sourceInfo.LastModifiedUtc, ifModifiedSinceUtc)) {
             return new StorageError
             {

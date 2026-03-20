@@ -123,7 +123,12 @@ public sealed class WebUiApplicationFactory : IAsyncDisposable
         configureBuilder?.Invoke(builder);
 
         var application = builder.Build();
-        WebUiApplication.ConfigurePipeline(application, configureIntegratedS3Endpoints);
+        if (configureIntegratedS3Endpoints is null) {
+            WebUiApplication.ConfigurePipeline(application);
+        }
+        else {
+            WebUiApplication.ConfigurePipeline(application, configureIntegratedS3Endpoints);
+        }
         await application.StartAsync();
         return application;
     }

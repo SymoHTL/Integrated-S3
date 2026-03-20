@@ -535,10 +535,16 @@ public static class IntegratedS3ClientTransferExtensions
         ArgumentNullException.ThrowIfNull(transferClient);
         ArgumentException.ThrowIfNullOrWhiteSpace(filePath);
 
-        var presigned = await client.PresignGetObjectAsync(
-            bucketName, key, expiresInSeconds, versionId, cancellationToken);
-
-        await DownloadPresignedToFileWithResumeAsync(transferClient, presigned, filePath, cancellationToken);
+        await DownloadToFileWithResumeAsyncCore(
+            transferClient,
+            innerCancellationToken => client.PresignGetObjectAsync(
+                bucketName,
+                key,
+                expiresInSeconds,
+                versionId,
+                innerCancellationToken),
+            filePath,
+            cancellationToken);
     }
 
     /// <summary>
@@ -585,10 +591,17 @@ public static class IntegratedS3ClientTransferExtensions
         ArgumentNullException.ThrowIfNull(transferClient);
         ArgumentException.ThrowIfNullOrWhiteSpace(filePath);
 
-        var presigned = await client.PresignGetObjectAsync(
-            bucketName, key, expiresInSeconds, preferredAccessMode, versionId, cancellationToken);
-
-        await DownloadPresignedToFileWithResumeAsync(transferClient, presigned, filePath, cancellationToken);
+        await DownloadToFileWithResumeAsyncCore(
+            transferClient,
+            innerCancellationToken => client.PresignGetObjectAsync(
+                bucketName,
+                key,
+                expiresInSeconds,
+                preferredAccessMode,
+                versionId,
+                innerCancellationToken),
+            filePath,
+            cancellationToken);
     }
 
     private static async Task DownloadPresignedToFileAsync(
@@ -631,18 +644,24 @@ public static class IntegratedS3ClientTransferExtensions
         }
     }
 
-    private static async Task DownloadPresignedToFileWithResumeAsync(
+    private static async Task DownloadToFileWithResumeAsyncCore(
         HttpClient transferClient,
-        StoragePresignedRequest presigned,
+        Func<CancellationToken, ValueTask<StoragePresignedRequest>> presignAsync,
         string filePath,
         CancellationToken cancellationToken)
     {
+        ArgumentNullException.ThrowIfNull(transferClient);
+        ArgumentNullException.ThrowIfNull(presignAsync);
+        ArgumentException.ThrowIfNullOrWhiteSpace(filePath);
+
         if (!File.Exists(filePath)) {
-            await DownloadPresignedToFileAsync(transferClient, presigned, filePath, cancellationToken);
+            var initialPresigned = await presignAsync(cancellationToken);
+            await DownloadPresignedToFileAsync(transferClient, initialPresigned, filePath, cancellationToken);
             return;
         }
 
         var existingLength = new FileInfo(filePath).Length;
+        var presigned = await presignAsync(cancellationToken);
 
         using var request = presigned.CreateHttpRequestMessage();
         request.Headers.Range = new RangeHeaderValue(existingLength, null);
@@ -651,7 +670,14 @@ public static class IntegratedS3ClientTransferExtensions
             request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
 
         if (response.StatusCode == HttpStatusCode.PartialContent) {
-            await AppendPartialDownloadAsync(response, filePath, cancellationToken);
+            // Avoid appending a misaligned partial response onto the caller's existing file.
+            if (!HasExpectedResumeRangeStart(response, existingLength)) {
+                await RewriteDownloadFromStartAsync(
+                    transferClient, presignAsync, filePath, responseToReuse: null, cancellationToken);
+                return;
+            }
+
+            await AppendPartialDownloadAsync(response, filePath, existingLength, cancellationToken);
             return;
         }
 
@@ -661,13 +687,13 @@ public static class IntegratedS3ClientTransferExtensions
             }
 
             await RewriteDownloadFromStartAsync(
-                transferClient, presigned, filePath, responseToReuse: null, cancellationToken);
+                transferClient, presignAsync, filePath, responseToReuse: null, cancellationToken);
             return;
         }
 
         if (response.IsSuccessStatusCode) {
             await RewriteDownloadFromStartAsync(
-                transferClient, presigned, filePath, response, cancellationToken);
+                transferClient, presignAsync, filePath, response, cancellationToken);
             return;
         }
 
@@ -677,6 +703,7 @@ public static class IntegratedS3ClientTransferExtensions
     private static async Task AppendPartialDownloadAsync(
         HttpResponseMessage response,
         string filePath,
+        long originalLength,
         CancellationToken cancellationToken)
     {
         var validation = IntegratedS3ClientTransferChecksumHelper.CreateDownloadValidation(response);
@@ -688,8 +715,9 @@ public static class IntegratedS3ClientTransferExtensions
         }
 
         await using var fileStream = new FileStream(
-            filePath, FileMode.Append, FileAccess.Write, FileShare.None,
+            filePath, FileMode.Open, FileAccess.ReadWrite, FileShare.None,
             bufferSize: 65536, useAsync: true);
+        fileStream.Seek(0, SeekOrigin.End);
 
         try {
             await IntegratedS3ClientTransferChecksumHelper.CopyToAsync(
@@ -697,6 +725,10 @@ public static class IntegratedS3ClientTransferExtensions
                 fileStream,
                 validation,
                 cancellationToken);
+        }
+        catch (InvalidDataException exception) {
+            RestorePartialDownload(fileStream, filePath, originalLength, exception);
+            throw;
         }
         catch (Exception exception) {
             if (exception is IOException ioException) {
@@ -709,15 +741,20 @@ public static class IntegratedS3ClientTransferExtensions
 
     private static async Task RewriteDownloadFromStartAsync(
         HttpClient transferClient,
-        StoragePresignedRequest presigned,
+        Func<CancellationToken, ValueTask<StoragePresignedRequest>> presignAsync,
         string filePath,
         HttpResponseMessage? responseToReuse,
         CancellationToken cancellationToken)
     {
+        ArgumentNullException.ThrowIfNull(transferClient);
+        ArgumentNullException.ThrowIfNull(presignAsync);
+        ArgumentException.ThrowIfNullOrWhiteSpace(filePath);
+
         var temporaryFilePath = CreateTemporaryDownloadPath(filePath);
 
         try {
             if (responseToReuse is null) {
+                var presigned = await presignAsync(cancellationToken);
                 using var request = presigned.CreateHttpRequestMessage();
                 using var response = await transferClient.SendAsync(
                     request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
@@ -788,12 +825,51 @@ public static class IntegratedS3ClientTransferExtensions
         return false;
     }
 
+    private static bool HasExpectedResumeRangeStart(HttpResponseMessage response, long expectedStartOffset)
+    {
+        ArgumentNullException.ThrowIfNull(response);
+        return response.Content.Headers.ContentRange?.From is long actualStartOffset
+            && actualStartOffset == expectedStartOffset;
+    }
+
     private static HttpRequestException CreateTransferHttpRequestException(string message, IOException innerException)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(message);
         ArgumentNullException.ThrowIfNull(innerException);
 
         return new HttpRequestException(message, innerException);
+    }
+
+    private static void RestorePartialDownload(
+        FileStream fileStream,
+        string filePath,
+        long originalLength,
+        Exception transferFailure)
+    {
+        ArgumentNullException.ThrowIfNull(fileStream);
+        ArgumentException.ThrowIfNullOrWhiteSpace(filePath);
+        ArgumentNullException.ThrowIfNull(transferFailure);
+
+        try {
+            fileStream.Flush();
+            fileStream.SetLength(originalLength);
+            fileStream.Position = originalLength;
+        }
+        catch (IOException exception) {
+            throw new IOException(
+                $"The resumed download failed checksum validation and the destination file '{filePath}' could not be rolled back to its original length.",
+                new AggregateException(transferFailure, exception));
+        }
+        catch (UnauthorizedAccessException exception) {
+            throw new IOException(
+                $"The resumed download failed checksum validation and the destination file '{filePath}' could not be rolled back to its original length.",
+                new AggregateException(transferFailure, exception));
+        }
+        catch (NotSupportedException exception) {
+            throw new IOException(
+                $"The resumed download failed checksum validation and the destination file '{filePath}' could not be rolled back to its original length.",
+                new AggregateException(transferFailure, exception));
+        }
     }
 
     private static void DeletePartialDownload(string filePath, Exception transferFailure)

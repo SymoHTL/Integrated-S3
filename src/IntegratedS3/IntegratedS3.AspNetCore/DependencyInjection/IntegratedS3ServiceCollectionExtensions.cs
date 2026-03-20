@@ -9,6 +9,7 @@ using Microsoft.AspNetCore.Http.Json;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Options;
 
 namespace IntegratedS3.AspNetCore.DependencyInjection;
 
@@ -43,8 +44,7 @@ public static class IntegratedS3ServiceCollectionExtensions
 
         services.AddOptions<IntegratedS3Options>()
             .Bind(section);
-        services.AddOptions<IntegratedS3EndpointOptions>()
-            .Bind(section.GetSection("Endpoints"));
+        ConfigureEndpointOptions(services, section.GetSection("Endpoints"));
 
         return services.AddIntegratedS3CoreServices();
     }
@@ -58,8 +58,7 @@ public static class IntegratedS3ServiceCollectionExtensions
         services.AddOptions<IntegratedS3Options>()
             .Bind(section)
             .Configure(configure);
-        services.AddOptions<IntegratedS3EndpointOptions>()
-            .Bind(section.GetSection("Endpoints"));
+        ConfigureEndpointOptions(services, section.GetSection("Endpoints"));
 
         return services.AddIntegratedS3CoreServices();
     }
@@ -144,10 +143,23 @@ public static class IntegratedS3ServiceCollectionExtensions
         return services.AddIntegratedS3CoreServices();
     }
 
+    private static void ConfigureEndpointOptions(IServiceCollection services, IConfigurationSection section)
+    {
+        ArgumentNullException.ThrowIfNull(services);
+        ArgumentNullException.ThrowIfNull(section);
+
+        services.AddOptions<IntegratedS3EndpointConfigurationOptions>()
+            .Bind(section);
+        services.AddOptions<IntegratedS3EndpointOptions>()
+            .Configure<IOptions<IntegratedS3EndpointConfigurationOptions>>(
+                (options, configuredOptions) => ApplyConfiguredEndpointOptions(options, configuredOptions.Value));
+    }
+
     private static IServiceCollection AddIntegratedS3CoreServices(this IServiceCollection services)
     {
         ArgumentNullException.ThrowIfNull(services);
 
+        services.AddOptions<IntegratedS3EndpointConfigurationOptions>();
         services.AddOptions<IntegratedS3EndpointOptions>();
 
         if (!services.Any(static serviceDescriptor => serviceDescriptor.ServiceType == typeof(IStorageService))
@@ -223,6 +235,16 @@ public static class IntegratedS3ServiceCollectionExtensions
         });
 
         return services;
+    }
+
+    private static void ApplyConfiguredEndpointOptions(
+        IntegratedS3EndpointOptions options,
+        IntegratedS3EndpointConfigurationOptions configuredOptions)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        ArgumentNullException.ThrowIfNull(configuredOptions);
+
+        configuredOptions.ApplyTo(options);
     }
 
     private static bool HasCustomPresignStrategy(IServiceCollection services)

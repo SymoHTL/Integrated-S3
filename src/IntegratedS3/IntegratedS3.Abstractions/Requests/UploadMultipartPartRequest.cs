@@ -1,3 +1,5 @@
+using IntegratedS3.Abstractions.Models;
+
 namespace IntegratedS3.Abstractions.Requests;
 
 public sealed class UploadMultipartPartRequest
@@ -17,4 +19,6 @@ public sealed class UploadMultipartPartRequest
     public string? ChecksumAlgorithm { get; init; }
 
     public IReadOnlyDictionary<string, string>? Checksums { get; init; }
+
+    public ObjectCustomerEncryptionSettings? CustomerEncryption { get; init; }
 }

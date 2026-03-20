@@ -12,6 +12,8 @@ public sealed class HeadObjectRequest
 
     public ObjectServerSideEncryptionSettings? ServerSideEncryption { get; init; }
 
+    public ObjectCustomerEncryptionSettings? CustomerEncryption { get; init; }
+
     public string? IfMatchETag { get; init; }
 
     public string? IfNoneMatchETag { get; init; }
