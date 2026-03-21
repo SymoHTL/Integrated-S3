@@ -12,8 +12,8 @@
     <Authors>Symo</Authors>
     <Copyright>Copyright (c) 2026 Symo</Copyright>
     <PackageLicenseExpression>BSD-3-Clause</PackageLicenseExpression>
-    <PackageProjectUrl>https://github.com/SymoHTL/Intergrated-S3</PackageProjectUrl>
-    <RepositoryUrl>https://github.com/SymoHTL/Intergrated-S3</RepositoryUrl>
+    <PackageProjectUrl>https://github.com/SymoHTL/Integrated-S3</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/SymoHTL/Integrated-S3</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
     <PackageTags>s3;storage;object-storage;aws;cloud;aspnetcore</PackageTags>
     <PackageReadmeFile Condition="'$(IsPackable)' != 'false'">README.md</PackageReadmeFile>
