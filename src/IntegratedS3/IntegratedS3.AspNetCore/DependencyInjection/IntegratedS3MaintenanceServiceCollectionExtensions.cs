@@ -7,8 +7,22 @@ using Microsoft.Extensions.Hosting;
 
 namespace IntegratedS3.AspNetCore.DependencyInjection;
 
+/// <summary>
+/// Extension methods for registering IntegratedS3 scheduled maintenance jobs
+/// with an <see cref="IServiceCollection"/>.
+/// </summary>
 public static class IntegratedS3MaintenanceServiceCollectionExtensions
 {
+    /// <summary>
+    /// Registers a maintenance job implemented by <typeparamref name="TJob"/>.
+    /// The job class is resolved from DI as a scoped service.
+    /// </summary>
+    /// <typeparam name="TJob">
+    /// A class that implements <see cref="IIntegratedS3MaintenanceJob"/>.
+    /// </typeparam>
+    /// <param name="services">The <see cref="IServiceCollection"/> to add the job to.</param>
+    /// <param name="name">Unique name for this job instance, used in logging and options resolution.</param>
+    /// <returns>The <see cref="IServiceCollection"/> so that additional calls can be chained.</returns>
     public static IServiceCollection AddIntegratedS3MaintenanceJob<TJob>(this IServiceCollection services, string name)
         where TJob : class, IIntegratedS3MaintenanceJob
     {
@@ -20,6 +34,20 @@ public static class IntegratedS3MaintenanceServiceCollectionExtensions
             static (serviceProvider, cancellationToken) => serviceProvider.GetRequiredService<TJob>().ExecuteAsync(cancellationToken));
     }
 
+    /// <summary>
+    /// Registers a maintenance job implemented by <typeparamref name="TJob"/>
+    /// with programmatic option configuration.
+    /// The job class is resolved from DI as a scoped service.
+    /// </summary>
+    /// <typeparam name="TJob">
+    /// A class that implements <see cref="IIntegratedS3MaintenanceJob"/>.
+    /// </typeparam>
+    /// <param name="services">The <see cref="IServiceCollection"/> to add the job to.</param>
+    /// <param name="name">Unique name for this job instance, used in logging and options resolution.</param>
+    /// <param name="configure">
+    /// A callback to configure <see cref="IntegratedS3MaintenanceJobOptions"/> programmatically.
+    /// </param>
+    /// <returns>The <see cref="IServiceCollection"/> so that additional calls can be chained.</returns>
     public static IServiceCollection AddIntegratedS3MaintenanceJob<TJob>(
         this IServiceCollection services,
         string name,
@@ -36,6 +64,20 @@ public static class IntegratedS3MaintenanceServiceCollectionExtensions
             configure);
     }
 
+    /// <summary>
+    /// Registers a maintenance job implemented by <typeparamref name="TJob"/>
+    /// with options bound from a configuration section.
+    /// The job class is resolved from DI as a scoped service.
+    /// </summary>
+    /// <typeparam name="TJob">
+    /// A class that implements <see cref="IIntegratedS3MaintenanceJob"/>.
+    /// </typeparam>
+    /// <param name="services">The <see cref="IServiceCollection"/> to add the job to.</param>
+    /// <param name="name">Unique name for this job instance, used in logging and options resolution.</param>
+    /// <param name="section">
+    /// An <see cref="IConfigurationSection"/> to bind <see cref="IntegratedS3MaintenanceJobOptions"/> from.
+    /// </param>
+    /// <returns>The <see cref="IServiceCollection"/> so that additional calls can be chained.</returns>
     public static IServiceCollection AddIntegratedS3MaintenanceJob<TJob>(
         this IServiceCollection services,
         string name,
@@ -52,6 +94,23 @@ public static class IntegratedS3MaintenanceServiceCollectionExtensions
             static (serviceProvider, cancellationToken) => serviceProvider.GetRequiredService<TJob>().ExecuteAsync(cancellationToken));
     }
 
+    /// <summary>
+    /// Registers a maintenance job implemented by <typeparamref name="TJob"/>
+    /// with options bound from a configuration section and additional programmatic configuration.
+    /// The job class is resolved from DI as a scoped service.
+    /// </summary>
+    /// <typeparam name="TJob">
+    /// A class that implements <see cref="IIntegratedS3MaintenanceJob"/>.
+    /// </typeparam>
+    /// <param name="services">The <see cref="IServiceCollection"/> to add the job to.</param>
+    /// <param name="name">Unique name for this job instance, used in logging and options resolution.</param>
+    /// <param name="section">
+    /// An <see cref="IConfigurationSection"/> to bind <see cref="IntegratedS3MaintenanceJobOptions"/> from.
+    /// </param>
+    /// <param name="configure">
+    /// A callback to further configure <see cref="IntegratedS3MaintenanceJobOptions"/> after binding.
+    /// </param>
+    /// <returns>The <see cref="IServiceCollection"/> so that additional calls can be chained.</returns>
     public static IServiceCollection AddIntegratedS3MaintenanceJob<TJob>(
         this IServiceCollection services,
         string name,
@@ -71,6 +130,13 @@ public static class IntegratedS3MaintenanceServiceCollectionExtensions
             configure);
     }
 
+    /// <summary>
+    /// Registers a maintenance job using an <see cref="IntegratedS3MaintenanceJobDelegate"/>.
+    /// </summary>
+    /// <param name="services">The <see cref="IServiceCollection"/> to add the job to.</param>
+    /// <param name="name">Unique name for this job instance, used in logging and options resolution.</param>
+    /// <param name="execute">The delegate that performs the maintenance work.</param>
+    /// <returns>The <see cref="IServiceCollection"/> so that additional calls can be chained.</returns>
     public static IServiceCollection AddIntegratedS3MaintenanceJob(
         this IServiceCollection services,
         string name,
@@ -82,6 +148,17 @@ public static class IntegratedS3MaintenanceServiceCollectionExtensions
         return AddIntegratedS3MaintenanceJobCore(services, name, section: null, execute, configure: null);
     }
 
+    /// <summary>
+    /// Registers a maintenance job using an <see cref="IntegratedS3MaintenanceJobDelegate"/>
+    /// with programmatic option configuration.
+    /// </summary>
+    /// <param name="services">The <see cref="IServiceCollection"/> to add the job to.</param>
+    /// <param name="name">Unique name for this job instance, used in logging and options resolution.</param>
+    /// <param name="execute">The delegate that performs the maintenance work.</param>
+    /// <param name="configure">
+    /// A callback to configure <see cref="IntegratedS3MaintenanceJobOptions"/> programmatically.
+    /// </param>
+    /// <returns>The <see cref="IServiceCollection"/> so that additional calls can be chained.</returns>
     public static IServiceCollection AddIntegratedS3MaintenanceJob(
         this IServiceCollection services,
         string name,
@@ -95,6 +172,17 @@ public static class IntegratedS3MaintenanceServiceCollectionExtensions
         return AddIntegratedS3MaintenanceJobCore(services, name, section: null, execute, configure);
     }
 
+    /// <summary>
+    /// Registers a maintenance job using an <see cref="IntegratedS3MaintenanceJobDelegate"/>
+    /// with options bound from a configuration section.
+    /// </summary>
+    /// <param name="services">The <see cref="IServiceCollection"/> to add the job to.</param>
+    /// <param name="name">Unique name for this job instance, used in logging and options resolution.</param>
+    /// <param name="section">
+    /// An <see cref="IConfigurationSection"/> to bind <see cref="IntegratedS3MaintenanceJobOptions"/> from.
+    /// </param>
+    /// <param name="execute">The delegate that performs the maintenance work.</param>
+    /// <returns>The <see cref="IServiceCollection"/> so that additional calls can be chained.</returns>
     public static IServiceCollection AddIntegratedS3MaintenanceJob(
         this IServiceCollection services,
         string name,
@@ -108,6 +196,20 @@ public static class IntegratedS3MaintenanceServiceCollectionExtensions
         return AddIntegratedS3MaintenanceJobCore(services, name, section, execute, configure: null);
     }
 
+    /// <summary>
+    /// Registers a maintenance job using an <see cref="IntegratedS3MaintenanceJobDelegate"/>
+    /// with options bound from a configuration section and additional programmatic configuration.
+    /// </summary>
+    /// <param name="services">The <see cref="IServiceCollection"/> to add the job to.</param>
+    /// <param name="name">Unique name for this job instance, used in logging and options resolution.</param>
+    /// <param name="section">
+    /// An <see cref="IConfigurationSection"/> to bind <see cref="IntegratedS3MaintenanceJobOptions"/> from.
+    /// </param>
+    /// <param name="execute">The delegate that performs the maintenance work.</param>
+    /// <param name="configure">
+    /// A callback to further configure <see cref="IntegratedS3MaintenanceJobOptions"/> after binding.
+    /// </param>
+    /// <returns>The <see cref="IServiceCollection"/> so that additional calls can be chained.</returns>
     public static IServiceCollection AddIntegratedS3MaintenanceJob(
         this IServiceCollection services,
         string name,

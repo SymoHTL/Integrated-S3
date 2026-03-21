@@ -2,8 +2,16 @@ using IntegratedS3.Abstractions.Capabilities;
 
 namespace IntegratedS3.Provider.Disk;
 
+/// <summary>
+/// Defines the S3 capability profile for the disk storage provider.
+/// </summary>
 public static class DiskStorageCapabilities
 {
+    /// <summary>
+    /// Creates a <see cref="StorageCapabilities"/> snapshot describing the features
+    /// natively supported, emulated, or unsupported by the disk provider.
+    /// </summary>
+    /// <returns>A <see cref="StorageCapabilities"/> instance with disk-provider defaults.</returns>
     public static StorageCapabilities CreateDefault()
     {
         return new StorageCapabilities

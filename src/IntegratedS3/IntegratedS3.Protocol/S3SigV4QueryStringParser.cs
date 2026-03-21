@@ -1,7 +1,16 @@
 namespace IntegratedS3.Protocol;
 
+/// <summary>
+/// Parses raw query strings into ordered key-value pairs with proper URI decoding,
+/// suitable for canonical query string construction during SigV4 signing.
+/// </summary>
 public static class S3SigV4QueryStringParser
 {
+    /// <summary>
+    /// Parses a raw query string into an ordered list of decoded key-value pairs.
+    /// </summary>
+    /// <param name="rawQuery">The raw query string, optionally prefixed with <c>?</c>. May be <see langword="null"/> or empty.</param>
+    /// <returns>An ordered list of decoded query parameter key-value pairs.</returns>
     public static IReadOnlyList<KeyValuePair<string, string?>> Parse(string? rawQuery)
     {
         if (string.IsNullOrEmpty(rawQuery) || string.Equals(rawQuery, "?", StringComparison.Ordinal)) {

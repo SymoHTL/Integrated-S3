@@ -13,6 +13,8 @@ namespace IntegratedS3.Tests;
 /// </summary>
 public sealed class RcloneS3MultipartEncodingCompatibilityTests : IClassFixture<WebUiApplicationFactory>
 {
+    private static readonly XNamespace S3Ns = "http://s3.amazonaws.com/doc/2006-03-01/";
+
     private const string Prefix = "/integrated-s3";
 
     private readonly WebUiApplicationFactory _factory;
@@ -234,19 +236,19 @@ public sealed class RcloneS3MultipartEncodingCompatibilityTests : IClassFixture<
         Assert.Equal("ListMultipartUploadsResult", doc.Root?.Name.LocalName);
         Assert.Equal(bucket, El(doc, "Bucket"));
 
-        var uploads = doc.Root!.Elements("Upload").ToArray();
+        var uploads = doc.Root!.Elements(S3Ns + "Upload").ToArray();
         Assert.Equal(3, uploads.Length);
 
-        var keys = uploads.Select(u => u.Element("Key")?.Value).OrderBy(k => k).ToArray();
+        var keys = uploads.Select(u => u.Element(S3Ns + "Key")?.Value).OrderBy(k => k).ToArray();
         Assert.Equal(new[] { "file-a.dat", "file-b.dat", "file-c.dat" }, keys);
 
-        var uploadIds = uploads.Select(u => u.Element("UploadId")?.Value).ToArray();
+        var uploadIds = uploads.Select(u => u.Element(S3Ns + "UploadId")?.Value).ToArray();
         Assert.Contains(id1, uploadIds);
         Assert.Contains(id2, uploadIds);
         Assert.Contains(id3, uploadIds);
 
         foreach (var upload in uploads) {
-            Assert.NotNull(upload.Element("Initiated") ?? upload.Element("InitiatedAtUtc"));
+            Assert.NotNull(upload.Element(S3Ns + "Initiated") ?? upload.Element(S3Ns + "InitiatedAtUtc"));
         }
     }
 
@@ -273,23 +275,23 @@ public sealed class RcloneS3MultipartEncodingCompatibilityTests : IClassFixture<
         Assert.Equal(key, El(doc, "Key"));
         Assert.Equal(uploadId, El(doc, "UploadId"));
 
-        var parts = doc.Root!.Elements("Part").ToArray();
+        var parts = doc.Root!.Elements(S3Ns + "Part").ToArray();
         Assert.Equal(3, parts.Length);
 
-        Assert.Equal("1", parts[0].Element("PartNumber")?.Value);
-        Assert.Equal("2", parts[1].Element("PartNumber")?.Value);
-        Assert.Equal("3", parts[2].Element("PartNumber")?.Value);
+        Assert.Equal("1", parts[0].Element(S3Ns + "PartNumber")?.Value);
+        Assert.Equal("2", parts[1].Element(S3Ns + "PartNumber")?.Value);
+        Assert.Equal("3", parts[2].Element(S3Ns + "PartNumber")?.Value);
 
         // Each part must have ETag, Size, LastModified
         foreach (var part in parts) {
-            Assert.False(string.IsNullOrWhiteSpace(part.Element("ETag")?.Value), "Part must have ETag.");
-            Assert.False(string.IsNullOrWhiteSpace(part.Element("Size")?.Value), "Part must have Size.");
-            Assert.False(string.IsNullOrWhiteSpace(part.Element("LastModified")?.Value), "Part must have LastModified.");
+            Assert.False(string.IsNullOrWhiteSpace(part.Element(S3Ns + "ETag")?.Value), "Part must have ETag.");
+            Assert.False(string.IsNullOrWhiteSpace(part.Element(S3Ns + "Size")?.Value), "Part must have Size.");
+            Assert.False(string.IsNullOrWhiteSpace(part.Element(S3Ns + "LastModified")?.Value), "Part must have LastModified.");
         }
 
-        Assert.Equal("100", parts[0].Element("Size")?.Value);
-        Assert.Equal("200", parts[1].Element("Size")?.Value);
-        Assert.Equal("300", parts[2].Element("Size")?.Value);
+        Assert.Equal("100", parts[0].Element(S3Ns + "Size")?.Value);
+        Assert.Equal("200", parts[1].Element(S3Ns + "Size")?.Value);
+        Assert.Equal("300", parts[2].Element(S3Ns + "Size")?.Value);
     }
 
     [Fact]
@@ -315,7 +317,7 @@ public sealed class RcloneS3MultipartEncodingCompatibilityTests : IClassFixture<
         Assert.Equal("2", El(page1Doc, "MaxParts"));
         var nextMarker = El(page1Doc, "NextPartNumberMarker");
         Assert.False(string.IsNullOrWhiteSpace(nextMarker));
-        Assert.Equal(2, page1Doc.Root!.Elements("Part").Count());
+        Assert.Equal(2, page1Doc.Root!.Elements(S3Ns + "Part").Count());
 
         // Second page: using marker
         var page2Resp = await client.GetAsync(
@@ -324,9 +326,9 @@ public sealed class RcloneS3MultipartEncodingCompatibilityTests : IClassFixture<
 
         var page2Doc = XDocument.Parse(await page2Resp.Content.ReadAsStringAsync());
         Assert.Equal("false", El(page2Doc, "IsTruncated"));
-        var remainingParts = page2Doc.Root!.Elements("Part").ToArray();
+        var remainingParts = page2Doc.Root!.Elements(S3Ns + "Part").ToArray();
         Assert.Single(remainingParts);
-        Assert.Equal("3", remainingParts[0].Element("PartNumber")?.Value);
+        Assert.Equal("3", remainingParts[0].Element(S3Ns + "PartNumber")?.Value);
     }
 
     [Fact]
@@ -349,8 +351,8 @@ public sealed class RcloneS3MultipartEncodingCompatibilityTests : IClassFixture<
         var listResp = await client.GetAsync($"{Prefix}/{bucket}?uploads");
         Assert.Equal(HttpStatusCode.OK, listResp.StatusCode);
         var listDoc = XDocument.Parse(await listResp.Content.ReadAsStringAsync());
-        var remainingUploads = listDoc.Root!.Elements("Upload")
-            .Where(u => u.Element("UploadId")?.Value == uploadId)
+        var remainingUploads = listDoc.Root!.Elements(S3Ns + "Upload")
+            .Where(u => u.Element(S3Ns + "UploadId")?.Value == uploadId)
             .ToArray();
         Assert.Empty(remainingUploads);
 
@@ -418,7 +420,7 @@ public sealed class RcloneS3MultipartEncodingCompatibilityTests : IClassFixture<
         var listResp = await client.GetAsync($"{Prefix}/{bucket}?list-type=2&prefix={Uri.EscapeDataString("my ")}");
         Assert.Equal(HttpStatusCode.OK, listResp.StatusCode);
         var listDoc = XDocument.Parse(await listResp.Content.ReadAsStringAsync());
-        var keys = listDoc.Root!.Elements("Contents").Select(c => c.Element("Key")?.Value).ToArray();
+        var keys = listDoc.Root!.Elements(S3Ns + "Contents").Select(c => c.Element(S3Ns + "Key")?.Value).ToArray();
         Assert.Contains(key, keys);
     }
 
@@ -465,7 +467,7 @@ public sealed class RcloneS3MultipartEncodingCompatibilityTests : IClassFixture<
             $"{Prefix}/{bucket}?list-type=2&prefix={Uri.EscapeDataString("données/")}");
         Assert.Equal(HttpStatusCode.OK, listResp.StatusCode);
         var listDoc = XDocument.Parse(await listResp.Content.ReadAsStringAsync());
-        var keys = listDoc.Root!.Elements("Contents").Select(c => c.Element("Key")?.Value).ToArray();
+        var keys = listDoc.Root!.Elements(S3Ns + "Contents").Select(c => c.Element(S3Ns + "Key")?.Value).ToArray();
         Assert.Contains(key, keys);
     }
 
@@ -498,7 +500,7 @@ public sealed class RcloneS3MultipartEncodingCompatibilityTests : IClassFixture<
         var listResp = await client.GetAsync($"{Prefix}/{bucket}?list-type=2");
         Assert.Equal(HttpStatusCode.OK, listResp.StatusCode);
         var listDoc = XDocument.Parse(await listResp.Content.ReadAsStringAsync());
-        var listedKeys = listDoc.Root!.Elements("Contents").Select(c => c.Element("Key")?.Value).ToArray();
+        var listedKeys = listDoc.Root!.Elements(S3Ns + "Contents").Select(c => c.Element(S3Ns + "Key")?.Value).ToArray();
 
         foreach (var key in specialKeys) {
             Assert.Contains(key, listedKeys);
@@ -522,8 +524,8 @@ public sealed class RcloneS3MultipartEncodingCompatibilityTests : IClassFixture<
         Assert.Equal(HttpStatusCode.OK, resp1.StatusCode);
         var doc1 = XDocument.Parse(await resp1.Content.ReadAsStringAsync());
 
-        var prefixes1 = doc1.Root!.Elements("CommonPrefixes").Select(cp => cp.Element("Prefix")?.Value).ToArray();
-        var contents1 = doc1.Root!.Elements("Contents").Select(c => c.Element("Key")?.Value).ToArray();
+        var prefixes1 = doc1.Root!.Elements(S3Ns + "CommonPrefixes").Select(cp => cp.Element(S3Ns + "Prefix")?.Value).ToArray();
+        var contents1 = doc1.Root!.Elements(S3Ns + "Contents").Select(c => c.Element(S3Ns + "Key")?.Value).ToArray();
         Assert.Contains("a/b/", prefixes1);
         Assert.Contains("a/g.txt", contents1);
         Assert.DoesNotContain("a/b/c/", prefixes1); // nested prefix not at this level
@@ -533,8 +535,8 @@ public sealed class RcloneS3MultipartEncodingCompatibilityTests : IClassFixture<
         Assert.Equal(HttpStatusCode.OK, resp2.StatusCode);
         var doc2 = XDocument.Parse(await resp2.Content.ReadAsStringAsync());
 
-        var prefixes2 = doc2.Root!.Elements("CommonPrefixes").Select(cp => cp.Element("Prefix")?.Value).ToArray();
-        var contents2 = doc2.Root!.Elements("Contents").Select(c => c.Element("Key")?.Value).ToArray();
+        var prefixes2 = doc2.Root!.Elements(S3Ns + "CommonPrefixes").Select(cp => cp.Element(S3Ns + "Prefix")?.Value).ToArray();
+        var contents2 = doc2.Root!.Elements(S3Ns + "Contents").Select(c => c.Element(S3Ns + "Key")?.Value).ToArray();
         Assert.Contains("a/b/c/", prefixes2);
         Assert.Contains("a/b/f.txt", contents2);
 
@@ -543,8 +545,8 @@ public sealed class RcloneS3MultipartEncodingCompatibilityTests : IClassFixture<
         Assert.Equal(HttpStatusCode.OK, resp3.StatusCode);
         var doc3 = XDocument.Parse(await resp3.Content.ReadAsStringAsync());
 
-        var prefixes3 = doc3.Root!.Elements("CommonPrefixes").Select(cp => cp.Element("Prefix")?.Value).ToArray();
-        var contents3 = doc3.Root!.Elements("Contents").Select(c => c.Element("Key")?.Value).OrderBy(k => k).ToArray();
+        var prefixes3 = doc3.Root!.Elements(S3Ns + "CommonPrefixes").Select(cp => cp.Element(S3Ns + "Prefix")?.Value).ToArray();
+        var contents3 = doc3.Root!.Elements(S3Ns + "Contents").Select(c => c.Element(S3Ns + "Key")?.Value).OrderBy(k => k).ToArray();
         Assert.Empty(prefixes3);
         Assert.Equal(new[] { "a/b/c/d.txt", "a/b/c/e.txt" }, contents3);
     }

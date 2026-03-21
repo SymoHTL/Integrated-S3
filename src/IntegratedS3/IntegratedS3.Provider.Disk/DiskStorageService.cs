@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Security.Cryptography;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
@@ -9,13 +10,15 @@ using IntegratedS3.Abstractions.Responses;
 using IntegratedS3.Abstractions.Results;
 using IntegratedS3.Abstractions.Services;
 using IntegratedS3.Provider.Disk.Internal;
+using Microsoft.Extensions.Logging;
 
 namespace IntegratedS3.Provider.Disk;
 
 internal sealed class DiskStorageService(
     DiskStorageOptions options,
     IStorageObjectStateStore? objectStateStore = null,
-    IStorageMultipartStateStore? multipartStateStore = null) : IStorageBackend
+    IStorageMultipartStateStore? multipartStateStore = null,
+    ILogger<DiskStorageService>? logger = null) : IStorageBackend
 {
     private const string MetadataSuffix = ".integrateds3.json";
     private const string BucketMetadataFileName = ".integrateds3.bucket.json";
@@ -117,6 +120,32 @@ internal sealed class DiskStorageService(
     }
 
     public async ValueTask<StorageResult<BucketInfo>> CreateBucketAsync(CreateBucketRequest request, CancellationToken cancellationToken = default)
+    {
+        using var activity = DiskStorageTelemetry.StartActivity("CreateBucket", request.BucketName);
+        var sw = Stopwatch.StartNew();
+        logger?.LogDebug("Disk {Operation} starting for {BucketName}", "CreateBucket", request.BucketName);
+        StorageResult<BucketInfo> result;
+        try
+        {
+            result = await CreateBucketCoreAsync(request, cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            DiskStorageTelemetry.RecordFailure(activity, "CreateBucket", "InternalError", sw.ElapsedMilliseconds);
+            logger?.LogError(ex, "Disk {Operation} failed for {BucketName}", "CreateBucket", request.BucketName);
+            throw;
+        }
+        if (result.IsSuccess)
+            DiskStorageTelemetry.RecordSuccess(activity, "CreateBucket", sw.ElapsedMilliseconds);
+        else
+        {
+            DiskStorageTelemetry.RecordFailure(activity, "CreateBucket", result.Error!.Code.ToString(), sw.ElapsedMilliseconds);
+            logger?.LogWarning("Disk {Operation} returned error {ErrorCode} for {BucketName}", "CreateBucket", result.Error.Code, request.BucketName);
+        }
+        return result;
+    }
+
+    private async ValueTask<StorageResult<BucketInfo>> CreateBucketCoreAsync(CreateBucketRequest request, CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
 
@@ -1560,7 +1589,33 @@ internal sealed class DiskStorageService(
         return await HeadBucketCoreAsync(bucketName, bucketPath, cancellationToken);
     }
 
-    public ValueTask<StorageResult> DeleteBucketAsync(DeleteBucketRequest request, CancellationToken cancellationToken = default)
+    public async ValueTask<StorageResult> DeleteBucketAsync(DeleteBucketRequest request, CancellationToken cancellationToken = default)
+    {
+        using var activity = DiskStorageTelemetry.StartActivity("DeleteBucket", request.BucketName);
+        var sw = Stopwatch.StartNew();
+        logger?.LogDebug("Disk {Operation} starting for {BucketName}", "DeleteBucket", request.BucketName);
+        StorageResult result;
+        try
+        {
+            result = await DeleteBucketCoreAsync(request, cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            DiskStorageTelemetry.RecordFailure(activity, "DeleteBucket", "InternalError", sw.ElapsedMilliseconds);
+            logger?.LogError(ex, "Disk {Operation} failed for {BucketName}", "DeleteBucket", request.BucketName);
+            throw;
+        }
+        if (result.IsSuccess)
+            DiskStorageTelemetry.RecordSuccess(activity, "DeleteBucket", sw.ElapsedMilliseconds);
+        else
+        {
+            DiskStorageTelemetry.RecordFailure(activity, "DeleteBucket", result.Error!.Code.ToString(), sw.ElapsedMilliseconds);
+            logger?.LogWarning("Disk {Operation} returned error {ErrorCode} for {BucketName}", "DeleteBucket", result.Error.Code, request.BucketName);
+        }
+        return result;
+    }
+
+    private ValueTask<StorageResult> DeleteBucketCoreAsync(DeleteBucketRequest request, CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
 
@@ -1589,6 +1644,7 @@ internal sealed class DiskStorageService(
     public async IAsyncEnumerable<ObjectInfo> ListObjectsAsync(ListObjectsRequest request, [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(request);
+        logger?.LogDebug("Disk {Operation} starting for {BucketName}", "ListObjects", request.BucketName);
 
         var bucketPath = GetBucketPath(request.BucketName);
         if (!Directory.Exists(bucketPath)) {
@@ -1655,6 +1711,7 @@ internal sealed class DiskStorageService(
     public async IAsyncEnumerable<ObjectInfo> ListObjectVersionsAsync(ListObjectVersionsRequest request, [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(request);
+        logger?.LogDebug("Disk {Operation} starting for {BucketName}", "ListObjectVersions", request.BucketName);
 
         var bucketPath = GetBucketPath(request.BucketName);
         if (!Directory.Exists(bucketPath)) {
@@ -1791,6 +1848,32 @@ internal sealed class DiskStorageService(
 
     public async ValueTask<StorageResult<GetObjectResponse>> GetObjectAsync(GetObjectRequest request, CancellationToken cancellationToken = default)
     {
+        using var activity = DiskStorageTelemetry.StartActivity("GetObject", request.BucketName, request.Key);
+        var sw = Stopwatch.StartNew();
+        logger?.LogDebug("Disk {Operation} starting for {BucketName}/{Key}", "GetObject", request.BucketName, request.Key);
+        StorageResult<GetObjectResponse> result;
+        try
+        {
+            result = await GetObjectCoreAsync(request, cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            DiskStorageTelemetry.RecordFailure(activity, "GetObject", "InternalError", sw.ElapsedMilliseconds);
+            logger?.LogError(ex, "Disk {Operation} failed for {BucketName}/{Key}", "GetObject", request.BucketName, request.Key);
+            throw;
+        }
+        if (result.IsSuccess)
+            DiskStorageTelemetry.RecordSuccess(activity, "GetObject", sw.ElapsedMilliseconds);
+        else
+        {
+            DiskStorageTelemetry.RecordFailure(activity, "GetObject", result.Error!.Code.ToString(), sw.ElapsedMilliseconds);
+            logger?.LogWarning("Disk {Operation} returned error {ErrorCode} for {BucketName}/{Key}", "GetObject", result.Error.Code, request.BucketName, request.Key);
+        }
+        return result;
+    }
+
+    private async ValueTask<StorageResult<GetObjectResponse>> GetObjectCoreAsync(GetObjectRequest request, CancellationToken cancellationToken = default)
+    {
         var serverSideEncryptionError = GetUnsupportedServerSideEncryptionError(
             request.ServerSideEncryption,
             request.BucketName,
@@ -1907,7 +1990,32 @@ internal sealed class DiskStorageService(
     public async ValueTask<StorageResult<ObjectInfo>> CopyObjectAsync(CopyObjectRequest request, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(request);
+        using var activity = DiskStorageTelemetry.StartActivity("CopyObject", request.SourceBucketName, request.SourceKey);
+        var sw = Stopwatch.StartNew();
+        logger?.LogDebug("Disk {Operation} starting for {BucketName}/{Key}", "CopyObject", request.SourceBucketName, request.SourceKey);
+        StorageResult<ObjectInfo> result;
+        try
+        {
+            result = await CopyObjectCoreAsync(request, cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            DiskStorageTelemetry.RecordFailure(activity, "CopyObject", "InternalError", sw.ElapsedMilliseconds);
+            logger?.LogError(ex, "Disk {Operation} failed for {BucketName}/{Key}", "CopyObject", request.SourceBucketName, request.SourceKey);
+            throw;
+        }
+        if (result.IsSuccess)
+            DiskStorageTelemetry.RecordSuccess(activity, "CopyObject", sw.ElapsedMilliseconds);
+        else
+        {
+            DiskStorageTelemetry.RecordFailure(activity, "CopyObject", result.Error!.Code.ToString(), sw.ElapsedMilliseconds);
+            logger?.LogWarning("Disk {Operation} returned error {ErrorCode} for {BucketName}/{Key}", "CopyObject", result.Error.Code, request.SourceBucketName, request.SourceKey);
+        }
+        return result;
+    }
 
+    private async ValueTask<StorageResult<ObjectInfo>> CopyObjectCoreAsync(CopyObjectRequest request, CancellationToken cancellationToken = default)
+    {
         var sourceServerSideEncryptionError = GetUnsupportedServerSideEncryptionError(
             request.SourceServerSideEncryption,
             request.SourceBucketName,
@@ -2071,7 +2179,32 @@ internal sealed class DiskStorageService(
     {
         ArgumentNullException.ThrowIfNull(request);
         ArgumentNullException.ThrowIfNull(request.Content);
+        using var activity = DiskStorageTelemetry.StartActivity("PutObject", request.BucketName, request.Key);
+        var sw = Stopwatch.StartNew();
+        logger?.LogDebug("Disk {Operation} starting for {BucketName}/{Key}", "PutObject", request.BucketName, request.Key);
+        StorageResult<ObjectInfo> result;
+        try
+        {
+            result = await PutObjectCoreAsync(request, cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            DiskStorageTelemetry.RecordFailure(activity, "PutObject", "InternalError", sw.ElapsedMilliseconds);
+            logger?.LogError(ex, "Disk {Operation} failed for {BucketName}/{Key}", "PutObject", request.BucketName, request.Key);
+            throw;
+        }
+        if (result.IsSuccess)
+            DiskStorageTelemetry.RecordSuccess(activity, "PutObject", sw.ElapsedMilliseconds);
+        else
+        {
+            DiskStorageTelemetry.RecordFailure(activity, "PutObject", result.Error!.Code.ToString(), sw.ElapsedMilliseconds);
+            logger?.LogWarning("Disk {Operation} returned error {ErrorCode} for {BucketName}/{Key}", "PutObject", result.Error.Code, request.BucketName, request.Key);
+        }
+        return result;
+    }
 
+    private async ValueTask<StorageResult<ObjectInfo>> PutObjectCoreAsync(PutObjectRequest request, CancellationToken cancellationToken = default)
+    {
         var serverSideEncryptionError = GetUnsupportedServerSideEncryptionError(
             request.ServerSideEncryption,
             request.BucketName,
@@ -2251,9 +2384,35 @@ internal sealed class DiskStorageService(
         });
     }
 
-    public ValueTask<StorageResult<MultipartUploadInfo>> InitiateMultipartUploadAsync(InitiateMultipartUploadRequest request, CancellationToken cancellationToken = default)
+    public async ValueTask<StorageResult<MultipartUploadInfo>> InitiateMultipartUploadAsync(InitiateMultipartUploadRequest request, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(request);
+        using var activity = DiskStorageTelemetry.StartActivity("InitiateMultipartUpload", request.BucketName, request.Key);
+        var sw = Stopwatch.StartNew();
+        logger?.LogDebug("Disk {Operation} starting for {BucketName}/{Key}", "InitiateMultipartUpload", request.BucketName, request.Key);
+        StorageResult<MultipartUploadInfo> result;
+        try
+        {
+            result = await InitiateMultipartUploadCoreAsync(request, cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            DiskStorageTelemetry.RecordFailure(activity, "InitiateMultipartUpload", "InternalError", sw.ElapsedMilliseconds);
+            logger?.LogError(ex, "Disk {Operation} failed for {BucketName}/{Key}", "InitiateMultipartUpload", request.BucketName, request.Key);
+            throw;
+        }
+        if (result.IsSuccess)
+            DiskStorageTelemetry.RecordSuccess(activity, "InitiateMultipartUpload", sw.ElapsedMilliseconds);
+        else
+        {
+            DiskStorageTelemetry.RecordFailure(activity, "InitiateMultipartUpload", result.Error!.Code.ToString(), sw.ElapsedMilliseconds);
+            logger?.LogWarning("Disk {Operation} returned error {ErrorCode} for {BucketName}/{Key}", "InitiateMultipartUpload", result.Error.Code, request.BucketName, request.Key);
+        }
+        return result;
+    }
+
+    private ValueTask<StorageResult<MultipartUploadInfo>> InitiateMultipartUploadCoreAsync(InitiateMultipartUploadRequest request, CancellationToken cancellationToken = default)
+    {
         cancellationToken.ThrowIfCancellationRequested();
 
         var serverSideEncryptionError = GetUnsupportedServerSideEncryptionError(
@@ -2546,7 +2705,32 @@ internal sealed class DiskStorageService(
     public async ValueTask<StorageResult<ObjectInfo>> CompleteMultipartUploadAsync(CompleteMultipartUploadRequest request, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(request);
+        using var activity = DiskStorageTelemetry.StartActivity("CompleteMultipartUpload", request.BucketName, request.Key);
+        var sw = Stopwatch.StartNew();
+        logger?.LogDebug("Disk {Operation} starting for {BucketName}/{Key}", "CompleteMultipartUpload", request.BucketName, request.Key);
+        StorageResult<ObjectInfo> result;
+        try
+        {
+            result = await CompleteMultipartUploadCoreAsync(request, cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            DiskStorageTelemetry.RecordFailure(activity, "CompleteMultipartUpload", "InternalError", sw.ElapsedMilliseconds);
+            logger?.LogError(ex, "Disk {Operation} failed for {BucketName}/{Key}", "CompleteMultipartUpload", request.BucketName, request.Key);
+            throw;
+        }
+        if (result.IsSuccess)
+            DiskStorageTelemetry.RecordSuccess(activity, "CompleteMultipartUpload", sw.ElapsedMilliseconds);
+        else
+        {
+            DiskStorageTelemetry.RecordFailure(activity, "CompleteMultipartUpload", result.Error!.Code.ToString(), sw.ElapsedMilliseconds);
+            logger?.LogWarning("Disk {Operation} returned error {ErrorCode} for {BucketName}/{Key}", "CompleteMultipartUpload", result.Error.Code, request.BucketName, request.Key);
+        }
+        return result;
+    }
 
+    private async ValueTask<StorageResult<ObjectInfo>> CompleteMultipartUploadCoreAsync(CompleteMultipartUploadRequest request, CancellationToken cancellationToken = default)
+    {
         if (request.Parts.Count == 0) {
             return StorageResult<ObjectInfo>.Failure(MultipartConflict(
                 "At least one multipart part is required to complete an upload.",
@@ -2736,6 +2920,32 @@ internal sealed class DiskStorageService(
 
     public async ValueTask<StorageResult<ObjectInfo>> HeadObjectAsync(HeadObjectRequest request, CancellationToken cancellationToken = default)
     {
+        using var activity = DiskStorageTelemetry.StartActivity("HeadObject", request.BucketName, request.Key);
+        var sw = Stopwatch.StartNew();
+        logger?.LogDebug("Disk {Operation} starting for {BucketName}/{Key}", "HeadObject", request.BucketName, request.Key);
+        StorageResult<ObjectInfo> result;
+        try
+        {
+            result = await HeadObjectCoreAsync(request, cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            DiskStorageTelemetry.RecordFailure(activity, "HeadObject", "InternalError", sw.ElapsedMilliseconds);
+            logger?.LogError(ex, "Disk {Operation} failed for {BucketName}/{Key}", "HeadObject", request.BucketName, request.Key);
+            throw;
+        }
+        if (result.IsSuccess)
+            DiskStorageTelemetry.RecordSuccess(activity, "HeadObject", sw.ElapsedMilliseconds);
+        else
+        {
+            DiskStorageTelemetry.RecordFailure(activity, "HeadObject", result.Error!.Code.ToString(), sw.ElapsedMilliseconds);
+            logger?.LogWarning("Disk {Operation} returned error {ErrorCode} for {BucketName}/{Key}", "HeadObject", result.Error.Code, request.BucketName, request.Key);
+        }
+        return result;
+    }
+
+    private async ValueTask<StorageResult<ObjectInfo>> HeadObjectCoreAsync(HeadObjectRequest request, CancellationToken cancellationToken = default)
+    {
         var serverSideEncryptionError = GetUnsupportedServerSideEncryptionError(
             request.ServerSideEncryption,
             request.BucketName,
@@ -2774,6 +2984,32 @@ internal sealed class DiskStorageService(
     }
 
     public async ValueTask<StorageResult<DeleteObjectResult>> DeleteObjectAsync(DeleteObjectRequest request, CancellationToken cancellationToken = default)
+    {
+        using var activity = DiskStorageTelemetry.StartActivity("DeleteObject", request.BucketName, request.Key);
+        var sw = Stopwatch.StartNew();
+        logger?.LogDebug("Disk {Operation} starting for {BucketName}/{Key}", "DeleteObject", request.BucketName, request.Key);
+        StorageResult<DeleteObjectResult> result;
+        try
+        {
+            result = await DeleteObjectCoreAsync(request, cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            DiskStorageTelemetry.RecordFailure(activity, "DeleteObject", "InternalError", sw.ElapsedMilliseconds);
+            logger?.LogError(ex, "Disk {Operation} failed for {BucketName}/{Key}", "DeleteObject", request.BucketName, request.Key);
+            throw;
+        }
+        if (result.IsSuccess)
+            DiskStorageTelemetry.RecordSuccess(activity, "DeleteObject", sw.ElapsedMilliseconds);
+        else
+        {
+            DiskStorageTelemetry.RecordFailure(activity, "DeleteObject", result.Error!.Code.ToString(), sw.ElapsedMilliseconds);
+            logger?.LogWarning("Disk {Operation} returned error {ErrorCode} for {BucketName}/{Key}", "DeleteObject", result.Error.Code, request.BucketName, request.Key);
+        }
+        return result;
+    }
+
+    private async ValueTask<StorageResult<DeleteObjectResult>> DeleteObjectCoreAsync(DeleteObjectRequest request, CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
 

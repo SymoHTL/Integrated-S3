@@ -6,10 +6,16 @@ using System.Runtime.CompilerServices;
 
 namespace IntegratedS3.Core.Services;
 
+/// <summary>
+/// An <see cref="IStorageObjectStateStore"/> backed by the <see cref="IStorageCatalogStore"/>,
+/// reading and writing object metadata through the catalog persistence layer.
+/// </summary>
 public sealed class CatalogStorageObjectStateStore(IStorageCatalogStore catalogStore) : IStorageObjectStateStore
 {
+    /// <inheritdoc />
     public StorageSupportStateOwnership Ownership => StorageSupportStateOwnership.PlatformManaged;
 
+    /// <inheritdoc />
     public async ValueTask<ObjectInfo?> GetObjectInfoAsync(string providerName, string bucketName, string key, string? versionId = null, CancellationToken cancellationToken = default)
     {
         var objects = await catalogStore.ListObjectsAsync(providerName, bucketName, cancellationToken);
@@ -24,6 +30,7 @@ public sealed class CatalogStorageObjectStateStore(IStorageCatalogStore catalogS
         return ToObjectInfo(entry);
     }
 
+    /// <inheritdoc />
     public async IAsyncEnumerable<ObjectInfo> ListObjectVersionsAsync(string providerName, string bucketName, string? prefix = null, [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
         var objects = await catalogStore.ListObjectsAsync(providerName, bucketName, cancellationToken);
@@ -37,11 +44,13 @@ public sealed class CatalogStorageObjectStateStore(IStorageCatalogStore catalogS
         }
     }
 
+    /// <inheritdoc />
     public ValueTask UpsertObjectInfoAsync(string providerName, ObjectInfo @object, CancellationToken cancellationToken = default)
     {
         return catalogStore.UpsertObjectAsync(providerName, @object, cancellationToken);
     }
 
+    /// <inheritdoc />
     public ValueTask RemoveObjectInfoAsync(string providerName, string bucketName, string key, string? versionId = null, CancellationToken cancellationToken = default)
     {
         return catalogStore.RemoveObjectAsync(providerName, bucketName, key, versionId, cancellationToken);

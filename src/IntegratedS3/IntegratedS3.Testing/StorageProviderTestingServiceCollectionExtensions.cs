@@ -8,6 +8,15 @@ namespace IntegratedS3.Testing;
 /// </summary>
 public static class StorageProviderTestingServiceCollectionExtensions
 {
+    /// <summary>
+    /// Registers an <see cref="InMemoryObjectStateStore"/> as the
+    /// <see cref="IStorageObjectStateStore"/> singleton for the container.
+    /// </summary>
+    /// <param name="services">The service collection to configure.</param>
+    /// <param name="stateStore">
+    /// An optional pre-existing instance. When <see langword="null"/>, a new instance is created as a singleton.
+    /// </param>
+    /// <returns>The same <paramref name="services"/> instance for chaining.</returns>
     public static IServiceCollection AddInMemoryStorageObjectStateStore(
         this IServiceCollection services,
         InMemoryObjectStateStore? stateStore = null)
@@ -25,6 +34,15 @@ public static class StorageProviderTestingServiceCollectionExtensions
         return services;
     }
 
+    /// <summary>
+    /// Registers an <see cref="InMemoryMultipartStateStore"/> as the
+    /// <see cref="IStorageMultipartStateStore"/> singleton for the container.
+    /// </summary>
+    /// <param name="services">The service collection to configure.</param>
+    /// <param name="stateStore">
+    /// An optional pre-existing instance. When <see langword="null"/>, a new instance is created as a singleton.
+    /// </param>
+    /// <returns>The same <paramref name="services"/> instance for chaining.</returns>
     public static IServiceCollection AddInMemoryStorageMultipartStateStore(
         this IServiceCollection services,
         InMemoryMultipartStateStore? stateStore = null)

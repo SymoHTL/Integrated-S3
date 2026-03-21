@@ -5,8 +5,12 @@ using IntegratedS3.Abstractions.Responses;
 
 namespace IntegratedS3.Protocol;
 
+/// <summary>Writes S3 XML response bodies from typed DTO instances.</summary>
 public static class S3XmlResponseWriter
 {
+    /// <summary>Writes a BucketLocation as an XML response body.</summary>
+    /// <param name="response">The <see cref="S3BucketLocationResponse"/> to serialize.</param>
+    /// <returns>The XML string.</returns>
     public static string WriteBucketLocation(S3BucketLocationResponse response)
     {
         ArgumentNullException.ThrowIfNull(response);
@@ -29,6 +33,9 @@ public static class S3XmlResponseWriter
         return InjectS3Namespace(builder, "LocationConstraint");
     }
 
+    /// <summary>Writes a BucketVersioningConfiguration as an XML response body.</summary>
+    /// <param name="response">The <see cref="S3BucketVersioningConfiguration"/> to serialize.</param>
+    /// <returns>The XML string.</returns>
     public static string WriteBucketVersioningConfiguration(S3BucketVersioningConfiguration response)
     {
         ArgumentNullException.ThrowIfNull(response);
@@ -51,6 +58,9 @@ public static class S3XmlResponseWriter
         return InjectS3Namespace(builder, "VersioningConfiguration");
     }
 
+    /// <summary>Writes a BucketEncryptionConfiguration as an XML response body.</summary>
+    /// <param name="response">The <see cref="S3BucketEncryptionConfiguration"/> to serialize.</param>
+    /// <returns>The XML string.</returns>
     public static string WriteBucketEncryptionConfiguration(S3BucketEncryptionConfiguration response)
     {
         ArgumentNullException.ThrowIfNull(response);
@@ -90,6 +100,9 @@ public static class S3XmlResponseWriter
         return InjectS3Namespace(builder, "ServerSideEncryptionConfiguration");
     }
 
+    /// <summary>Writes a CorsConfiguration as an XML response body.</summary>
+    /// <param name="response">The <see cref="S3CorsConfiguration"/> to serialize.</param>
+    /// <returns>The XML string.</returns>
     public static string WriteCorsConfiguration(S3CorsConfiguration response)
     {
         ArgumentNullException.ThrowIfNull(response);
@@ -138,6 +151,9 @@ public static class S3XmlResponseWriter
         return InjectS3Namespace(builder, "CORSConfiguration");
     }
 
+    /// <summary>Writes an Error as an XML response body.</summary>
+    /// <param name="response">The <see cref="S3ErrorResponse"/> to serialize.</param>
+    /// <returns>The XML string.</returns>
     public static string WriteError(S3ErrorResponse response)
     {
         ArgumentNullException.ThrowIfNull(response);
@@ -174,6 +190,9 @@ public static class S3XmlResponseWriter
         return InjectS3Namespace(builder, "Error");
     }
 
+    /// <summary>Writes a CopyObjectResult as an XML response body.</summary>
+    /// <param name="response">The <see cref="S3CopyObjectResult"/> to serialize.</param>
+    /// <returns>The XML string.</returns>
     public static string WriteCopyObjectResult(S3CopyObjectResult response)
     {
         ArgumentNullException.ThrowIfNull(response);
@@ -214,6 +233,9 @@ public static class S3XmlResponseWriter
         return InjectS3Namespace(builder, "CopyObjectResult");
     }
 
+    /// <summary>Writes a CopyPartResult as an XML response body.</summary>
+    /// <param name="response">The <see cref="S3CopyObjectResult"/> to serialize.</param>
+    /// <returns>The XML string.</returns>
     public static string WriteCopyPartResult(S3CopyObjectResult response)
     {
         ArgumentNullException.ThrowIfNull(response);
@@ -250,6 +272,9 @@ public static class S3XmlResponseWriter
         return InjectS3Namespace(builder, "CopyPartResult");
     }
 
+    /// <summary>Writes an InitiateMultipartUploadResult as an XML response body.</summary>
+    /// <param name="response">The <see cref="S3InitiateMultipartUploadResult"/> to serialize.</param>
+    /// <returns>The XML string.</returns>
     public static string WriteInitiateMultipartUploadResult(S3InitiateMultipartUploadResult response)
     {
         ArgumentNullException.ThrowIfNull(response);
@@ -273,6 +298,9 @@ public static class S3XmlResponseWriter
         return InjectS3Namespace(builder, "InitiateMultipartUploadResult");
     }
 
+    /// <summary>Writes a CompleteMultipartUploadResult as an XML response body.</summary>
+    /// <param name="response">The <see cref="S3CompleteMultipartUploadResult"/> to serialize.</param>
+    /// <returns>The XML string.</returns>
     public static string WriteCompleteMultipartUploadResult(S3CompleteMultipartUploadResult response)
     {
         ArgumentNullException.ThrowIfNull(response);
@@ -319,6 +347,9 @@ public static class S3XmlResponseWriter
         return InjectS3Namespace(builder, "CompleteMultipartUploadResult");
     }
 
+    /// <summary>Writes a ListBucketResult as an XML response body.</summary>
+    /// <param name="response">The <see cref="S3ListBucketResult"/> to serialize.</param>
+    /// <returns>The XML string.</returns>
     public static string WriteListBucketResult(S3ListBucketResult response)
     {
         ArgumentNullException.ThrowIfNull(response);
@@ -398,6 +429,9 @@ public static class S3XmlResponseWriter
         return InjectS3Namespace(builder, "ListBucketResult");
     }
 
+    /// <summary>Writes a ListObjectVersionsResult as an XML response body.</summary>
+    /// <param name="response">The <see cref="S3ListObjectVersionsResult"/> to serialize.</param>
+    /// <returns>The XML string.</returns>
     public static string WriteListObjectVersionsResult(S3ListObjectVersionsResult response)
     {
         ArgumentNullException.ThrowIfNull(response);
@@ -467,6 +501,9 @@ public static class S3XmlResponseWriter
         return InjectS3Namespace(builder, "ListVersionsResult");
     }
 
+    /// <summary>Writes a ListMultipartUploadsResult as an XML response body.</summary>
+    /// <param name="response">The <see cref="S3ListMultipartUploadsResult"/> to serialize.</param>
+    /// <returns>The XML string.</returns>
     public static string WriteListMultipartUploadsResult(S3ListMultipartUploadsResult response)
     {
         ArgumentNullException.ThrowIfNull(response);
@@ -537,6 +574,9 @@ public static class S3XmlResponseWriter
         return InjectS3Namespace(builder, "ListMultipartUploadsResult");
     }
 
+    /// <summary>Writes a ListPartsResult as an XML response body.</summary>
+    /// <param name="response">The <see cref="S3ListPartsResult"/> to serialize.</param>
+    /// <returns>The XML string.</returns>
     public static string WriteListPartsResult(S3ListPartsResult response)
     {
         ArgumentNullException.ThrowIfNull(response);
@@ -619,6 +659,9 @@ public static class S3XmlResponseWriter
         return InjectS3Namespace(builder, "ListPartsResult");
     }
 
+    /// <summary>Writes a ListAllMyBucketsResult as an XML response body.</summary>
+    /// <param name="response">The <see cref="S3ListAllMyBucketsResult"/> to serialize.</param>
+    /// <returns>The XML string.</returns>
     public static string WriteListAllMyBucketsResult(S3ListAllMyBucketsResult response)
     {
         ArgumentNullException.ThrowIfNull(response);
@@ -648,6 +691,9 @@ public static class S3XmlResponseWriter
         return InjectS3Namespace(builder, "ListAllMyBucketsResult");
     }
 
+    /// <summary>Writes a DeleteObjectsResult as an XML response body.</summary>
+    /// <param name="response">The <see cref="S3DeleteObjectsResult"/> to serialize.</param>
+    /// <returns>The XML string.</returns>
     public static string WriteDeleteObjectsResult(S3DeleteObjectsResult response)
     {
         ArgumentNullException.ThrowIfNull(response);
@@ -698,6 +744,9 @@ public static class S3XmlResponseWriter
         return InjectS3Namespace(builder, "DeleteResult");
     }
 
+    /// <summary>Writes an ObjectTagging as an XML response body.</summary>
+    /// <param name="response">The <see cref="S3ObjectTagging"/> to serialize.</param>
+    /// <returns>The XML string.</returns>
     public static string WriteObjectTagging(S3ObjectTagging response)
     {
         ArgumentNullException.ThrowIfNull(response);
@@ -725,6 +774,9 @@ public static class S3XmlResponseWriter
         return InjectS3Namespace(builder, "Tagging");
     }
 
+    /// <summary>Writes an ObjectRetention as an XML response body.</summary>
+    /// <param name="response">The <see cref="S3ObjectRetention"/> to serialize.</param>
+    /// <returns>The XML string.</returns>
     public static string WriteObjectRetention(S3ObjectRetention response)
     {
         ArgumentNullException.ThrowIfNull(response);
@@ -751,6 +803,9 @@ public static class S3XmlResponseWriter
         return InjectS3Namespace(builder, "Retention");
     }
 
+    /// <summary>Writes an ObjectLegalHold as an XML response body.</summary>
+    /// <param name="response">The <see cref="S3ObjectLegalHold"/> to serialize.</param>
+    /// <returns>The XML string.</returns>
     public static string WriteObjectLegalHold(S3ObjectLegalHold response)
     {
         ArgumentNullException.ThrowIfNull(response);
@@ -773,6 +828,9 @@ public static class S3XmlResponseWriter
         return InjectS3Namespace(builder, "LegalHold");
     }
 
+    /// <summary>Writes a GetObjectAttributesResponse as an XML response body.</summary>
+    /// <param name="response">The <see cref="GetObjectAttributesResponse"/> to serialize.</param>
+    /// <returns>The XML string.</returns>
     public static string WriteGetObjectAttributesResponse(GetObjectAttributesResponse response)
     {
         ArgumentNullException.ThrowIfNull(response);
@@ -863,6 +921,9 @@ public static class S3XmlResponseWriter
         return InjectS3Namespace(builder, "GetObjectAttributesResponse");
     }
 
+    /// <summary>Writes an AccessControlPolicy as an XML response body.</summary>
+    /// <param name="response">The <see cref="S3AccessControlPolicy"/> to serialize.</param>
+    /// <returns>The XML string.</returns>
     public static string WriteAccessControlPolicy(S3AccessControlPolicy response)
     {
         ArgumentNullException.ThrowIfNull(response);
@@ -913,6 +974,9 @@ public static class S3XmlResponseWriter
         return InjectS3Namespace(builder, "AccessControlPolicy");
     }
 
+    /// <summary>Writes a BucketTagging as an XML response body.</summary>
+    /// <param name="response">The <see cref="S3BucketTagging"/> to serialize.</param>
+    /// <returns>The XML string.</returns>
     public static string WriteBucketTagging(S3BucketTagging response)
     {
         ArgumentNullException.ThrowIfNull(response);
@@ -940,6 +1004,9 @@ public static class S3XmlResponseWriter
         return InjectS3Namespace(builder, "Tagging");
     }
 
+    /// <summary>Writes a BucketLoggingStatus as an XML response body.</summary>
+    /// <param name="response">The <see cref="S3BucketLoggingStatus"/> to serialize.</param>
+    /// <returns>The XML string.</returns>
     public static string WriteBucketLoggingStatus(S3BucketLoggingStatus response)
     {
         ArgumentNullException.ThrowIfNull(response);
@@ -965,6 +1032,9 @@ public static class S3XmlResponseWriter
         return InjectS3Namespace(builder, "BucketLoggingStatus");
     }
 
+    /// <summary>Writes a WebsiteConfiguration as an XML response body.</summary>
+    /// <param name="response">The <see cref="S3WebsiteConfiguration"/> to serialize.</param>
+    /// <returns>The XML string.</returns>
     public static string WriteWebsiteConfiguration(S3WebsiteConfiguration response)
     {
         ArgumentNullException.ThrowIfNull(response);
@@ -1043,6 +1113,9 @@ public static class S3XmlResponseWriter
         return InjectS3Namespace(builder, "WebsiteConfiguration");
     }
 
+    /// <summary>Writes a RequestPaymentConfiguration as an XML response body.</summary>
+    /// <param name="response">The <see cref="S3RequestPaymentConfiguration"/> to serialize.</param>
+    /// <returns>The XML string.</returns>
     public static string WriteRequestPaymentConfiguration(S3RequestPaymentConfiguration response)
     {
         ArgumentNullException.ThrowIfNull(response);
@@ -1061,6 +1134,9 @@ public static class S3XmlResponseWriter
         return InjectS3Namespace(builder, "RequestPaymentConfiguration");
     }
 
+    /// <summary>Writes an AccelerateConfiguration as an XML response body.</summary>
+    /// <param name="response">The <see cref="S3AccelerateConfiguration"/> to serialize.</param>
+    /// <returns>The XML string.</returns>
     public static string WriteAccelerateConfiguration(S3AccelerateConfiguration response)
     {
         ArgumentNullException.ThrowIfNull(response);
@@ -1083,6 +1159,9 @@ public static class S3XmlResponseWriter
         return InjectS3Namespace(builder, "AccelerateConfiguration");
     }
 
+    /// <summary>Writes a LifecycleConfiguration as an XML response body.</summary>
+    /// <param name="response">The <see cref="S3LifecycleConfiguration"/> to serialize.</param>
+    /// <returns>The XML string.</returns>
     public static string WriteLifecycleConfiguration(S3LifecycleConfiguration response)
     {
         ArgumentNullException.ThrowIfNull(response);
@@ -1193,6 +1272,9 @@ public static class S3XmlResponseWriter
         return InjectS3Namespace(builder, "LifecycleConfiguration");
     }
 
+    /// <summary>Writes a ReplicationConfiguration as an XML response body.</summary>
+    /// <param name="response">The <see cref="S3ReplicationConfiguration"/> to serialize.</param>
+    /// <returns>The XML string.</returns>
     public static string WriteReplicationConfiguration(S3ReplicationConfiguration response)
     {
         ArgumentNullException.ThrowIfNull(response);
@@ -1253,6 +1335,9 @@ public static class S3XmlResponseWriter
         return InjectS3Namespace(builder, "ReplicationConfiguration");
     }
 
+    /// <summary>Writes a NotificationConfiguration as an XML response body.</summary>
+    /// <param name="response">The <see cref="S3NotificationConfiguration"/> to serialize.</param>
+    /// <returns>The XML string.</returns>
     public static string WriteNotificationConfiguration(S3NotificationConfiguration response)
     {
         ArgumentNullException.ThrowIfNull(response);
@@ -1310,6 +1395,9 @@ public static class S3XmlResponseWriter
         return InjectS3Namespace(builder, "NotificationConfiguration");
     }
 
+    /// <summary>Writes an ObjectLockConfiguration as an XML response body.</summary>
+    /// <param name="response">The <see cref="S3ObjectLockConfiguration"/> to serialize.</param>
+    /// <returns>The XML string.</returns>
     public static string WriteObjectLockConfiguration(S3ObjectLockConfiguration response)
     {
         ArgumentNullException.ThrowIfNull(response);
@@ -1348,6 +1436,9 @@ public static class S3XmlResponseWriter
         return InjectS3Namespace(builder, "ObjectLockConfiguration");
     }
 
+    /// <summary>Writes an AnalyticsConfiguration as an XML response body.</summary>
+    /// <param name="response">The <see cref="S3AnalyticsConfiguration"/> to serialize.</param>
+    /// <returns>The XML string.</returns>
     public static string WriteAnalyticsConfiguration(S3AnalyticsConfiguration response)
     {
         ArgumentNullException.ThrowIfNull(response);
@@ -1420,6 +1511,9 @@ public static class S3XmlResponseWriter
         return InjectS3Namespace(builder, "AnalyticsConfiguration");
     }
 
+    /// <summary>Writes a MetricsConfiguration as an XML response body.</summary>
+    /// <param name="response">The <see cref="S3MetricsConfiguration"/> to serialize.</param>
+    /// <returns>The XML string.</returns>
     public static string WriteMetricsConfiguration(S3MetricsConfiguration response)
     {
         ArgumentNullException.ThrowIfNull(response);
@@ -1470,6 +1564,9 @@ public static class S3XmlResponseWriter
         return InjectS3Namespace(builder, "MetricsConfiguration");
     }
 
+    /// <summary>Writes an InventoryConfiguration as an XML response body.</summary>
+    /// <param name="response">The <see cref="S3InventoryConfiguration"/> to serialize.</param>
+    /// <returns>The XML string.</returns>
     public static string WriteInventoryConfiguration(S3InventoryConfiguration response)
     {
         ArgumentNullException.ThrowIfNull(response);
@@ -1530,6 +1627,9 @@ public static class S3XmlResponseWriter
         return InjectS3Namespace(builder, "InventoryConfiguration");
     }
 
+    /// <summary>Writes an IntelligentTieringConfiguration as an XML response body.</summary>
+    /// <param name="response">The <see cref="S3IntelligentTieringConfiguration"/> to serialize.</param>
+    /// <returns>The XML string.</returns>
     public static string WriteIntelligentTieringConfiguration(S3IntelligentTieringConfiguration response)
     {
         ArgumentNullException.ThrowIfNull(response);
@@ -1584,6 +1684,9 @@ public static class S3XmlResponseWriter
         return InjectS3Namespace(builder, "IntelligentTieringConfiguration");
     }
 
+    /// <summary>Writes a ListAnalyticsConfigurations result as an XML response body.</summary>
+    /// <param name="response">The <see cref="S3ListAnalyticsConfigurationsResult"/> to serialize.</param>
+    /// <returns>The XML string.</returns>
     public static string WriteListAnalyticsConfigurations(S3ListAnalyticsConfigurationsResult response)
     {
         ArgumentNullException.ThrowIfNull(response);
@@ -1613,6 +1716,9 @@ public static class S3XmlResponseWriter
         return InjectS3Namespace(builder, "ListBucketAnalyticsConfigurationsResult");
     }
 
+    /// <summary>Writes a ListMetricsConfigurations result as an XML response body.</summary>
+    /// <param name="response">The <see cref="S3ListMetricsConfigurationsResult"/> to serialize.</param>
+    /// <returns>The XML string.</returns>
     public static string WriteListMetricsConfigurations(S3ListMetricsConfigurationsResult response)
     {
         ArgumentNullException.ThrowIfNull(response);
@@ -1642,6 +1748,9 @@ public static class S3XmlResponseWriter
         return InjectS3Namespace(builder, "ListMetricsConfigurationsResult");
     }
 
+    /// <summary>Writes a ListInventoryConfigurations result as an XML response body.</summary>
+    /// <param name="response">The <see cref="S3ListInventoryConfigurationsResult"/> to serialize.</param>
+    /// <returns>The XML string.</returns>
     public static string WriteListInventoryConfigurations(S3ListInventoryConfigurationsResult response)
     {
         ArgumentNullException.ThrowIfNull(response);
@@ -1671,6 +1780,9 @@ public static class S3XmlResponseWriter
         return InjectS3Namespace(builder, "ListInventoryConfigurationsResult");
     }
 
+    /// <summary>Writes a ListIntelligentTieringConfigurations result as an XML response body.</summary>
+    /// <param name="response">The <see cref="S3ListIntelligentTieringConfigurationsResult"/> to serialize.</param>
+    /// <returns>The XML string.</returns>
     public static string WriteListIntelligentTieringConfigurations(S3ListIntelligentTieringConfigurationsResult response)
     {
         ArgumentNullException.ThrowIfNull(response);
@@ -1892,6 +2004,9 @@ public static class S3XmlResponseWriter
         xmlWriter.WriteEndElement();
     }
 
+    /// <summary>Writes a RestoreRequest as an XML response body.</summary>
+    /// <param name="response">The <see cref="S3RestoreRequest"/> to serialize.</param>
+    /// <returns>The XML string.</returns>
     public static string WriteRestoreRequest(S3RestoreRequest response)
     {
         ArgumentNullException.ThrowIfNull(response);
@@ -1997,6 +2112,11 @@ public static class S3XmlResponseWriter
         xmlWriter.WriteEndElement();
     }
 
+    /// <summary>Writes a PostObjectResult as an XML response body.</summary>
+    /// <param name="bucketName">The name of the bucket.</param>
+    /// <param name="key">The object key.</param>
+    /// <param name="etag">The optional ETag of the created object.</param>
+    /// <returns>The XML string.</returns>
     public static string WritePostObjectResult(string bucketName, string key, string? etag)
     {
         var builder = new StringBuilder();

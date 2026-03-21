@@ -20,6 +20,11 @@ public static class IntegratedS3ClientServiceCollectionExtensions
     /// </summary>
     public const string HttpClientName = "IntegratedS3.Client";
 
+    /// <summary>
+    /// Registers <see cref="IntegratedS3Client"/> and <see cref="IIntegratedS3Client"/> with default options.
+    /// </summary>
+    /// <param name="services">The service collection to add registrations to.</param>
+    /// <returns>An <see cref="IHttpClientBuilder"/> for further configuration of the underlying <see cref="HttpClient"/>.</returns>
     public static IHttpClientBuilder AddIntegratedS3Client(this IServiceCollection services)
     {
         ArgumentNullException.ThrowIfNull(services);
@@ -28,6 +33,13 @@ public static class IntegratedS3ClientServiceCollectionExtensions
         return AddIntegratedS3ClientCore(services);
     }
 
+    /// <summary>
+    /// Registers <see cref="IntegratedS3Client"/> and <see cref="IIntegratedS3Client"/>,
+    /// setting <see cref="IntegratedS3ClientOptions.BaseAddress"/> to <paramref name="baseAddress"/>.
+    /// </summary>
+    /// <param name="services">The service collection to add registrations to.</param>
+    /// <param name="baseAddress">The absolute base address of the IntegratedS3 host.</param>
+    /// <returns>An <see cref="IHttpClientBuilder"/> for further configuration of the underlying <see cref="HttpClient"/>.</returns>
     public static IHttpClientBuilder AddIntegratedS3Client(this IServiceCollection services, Uri baseAddress)
     {
         ArgumentNullException.ThrowIfNull(services);
@@ -38,6 +50,13 @@ public static class IntegratedS3ClientServiceCollectionExtensions
         });
     }
 
+    /// <summary>
+    /// Registers <see cref="IntegratedS3Client"/> and <see cref="IIntegratedS3Client"/>,
+    /// binding options from the <see cref="ConfigurationSectionName"/> section of <paramref name="configuration"/>.
+    /// </summary>
+    /// <param name="services">The service collection to add registrations to.</param>
+    /// <param name="configuration">The root <see cref="IConfiguration"/> containing the IntegratedS3 client section.</param>
+    /// <returns>An <see cref="IHttpClientBuilder"/> for further configuration of the underlying <see cref="HttpClient"/>.</returns>
     public static IHttpClientBuilder AddIntegratedS3Client(this IServiceCollection services, IConfiguration configuration)
     {
         ArgumentNullException.ThrowIfNull(services);
@@ -46,6 +65,15 @@ public static class IntegratedS3ClientServiceCollectionExtensions
         return services.AddIntegratedS3Client(configuration.GetSection(ConfigurationSectionName));
     }
 
+    /// <summary>
+    /// Registers <see cref="IntegratedS3Client"/> and <see cref="IIntegratedS3Client"/>,
+    /// binding options from the <see cref="ConfigurationSectionName"/> section of <paramref name="configuration"/>
+    /// and then applying the <paramref name="configure"/> callback.
+    /// </summary>
+    /// <param name="services">The service collection to add registrations to.</param>
+    /// <param name="configuration">The root <see cref="IConfiguration"/> containing the IntegratedS3 client section.</param>
+    /// <param name="configure">A delegate to further configure <see cref="IntegratedS3ClientOptions"/>.</param>
+    /// <returns>An <see cref="IHttpClientBuilder"/> for further configuration of the underlying <see cref="HttpClient"/>.</returns>
     public static IHttpClientBuilder AddIntegratedS3Client(
         this IServiceCollection services,
         IConfiguration configuration,
@@ -58,6 +86,13 @@ public static class IntegratedS3ClientServiceCollectionExtensions
         return services.AddIntegratedS3Client(configuration.GetSection(ConfigurationSectionName), configure);
     }
 
+    /// <summary>
+    /// Registers <see cref="IntegratedS3Client"/> and <see cref="IIntegratedS3Client"/>,
+    /// binding options from the provided <paramref name="section"/>.
+    /// </summary>
+    /// <param name="services">The service collection to add registrations to.</param>
+    /// <param name="section">The <see cref="IConfigurationSection"/> to bind <see cref="IntegratedS3ClientOptions"/> from.</param>
+    /// <returns>An <see cref="IHttpClientBuilder"/> for further configuration of the underlying <see cref="HttpClient"/>.</returns>
     public static IHttpClientBuilder AddIntegratedS3Client(this IServiceCollection services, IConfigurationSection section)
     {
         ArgumentNullException.ThrowIfNull(services);
@@ -70,6 +105,14 @@ public static class IntegratedS3ClientServiceCollectionExtensions
         return AddIntegratedS3ClientCore(services);
     }
 
+    /// <summary>
+    /// Registers <see cref="IntegratedS3Client"/> and <see cref="IIntegratedS3Client"/>,
+    /// binding options from the provided <paramref name="section"/> and then applying the <paramref name="configure"/> callback.
+    /// </summary>
+    /// <param name="services">The service collection to add registrations to.</param>
+    /// <param name="section">The <see cref="IConfigurationSection"/> to bind <see cref="IntegratedS3ClientOptions"/> from.</param>
+    /// <param name="configure">A delegate to further configure <see cref="IntegratedS3ClientOptions"/>.</param>
+    /// <returns>An <see cref="IHttpClientBuilder"/> for further configuration of the underlying <see cref="HttpClient"/>.</returns>
     public static IHttpClientBuilder AddIntegratedS3Client(
         this IServiceCollection services,
         IConfigurationSection section,
@@ -87,6 +130,13 @@ public static class IntegratedS3ClientServiceCollectionExtensions
         return AddIntegratedS3ClientCore(services);
     }
 
+    /// <summary>
+    /// Registers <see cref="IntegratedS3Client"/> and <see cref="IIntegratedS3Client"/>,
+    /// applying the <paramref name="configure"/> callback to <see cref="IntegratedS3ClientOptions"/>.
+    /// </summary>
+    /// <param name="services">The service collection to add registrations to.</param>
+    /// <param name="configure">A delegate to configure <see cref="IntegratedS3ClientOptions"/>.</param>
+    /// <returns>An <see cref="IHttpClientBuilder"/> for further configuration of the underlying <see cref="HttpClient"/>.</returns>
     public static IHttpClientBuilder AddIntegratedS3Client(
         this IServiceCollection services,
         Action<IntegratedS3ClientOptions> configure)

@@ -29,11 +29,6 @@ internal static class S3BucketDefaultEncryptionMapper
                 "S3 bucket default encryption metadata did not include an ApplyServerSideEncryptionByDefault configuration.");
         }
 
-        if (rule.BucketKeyEnabled == true) {
-            throw new S3ServerSideEncryptionNotSupportedException(
-                "S3 bucket default encryption metadata reported BucketKeyEnabled=true, which is not currently supported.");
-        }
-
         var serverSideEncryption = S3ServerSideEncryptionMapper.ToInfo(
             rule.ServerSideEncryptionByDefault.ServerSideEncryptionAlgorithm,
             rule.ServerSideEncryptionByDefault.ServerSideEncryptionKeyManagementServiceKeyId)
@@ -46,7 +41,8 @@ internal static class S3BucketDefaultEncryptionMapper
             Rule = new BucketDefaultEncryptionRule
             {
                 Algorithm = serverSideEncryption.Algorithm,
-                KeyId = serverSideEncryption.KeyId
+                KeyId = serverSideEncryption.KeyId,
+                BucketKeyEnabled = rule.BucketKeyEnabled == true
             }
         };
     }
@@ -70,6 +66,7 @@ internal static class S3BucketDefaultEncryptionMapper
             [
                 new ServerSideEncryptionRule
                 {
+                    BucketKeyEnabled = rule.BucketKeyEnabled,
                     ServerSideEncryptionByDefault = new ServerSideEncryptionByDefault
                     {
                         ServerSideEncryptionAlgorithm = ToServerSideEncryptionMethod(rule.Algorithm, keyId),

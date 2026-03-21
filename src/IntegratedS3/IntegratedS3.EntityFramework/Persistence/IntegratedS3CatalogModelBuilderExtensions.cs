@@ -2,8 +2,18 @@ using Microsoft.EntityFrameworkCore;
 
 namespace IntegratedS3.Core.Persistence;
 
+/// <summary>
+/// Extension methods for configuring EF Core entity mappings for IntegratedS3 catalog tables.
+/// </summary>
 public static class IntegratedS3CatalogModelBuilderExtensions
 {
+    /// <summary>
+    /// Configures the EF Core entity mappings for <see cref="BucketCatalogRecord"/>,
+    /// <see cref="ObjectCatalogRecord"/>, and <see cref="MultipartUploadCatalogRecord"/>
+    /// used by the IntegratedS3 catalog persistence layer.
+    /// </summary>
+    /// <param name="modelBuilder">The <see cref="ModelBuilder"/> to apply the mappings to.</param>
+    /// <returns>The same <see cref="ModelBuilder"/> for chaining.</returns>
     public static ModelBuilder MapIntegratedS3Catalog(this ModelBuilder modelBuilder)
     {
         ArgumentNullException.ThrowIfNull(modelBuilder);

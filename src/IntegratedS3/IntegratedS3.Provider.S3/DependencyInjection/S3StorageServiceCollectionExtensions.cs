@@ -5,8 +5,18 @@ using Microsoft.Extensions.Logging;
 
 namespace IntegratedS3.Provider.S3.DependencyInjection;
 
+/// <summary>
+/// Extension methods for registering an AWS S3-backed <see cref="IStorageBackend"/> with the dependency-injection container.
+/// </summary>
 public static class S3StorageServiceCollectionExtensions
 {
+    /// <summary>
+    /// Registers an AWS S3-backed <see cref="IStorageBackend"/> using the supplied <paramref name="options"/>.
+    /// Also registers the internal <see cref="IS3StorageClient"/> and <see cref="IStorageObjectLocationResolver"/> services.
+    /// </summary>
+    /// <param name="services">The service collection to add to.</param>
+    /// <param name="options">Pre-configured S3 storage options.</param>
+    /// <returns>The same <see cref="IServiceCollection"/> for chaining.</returns>
     public static IServiceCollection AddS3Storage(this IServiceCollection services, S3StorageOptions options)
     {
         ArgumentNullException.ThrowIfNull(services);
@@ -25,6 +35,12 @@ public static class S3StorageServiceCollectionExtensions
         return services;
     }
 
+    /// <summary>
+    /// Registers an AWS S3-backed <see cref="IStorageBackend"/> using a delegate to configure <see cref="S3StorageOptions"/>.
+    /// </summary>
+    /// <param name="services">The service collection to add to.</param>
+    /// <param name="configure">A delegate that configures the <see cref="S3StorageOptions"/>.</param>
+    /// <returns>The same <see cref="IServiceCollection"/> for chaining.</returns>
     public static IServiceCollection AddS3Storage(this IServiceCollection services, Action<S3StorageOptions> configure)
     {
         ArgumentNullException.ThrowIfNull(services);

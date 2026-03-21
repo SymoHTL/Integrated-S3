@@ -2,12 +2,22 @@ using System.Globalization;
 
 namespace IntegratedS3.Protocol;
 
+/// <summary>
+/// Generates SigV4 presigned URLs by computing a canonical request and HMAC-SHA256 signature
+/// that is appended as the <c>X-Amz-Signature</c> query parameter.
+/// </summary>
 public static class S3SigV4Presigner
 {
     private const string Algorithm = "AWS4-HMAC-SHA256";
     private const string Terminator = "aws4_request";
     private const string SignatureQueryKey = "X-Amz-Signature";
 
+    /// <summary>
+    /// Creates a SigV4 presigned request by computing the canonical request, string-to-sign,
+    /// and HMAC-SHA256 signature from the supplied parameters.
+    /// </summary>
+    /// <param name="parameters">The presign parameters including credentials, region, expiry, and request details.</param>
+    /// <returns>A <see cref="S3SigV4PresignedRequestData"/> containing the signature and signed query parameters.</returns>
     public static S3SigV4PresignedRequestData Presign(S3SigV4PresignParameters parameters)
     {
         ArgumentNullException.ThrowIfNull(parameters);

@@ -3,13 +3,32 @@ using System.Text;
 
 namespace IntegratedS3.Abstractions.Models;
 
+/// <summary>
+/// Validates tag keys and values against S3 tagging constraints.
+/// </summary>
 public static class ObjectTagValidation
 {
+    /// <summary>
+    /// Maximum number of tags allowed per object (10).
+    /// </summary>
     public const int MaxTagCount = 10;
+
+    /// <summary>
+    /// Maximum length of a tag key in Unicode characters (128).
+    /// </summary>
     public const int MaxKeyLength = 128;
+
+    /// <summary>
+    /// Maximum length of a tag value in Unicode characters (256).
+    /// </summary>
     public const int MaxValueLength = 256;
     private const string ReservedPrefix = "aws:";
 
+    /// <summary>
+    /// Validates a dictionary of tags against S3 tagging constraints.
+    /// </summary>
+    /// <param name="tags">The tags to validate, or <see langword="null"/>.</param>
+    /// <returns><see langword="null"/> if valid; otherwise an error message describing the first violation.</returns>
     public static string? Validate(IReadOnlyDictionary<string, string>? tags)
     {
         if (tags is null || tags.Count == 0) {
@@ -30,6 +49,11 @@ public static class ObjectTagValidation
         return null;
     }
 
+    /// <summary>
+    /// Validates a list of tag key-value pairs against S3 tagging constraints, including duplicate key detection.
+    /// </summary>
+    /// <param name="tags">The tags to validate.</param>
+    /// <returns><see langword="null"/> if valid; otherwise an error message describing the first violation.</returns>
     public static string? Validate(IReadOnlyList<KeyValuePair<string, string>> tags)
     {
         ArgumentNullException.ThrowIfNull(tags);

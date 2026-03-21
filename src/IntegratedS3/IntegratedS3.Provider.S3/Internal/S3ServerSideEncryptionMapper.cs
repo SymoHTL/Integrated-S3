@@ -54,6 +54,11 @@ internal static class S3ServerSideEncryptionMapper
 
     public static ObjectServerSideEncryptionInfo? ToInfo(ServerSideEncryptionMethod? method, string? keyId)
     {
+        return ToInfo(method, keyId, bucketKeyEnabled: false);
+    }
+
+    public static ObjectServerSideEncryptionInfo? ToInfo(ServerSideEncryptionMethod? method, string? keyId, bool? bucketKeyEnabled)
+    {
         var algorithm = NormalizeAlgorithm(method);
         if (algorithm is null)
             return null;
@@ -70,7 +75,8 @@ internal static class S3ServerSideEncryptionMapper
             Algorithm = algorithm.Value,
             KeyId = SupportsKmsKeyId(algorithm.Value) && !string.IsNullOrWhiteSpace(keyId)
                 ? keyId
-                : null
+                : null,
+            BucketKeyEnabled = bucketKeyEnabled == true
         };
     }
 

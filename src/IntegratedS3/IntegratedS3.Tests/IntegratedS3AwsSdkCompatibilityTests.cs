@@ -4881,12 +4881,15 @@ public sealed class IntegratedS3AwsSdkCompatibilityTests : IClassFixture<WebUiAp
             IReadOnlyDictionary<string, string>? checksums,
             StorageObjectServerSideEncryptionSettings? serverSideEncryption,
             StorageObjectCustomerEncryptionSettings? customerEncryption,
+            string? storageClass,
+            string? ifMatchETag,
+            string? ifNoneMatchETag,
             CancellationToken cancellationToken = default)
         {
             cancellationToken.ThrowIfCancellationRequested();
             EnsureBucketExists(bucketName);
 
-            LastPutObjectServerSideEncryption = CloneServerSideEncryptionSettings(serverSideEncryption);
+            LastPutObjectServerSideEncryption= CloneServerSideEncryptionSettings(serverSideEncryption);
 
             using var buffer = new MemoryStream();
             await content.CopyToAsync(buffer, cancellationToken).ConfigureAwait(false);
@@ -4944,6 +4947,7 @@ public sealed class IntegratedS3AwsSdkCompatibilityTests : IClassFixture<WebUiAp
             StorageObjectServerSideEncryptionSettings? destinationServerSideEncryption,
             StorageObjectCustomerEncryptionSettings? sourceCustomerEncryption,
             StorageObjectCustomerEncryptionSettings? destinationCustomerEncryption,
+            string? storageClass,
             CancellationToken cancellationToken = default)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -4991,6 +4995,7 @@ public sealed class IntegratedS3AwsSdkCompatibilityTests : IClassFixture<WebUiAp
             string? checksumAlgorithm,
             StorageObjectServerSideEncryptionSettings? serverSideEncryption,
             StorageObjectCustomerEncryptionSettings? customerEncryption,
+            string? storageClass,
             CancellationToken cancellationToken = default)
             => throw new NotSupportedException("Multipart compatibility coverage is not exercised by this harness.");
 

@@ -5,10 +5,16 @@ using IntegratedS3.Abstractions.Services;
 
 namespace IntegratedS3.Core.Services;
 
+/// <summary>
+/// A no-op <see cref="IStorageObjectLocationResolver"/> that always returns <see langword="null"/>,
+/// indicating that location resolution is not supported or not applicable.
+/// </summary>
 public sealed class NullStorageObjectLocationResolver : IStorageObjectLocationResolver
 {
+    /// <inheritdoc />
     public StorageSupportStateOwnership Ownership => StorageSupportStateOwnership.NotApplicable;
 
+    /// <inheritdoc />
     public ValueTask<StorageResolvedObjectLocation?> ResolveReadLocationAsync(
         ResolveObjectLocationRequest request,
         CancellationToken cancellationToken = default)

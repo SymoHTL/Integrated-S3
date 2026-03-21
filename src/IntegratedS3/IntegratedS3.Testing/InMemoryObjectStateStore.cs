@@ -8,12 +8,18 @@ namespace IntegratedS3.Testing;
 /// <summary>
 /// In-memory <see cref="IStorageObjectStateStore" /> implementation for provider tests.
 /// </summary>
+/// <remarks>
+/// This implementation is intended for unit and integration testing only. 
+/// It is not thread-safe and should not be used as a production singleton service.
+/// </remarks>
 public sealed class InMemoryObjectStateStore : IStorageObjectStateStore
 {
     private readonly Dictionary<(string ProviderName, string BucketName, string Key, string? VersionId), ObjectInfo> _objects = new();
 
+    /// <inheritdoc />
     public StorageSupportStateOwnership Ownership => StorageSupportStateOwnership.PlatformManaged;
 
+    /// <inheritdoc />
     public ValueTask<ObjectInfo?> GetObjectInfoAsync(
         string providerName,
         string bucketName,
@@ -35,6 +41,7 @@ public sealed class InMemoryObjectStateStore : IStorageObjectStateStore
         return ValueTask.FromResult(current);
     }
 
+    /// <inheritdoc />
     public async IAsyncEnumerable<ObjectInfo> ListObjectVersionsAsync(
         string providerName,
         string bucketName,
@@ -53,6 +60,7 @@ public sealed class InMemoryObjectStateStore : IStorageObjectStateStore
         }
     }
 
+    /// <inheritdoc />
     public ValueTask UpsertObjectInfoAsync(string providerName, ObjectInfo @object, CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
@@ -88,6 +96,7 @@ public sealed class InMemoryObjectStateStore : IStorageObjectStateStore
         return ValueTask.CompletedTask;
     }
 
+    /// <inheritdoc />
     public ValueTask RemoveObjectInfoAsync(
         string providerName,
         string bucketName,

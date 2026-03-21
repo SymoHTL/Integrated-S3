@@ -13,14 +13,50 @@ using Microsoft.Extensions.Options;
 
 namespace IntegratedS3.AspNetCore.DependencyInjection;
 
+/// <summary>
+/// Extension methods for registering IntegratedS3 services with the ASP.NET Core dependency injection container.
+/// </summary>
 public static class IntegratedS3ServiceCollectionExtensions
 {
+    /// <summary>
+    /// Registers IntegratedS3 core services with default options.
+    /// Use this overload when no external configuration is needed and all settings use their defaults.
+    /// </summary>
+    /// <remarks>
+    /// This method does <b>not</b> register a storage backend. Consumers must also call a backend
+    /// registration method such as <c>AddDiskStorage()</c>, <c>AddS3Storage()</c>, or
+    /// <see cref="AddIntegratedS3Backend{TBackend}(IServiceCollection)"/> to provide a functioning
+    /// <see cref="IStorageBackend"/> implementation.
+    /// </remarks>
+    /// <param name="services">The <see cref="IServiceCollection"/> to add services to.</param>
+    /// <returns>The <see cref="IServiceCollection"/> so that additional calls can be chained.</returns>
+    /// <example>
+    /// <code>
+    /// builder.Services.AddIntegratedS3();
+    /// builder.Services.AddIntegratedS3Backend&lt;DiskStorageBackend&gt;();
+    /// </code>
+    /// </example>
     public static IServiceCollection AddIntegratedS3(this IServiceCollection services)
     {
         ArgumentNullException.ThrowIfNull(services);
         return services.AddIntegratedS3(static _ => { });
     }
 
+    /// <summary>
+    /// Registers IntegratedS3 core services and binds <see cref="IntegratedS3Options"/> from
+    /// the <c>"IntegratedS3"</c> section of the provided root <see cref="IConfiguration"/>.
+    /// </summary>
+    /// <remarks>
+    /// This method does <b>not</b> register a storage backend. Consumers must also call a backend
+    /// registration method such as <c>AddDiskStorage()</c>, <c>AddS3Storage()</c>, or
+    /// <see cref="AddIntegratedS3Backend{TBackend}(IServiceCollection)"/> to provide a functioning
+    /// <see cref="IStorageBackend"/> implementation.
+    /// </remarks>
+    /// <param name="services">The <see cref="IServiceCollection"/> to add services to.</param>
+    /// <param name="configuration">
+    /// The root <see cref="IConfiguration"/> from which the <c>"IntegratedS3"</c> section is read.
+    /// </param>
+    /// <returns>The <see cref="IServiceCollection"/> so that additional calls can be chained.</returns>
     public static IServiceCollection AddIntegratedS3(this IServiceCollection services, IConfiguration configuration)
     {
         ArgumentNullException.ThrowIfNull(services);
@@ -28,6 +64,31 @@ public static class IntegratedS3ServiceCollectionExtensions
         return services.AddIntegratedS3(configuration.GetSection("IntegratedS3"));
     }
 
+    /// <summary>
+    /// Registers IntegratedS3 core services, binds <see cref="IntegratedS3Options"/> from the
+    /// <c>"IntegratedS3"</c> section of the provided root <see cref="IConfiguration"/>, and then
+    /// applies the <paramref name="configure"/> callback for programmatic overrides.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The <paramref name="configure"/> callback runs <b>after</b> configuration binding, so values
+    /// set in the callback take precedence over values from <see cref="IConfiguration"/>.
+    /// </para>
+    /// <para>
+    /// This method does <b>not</b> register a storage backend. Consumers must also call a backend
+    /// registration method such as <c>AddDiskStorage()</c>, <c>AddS3Storage()</c>, or
+    /// <see cref="AddIntegratedS3Backend{TBackend}(IServiceCollection)"/> to provide a functioning
+    /// <see cref="IStorageBackend"/> implementation.
+    /// </para>
+    /// </remarks>
+    /// <param name="services">The <see cref="IServiceCollection"/> to add services to.</param>
+    /// <param name="configuration">
+    /// The root <see cref="IConfiguration"/> from which the <c>"IntegratedS3"</c> section is read.
+    /// </param>
+    /// <param name="configure">
+    /// A callback to further configure <see cref="IntegratedS3Options"/> after configuration binding.
+    /// </param>
+    /// <returns>The <see cref="IServiceCollection"/> so that additional calls can be chained.</returns>
     public static IServiceCollection AddIntegratedS3(this IServiceCollection services, IConfiguration configuration, Action<IntegratedS3Options> configure)
     {
         ArgumentNullException.ThrowIfNull(services);
@@ -37,6 +98,22 @@ public static class IntegratedS3ServiceCollectionExtensions
         return services.AddIntegratedS3(configuration.GetSection("IntegratedS3"), configure);
     }
 
+    /// <summary>
+    /// Registers IntegratedS3 core services and binds <see cref="IntegratedS3Options"/> from the
+    /// specified <see cref="IConfigurationSection"/>. Use this overload when the configuration
+    /// section is already known or does not follow the default <c>"IntegratedS3"</c> naming convention.
+    /// </summary>
+    /// <remarks>
+    /// This method does <b>not</b> register a storage backend. Consumers must also call a backend
+    /// registration method such as <c>AddDiskStorage()</c>, <c>AddS3Storage()</c>, or
+    /// <see cref="AddIntegratedS3Backend{TBackend}(IServiceCollection)"/> to provide a functioning
+    /// <see cref="IStorageBackend"/> implementation.
+    /// </remarks>
+    /// <param name="services">The <see cref="IServiceCollection"/> to add services to.</param>
+    /// <param name="section">
+    /// The <see cref="IConfigurationSection"/> to bind to <see cref="IntegratedS3Options"/>.
+    /// </param>
+    /// <returns>The <see cref="IServiceCollection"/> so that additional calls can be chained.</returns>
     public static IServiceCollection AddIntegratedS3(this IServiceCollection services, IConfigurationSection section)
     {
         ArgumentNullException.ThrowIfNull(services);
@@ -49,6 +126,31 @@ public static class IntegratedS3ServiceCollectionExtensions
         return services.AddIntegratedS3CoreServices();
     }
 
+    /// <summary>
+    /// Registers IntegratedS3 core services, binds <see cref="IntegratedS3Options"/> from the
+    /// specified <see cref="IConfigurationSection"/>, and then applies the <paramref name="configure"/>
+    /// callback for programmatic overrides.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The <paramref name="configure"/> callback runs <b>after</b> configuration binding, so values
+    /// set in the callback take precedence over values from the bound <paramref name="section"/>.
+    /// </para>
+    /// <para>
+    /// This method does <b>not</b> register a storage backend. Consumers must also call a backend
+    /// registration method such as <c>AddDiskStorage()</c>, <c>AddS3Storage()</c>, or
+    /// <see cref="AddIntegratedS3Backend{TBackend}(IServiceCollection)"/> to provide a functioning
+    /// <see cref="IStorageBackend"/> implementation.
+    /// </para>
+    /// </remarks>
+    /// <param name="services">The <see cref="IServiceCollection"/> to add services to.</param>
+    /// <param name="section">
+    /// The <see cref="IConfigurationSection"/> to bind to <see cref="IntegratedS3Options"/>.
+    /// </param>
+    /// <param name="configure">
+    /// A callback to further configure <see cref="IntegratedS3Options"/> after configuration binding.
+    /// </param>
+    /// <returns>The <see cref="IServiceCollection"/> so that additional calls can be chained.</returns>
     public static IServiceCollection AddIntegratedS3(this IServiceCollection services, IConfigurationSection section, Action<IntegratedS3Options> configure)
     {
         ArgumentNullException.ThrowIfNull(services);
@@ -63,6 +165,22 @@ public static class IntegratedS3ServiceCollectionExtensions
         return services.AddIntegratedS3CoreServices();
     }
 
+    /// <summary>
+    /// Registers IntegratedS3 core services and configures <see cref="IntegratedS3Options"/>
+    /// entirely through the provided <paramref name="configure"/> callback. Use this overload for
+    /// code-only configuration when no <see cref="IConfiguration"/> binding is needed.
+    /// </summary>
+    /// <remarks>
+    /// This method does <b>not</b> register a storage backend. Consumers must also call a backend
+    /// registration method such as <c>AddDiskStorage()</c>, <c>AddS3Storage()</c>, or
+    /// <see cref="AddIntegratedS3Backend{TBackend}(IServiceCollection)"/> to provide a functioning
+    /// <see cref="IStorageBackend"/> implementation.
+    /// </remarks>
+    /// <param name="services">The <see cref="IServiceCollection"/> to add services to.</param>
+    /// <param name="configure">
+    /// A callback to configure <see cref="IntegratedS3Options"/>.
+    /// </param>
+    /// <returns>The <see cref="IServiceCollection"/> so that additional calls can be chained.</returns>
     public static IServiceCollection AddIntegratedS3(this IServiceCollection services, Action<IntegratedS3Options> configure)
     {
         ArgumentNullException.ThrowIfNull(services);
@@ -74,6 +192,14 @@ public static class IntegratedS3ServiceCollectionExtensions
         return services.AddIntegratedS3CoreServices();
     }
 
+    /// <summary>
+    /// Registers a custom <see cref="IStorageBackend"/> implementation as the IntegratedS3 storage backend.
+    /// </summary>
+    /// <typeparam name="TBackend">
+    /// The concrete type implementing <see cref="IStorageBackend"/> to register as a singleton service.
+    /// </typeparam>
+    /// <param name="services">The <see cref="IServiceCollection"/> to add services to.</param>
+    /// <returns>The <see cref="IServiceCollection"/> so that additional calls can be chained.</returns>
     public static IServiceCollection AddIntegratedS3Backend<TBackend>(this IServiceCollection services)
         where TBackend : class, IStorageBackend
     {
@@ -84,6 +210,19 @@ public static class IntegratedS3ServiceCollectionExtensions
         return services.AddIntegratedS3CoreServices();
     }
 
+    /// <summary>
+    /// Registers a custom <see cref="IStorageBackend"/> implementation as the IntegratedS3 storage backend
+    /// using a factory delegate to create the instance.
+    /// </summary>
+    /// <typeparam name="TBackend">
+    /// The concrete type implementing <see cref="IStorageBackend"/> to register as a singleton service.
+    /// </typeparam>
+    /// <param name="services">The <see cref="IServiceCollection"/> to add services to.</param>
+    /// <param name="implementationFactory">
+    /// A factory delegate that produces the <typeparamref name="TBackend"/> instance, receiving the
+    /// <see cref="IServiceProvider"/> to resolve dependencies.
+    /// </param>
+    /// <returns>The <see cref="IServiceCollection"/> so that additional calls can be chained.</returns>
     public static IServiceCollection AddIntegratedS3Backend<TBackend>(
         this IServiceCollection services,
         Func<IServiceProvider, TBackend> implementationFactory)
@@ -97,6 +236,18 @@ public static class IntegratedS3ServiceCollectionExtensions
         return services.AddIntegratedS3CoreServices();
     }
 
+    /// <summary>
+    /// Registers a <see cref="StorageProviderDescriptor"/> for service discovery metadata from
+    /// explicit parameter values.
+    /// </summary>
+    /// <param name="services">The <see cref="IServiceCollection"/> to add services to.</param>
+    /// <param name="name">A unique display name for the storage provider.</param>
+    /// <param name="kind">The kind of storage provider (e.g., <c>"disk"</c>, <c>"s3"</c>).</param>
+    /// <param name="isPrimary">
+    /// <see langword="true"/> if this provider should be treated as the primary provider; otherwise <see langword="false"/>.
+    /// </param>
+    /// <param name="description">An optional human-readable description of the provider.</param>
+    /// <returns>The <see cref="IServiceCollection"/> so that additional calls can be chained.</returns>
     public static IServiceCollection AddIntegratedS3Provider(this IServiceCollection services, string name, string kind, bool isPrimary = false, string? description = null)
     {
         ArgumentNullException.ThrowIfNull(services);
@@ -118,6 +269,15 @@ public static class IntegratedS3ServiceCollectionExtensions
         });
     }
 
+    /// <summary>
+    /// Registers a <see cref="StorageProviderDescriptor"/> for service discovery metadata using a
+    /// callback to configure the descriptor.
+    /// </summary>
+    /// <param name="services">The <see cref="IServiceCollection"/> to add services to.</param>
+    /// <param name="configure">
+    /// A callback to configure a new <see cref="StorageProviderDescriptor"/> instance.
+    /// </param>
+    /// <returns>The <see cref="IServiceCollection"/> so that additional calls can be chained.</returns>
     public static IServiceCollection AddIntegratedS3Provider(this IServiceCollection services, Action<StorageProviderDescriptor> configure)
     {
         ArgumentNullException.ThrowIfNull(services);
@@ -129,6 +289,13 @@ public static class IntegratedS3ServiceCollectionExtensions
         return services.AddIntegratedS3Provider(provider);
     }
 
+    /// <summary>
+    /// Registers a pre-built <see cref="StorageProviderDescriptor"/> for service discovery metadata.
+    /// The descriptor is normalized and a defensive copy is stored.
+    /// </summary>
+    /// <param name="services">The <see cref="IServiceCollection"/> to add services to.</param>
+    /// <param name="provider">The <see cref="StorageProviderDescriptor"/> to register.</param>
+    /// <returns>The <see cref="IServiceCollection"/> so that additional calls can be chained.</returns>
     public static IServiceCollection AddIntegratedS3Provider(this IServiceCollection services, StorageProviderDescriptor provider)
     {
         ArgumentNullException.ThrowIfNull(services);
@@ -161,6 +328,7 @@ public static class IntegratedS3ServiceCollectionExtensions
 
         services.AddOptions<IntegratedS3EndpointConfigurationOptions>();
         services.AddOptions<IntegratedS3EndpointOptions>();
+        services.TryAddEnumerable(ServiceDescriptor.Singleton<IValidateOptions<IntegratedS3Options>, IntegratedS3OptionsValidator>());
 
         if (!services.Any(static serviceDescriptor => serviceDescriptor.ServiceType == typeof(IStorageService))
             || !services.Any(static serviceDescriptor => serviceDescriptor.ServiceType == typeof(IStoragePresignService))) {

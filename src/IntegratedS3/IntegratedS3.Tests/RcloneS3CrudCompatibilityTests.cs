@@ -16,6 +16,8 @@ namespace IntegratedS3.Tests;
 /// </summary>
 public sealed class RcloneS3CrudCompatibilityTests : IClassFixture<WebUiApplicationFactory>
 {
+    private static readonly XNamespace S3Ns = "http://s3.amazonaws.com/doc/2006-03-01/";
+
     private static readonly System.Text.Json.JsonSerializerOptions JsonOptions = new(System.Text.Json.JsonSerializerDefaults.Web);
 
     private readonly WebUiApplicationFactory _factory;
@@ -475,12 +477,12 @@ public sealed class RcloneS3CrudCompatibilityTests : IClassFixture<WebUiApplicat
         var doc = XDocument.Parse(await deleteResponse.Content.ReadAsStringAsync());
         Assert.Equal("DeleteResult", doc.Root?.Name.LocalName);
 
-        var deletedKeys = doc.Root!.Elements("Deleted")
-            .Select(static d => d.Element("Key")?.Value)
+        var deletedKeys = doc.Root!.Elements(S3Ns + "Deleted")
+            .Select(static d => d.Element(S3Ns + "Key")?.Value)
             .OrderBy(static k => k, StringComparer.Ordinal)
             .ToArray();
         Assert.Equal(keys.OrderBy(static k => k, StringComparer.Ordinal).ToArray(), deletedKeys);
-        Assert.Empty(doc.Root.Elements("Error"));
+        Assert.Empty(doc.Root.Elements(S3Ns + "Error"));
 
         // Verify all gone
         foreach (var key in keys) {
@@ -523,8 +525,8 @@ public sealed class RcloneS3CrudCompatibilityTests : IClassFixture<WebUiApplicat
         Assert.Equal(HttpStatusCode.OK, deleteResponse.StatusCode);
 
         var doc = XDocument.Parse(await deleteResponse.Content.ReadAsStringAsync());
-        var deletedKeys = doc.Root!.Elements("Deleted")
-            .Select(static d => d.Element("Key")?.Value)
+        var deletedKeys = doc.Root!.Elements(S3Ns + "Deleted")
+            .Select(static d => d.Element(S3Ns + "Key")?.Value)
             .OrderBy(static k => k, StringComparer.Ordinal)
             .ToArray();
 
@@ -535,7 +537,7 @@ public sealed class RcloneS3CrudCompatibilityTests : IClassFixture<WebUiApplicat
         Assert.Contains("ghost2.txt", deletedKeys);
 
         // No errors expected
-        Assert.Empty(doc.Root.Elements("Error"));
+        Assert.Empty(doc.Root.Elements(S3Ns + "Error"));
     }
 
     // ──────────────────────────────────────────────
@@ -797,7 +799,7 @@ public sealed class RcloneS3CrudCompatibilityTests : IClassFixture<WebUiApplicat
 
     private static string GetRequiredElementValue(XDocument document, string elementName)
     {
-        return document.Root?.Element(elementName)?.Value
+        return document.Root?.Element(S3Ns + elementName)?.Value
             ?? throw new Xunit.Sdk.XunitException($"Missing XML element '{elementName}'.");
     }
 }

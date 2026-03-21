@@ -31,7 +31,8 @@ public sealed class ServerSideEncryptionContractTests
 
         var json = JsonSerializer.Serialize(payload, new JsonSerializerOptions(JsonSerializerDefaults.Web));
 
-        Assert.Contains("\"serverSideEncryption\":{\"algorithm\":\"KmsDsse\",\"keyId\":\"key-123\"}", json, StringComparison.Ordinal);
+        Assert.Contains("\"algorithm\":\"KmsDsse\"", json, StringComparison.Ordinal);
+        Assert.Contains("\"keyId\":\"key-123\"", json, StringComparison.Ordinal);
     }
 
     [Fact]

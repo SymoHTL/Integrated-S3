@@ -4,5 +4,33 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <InvariantGlobalization>true</InvariantGlobalization>
+
+    <!-- Versioning -->
+    <VersionPrefix>10.0.0</VersionPrefix>
+
+    <!-- Package metadata -->
+    <Authors>Symo</Authors>
+    <Copyright>Copyright (c) 2026 Symo</Copyright>
+    <PackageLicenseExpression>BSD-3-Clause</PackageLicenseExpression>
+    <PackageProjectUrl>https://github.com/SymoHTL/Intergrated-S3</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/SymoHTL/Intergrated-S3</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageTags>s3;storage;object-storage;aws;cloud;aspnetcore</PackageTags>
+
+    <!-- Build quality -->
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <Deterministic>true</Deterministic>
+    <ContinuousIntegrationBuild Condition="'$(CI)' == 'true'">true</ContinuousIntegrationBuild>
+    <EmbedUntrackedSources>true</EmbedUntrackedSources>
+    <PublishRepositoryUrl>true</PublishRepositoryUrl>
+
+    <!-- Symbol packages for debugging -->
+    <IncludeSymbols>true</IncludeSymbols>
+    <SymbolPackageFormat>snupkg</SymbolPackageFormat>
   </PropertyGroup>
+
+  <!-- SourceLink for source debugging -->
+  <ItemGroup>
+    <PackageReference Include="Microsoft.SourceLink.GitHub" PrivateAssets="All" />
+  </ItemGroup>
 </Project>

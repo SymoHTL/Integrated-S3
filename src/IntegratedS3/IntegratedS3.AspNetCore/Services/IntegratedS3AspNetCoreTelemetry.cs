@@ -17,6 +17,16 @@ internal static class IntegratedS3AspNetCoreTelemetry
         unit: "{failure}",
         description: "Count of HTTP authentication failures handled by IntegratedS3.");
 
+    private static readonly Counter<long> HttpRequestCounter = IntegratedS3Observability.Meter.CreateCounter<long>(
+        IntegratedS3Observability.Metrics.HttpRequestCount,
+        unit: "{request}",
+        description: "Count of HTTP requests to IntegratedS3 endpoints.");
+
+    private static readonly Histogram<double> HttpRequestDuration = IntegratedS3Observability.Meter.CreateHistogram<double>(
+        IntegratedS3Observability.Metrics.HttpRequestDuration,
+        unit: "ms",
+        description: "Duration of HTTP requests to IntegratedS3 endpoints.");
+
     public static string GetOrCreateCorrelationId(HttpContext httpContext)
     {
         ArgumentNullException.ThrowIfNull(httpContext);
@@ -96,6 +106,18 @@ internal static class IntegratedS3AspNetCoreTelemetry
         activity.SetTag(IntegratedS3Observability.Tags.AuthType, authType);
         activity.SetTag(IntegratedS3Observability.Tags.Result, "failure");
         activity.SetTag(IntegratedS3Observability.Tags.ErrorCode, errorCode);
+    }
+
+    public static void RecordHttpRequest(string method, string operation, int statusCode, double elapsedMs)
+    {
+        var tags = new TagList
+        {
+            { "http.request.method", method },
+            { IntegratedS3Observability.Tags.Operation, operation },
+            { "http.response.status_code", statusCode }
+        };
+        HttpRequestCounter.Add(1, tags);
+        HttpRequestDuration.Record(elapsedMs, tags);
     }
 
     public static void MarkSuccess(Activity? activity, string authType)

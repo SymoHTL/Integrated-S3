@@ -187,7 +187,8 @@ internal sealed class InMemoryStorageAuthorizationCompatibilityService(Orchestra
         switch (request.Operation) {
             case StorageOperationType.HeadBucket:
             case StorageOperationType.ListObjects:
-                return ValueTask.FromResult(bucketAllowsPublicList);
+                return ValueTask.FromResult(bucketAllowsPublicList
+                    || bucketState.BucketAcl == StorageCannedAcl.PublicReadWrite);
             case StorageOperationType.GetObject:
             case StorageOperationType.HeadObject:
                 if (bucketState.Policy?.AllowsPublicRead == true) {
@@ -198,7 +199,20 @@ internal sealed class InMemoryStorageAuthorizationCompatibilityService(Orchestra
                     return ValueTask.FromResult(false);
                 }
 
-                return ValueTask.FromResult(GetObjectAclStateValue(request.BucketName, request.Key).CannedAcl == StorageCannedAcl.PublicRead);
+                var objectAcl = GetObjectAclStateValue(request.BucketName, request.Key).CannedAcl;
+                return ValueTask.FromResult(objectAcl == StorageCannedAcl.PublicRead
+                    || objectAcl == StorageCannedAcl.PublicReadWrite);
+            case StorageOperationType.PutObject:
+                if (bucketState.BucketAcl == StorageCannedAcl.PublicReadWrite) {
+                    return ValueTask.FromResult(true);
+                }
+
+                if (string.IsNullOrWhiteSpace(request.Key)) {
+                    return ValueTask.FromResult(false);
+                }
+
+                var objAclForWrite = GetObjectAclStateValue(request.BucketName, request.Key).CannedAcl;
+                return ValueTask.FromResult(objAclForWrite == StorageCannedAcl.PublicReadWrite);
             default:
                 return ValueTask.FromResult(false);
         }

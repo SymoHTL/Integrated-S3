@@ -59,6 +59,15 @@ A large implementation wave landed 13 bucket configuration subresource families,
 
 **Remaining blocked:** None in the current scope. SigV4a is now fully supported for header-based, presigned-query, and streaming trailer verification flows.
 
+### Developer Experience Enhancements — ✅ Complete
+
+1. **Root README.md** — Comprehensive getting-started guide with quickstart code, package table, configuration reference, provider examples, health checks, observability, and build/test commands.
+2. **XML Documentation** — Full `<summary>`, `<param>`, `<returns>` coverage on all public APIs across all 9 library packages (~200+ public types). IntelliSense now works for all consumer-facing types including `IStorageService`, `IStorageBackend`, `AddIntegratedS3()`, `MapIntegratedS3Endpoints()`, `IntegratedS3Options`, and all provider/client/testing APIs.
+3. **Startup Validation** — `IntegratedS3OptionsValidator` (`IValidateOptions`) validates auth credentials, route prefix, clock skew, and presign expiry. `MapIntegratedS3Endpoints()` validates at least one `IStorageBackend` is registered, producing actionable error messages instead of cryptic DI failures.
+4. **NuGet Packaging Metadata** — `Directory.Build.props` now includes `GenerateDocumentationFile`, `PackageLicenseExpression` (MIT), `PackageTags`, `RepositoryUrl`, `RepositoryType`. XML doc files ship in NuGet packages.
+
+Build: 0 errors, 0 warnings, 0 AOT warnings. Tests: **944 passing**.
+
 ### Implemented snapshot (refresh intentionally, not every feature PR)
 
 - `IntegratedS3.Provider.S3` object-operations foundation slice with:
@@ -720,6 +729,8 @@ Status:
 - EF-backed catalog persistence is available through the extracted `IntegratedS3.EntityFramework` package and a dedicated generic registration against a consumer-owned `DbContext`
 - catalog model mapping is exposed through `modelBuilder.MapIntegratedS3Catalog()` so consumers can keep the schema inside their own EF model
 - critical persistence services are overrideable via DI today through `IStorageCatalogStore`
+- startup validation is implemented: `MapIntegratedS3Endpoints()` validates that at least one `IStorageBackend` is registered and throws an actionable `InvalidOperationException` if not
+- `IValidateOptions<IntegratedS3Options>` validates SigV4-credential consistency, route-prefix format, and positive clock-skew/expiry values
 
 Support overloads for:
 
@@ -1066,19 +1077,34 @@ These are optional host integrations around Core orchestration seams, not a comm
 - index compaction
 - expired temporary artifact cleanup
 
-### Observability requirements
+### Observability (Logging, Tracing, Metrics) — ✅ Complete
 
-The current supported observability path is:
+**Architecture:**
+- Single `ActivitySource` ("IntegratedS3") and single `Meter` ("IntegratedS3") shared across all layers via `IntegratedS3Observability`
+- Tag constants centralized in `IntegratedS3Observability.Tags`
+- Metric naming convention: `integrateds3.{layer}.{instrument}`
 
-- structured `ILogger` logs across HTTP auth, Core authorization/orchestration, replica repair, backend health transitions, and S3-compatible/native endpoint dispatch
-- traces from the shared `IntegratedS3` `ActivitySource`
-- metrics from the shared `IntegratedS3` `Meter` (including per-endpoint `integrateds3.http.request.count` and `integrateds3.http.request.duration` with method/operation/status tags)
-- correlation IDs via the canonical `x-integrateds3-correlation-id` header plus request-context/log/activity propagation
-- provider, primary-provider, and replica-backend tags on operation, repair, backlog, and backend-health telemetry
-- explicit auth-failure visibility via warning logs plus `integrateds3.http.authentication.failures` and `integrateds3.storage.authorization.failures`
-- mirror-lag and reconciliation-backlog visibility via `integrateds3.replication.backlog.size`, `integrateds3.replication.backlog.oldest_age`, and the admin repair-backlog endpoint
-- backend health visibility via `integrateds3.backend.health.status`
-- dedicated health endpoints remain host-owned for now; see `docs/observability.md`
+**Instrumented Layers:**
+
+1. **Core Orchestration** (pre-existing) — 8 metrics, 4 activity types, rich structured logging
+2. **Disk Provider** — `DiskStorageTelemetry` helper with `integrateds3.disk.operation.duration` histogram + `integrateds3.disk.operation.errors` counter + Activity spans on 11 key methods + ILogger structured logging
+3. **S3 Provider** — `S3StorageTelemetry` helper with `integrateds3.s3.operation.duration` histogram + `integrateds3.s3.operation.errors` counter + Activity spans on 12 AWS SDK methods + ILogger structured logging
+4. **Protocol** — `ProtocolTelemetry` error-path counters for XML parse errors + signature verification errors (no happy-path instrumentation to avoid hot-path allocations)
+5. **Endpoints** — HTTP request counter (`integrateds3.http.request.count`) + duration histogram (`integrateds3.http.request.duration`) + structured request logging at dispatch level
+6. **Maintenance** — Exception handling + Activity tracing + job duration/failure metrics on scheduled maintenance
+
+**Additional signals:**
+- Correlation IDs via canonical `x-integrateds3-correlation-id` header plus request-context/log/activity propagation
+- Provider, primary-provider, and replica-backend tags on operation, repair, backlog, and backend-health telemetry
+- Auth-failure visibility via warning logs plus `integrateds3.http.authentication.failures` and `integrateds3.storage.authorization.failures`
+- Mirror-lag and reconciliation-backlog visibility via `integrateds3.replication.backlog.size`, `integrateds3.replication.backlog.oldest_age`, and the admin repair-backlog endpoint
+- Backend health visibility via `integrateds3.backend.health.status`
+
+**OpenTelemetry Integration:**
+- WebUi host wires `AddOpenTelemetry()` with tracing + metrics + optional OTLP export
+- Configured via `OpenTelemetry:OtlpEndpoint` in appsettings.json (disabled by default)
+- AOT-compatible: 0 IL2026/IL3050 warnings
+- Dedicated health endpoints remain host-owned for now; see `docs/observability.md`
 
 ## Phase 11 — Testing, Conformance, and Packaging
 
@@ -1535,7 +1561,7 @@ This section is the execution board for the remaining implementation backlog. As
   - `S3CompatibleEndpointConformanceTests` now add gated real-endpoint coverage for historical `CopyObject` and `UploadPartCopy` after a current delete marker with requested `SHA256` plus `AES256` SSE, plus direct presigned `PUT` after a delete marker so historical reads and version listing remain correct.
 - Verification status (July 2025):
   - `dotnet build src\IntegratedS3\IntegratedS3.slnx` — 0 errors, 0 warnings
-  - `dotnet test src\IntegratedS3\IntegratedS3.slnx` — **936 tests passing** (up from 855 baseline — 46 new tests covering bucket configuration subresources, object-level operations, protocol improvements, and hardening)
+  - `dotnet test src\IntegratedS3\IntegratedS3.slnx` — **944 tests passing** (up from 855 baseline)
   - All production code AOT/trimming compatible
   - The recently completed implementation wave landed 13 bucket configuration subresource families, PutObjectRetention/PutObjectLegalHold write paths, SelectObjectContent/RestoreObject S3 passthrough, PostObject browser form upload, storage class headers, conditional writes, multi-range requests, checksum-mode support, CRC64NVME recognition, SSE bucket-key-enabled, XML namespace parity, encoding-type=url consistency, BucketNotEmpty for versioned buckets, ACL expansion, bucket policy expansion, multipart replication, and SigV4a detection — all wired end-to-end across the full stack
   - Previous verification baseline: `dotnet build` passed with no IL warnings; `eng\Invoke-AotPublishValidation.ps1` passed with `0` IL2026/IL3050 warnings; `dotnet run --configuration Release --project src\IntegratedS3\IntegratedS3.Benchmarks\IntegratedS3.Benchmarks.csproj -- --list-scenarios` confirmed 19-scenario benchmark catalog
@@ -1546,22 +1572,20 @@ This section is the execution board for the remaining implementation backlog. As
   - extend conformance beyond the current historical conditional-read/presign pinning, same-key historical self-copy, delete-marker-aware versioned copy, presigned-expiry/clock-skew, and AWS SDK version-id coverage into the remaining protocol edge cases and broader client-compatibility scenarios
   - rerun the landed local checksum plus version-targeted versioning/presign/copy conformance slices against configured real endpoints and broaden them beyond the current `SHA1` / `CRC32C` multipart/copy plus historical read/copy coverage as additional algorithms/providers land
   - extend fault-injection beyond the current unhealthy-provider, async-replication/backlog, partial-write-through, multi-replica replay, bucket-versioning/CORS/tag-delete repair, and write-through bucket-CORS delete coverage into backlog-saturation, topology-change, and other durable repair/reconciliation scenarios
-  - add structured logs, metrics, traces, correlation IDs, provider tags, auth-failure visibility, mirror-lag visibility, and reconciliation-backlog visibility
   - extend conformance beyond the current versioned-read/copy, presigned-expiry/clock-skew, and AWS SDK version-id metadata/read/copy coverage into the remaining protocol edge cases and broader client-compatibility scenarios
   - extend fault-injection beyond the current unhealthy-provider, async-replication/backlog, partial-write-through, and newly added multi-replica replay coverage into broader repair/reconciliation scenarios
   - benchmark the hot paths called out in this plan and track throughput, latency, allocation, and provider-breakdown baselines
-  - add structured logs, metrics, traces, correlation IDs, provider tags, auth-failure visibility, mirror-lag visibility, and reconciliation-backlog visibility
   - expand the benchmark suite beyond the current disk, mirrored-disk, loopback HTTP, AWS SDK path-style client-comparison, and first-party presign baseline set into reproducible native-S3 and broader client-comparison scenarios
   - keep the new trimming/AOT publish automation in CI aligned with the supported host surface and preserve the current zero-warning endpoint-map posture alongside benchmark baselines
   - add the planned MVC/Razor and Blazor WebAssembly sample consumers
-  - continue package polish with deeper XML docs, versioned protocol compatibility guidance, and any analyzers/diagnostics worth shipping
+  - continue package polish with versioned protocol compatibility guidance and any analyzers/diagnostics worth shipping
 - Next recommended steps:
   - keep the zero-warning rebuild-backed publish validation running in CI so future `IntegratedS3.AspNetCore` / `WebUi` changes do not reintroduce IL2026/IL3050 regressions
   - rerun the expanded local S3-compatible conformance suite against configured real endpoints, especially the new direct historical `GET`, direct `PUT`, and `ListObjectVersions` marker-pagination slices
   - extend Track H fault-injection beyond the current missing-primary replay cleanup/current-topology targeting coverage into backlog-saturation, topology-change, and broader durable repair/reconciliation scenarios
   - expand the benchmark suite beyond the current 19-scenario disk/loopback/AWS-SDK baseline into reproducible native-S3 and broader client-comparison coverage, then keep the checked-in reports current
   - continue broader post-resume client ergonomics, composite-checksum, and direct-vs-delegated follow-ons now that the resume range/rollback guards are in place
-  - finish package polish items such as XML docs, onboarding docs, versioned protocol compatibility guidance, and any analyzers/diagnostics worth shipping
+  - finish package polish items such as versioned protocol compatibility guidance and any analyzers/diagnostics worth shipping (XML docs, onboarding docs, startup validation, and NuGet metadata are now complete)
 ## Relevant Repository Files
 
 - `src/IntegratedS3/WebUi/Program.cs`

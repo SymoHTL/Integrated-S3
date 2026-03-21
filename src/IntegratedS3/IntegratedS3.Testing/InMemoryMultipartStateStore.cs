@@ -8,12 +8,18 @@ namespace IntegratedS3.Testing;
 /// <summary>
 /// In-memory <see cref="IStorageMultipartStateStore" /> implementation for provider tests.
 /// </summary>
+/// <remarks>
+/// This implementation is intended for unit and integration testing only. 
+/// It is not thread-safe and should not be used as a production singleton service.
+/// </remarks>
 public sealed class InMemoryMultipartStateStore : IStorageMultipartStateStore
 {
     private readonly Dictionary<(string ProviderName, string BucketName, string Key, string UploadId), MultipartUploadState> _states = new();
 
+    /// <inheritdoc />
     public StorageSupportStateOwnership Ownership => StorageSupportStateOwnership.PlatformManaged;
 
+    /// <inheritdoc />
     public ValueTask<MultipartUploadState?> GetMultipartUploadStateAsync(
         string providerName,
         string bucketName,
@@ -25,6 +31,7 @@ public sealed class InMemoryMultipartStateStore : IStorageMultipartStateStore
         return ValueTask.FromResult(_states.TryGetValue((providerName, bucketName, key, uploadId), out var value) ? value : null);
     }
 
+    /// <inheritdoc />
     public async IAsyncEnumerable<MultipartUploadState> ListMultipartUploadStatesAsync(
         string providerName,
         string bucketName,
@@ -43,6 +50,7 @@ public sealed class InMemoryMultipartStateStore : IStorageMultipartStateStore
         }
     }
 
+    /// <inheritdoc />
     public ValueTask UpsertMultipartUploadStateAsync(string providerName, MultipartUploadState state, CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
@@ -50,6 +58,7 @@ public sealed class InMemoryMultipartStateStore : IStorageMultipartStateStore
         return ValueTask.CompletedTask;
     }
 
+    /// <inheritdoc />
     public ValueTask RemoveMultipartUploadStateAsync(
         string providerName,
         string bucketName,

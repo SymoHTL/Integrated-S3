@@ -1,17 +1,26 @@
 namespace IntegratedS3.Core.Models;
 
+/// <summary>
+/// Describes a request to generate a presigned URL for a storage object.
+/// </summary>
 public sealed class StoragePresignRequest
 {
+    /// <summary>The presign operation to perform (GET or PUT).</summary>
     public required StoragePresignOperation Operation { get; init; }
 
+    /// <summary>The name of the target bucket.</summary>
     public required string BucketName { get; init; }
 
+    /// <summary>The object key within the bucket.</summary>
     public required string Key { get; init; }
 
+    /// <summary>The number of seconds until the presigned URL expires.</summary>
     public required int ExpiresInSeconds { get; init; }
 
+    /// <summary>The object version identifier, or <see langword="null"/> for the latest version.</summary>
     public string? VersionId { get; init; }
 
+    /// <summary>The MIME content type to associate with the object (relevant for PUT operations).</summary>
     public string? ContentType { get; init; }
 
     /// <summary>

@@ -1,4 +1,5 @@
 using System.Net;
+using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using System.Security.Claims;
@@ -22,6 +23,7 @@ using Microsoft.AspNetCore.Http.HttpResults;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.AspNetCore.WebUtilities;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Microsoft.Net.Http.Headers;
 using IntegratedS3.Core.Models;
@@ -29,6 +31,9 @@ using IntegratedS3.Core.Services;
 
 namespace IntegratedS3.AspNetCore.Endpoints;
 
+/// <summary>
+/// Extension methods for mapping IntegratedS3 S3-compatible REST API endpoints onto the ASP.NET Core routing pipeline.
+/// </summary>
 public static class IntegratedS3EndpointRouteBuilderExtensions
 {
     private const string SigV4AuthenticationClaimType = "integrateds3:auth-type";
@@ -220,6 +225,22 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
         CopySourceServerSideEncryptionCustomerKeyMd5HeaderName
     };
 
+    /// <summary>
+    /// Maps S3-compatible IntegratedS3 endpoints (ListBuckets, GetObject, PutObject, DeleteObject,
+    /// multipart uploads, etc.) onto the routing pipeline using DI-configured
+    /// <see cref="IntegratedS3EndpointOptions"/>. Endpoints are grouped under the configured
+    /// <see cref="IntegratedS3Options.RoutePrefix"/>.
+    /// </summary>
+    /// <param name="endpoints">The <see cref="IEndpointRouteBuilder"/> to add routes to.</param>
+    /// <returns>
+    /// A <see cref="RouteGroupBuilder"/> for the mapped endpoint group, allowing further customization
+    /// such as adding filters or metadata.
+    /// </returns>
+    /// <example>
+    /// <code>
+    /// app.MapIntegratedS3Endpoints();
+    /// </code>
+    /// </example>
     [RequiresUnreferencedCode("Minimal API endpoint registration may reflect over route handler delegates and parameters.")]
     [RequiresDynamicCode("Minimal API endpoint registration may require runtime-generated code for route handler delegates.")]
     public static RouteGroupBuilder MapIntegratedS3Endpoints(this IEndpointRouteBuilder endpoints)
@@ -229,6 +250,26 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
         return endpoints.MapIntegratedS3Endpoints(ResolveConfiguredEndpointOptions(endpoints));
     }
 
+    /// <summary>
+    /// Maps S3-compatible IntegratedS3 endpoints (ListBuckets, GetObject, PutObject, DeleteObject,
+    /// multipart uploads, etc.) onto the routing pipeline using the provided
+    /// <see cref="IntegratedS3EndpointConfigurationOptions"/>. Endpoints are grouped under the
+    /// configured <see cref="IntegratedS3Options.RoutePrefix"/>.
+    /// </summary>
+    /// <remarks>
+    /// This overload is preferred for AOT/trimming scenarios because it avoids code callbacks that require
+    /// dynamic code generation. Endpoint configuration is driven entirely by <see cref="IntegratedS3EndpointConfigurationOptions"/>
+    /// which can be bound from <c>IConfiguration</c>.
+    /// </remarks>
+    /// <param name="endpoints">The <see cref="IEndpointRouteBuilder"/> to add routes to.</param>
+    /// <param name="endpointConfiguration">
+    /// A <see cref="IntegratedS3EndpointConfigurationOptions"/> instance describing the endpoint
+    /// configuration. Can be bound from <c>IConfiguration</c> for AOT-safe scenarios.
+    /// </param>
+    /// <returns>
+    /// A <see cref="RouteGroupBuilder"/> for the mapped endpoint group, allowing further customization
+    /// such as adding filters or metadata.
+    /// </returns>
     public static RouteGroupBuilder MapIntegratedS3Endpoints(
         this IEndpointRouteBuilder endpoints,
         IntegratedS3EndpointConfigurationOptions endpointConfiguration)
@@ -241,6 +282,21 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
         return MapIntegratedS3EndpointsCore(endpoints, resolvedEndpointOptions);
     }
 
+    /// <summary>
+    /// Maps S3-compatible IntegratedS3 endpoints (ListBuckets, GetObject, PutObject, DeleteObject,
+    /// multipart uploads, etc.) onto the routing pipeline, starting from DI-configured options and
+    /// applying the <paramref name="configure"/> callback for programmatic overrides. Endpoints are
+    /// grouped under the configured <see cref="IntegratedS3Options.RoutePrefix"/>.
+    /// </summary>
+    /// <param name="endpoints">The <see cref="IEndpointRouteBuilder"/> to add routes to.</param>
+    /// <param name="configure">
+    /// A callback to customize <see cref="IntegratedS3EndpointOptions"/> after DI-configured values
+    /// have been applied.
+    /// </param>
+    /// <returns>
+    /// A <see cref="RouteGroupBuilder"/> for the mapped endpoint group, allowing further customization
+    /// such as adding filters or metadata.
+    /// </returns>
     [RequiresUnreferencedCode("Minimal API endpoint registration may reflect over route handler delegates and parameters.")]
     [RequiresDynamicCode("Minimal API endpoint registration may require runtime-generated code for route handler delegates.")]
     public static RouteGroupBuilder MapIntegratedS3Endpoints(this IEndpointRouteBuilder endpoints, Action<IntegratedS3EndpointOptions> configure)
@@ -253,6 +309,21 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
         return endpoints.MapIntegratedS3Endpoints(options);
     }
 
+    /// <summary>
+    /// Maps S3-compatible IntegratedS3 endpoints (ListBuckets, GetObject, PutObject, DeleteObject,
+    /// multipart uploads, etc.) onto the routing pipeline using the provided pre-built
+    /// <see cref="IntegratedS3EndpointOptions"/>. Endpoints are grouped under the configured
+    /// <see cref="IntegratedS3Options.RoutePrefix"/>.
+    /// </summary>
+    /// <param name="endpoints">The <see cref="IEndpointRouteBuilder"/> to add routes to.</param>
+    /// <param name="endpointOptions">
+    /// A fully configured <see cref="IntegratedS3EndpointOptions"/> instance. A defensive copy is
+    /// made internally.
+    /// </param>
+    /// <returns>
+    /// A <see cref="RouteGroupBuilder"/> for the mapped endpoint group, allowing further customization
+    /// such as adding filters or metadata.
+    /// </returns>
     [RequiresUnreferencedCode("Minimal API endpoint registration may reflect over route handler delegates and parameters.")]
     [RequiresDynamicCode("Minimal API endpoint registration may require runtime-generated code for route handler delegates.")]
     public static RouteGroupBuilder MapIntegratedS3Endpoints(this IEndpointRouteBuilder endpoints, IntegratedS3EndpointOptions endpointOptions)
@@ -269,6 +340,8 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
     {
         ArgumentNullException.ThrowIfNull(endpoints);
         ArgumentNullException.ThrowIfNull(resolvedEndpointOptions);
+
+        ValidateRequiredServices(endpoints.ServiceProvider);
 
         var options = endpoints.ServiceProvider.GetRequiredService<IOptions<IntegratedS3Options>>().Value;
         var group = endpoints.MapGroup(options.RoutePrefix);
@@ -344,23 +417,59 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
         }
 
         if (resolvedEndpointOptions.EnableBucketEndpoints) {
-            bucketGroup.MapGet("/buckets", ListBucketsAsync)
+            bucketGroup.MapGet("/buckets", async (HttpContext httpContext, IIntegratedS3RequestContextAccessor requestContextAccessor, IStorageService storageService, CancellationToken cancellationToken) => {
+                    var sw = Stopwatch.StartNew();
+                    var logger = httpContext.RequestServices.GetService<ILoggerFactory>()?.CreateLogger("IntegratedS3.Endpoints");
+                    logger?.LogDebug("Native request: ListBuckets");
+                    var result = await ListBucketsAsync(httpContext, requestContextAccessor, storageService, cancellationToken);
+                    sw.Stop();
+                    IntegratedS3AspNetCoreTelemetry.RecordHttpRequest("GET", "ListBuckets", ResolveResultStatusCode(result), sw.Elapsed.TotalMilliseconds);
+                    return result;
+                })
                 .WithName("ListIntegratedS3Buckets");
 
-            bucketGroup.MapPut("/buckets/{bucketName}", async (string bucketName, HttpContext httpContext, IIntegratedS3RequestContextAccessor requestContextAccessor, IStorageService storageService, CancellationToken cancellationToken) =>
-                    WrapBucketCorsResult(bucketName, await CreateBucketAsync(bucketName, httpContext, requestContextAccessor, storageService, cancellationToken)))
+            bucketGroup.MapPut("/buckets/{bucketName}", async (string bucketName, HttpContext httpContext, IIntegratedS3RequestContextAccessor requestContextAccessor, IStorageService storageService, CancellationToken cancellationToken) => {
+                    var sw = Stopwatch.StartNew();
+                    var logger = httpContext.RequestServices.GetService<ILoggerFactory>()?.CreateLogger("IntegratedS3.Endpoints");
+                    logger?.LogDebug("Native request: CreateBucket {BucketName}", bucketName);
+                    var result = WrapBucketCorsResult(bucketName, await CreateBucketAsync(bucketName, httpContext, requestContextAccessor, storageService, cancellationToken));
+                    sw.Stop();
+                    IntegratedS3AspNetCoreTelemetry.RecordHttpRequest("PUT", "CreateBucket", ResolveResultStatusCode(result), sw.Elapsed.TotalMilliseconds);
+                    return result;
+                })
                 .WithName("CreateIntegratedS3Bucket");
 
-            bucketGroup.MapMethods("/buckets/{bucketName}", ["HEAD"], async (string bucketName, HttpContext httpContext, IIntegratedS3RequestContextAccessor requestContextAccessor, IStorageService storageService, CancellationToken cancellationToken) =>
-                    WrapBucketCorsResult(bucketName, await HeadBucketAsync(bucketName, httpContext, requestContextAccessor, storageService, cancellationToken)))
+            bucketGroup.MapMethods("/buckets/{bucketName}", ["HEAD"], async (string bucketName, HttpContext httpContext, IIntegratedS3RequestContextAccessor requestContextAccessor, IStorageService storageService, CancellationToken cancellationToken) => {
+                    var sw = Stopwatch.StartNew();
+                    var logger = httpContext.RequestServices.GetService<ILoggerFactory>()?.CreateLogger("IntegratedS3.Endpoints");
+                    logger?.LogDebug("Native request: HeadBucket {BucketName}", bucketName);
+                    var result = WrapBucketCorsResult(bucketName, await HeadBucketAsync(bucketName, httpContext, requestContextAccessor, storageService, cancellationToken));
+                    sw.Stop();
+                    IntegratedS3AspNetCoreTelemetry.RecordHttpRequest("HEAD", "HeadBucket", ResolveResultStatusCode(result), sw.Elapsed.TotalMilliseconds);
+                    return result;
+                })
                 .WithName("HeadIntegratedS3Bucket");
 
-            bucketGroup.MapDelete("/buckets/{bucketName}", async (string bucketName, HttpContext httpContext, IIntegratedS3RequestContextAccessor requestContextAccessor, IStorageService storageService, CancellationToken cancellationToken) =>
-                    WrapBucketCorsResult(bucketName, await DeleteBucketAsync(bucketName, httpContext, requestContextAccessor, storageService, cancellationToken)))
+            bucketGroup.MapDelete("/buckets/{bucketName}", async (string bucketName, HttpContext httpContext, IIntegratedS3RequestContextAccessor requestContextAccessor, IStorageService storageService, CancellationToken cancellationToken) => {
+                    var sw = Stopwatch.StartNew();
+                    var logger = httpContext.RequestServices.GetService<ILoggerFactory>()?.CreateLogger("IntegratedS3.Endpoints");
+                    logger?.LogDebug("Native request: DeleteBucket {BucketName}", bucketName);
+                    var result = WrapBucketCorsResult(bucketName, await DeleteBucketAsync(bucketName, httpContext, requestContextAccessor, storageService, cancellationToken));
+                    sw.Stop();
+                    IntegratedS3AspNetCoreTelemetry.RecordHttpRequest("DELETE", "DeleteBucket", ResolveResultStatusCode(result), sw.Elapsed.TotalMilliseconds);
+                    return result;
+                })
                 .WithName("DeleteIntegratedS3Bucket");
 
-            bucketGroup.MapGet("/buckets/{bucketName}/objects", async (string bucketName, string? prefix, string? continuationToken, int? pageSize, HttpContext httpContext, IIntegratedS3RequestContextAccessor requestContextAccessor, IStorageService storageService, CancellationToken cancellationToken) =>
-                    WrapBucketCorsResult(bucketName, await ListObjectsAsync(bucketName, prefix, continuationToken, pageSize, httpContext, requestContextAccessor, storageService, cancellationToken)))
+            bucketGroup.MapGet("/buckets/{bucketName}/objects", async (string bucketName, string? prefix, string? continuationToken, int? pageSize, HttpContext httpContext, IIntegratedS3RequestContextAccessor requestContextAccessor, IStorageService storageService, CancellationToken cancellationToken) => {
+                    var sw = Stopwatch.StartNew();
+                    var logger = httpContext.RequestServices.GetService<ILoggerFactory>()?.CreateLogger("IntegratedS3.Endpoints");
+                    logger?.LogDebug("Native request: ListObjects {BucketName}", bucketName);
+                    var result = WrapBucketCorsResult(bucketName, await ListObjectsAsync(bucketName, prefix, continuationToken, pageSize, httpContext, requestContextAccessor, storageService, cancellationToken));
+                    sw.Stop();
+                    IntegratedS3AspNetCoreTelemetry.RecordHttpRequest("GET", "ListObjects", ResolveResultStatusCode(result), sw.Elapsed.TotalMilliseconds);
+                    return result;
+                })
                 .WithName("ListIntegratedS3Objects");
 
             bucketGroup.MapMethods("/buckets/{bucketName}", ["OPTIONS"], HandleBucketCorsPreflightAsync)
@@ -374,20 +483,48 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
             objectGroup.MapPost("/presign/object", CreateObjectPresignAsync)
                 .WithName("CreateIntegratedS3ObjectPresign");
 
-            objectGroup.MapPut("/buckets/{bucketName}/objects/{**key}", async (string bucketName, string key, HttpContext httpContext, HttpRequest request, IIntegratedS3RequestContextAccessor requestContextAccessor, IStorageService storageService, CancellationToken cancellationToken) =>
-                    WrapBucketCorsResult(bucketName, await PutObjectAsync(bucketName, key, httpContext, request, requestContextAccessor, storageService, cancellationToken)))
+            objectGroup.MapPut("/buckets/{bucketName}/objects/{**key}", async (string bucketName, string key, HttpContext httpContext, HttpRequest request, IIntegratedS3RequestContextAccessor requestContextAccessor, IStorageService storageService, CancellationToken cancellationToken) => {
+                    var sw = Stopwatch.StartNew();
+                    var logger = httpContext.RequestServices.GetService<ILoggerFactory>()?.CreateLogger("IntegratedS3.Endpoints");
+                    logger?.LogDebug("Native request: PutObject {BucketName}/{ObjectKey}", bucketName, key);
+                    var result = WrapBucketCorsResult(bucketName, await PutObjectAsync(bucketName, key, httpContext, request, requestContextAccessor, storageService, cancellationToken));
+                    sw.Stop();
+                    IntegratedS3AspNetCoreTelemetry.RecordHttpRequest("PUT", "PutObject", ResolveResultStatusCode(result), sw.Elapsed.TotalMilliseconds);
+                    return result;
+                })
                 .WithName("PutIntegratedS3Object");
 
-            objectGroup.MapGet("/buckets/{bucketName}/objects/{**key}", async (string bucketName, string key, HttpContext httpContext, HttpRequest request, IIntegratedS3RequestContextAccessor requestContextAccessor, IStorageService storageService, CancellationToken cancellationToken) =>
-                    WrapBucketCorsResult(bucketName, await GetObjectAsync(bucketName, key, httpContext, request, requestContextAccessor, storageService, cancellationToken)))
+            objectGroup.MapGet("/buckets/{bucketName}/objects/{**key}", async (string bucketName, string key, HttpContext httpContext, HttpRequest request, IIntegratedS3RequestContextAccessor requestContextAccessor, IStorageService storageService, CancellationToken cancellationToken) => {
+                    var sw = Stopwatch.StartNew();
+                    var logger = httpContext.RequestServices.GetService<ILoggerFactory>()?.CreateLogger("IntegratedS3.Endpoints");
+                    logger?.LogDebug("Native request: GetObject {BucketName}/{ObjectKey}", bucketName, key);
+                    var result = WrapBucketCorsResult(bucketName, await GetObjectAsync(bucketName, key, httpContext, request, requestContextAccessor, storageService, cancellationToken));
+                    sw.Stop();
+                    IntegratedS3AspNetCoreTelemetry.RecordHttpRequest("GET", "GetObject", ResolveResultStatusCode(result), sw.Elapsed.TotalMilliseconds);
+                    return result;
+                })
                 .WithName("GetIntegratedS3Object");
 
-            objectGroup.MapMethods("/buckets/{bucketName}/objects/{**key}", ["HEAD"], async (string bucketName, string key, HttpContext httpContext, IIntegratedS3RequestContextAccessor requestContextAccessor, IStorageService storageService, CancellationToken cancellationToken) =>
-                    WrapBucketCorsResult(bucketName, await HeadObjectAsync(bucketName, key, httpContext, requestContextAccessor, storageService, cancellationToken)))
+            objectGroup.MapMethods("/buckets/{bucketName}/objects/{**key}", ["HEAD"], async (string bucketName, string key, HttpContext httpContext, IIntegratedS3RequestContextAccessor requestContextAccessor, IStorageService storageService, CancellationToken cancellationToken) => {
+                    var sw = Stopwatch.StartNew();
+                    var logger = httpContext.RequestServices.GetService<ILoggerFactory>()?.CreateLogger("IntegratedS3.Endpoints");
+                    logger?.LogDebug("Native request: HeadObject {BucketName}/{ObjectKey}", bucketName, key);
+                    var result = WrapBucketCorsResult(bucketName, await HeadObjectAsync(bucketName, key, httpContext, requestContextAccessor, storageService, cancellationToken));
+                    sw.Stop();
+                    IntegratedS3AspNetCoreTelemetry.RecordHttpRequest("HEAD", "HeadObject", ResolveResultStatusCode(result), sw.Elapsed.TotalMilliseconds);
+                    return result;
+                })
                 .WithName("HeadIntegratedS3Object");
 
-            objectGroup.MapDelete("/buckets/{bucketName}/objects/{**key}", async (string bucketName, string key, HttpContext httpContext, IIntegratedS3RequestContextAccessor requestContextAccessor, IStorageService storageService, CancellationToken cancellationToken) =>
-                    WrapBucketCorsResult(bucketName, await DeleteObjectAsync(bucketName, key, httpContext, requestContextAccessor, storageService, cancellationToken)))
+            objectGroup.MapDelete("/buckets/{bucketName}/objects/{**key}", async (string bucketName, string key, HttpContext httpContext, IIntegratedS3RequestContextAccessor requestContextAccessor, IStorageService storageService, CancellationToken cancellationToken) => {
+                    var sw = Stopwatch.StartNew();
+                    var logger = httpContext.RequestServices.GetService<ILoggerFactory>()?.CreateLogger("IntegratedS3.Endpoints");
+                    logger?.LogDebug("Native request: DeleteObject {BucketName}/{ObjectKey}", bucketName, key);
+                    var result = WrapBucketCorsResult(bucketName, await DeleteObjectAsync(bucketName, key, httpContext, requestContextAccessor, storageService, cancellationToken));
+                    sw.Stop();
+                    IntegratedS3AspNetCoreTelemetry.RecordHttpRequest("DELETE", "DeleteObject", ResolveResultStatusCode(result), sw.Elapsed.TotalMilliseconds);
+                    return result;
+                })
                 .WithName("DeleteIntegratedS3Object");
 
             objectGroup.MapMethods("/buckets/{bucketName}/objects/{**key}", ["OPTIONS"], HandleObjectCorsPreflightAsync)
@@ -412,6 +549,16 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
         var configuredOptions = endpoints.ServiceProvider.GetService<IOptions<IntegratedS3EndpointOptions>>();
 
         return configuredOptions?.Value.Clone() ?? new IntegratedS3EndpointOptions();
+    }
+
+    private static void ValidateRequiredServices(IServiceProvider serviceProvider)
+    {
+        var backends = serviceProvider.GetService<IEnumerable<IStorageBackend>>();
+        if (backends is null || !backends.Any())
+        {
+            throw new InvalidOperationException(
+                "No IStorageBackend is registered. Call AddDiskStorage(), AddS3Storage(), or AddIntegratedS3Backend<T>() to configure a storage provider.");
+        }
     }
 
     private static RouteGroupConfiguration CreateRouteGroupConfiguration(
@@ -1463,6 +1610,13 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
         IStorageService storageService,
         CancellationToken cancellationToken)
     {
+        var sw = Stopwatch.StartNew();
+        var operation = ResolveBucketOperationName(httpContext.Request);
+        var logger = httpContext.RequestServices.GetService<ILoggerFactory>()?.CreateLogger("IntegratedS3.Endpoints");
+
+        logger?.LogDebug("S3 bucket request: {Method} {Operation} for {BucketName}",
+            httpContext.Request.Method, operation, resolvedRequest.BucketName);
+
         if (IsMultipartRequest(httpContext.Request)
             && !endpointOptions.EnableMultipartEndpoints) {
             return CreateFeatureDisabledResult();
@@ -1472,117 +1626,139 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
             return ToErrorResult(httpContext, validationStatusCode, validationErrorCode!, validationMessage!, resolvedRequest.CanonicalResourcePath, resolvedRequest.BucketName);
         }
 
-        return httpContext.Request.Method switch
+        IResult result;
+        try
         {
-            "GET" when httpContext.Request.Query.ContainsKey(LocationQueryParameterName) => await GetBucketLocationAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
-            "GET" when httpContext.Request.Query.ContainsKey(AclQueryParameterName) => await GetBucketAclAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, cancellationToken),
-            "GET" when httpContext.Request.Query.ContainsKey(CorsQueryParameterName) => await GetBucketCorsAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
-            "GET" when httpContext.Request.Query.ContainsKey(PolicyQueryParameterName) => await GetBucketPolicyAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, cancellationToken),
-            "GET" when httpContext.Request.Query.ContainsKey(VersioningQueryParameterName) => await GetBucketVersioningAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
-            "GET" when httpContext.Request.Query.ContainsKey(EncryptionQueryParameterName) => await GetBucketDefaultEncryptionAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
-            "GET" when httpContext.Request.Query.ContainsKey(TaggingQueryParameterName) => await GetBucketTaggingAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
-            "GET" when httpContext.Request.Query.ContainsKey(LoggingQueryParameterName) => await GetBucketLoggingAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
-            "GET" when httpContext.Request.Query.ContainsKey(WebsiteQueryParameterName) => await GetBucketWebsiteAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
-            "GET" when httpContext.Request.Query.ContainsKey(RequestPaymentQueryParameterName) => await GetBucketRequestPaymentAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
-            "GET" when httpContext.Request.Query.ContainsKey(AccelerateQueryParameterName) => await GetBucketAccelerateAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
-            "GET" when httpContext.Request.Query.ContainsKey(LifecycleQueryParameterName) => await GetBucketLifecycleAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
-            "GET" when httpContext.Request.Query.ContainsKey(ReplicationQueryParameterName) => await GetBucketReplicationAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
-            "GET" when httpContext.Request.Query.ContainsKey(NotificationQueryParameterName) => await GetBucketNotificationAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
-            "GET" when httpContext.Request.Query.ContainsKey(ObjectLockQueryParameterName) => await GetBucketObjectLockAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
-            "GET" when httpContext.Request.Query.ContainsKey(AnalyticsQueryParameterName) && !httpContext.Request.Query.ContainsKey(IdQueryParameterName) => await ListBucketAnalyticsAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
-            "GET" when httpContext.Request.Query.ContainsKey(MetricsQueryParameterName) && !httpContext.Request.Query.ContainsKey(IdQueryParameterName) => await ListBucketMetricsAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
-            "GET" when httpContext.Request.Query.ContainsKey(InventoryQueryParameterName) && !httpContext.Request.Query.ContainsKey(IdQueryParameterName) => await ListBucketInventoryAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
-            "GET" when httpContext.Request.Query.ContainsKey(IntelligentTieringQueryParameterName) && !httpContext.Request.Query.ContainsKey(IdQueryParameterName) => await ListBucketIntelligentTieringAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
-            "GET" when httpContext.Request.Query.ContainsKey(AnalyticsQueryParameterName) => await GetBucketAnalyticsAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
-            "GET" when httpContext.Request.Query.ContainsKey(MetricsQueryParameterName) => await GetBucketMetricsAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
-            "GET" when httpContext.Request.Query.ContainsKey(InventoryQueryParameterName) => await GetBucketInventoryAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
-            "GET" when httpContext.Request.Query.ContainsKey(IntelligentTieringQueryParameterName) => await GetBucketIntelligentTieringAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
-            "GET" when httpContext.Request.Query.ContainsKey(UploadsQueryParameterName) => await ListMultipartUploadsAsync(
-                resolvedRequest.BucketName,
-                ParsePrefix(httpContext.Request),
-                ParseDelimiter(httpContext.Request),
-                ParseKeyMarker(httpContext.Request),
-                ParseUploadIdMarker(httpContext.Request),
-                httpContext,
-                requestContextAccessor,
-                storageService,
-                cancellationToken),
-            "GET" when httpContext.Request.Query.ContainsKey(VersionsQueryParameterName) => await ListObjectVersionsAsync(
-                resolvedRequest.BucketName,
-                ParsePrefix(httpContext.Request),
-                ParseDelimiter(httpContext.Request),
-                ParseKeyMarker(httpContext.Request),
-                ParseVersionIdMarker(httpContext.Request),
-                ParseMaxKeys(httpContext.Request),
-                ParseEncodingType(httpContext.Request),
-                httpContext,
-                requestContextAccessor,
-                storageService,
-                cancellationToken),
-            "PUT" when httpContext.Request.Query.ContainsKey(AclQueryParameterName) => await PutBucketAclAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, cancellationToken),
-            "PUT" when httpContext.Request.Query.ContainsKey(CorsQueryParameterName) => await PutBucketCorsAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
-            "PUT" when httpContext.Request.Query.ContainsKey(PolicyQueryParameterName) => await PutBucketPolicyAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, cancellationToken),
-            "PUT" when httpContext.Request.Query.ContainsKey(VersioningQueryParameterName) => await PutBucketVersioningAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
-            "PUT" when httpContext.Request.Query.ContainsKey(EncryptionQueryParameterName) => await PutBucketDefaultEncryptionAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
-            "PUT" when httpContext.Request.Query.ContainsKey(TaggingQueryParameterName) => await PutBucketTaggingAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
-            "PUT" when httpContext.Request.Query.ContainsKey(LoggingQueryParameterName) => await PutBucketLoggingAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
-            "PUT" when httpContext.Request.Query.ContainsKey(WebsiteQueryParameterName) => await PutBucketWebsiteAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
-            "PUT" when httpContext.Request.Query.ContainsKey(RequestPaymentQueryParameterName) => await PutBucketRequestPaymentAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
-            "PUT" when httpContext.Request.Query.ContainsKey(AccelerateQueryParameterName) => await PutBucketAccelerateAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
-            "PUT" when httpContext.Request.Query.ContainsKey(LifecycleQueryParameterName) => await PutBucketLifecycleAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
-            "PUT" when httpContext.Request.Query.ContainsKey(ReplicationQueryParameterName) => await PutBucketReplicationAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
-            "PUT" when httpContext.Request.Query.ContainsKey(NotificationQueryParameterName) => await PutBucketNotificationAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
-            "PUT" when httpContext.Request.Query.ContainsKey(ObjectLockQueryParameterName) => await PutBucketObjectLockAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
-            "PUT" when httpContext.Request.Query.ContainsKey(AnalyticsQueryParameterName) => await PutBucketAnalyticsAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
-            "PUT" when httpContext.Request.Query.ContainsKey(MetricsQueryParameterName) => await PutBucketMetricsAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
-            "PUT" when httpContext.Request.Query.ContainsKey(InventoryQueryParameterName) => await PutBucketInventoryAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
-            "PUT" when httpContext.Request.Query.ContainsKey(IntelligentTieringQueryParameterName) => await PutBucketIntelligentTieringAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
-            "DELETE" when httpContext.Request.Query.ContainsKey(CorsQueryParameterName) => await DeleteBucketCorsAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
-            "DELETE" when httpContext.Request.Query.ContainsKey(PolicyQueryParameterName) => await DeleteBucketPolicyAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, cancellationToken),
-            "DELETE" when httpContext.Request.Query.ContainsKey(EncryptionQueryParameterName) => await DeleteBucketDefaultEncryptionAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
-            "DELETE" when httpContext.Request.Query.ContainsKey(TaggingQueryParameterName) => await DeleteBucketTaggingAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
-            "DELETE" when httpContext.Request.Query.ContainsKey(WebsiteQueryParameterName) => await DeleteBucketWebsiteAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
-            "DELETE" when httpContext.Request.Query.ContainsKey(LifecycleQueryParameterName) => await DeleteBucketLifecycleAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
-            "DELETE" when httpContext.Request.Query.ContainsKey(ReplicationQueryParameterName) => await DeleteBucketReplicationAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
-            "DELETE" when httpContext.Request.Query.ContainsKey(AnalyticsQueryParameterName) => await DeleteBucketAnalyticsAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
-            "DELETE" when httpContext.Request.Query.ContainsKey(MetricsQueryParameterName) => await DeleteBucketMetricsAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
-            "DELETE" when httpContext.Request.Query.ContainsKey(InventoryQueryParameterName) => await DeleteBucketInventoryAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
-            "DELETE" when httpContext.Request.Query.ContainsKey(IntelligentTieringQueryParameterName) => await DeleteBucketIntelligentTieringAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
-            _ => httpContext.Request.Method switch
-        {
-            "GET" => IsListObjectsV2Request(httpContext.Request)
-                ? await ListObjectsV2Async(
+            result = httpContext.Request.Method switch
+            {
+                "GET" when httpContext.Request.Query.ContainsKey(LocationQueryParameterName) => await GetBucketLocationAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
+                "GET" when httpContext.Request.Query.ContainsKey(AclQueryParameterName) => await GetBucketAclAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, cancellationToken),
+                "GET" when httpContext.Request.Query.ContainsKey(CorsQueryParameterName) => await GetBucketCorsAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
+                "GET" when httpContext.Request.Query.ContainsKey(PolicyQueryParameterName) => await GetBucketPolicyAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, cancellationToken),
+                "GET" when httpContext.Request.Query.ContainsKey(VersioningQueryParameterName) => await GetBucketVersioningAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
+                "GET" when httpContext.Request.Query.ContainsKey(EncryptionQueryParameterName) => await GetBucketDefaultEncryptionAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
+                "GET" when httpContext.Request.Query.ContainsKey(TaggingQueryParameterName) => await GetBucketTaggingAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
+                "GET" when httpContext.Request.Query.ContainsKey(LoggingQueryParameterName) => await GetBucketLoggingAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
+                "GET" when httpContext.Request.Query.ContainsKey(WebsiteQueryParameterName) => await GetBucketWebsiteAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
+                "GET" when httpContext.Request.Query.ContainsKey(RequestPaymentQueryParameterName) => await GetBucketRequestPaymentAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
+                "GET" when httpContext.Request.Query.ContainsKey(AccelerateQueryParameterName) => await GetBucketAccelerateAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
+                "GET" when httpContext.Request.Query.ContainsKey(LifecycleQueryParameterName) => await GetBucketLifecycleAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
+                "GET" when httpContext.Request.Query.ContainsKey(ReplicationQueryParameterName) => await GetBucketReplicationAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
+                "GET" when httpContext.Request.Query.ContainsKey(NotificationQueryParameterName) => await GetBucketNotificationAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
+                "GET" when httpContext.Request.Query.ContainsKey(ObjectLockQueryParameterName) => await GetBucketObjectLockAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
+                "GET" when httpContext.Request.Query.ContainsKey(AnalyticsQueryParameterName) && !httpContext.Request.Query.ContainsKey(IdQueryParameterName) => await ListBucketAnalyticsAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
+                "GET" when httpContext.Request.Query.ContainsKey(MetricsQueryParameterName) && !httpContext.Request.Query.ContainsKey(IdQueryParameterName) => await ListBucketMetricsAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
+                "GET" when httpContext.Request.Query.ContainsKey(InventoryQueryParameterName) && !httpContext.Request.Query.ContainsKey(IdQueryParameterName) => await ListBucketInventoryAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
+                "GET" when httpContext.Request.Query.ContainsKey(IntelligentTieringQueryParameterName) && !httpContext.Request.Query.ContainsKey(IdQueryParameterName) => await ListBucketIntelligentTieringAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
+                "GET" when httpContext.Request.Query.ContainsKey(AnalyticsQueryParameterName) => await GetBucketAnalyticsAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
+                "GET" when httpContext.Request.Query.ContainsKey(MetricsQueryParameterName) => await GetBucketMetricsAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
+                "GET" when httpContext.Request.Query.ContainsKey(InventoryQueryParameterName) => await GetBucketInventoryAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
+                "GET" when httpContext.Request.Query.ContainsKey(IntelligentTieringQueryParameterName) => await GetBucketIntelligentTieringAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
+                "GET" when httpContext.Request.Query.ContainsKey(UploadsQueryParameterName) => await ListMultipartUploadsAsync(
                     resolvedRequest.BucketName,
                     ParsePrefix(httpContext.Request),
                     ParseDelimiter(httpContext.Request),
-                    ParseStartAfter(httpContext.Request),
-                    ParseContinuationToken(httpContext.Request),
-                    ParseMaxKeys(httpContext.Request),
-                    ParseEncodingType(httpContext.Request),
-                    ParseFetchOwner(httpContext.Request),
+                    ParseKeyMarker(httpContext.Request),
+                    ParseUploadIdMarker(httpContext.Request),
                     httpContext,
                     requestContextAccessor,
                     storageService,
-                    cancellationToken)
-                : await ListObjectsV1Async(
+                    cancellationToken),
+                "GET" when httpContext.Request.Query.ContainsKey(VersionsQueryParameterName) => await ListObjectVersionsAsync(
                     resolvedRequest.BucketName,
                     ParsePrefix(httpContext.Request),
                     ParseDelimiter(httpContext.Request),
-                    ParseMarker(httpContext.Request),
+                    ParseKeyMarker(httpContext.Request),
+                    ParseVersionIdMarker(httpContext.Request),
                     ParseMaxKeys(httpContext.Request),
                     ParseEncodingType(httpContext.Request),
                     httpContext,
                     requestContextAccessor,
                     storageService,
                     cancellationToken),
-            "PUT" => await CreateBucketS3CompatibleAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
-            "HEAD" => await HeadBucketAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
-            "DELETE" => await DeleteBucketAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
-            "POST" when httpContext.Request.Query.ContainsKey(DeleteQueryParameterName) => await DeleteObjectsAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
-            "POST" when IsPostObjectFormUpload(httpContext.Request) => await PostObjectAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
-            "POST" => ToErrorResult(httpContext, StatusCodes.Status400BadRequest, "InvalidRequest", "Unsupported bucket subresource request.", resolvedRequest.CanonicalResourcePath, resolvedRequest.BucketName),
-            _ => TypedResults.StatusCode(StatusCodes.Status405MethodNotAllowed)
-        }};
+                "PUT" when httpContext.Request.Query.ContainsKey(AclQueryParameterName) => await PutBucketAclAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, cancellationToken),
+                "PUT" when httpContext.Request.Query.ContainsKey(CorsQueryParameterName) => await PutBucketCorsAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
+                "PUT" when httpContext.Request.Query.ContainsKey(PolicyQueryParameterName) => await PutBucketPolicyAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, cancellationToken),
+                "PUT" when httpContext.Request.Query.ContainsKey(VersioningQueryParameterName) => await PutBucketVersioningAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
+                "PUT" when httpContext.Request.Query.ContainsKey(EncryptionQueryParameterName) => await PutBucketDefaultEncryptionAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
+                "PUT" when httpContext.Request.Query.ContainsKey(TaggingQueryParameterName) => await PutBucketTaggingAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
+                "PUT" when httpContext.Request.Query.ContainsKey(LoggingQueryParameterName) => await PutBucketLoggingAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
+                "PUT" when httpContext.Request.Query.ContainsKey(WebsiteQueryParameterName) => await PutBucketWebsiteAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
+                "PUT" when httpContext.Request.Query.ContainsKey(RequestPaymentQueryParameterName) => await PutBucketRequestPaymentAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
+                "PUT" when httpContext.Request.Query.ContainsKey(AccelerateQueryParameterName) => await PutBucketAccelerateAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
+                "PUT" when httpContext.Request.Query.ContainsKey(LifecycleQueryParameterName) => await PutBucketLifecycleAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
+                "PUT" when httpContext.Request.Query.ContainsKey(ReplicationQueryParameterName) => await PutBucketReplicationAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
+                "PUT" when httpContext.Request.Query.ContainsKey(NotificationQueryParameterName) => await PutBucketNotificationAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
+                "PUT" when httpContext.Request.Query.ContainsKey(ObjectLockQueryParameterName) => await PutBucketObjectLockAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
+                "PUT" when httpContext.Request.Query.ContainsKey(AnalyticsQueryParameterName) => await PutBucketAnalyticsAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
+                "PUT" when httpContext.Request.Query.ContainsKey(MetricsQueryParameterName) => await PutBucketMetricsAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
+                "PUT" when httpContext.Request.Query.ContainsKey(InventoryQueryParameterName) => await PutBucketInventoryAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
+                "PUT" when httpContext.Request.Query.ContainsKey(IntelligentTieringQueryParameterName) => await PutBucketIntelligentTieringAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
+                "DELETE" when httpContext.Request.Query.ContainsKey(CorsQueryParameterName) => await DeleteBucketCorsAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
+                "DELETE" when httpContext.Request.Query.ContainsKey(PolicyQueryParameterName) => await DeleteBucketPolicyAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, cancellationToken),
+                "DELETE" when httpContext.Request.Query.ContainsKey(EncryptionQueryParameterName) => await DeleteBucketDefaultEncryptionAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
+                "DELETE" when httpContext.Request.Query.ContainsKey(TaggingQueryParameterName) => await DeleteBucketTaggingAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
+                "DELETE" when httpContext.Request.Query.ContainsKey(WebsiteQueryParameterName) => await DeleteBucketWebsiteAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
+                "DELETE" when httpContext.Request.Query.ContainsKey(LifecycleQueryParameterName) => await DeleteBucketLifecycleAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
+                "DELETE" when httpContext.Request.Query.ContainsKey(ReplicationQueryParameterName) => await DeleteBucketReplicationAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
+                "DELETE" when httpContext.Request.Query.ContainsKey(AnalyticsQueryParameterName) => await DeleteBucketAnalyticsAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
+                "DELETE" when httpContext.Request.Query.ContainsKey(MetricsQueryParameterName) => await DeleteBucketMetricsAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
+                "DELETE" when httpContext.Request.Query.ContainsKey(InventoryQueryParameterName) => await DeleteBucketInventoryAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
+                "DELETE" when httpContext.Request.Query.ContainsKey(IntelligentTieringQueryParameterName) => await DeleteBucketIntelligentTieringAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
+                _ => httpContext.Request.Method switch
+            {
+                "GET" => IsListObjectsV2Request(httpContext.Request)
+                    ? await ListObjectsV2Async(
+                        resolvedRequest.BucketName,
+                        ParsePrefix(httpContext.Request),
+                        ParseDelimiter(httpContext.Request),
+                        ParseStartAfter(httpContext.Request),
+                        ParseContinuationToken(httpContext.Request),
+                        ParseMaxKeys(httpContext.Request),
+                        ParseEncodingType(httpContext.Request),
+                        ParseFetchOwner(httpContext.Request),
+                        httpContext,
+                        requestContextAccessor,
+                        storageService,
+                        cancellationToken)
+                    : await ListObjectsV1Async(
+                        resolvedRequest.BucketName,
+                        ParsePrefix(httpContext.Request),
+                        ParseDelimiter(httpContext.Request),
+                        ParseMarker(httpContext.Request),
+                        ParseMaxKeys(httpContext.Request),
+                        ParseEncodingType(httpContext.Request),
+                        httpContext,
+                        requestContextAccessor,
+                        storageService,
+                        cancellationToken),
+                "PUT" => await CreateBucketS3CompatibleAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
+                "HEAD" => await HeadBucketAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
+                "DELETE" => await DeleteBucketAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
+                "POST" when httpContext.Request.Query.ContainsKey(DeleteQueryParameterName) => await DeleteObjectsAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
+                "POST" when IsPostObjectFormUpload(httpContext.Request) => await PostObjectAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
+                "POST" => ToErrorResult(httpContext, StatusCodes.Status400BadRequest, "InvalidRequest", "Unsupported bucket subresource request.", resolvedRequest.CanonicalResourcePath, resolvedRequest.BucketName),
+                _ => TypedResults.StatusCode(StatusCodes.Status405MethodNotAllowed)
+            }};
+        }
+        catch (Exception ex)
+        {
+            logger?.LogError(ex, "S3 bucket request {Operation} failed for {BucketName}",
+                operation, resolvedRequest.BucketName);
+            throw;
+        }
+
+        var statusCode = ResolveResultStatusCode(result);
+        sw.Stop();
+
+        if (statusCode >= 400)
+            logger?.LogWarning("S3 bucket request {Operation} returned {StatusCode} for {BucketName}",
+                operation, statusCode, resolvedRequest.BucketName);
+
+        IntegratedS3AspNetCoreTelemetry.RecordHttpRequest(
+            httpContext.Request.Method, operation, statusCode, sw.Elapsed.TotalMilliseconds);
+
+        return result;
     }
 
     private static async Task<IResult> GetBucketLocationAsync(
@@ -2203,7 +2379,13 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
         IStorageService storageService,
         CancellationToken cancellationToken)
     {
+        var sw = Stopwatch.StartNew();
         var key = resolvedRequest.Key!;
+        var operation = ResolveObjectOperationName(httpContext.Request);
+        var logger = httpContext.RequestServices.GetService<ILoggerFactory>()?.CreateLogger("IntegratedS3.Endpoints");
+
+        logger?.LogDebug("S3 object request: {Method} {Operation} for {BucketName}/{ObjectKey}",
+            httpContext.Request.Method, operation, resolvedRequest.BucketName, key);
 
         if (IsMultipartRequest(httpContext.Request)) {
             if (!endpointOptions.EnableMultipartEndpoints) {
@@ -2218,32 +2400,54 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
             return ToErrorResult(httpContext, validationStatusCode, validationErrorCode!, validationMessage!, resolvedRequest.CanonicalResourcePath, resolvedRequest.BucketName, key);
         }
 
-        return httpContext.Request.Method switch
+        IResult result;
+        try
         {
-            "GET" when httpContext.Request.Query.ContainsKey(AclQueryParameterName) => await GetObjectAclAsync(resolvedRequest.BucketName, key, httpContext, requestContextAccessor, cancellationToken),
-            "GET" when httpContext.Request.Query.ContainsKey(TaggingQueryParameterName) => await GetObjectTaggingAsync(resolvedRequest.BucketName, key, httpContext, requestContextAccessor, storageService, cancellationToken),
-            "GET" when httpContext.Request.Query.ContainsKey(RetentionQueryParameterName) => await GetObjectRetentionAsync(resolvedRequest.BucketName, key, httpContext, requestContextAccessor, storageService, cancellationToken),
-            "GET" when httpContext.Request.Query.ContainsKey(LegalHoldQueryParameterName) => await GetObjectLegalHoldAsync(resolvedRequest.BucketName, key, httpContext, requestContextAccessor, storageService, cancellationToken),
-            "GET" when httpContext.Request.Query.ContainsKey(AttributesQueryParameterName) => await GetObjectAttributesAsync(resolvedRequest.BucketName, key, httpContext, requestContextAccessor, storageService, cancellationToken),
-            "GET" when TryGetMultipartUploadId(httpContext.Request, out _, out _) => await ListMultipartPartsAsync(resolvedRequest.BucketName, key, httpContext, requestContextAccessor, storageService, cancellationToken),
-            "PUT" when httpContext.Request.Query.ContainsKey(AclQueryParameterName) => await PutObjectAclAsync(resolvedRequest.BucketName, key, httpContext, requestContextAccessor, cancellationToken),
-            "PUT" when httpContext.Request.Query.ContainsKey(TaggingQueryParameterName) => await PutObjectTaggingAsync(resolvedRequest.BucketName, key, httpContext, requestContextAccessor, storageService, cancellationToken),
-            "PUT" when httpContext.Request.Query.ContainsKey(RetentionQueryParameterName) => await PutObjectRetentionAsync(resolvedRequest.BucketName, key, httpContext, requestContextAccessor, storageService, cancellationToken),
-            "PUT" when httpContext.Request.Query.ContainsKey(LegalHoldQueryParameterName) => await PutObjectLegalHoldAsync(resolvedRequest.BucketName, key, httpContext, requestContextAccessor, storageService, cancellationToken),
-            "DELETE" when httpContext.Request.Query.ContainsKey(TaggingQueryParameterName) => await DeleteObjectTaggingAsync(resolvedRequest.BucketName, key, httpContext, requestContextAccessor, storageService, cancellationToken),
-            "POST" when httpContext.Request.Query.ContainsKey(RestoreQueryParameterName) => await RestoreObjectAsync(resolvedRequest.BucketName, key, httpContext, requestContextAccessor, storageService, cancellationToken),
-            "POST" when httpContext.Request.Query.ContainsKey(SelectQueryParameterName) => await SelectObjectContentAsync(resolvedRequest.BucketName, key, httpContext, requestContextAccessor, storageService, cancellationToken),
-            "POST" when httpContext.Request.Query.ContainsKey(UploadsQueryParameterName) => await InitiateMultipartUploadAsync(resolvedRequest.BucketName, key, httpContext, requestContextAccessor, storageService, cancellationToken),
-            "PUT" when TryGetMultipartUploadId(httpContext.Request, out _, out _) && httpContext.Request.Query.ContainsKey(PartNumberQueryParameterName) && TryGetCopySource(httpContext.Request, out _, out _) => await UploadPartCopyAsync(resolvedRequest.BucketName, key, httpContext, requestContextAccessor, storageService, cancellationToken),
-            "PUT" when TryGetMultipartUploadId(httpContext.Request, out _, out _) && httpContext.Request.Query.ContainsKey(PartNumberQueryParameterName) => await UploadMultipartPartAsync(resolvedRequest.BucketName, key, httpContext, requestContextAccessor, storageService, cancellationToken),
-            "POST" when TryGetMultipartUploadId(httpContext.Request, out _, out _) => await CompleteMultipartUploadAsync(resolvedRequest.BucketName, key, httpContext, requestContextAccessor, storageService, cancellationToken),
-            "DELETE" when TryGetMultipartUploadId(httpContext.Request, out _, out _) => await AbortMultipartUploadAsync(resolvedRequest.BucketName, key, httpContext, requestContextAccessor, storageService, cancellationToken),
-            "GET" => await GetObjectAsync(resolvedRequest.BucketName, key, httpContext, httpContext.Request, requestContextAccessor, storageService, cancellationToken),
-            "PUT" => await PutObjectAsync(resolvedRequest.BucketName, key, httpContext, httpContext.Request, requestContextAccessor, storageService, cancellationToken),
-            "HEAD" => await HeadObjectAsync(resolvedRequest.BucketName, key, httpContext, requestContextAccessor, storageService, cancellationToken),
-            "DELETE" => await DeleteObjectAsync(resolvedRequest.BucketName, key, httpContext, requestContextAccessor, storageService, cancellationToken),
-            _ => TypedResults.StatusCode(StatusCodes.Status405MethodNotAllowed)
-        };
+            result = httpContext.Request.Method switch
+            {
+                "GET" when httpContext.Request.Query.ContainsKey(AclQueryParameterName) => await GetObjectAclAsync(resolvedRequest.BucketName, key, httpContext, requestContextAccessor, cancellationToken),
+                "GET" when httpContext.Request.Query.ContainsKey(TaggingQueryParameterName) => await GetObjectTaggingAsync(resolvedRequest.BucketName, key, httpContext, requestContextAccessor, storageService, cancellationToken),
+                "GET" when httpContext.Request.Query.ContainsKey(RetentionQueryParameterName) => await GetObjectRetentionAsync(resolvedRequest.BucketName, key, httpContext, requestContextAccessor, storageService, cancellationToken),
+                "GET" when httpContext.Request.Query.ContainsKey(LegalHoldQueryParameterName) => await GetObjectLegalHoldAsync(resolvedRequest.BucketName, key, httpContext, requestContextAccessor, storageService, cancellationToken),
+                "GET" when httpContext.Request.Query.ContainsKey(AttributesQueryParameterName) => await GetObjectAttributesAsync(resolvedRequest.BucketName, key, httpContext, requestContextAccessor, storageService, cancellationToken),
+                "GET" when TryGetMultipartUploadId(httpContext.Request, out _, out _) => await ListMultipartPartsAsync(resolvedRequest.BucketName, key, httpContext, requestContextAccessor, storageService, cancellationToken),
+                "PUT" when httpContext.Request.Query.ContainsKey(AclQueryParameterName) => await PutObjectAclAsync(resolvedRequest.BucketName, key, httpContext, requestContextAccessor, cancellationToken),
+                "PUT" when httpContext.Request.Query.ContainsKey(TaggingQueryParameterName) => await PutObjectTaggingAsync(resolvedRequest.BucketName, key, httpContext, requestContextAccessor, storageService, cancellationToken),
+                "PUT" when httpContext.Request.Query.ContainsKey(RetentionQueryParameterName) => await PutObjectRetentionAsync(resolvedRequest.BucketName, key, httpContext, requestContextAccessor, storageService, cancellationToken),
+                "PUT" when httpContext.Request.Query.ContainsKey(LegalHoldQueryParameterName) => await PutObjectLegalHoldAsync(resolvedRequest.BucketName, key, httpContext, requestContextAccessor, storageService, cancellationToken),
+                "DELETE" when httpContext.Request.Query.ContainsKey(TaggingQueryParameterName) => await DeleteObjectTaggingAsync(resolvedRequest.BucketName, key, httpContext, requestContextAccessor, storageService, cancellationToken),
+                "POST" when httpContext.Request.Query.ContainsKey(RestoreQueryParameterName) => await RestoreObjectAsync(resolvedRequest.BucketName, key, httpContext, requestContextAccessor, storageService, cancellationToken),
+                "POST" when httpContext.Request.Query.ContainsKey(SelectQueryParameterName) => await SelectObjectContentAsync(resolvedRequest.BucketName, key, httpContext, requestContextAccessor, storageService, cancellationToken),
+                "POST" when httpContext.Request.Query.ContainsKey(UploadsQueryParameterName) => await InitiateMultipartUploadAsync(resolvedRequest.BucketName, key, httpContext, requestContextAccessor, storageService, cancellationToken),
+                "PUT" when TryGetMultipartUploadId(httpContext.Request, out _, out _) && httpContext.Request.Query.ContainsKey(PartNumberQueryParameterName) && TryGetCopySource(httpContext.Request, out _, out _) => await UploadPartCopyAsync(resolvedRequest.BucketName, key, httpContext, requestContextAccessor, storageService, cancellationToken),
+                "PUT" when TryGetMultipartUploadId(httpContext.Request, out _, out _) && httpContext.Request.Query.ContainsKey(PartNumberQueryParameterName) => await UploadMultipartPartAsync(resolvedRequest.BucketName, key, httpContext, requestContextAccessor, storageService, cancellationToken),
+                "POST" when TryGetMultipartUploadId(httpContext.Request, out _, out _) => await CompleteMultipartUploadAsync(resolvedRequest.BucketName, key, httpContext, requestContextAccessor, storageService, cancellationToken),
+                "DELETE" when TryGetMultipartUploadId(httpContext.Request, out _, out _) => await AbortMultipartUploadAsync(resolvedRequest.BucketName, key, httpContext, requestContextAccessor, storageService, cancellationToken),
+                "GET" => await GetObjectAsync(resolvedRequest.BucketName, key, httpContext, httpContext.Request, requestContextAccessor, storageService, cancellationToken),
+                "PUT" => await PutObjectAsync(resolvedRequest.BucketName, key, httpContext, httpContext.Request, requestContextAccessor, storageService, cancellationToken),
+                "HEAD" => await HeadObjectAsync(resolvedRequest.BucketName, key, httpContext, requestContextAccessor, storageService, cancellationToken),
+                "DELETE" => await DeleteObjectAsync(resolvedRequest.BucketName, key, httpContext, requestContextAccessor, storageService, cancellationToken),
+                _ => TypedResults.StatusCode(StatusCodes.Status405MethodNotAllowed)
+            };
+        }
+        catch (Exception ex)
+        {
+            logger?.LogError(ex, "S3 object request {Operation} failed for {BucketName}/{ObjectKey}",
+                operation, resolvedRequest.BucketName, key);
+            throw;
+        }
+
+        var statusCode = ResolveResultStatusCode(result);
+        sw.Stop();
+
+        if (statusCode >= 400)
+            logger?.LogWarning("S3 object request {Operation} returned {StatusCode} for {BucketName}/{ObjectKey}",
+                operation, statusCode, resolvedRequest.BucketName, key);
+
+        IntegratedS3AspNetCoreTelemetry.RecordHttpRequest(
+            httpContext.Request.Method, operation, statusCode, sw.Elapsed.TotalMilliseconds);
+
+        return result;
     }
 
     private static async Task<IResult> GetObjectAclAsync(
@@ -10556,6 +10760,86 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
                 AccessTier = t.AccessTier,
                 Days = t.Days
             }).ToArray()
+        };
+    }
+
+    private static string ResolveBucketOperationName(HttpRequest request)
+    {
+        var method = request.Method;
+        if (request.Query.ContainsKey(LocationQueryParameterName)) return $"{method}BucketLocation";
+        if (request.Query.ContainsKey(AclQueryParameterName)) return $"{method}BucketAcl";
+        if (request.Query.ContainsKey(CorsQueryParameterName)) return $"{method}BucketCors";
+        if (request.Query.ContainsKey(PolicyQueryParameterName)) return $"{method}BucketPolicy";
+        if (request.Query.ContainsKey(VersioningQueryParameterName)) return $"{method}BucketVersioning";
+        if (request.Query.ContainsKey(EncryptionQueryParameterName)) return $"{method}BucketEncryption";
+        if (request.Query.ContainsKey(TaggingQueryParameterName)) return $"{method}BucketTagging";
+        if (request.Query.ContainsKey(LoggingQueryParameterName)) return $"{method}BucketLogging";
+        if (request.Query.ContainsKey(WebsiteQueryParameterName)) return $"{method}BucketWebsite";
+        if (request.Query.ContainsKey(RequestPaymentQueryParameterName)) return $"{method}BucketRequestPayment";
+        if (request.Query.ContainsKey(AccelerateQueryParameterName)) return $"{method}BucketAccelerate";
+        if (request.Query.ContainsKey(LifecycleQueryParameterName)) return $"{method}BucketLifecycle";
+        if (request.Query.ContainsKey(ReplicationQueryParameterName)) return $"{method}BucketReplication";
+        if (request.Query.ContainsKey(NotificationQueryParameterName)) return $"{method}BucketNotification";
+        if (request.Query.ContainsKey(ObjectLockQueryParameterName)) return $"{method}BucketObjectLock";
+        if (request.Query.ContainsKey(AnalyticsQueryParameterName)) return $"{method}BucketAnalytics";
+        if (request.Query.ContainsKey(MetricsQueryParameterName)) return $"{method}BucketMetrics";
+        if (request.Query.ContainsKey(InventoryQueryParameterName)) return $"{method}BucketInventory";
+        if (request.Query.ContainsKey(IntelligentTieringQueryParameterName)) return $"{method}BucketIntelligentTiering";
+        if (request.Query.ContainsKey(UploadsQueryParameterName)) return "ListMultipartUploads";
+        if (request.Query.ContainsKey(VersionsQueryParameterName)) return "ListObjectVersions";
+        if (request.Query.ContainsKey(DeleteQueryParameterName)) return "DeleteObjects";
+
+        return method switch
+        {
+            "GET" => "ListObjects",
+            "PUT" => "CreateBucket",
+            "HEAD" => "HeadBucket",
+            "DELETE" => "DeleteBucket",
+            "POST" => "PostBucket",
+            _ => $"{method}Bucket"
+        };
+    }
+
+    private static string ResolveObjectOperationName(HttpRequest request)
+    {
+        var method = request.Method;
+        if (request.Query.ContainsKey(AclQueryParameterName)) return $"{method}ObjectAcl";
+        if (request.Query.ContainsKey(TaggingQueryParameterName)) return $"{method}ObjectTagging";
+        if (request.Query.ContainsKey(RetentionQueryParameterName)) return $"{method}ObjectRetention";
+        if (request.Query.ContainsKey(LegalHoldQueryParameterName)) return $"{method}ObjectLegalHold";
+        if (request.Query.ContainsKey(AttributesQueryParameterName)) return "GetObjectAttributes";
+        if (request.Query.ContainsKey(RestoreQueryParameterName)) return "RestoreObject";
+        if (request.Query.ContainsKey(SelectQueryParameterName)) return "SelectObjectContent";
+        if (request.Query.ContainsKey(UploadsQueryParameterName)) return "InitiateMultipartUpload";
+        if (TryGetMultipartUploadId(request, out _, out _))
+        {
+            if (request.Query.ContainsKey(PartNumberQueryParameterName))
+                return TryGetCopySource(request, out _, out _) ? "UploadPartCopy" : "UploadPart";
+            return method switch
+            {
+                "GET" => "ListParts",
+                "POST" => "CompleteMultipartUpload",
+                "DELETE" => "AbortMultipartUpload",
+                _ => $"{method}MultipartUpload"
+            };
+        }
+
+        return method switch
+        {
+            "GET" => "GetObject",
+            "PUT" => "PutObject",
+            "HEAD" => "HeadObject",
+            "DELETE" => "DeleteObject",
+            _ => $"{method}Object"
+        };
+    }
+
+    private static int ResolveResultStatusCode(IResult result)
+    {
+        return result switch
+        {
+            IStatusCodeHttpResult statusCodeResult => statusCodeResult.StatusCode ?? 200,
+            _ => 200
         };
     }
 }

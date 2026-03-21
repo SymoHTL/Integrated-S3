@@ -18,10 +18,23 @@ namespace IntegratedS3.Testing;
 /// </summary>
 public abstract class StorageProviderContractTests
 {
+    /// <summary>
+    /// Gets the options that gate optional contract-test scenarios.
+    /// Override to enable checksum, state-store, or algorithm-specific tests.
+    /// </summary>
     protected virtual StorageProviderContractTestOptions ContractOptions => new();
 
+    /// <summary>
+    /// Creates a new <see cref="StorageProviderContractFixture"/> for the provider under test.
+    /// Each test invocation receives its own fixture instance.
+    /// </summary>
+    /// <returns>An uninitialized or pre-initialized fixture for the storage backend.</returns>
     protected abstract StorageProviderContractFixture CreateFixture();
 
+    /// <summary>
+    /// Verifies that buckets can be created, inspected via HEAD, listed, and deleted,
+    /// and that HEAD returns <see cref="StorageErrorCode.BucketNotFound"/> after deletion.
+    /// </summary>
     [Fact]
     public async Task ProviderContract_BucketLifecycle_CreatesHeadsListsAndDeletesBuckets()
     {
@@ -51,6 +64,11 @@ public abstract class StorageProviderContractTests
         RequireFailure(await storage.HeadBucketAsync("contract-buckets"), StorageErrorCode.BucketNotFound);
     }
 
+    /// <summary>
+    /// Verifies a full object round-trip: PUT with content, metadata, and checksums,
+    /// then LIST, HEAD, GET (including payload read-back), and DELETE with a final
+    /// <see cref="StorageErrorCode.ObjectNotFound"/> confirmation.
+    /// </summary>
     [Fact]
     public async Task ProviderContract_PutGetHeadListAndDeleteObject_RoundTripsContentMetadataAndChecksums()
     {
@@ -165,6 +183,10 @@ public abstract class StorageProviderContractTests
         }), StorageErrorCode.ObjectNotFound);
     }
 
+    /// <summary>
+    /// Verifies that a PUT with an intentionally wrong checksum is rejected with
+    /// <see cref="StorageErrorCode.InvalidChecksum"/> and that the object is not persisted.
+    /// </summary>
     [Fact]
     public async Task ProviderContract_InvalidChecksums_AreRejectedWithoutPersistingObjects()
     {
@@ -204,6 +226,11 @@ public abstract class StorageProviderContractTests
         }), StorageErrorCode.ObjectNotFound);
     }
 
+    /// <summary>
+    /// Verifies that multiple checksum algorithms can be supplied on a single PUT and are
+    /// persisted correctly, and that a conflicting checksum value on a subsequent PUT is
+    /// rejected with <see cref="StorageErrorCode.InvalidChecksum"/>.
+    /// </summary>
     [Fact]
     public async Task ProviderContract_ChecksumWrites_PersistMultipleAlgorithmsAndRejectConflicts()
     {
@@ -284,6 +311,10 @@ public abstract class StorageProviderContractTests
         }), StorageErrorCode.ObjectNotFound);
     }
 
+    /// <summary>
+    /// Verifies that bucket versioning can be enabled at creation time and subsequently
+    /// suspended, and that the suspended state is reflected by HEAD and LIST bucket operations.
+    /// </summary>
     [Fact]
     public async Task ProviderContract_BucketVersioning_CanBeEnabledAndSuspended()
     {
@@ -319,6 +350,12 @@ public abstract class StorageProviderContractTests
         Assert.Contains(buckets, static bucket => bucket.Name == "contract-versioning" && !bucket.VersioningEnabled);
     }
 
+    /// <summary>
+    /// Verifies that versioned objects retain historical access: two versions of the same key
+    /// can be read independently, a soft delete creates a delete marker, and
+    /// <see cref="StorageErrorCode.ObjectNotFound"/> is returned for the current key while
+    /// historical versions remain accessible.
+    /// </summary>
     [Fact]
     public async Task ProviderContract_VersionedObjects_PreserveHistoricalAccessAndDeleteMarkers()
     {
@@ -438,6 +475,10 @@ public abstract class StorageProviderContractTests
         Assert.Contains(versions, version => version.VersionId == v2.VersionId && !version.IsDeleteMarker);
     }
 
+    /// <summary>
+    /// Verifies that deleting a delete-marker version restores the previous latest version
+    /// so that GET and HEAD return the prior object content again.
+    /// </summary>
     [Fact]
     public async Task ProviderContract_DeletingDeleteMarkerVersion_RestoresPreviousLatestVersion()
     {
@@ -520,6 +561,11 @@ public abstract class StorageProviderContractTests
         Assert.Contains(versions, version => version.VersionId == v1.VersionId && !version.IsDeleteMarker);
     }
 
+    /// <summary>
+    /// Verifies that paginated <c>ListObjectVersions</c> requests across multiple versions
+    /// and delete markers produce the same ordered result set as an unpaginated request
+    /// without repeating entries.
+    /// </summary>
     [Fact]
     public async Task ProviderContract_ListObjectVersions_PaginatesAcrossDeleteMarkersWithoutRepeatingEntries()
     {
@@ -637,6 +683,11 @@ public abstract class StorageProviderContractTests
         Assert.Equal(fullProjection, pagedListing);
     }
 
+    /// <summary>
+    /// Verifies that conditional GET requests (<c>If-Match</c> / <c>If-None-Match</c>) work
+    /// correctly against historical object versions, returning the expected content or
+    /// <see cref="StorageErrorCode.PreconditionFailed"/>.
+    /// </summary>
     [Fact]
     public async Task ProviderContract_ConditionalReads_TargetHistoricalVersions()
     {
@@ -709,6 +760,10 @@ public abstract class StorageProviderContractTests
         }), StorageErrorCode.PreconditionFailed);
     }
 
+    /// <summary>
+    /// Verifies that CORS rules can be stored, retrieved, and deleted on a bucket, and that
+    /// versioning state is not lost when CORS configuration changes.
+    /// </summary>
     [Fact]
     public async Task ProviderContract_BucketCors_RoundTripsRulesWithoutLosingVersioningState()
     {
@@ -780,6 +835,11 @@ public abstract class StorageProviderContractTests
         }
     }
 
+    /// <summary>
+    /// Verifies that bucket default encryption can be set, read back, and deleted when
+    /// supported, or that all encryption operations return
+    /// <see cref="StorageErrorCode.UnsupportedCapability"/> when not supported.
+    /// </summary>
     [Fact]
     public async Task ProviderContract_BucketDefaultEncryption_IsExplicitlySupportedOrRejected()
     {
@@ -828,6 +888,10 @@ public abstract class StorageProviderContractTests
         RequireFailure(await storage.GetBucketDefaultEncryptionAsync("contract-default-encryption"), StorageErrorCode.BucketEncryptionConfigurationNotFound);
     }
 
+    /// <summary>
+    /// Verifies that a byte-range GET request returns only the requested slice and
+    /// reports correct <see cref="GetObjectResponse.Range"/> and total content length.
+    /// </summary>
     [Fact]
     public async Task ProviderContract_RangeRequests_ReturnRequestedSlices()
     {
@@ -872,6 +936,11 @@ public abstract class StorageProviderContractTests
         }
     }
 
+    /// <summary>
+    /// Verifies conditional GET behavior for <c>If-Match</c>, <c>If-None-Match</c>,
+    /// <c>If-Modified-Since</c>, and <c>If-Unmodified-Since</c> preconditions, asserting
+    /// correct 304 Not Modified and <see cref="StorageErrorCode.PreconditionFailed"/> responses.
+    /// </summary>
     [Fact]
     public async Task ProviderContract_ConditionalReads_HonorEntityTagAndDatePreconditions()
     {
@@ -944,6 +1013,11 @@ public abstract class StorageProviderContractTests
         }), StorageErrorCode.PreconditionFailed);
     }
 
+    /// <summary>
+    /// Verifies S3-style conditional-request precedence: <c>If-Match</c> takes priority over
+    /// <c>If-Unmodified-Since</c>, <c>If-None-Match</c> takes priority over
+    /// <c>If-Modified-Since</c>, and that ranges combine correctly with conditions.
+    /// </summary>
     [Fact]
     public async Task ProviderContract_ConditionalReads_RespectPrecedenceAndCombineWithRanges()
     {
@@ -1033,6 +1107,10 @@ public abstract class StorageProviderContractTests
         }
     }
 
+    /// <summary>
+    /// Verifies that <c>CopyObject</c> preserves payload and metadata across buckets,
+    /// and that source-side <c>If-Match</c> preconditions are enforced.
+    /// </summary>
     [Fact]
     public async Task ProviderContract_CopyObject_PreservesPayloadMetadataAndPreconditions()
     {
@@ -1109,6 +1187,11 @@ public abstract class StorageProviderContractTests
         }
     }
 
+    /// <summary>
+    /// Verifies S3-style source-precondition precedence for <c>CopyObject</c>:
+    /// <c>If-Match</c> overrides <c>If-Unmodified-Since</c> and <c>If-None-Match</c>
+    /// overrides <c>If-Modified-Since</c>.
+    /// </summary>
     [Fact]
     public async Task ProviderContract_CopyObject_SourcePreconditionsRespectPrecedence()
     {
@@ -1215,6 +1298,10 @@ public abstract class StorageProviderContractTests
         }
     }
 
+    /// <summary>
+    /// Verifies that object tags can be set, retrieved, and deleted for both the current
+    /// and historical versions when versioning is enabled.
+    /// </summary>
     [Fact]
     public async Task ProviderContract_ObjectTags_RoundTripAndDeleteAcrossCurrentAndHistoricalVersions()
     {
@@ -1358,6 +1445,11 @@ public abstract class StorageProviderContractTests
         Assert.Empty(rereadHistoricalTags.Tags);
     }
 
+    /// <summary>
+    /// Verifies the full multipart upload lifecycle: initiate, list in-progress uploads,
+    /// upload parts, complete, and confirm that the assembled object preserves content,
+    /// content type, and metadata.
+    /// </summary>
     [Fact]
     public async Task ProviderContract_MultipartUploads_CompleteAndPreserveMetadata()
     {
@@ -1445,6 +1537,11 @@ public abstract class StorageProviderContractTests
         Assert.Empty(uploads);
     }
 
+    /// <summary>
+    /// Verifies that an in-progress multipart upload can be aborted, that completing an
+    /// aborted upload fails with <see cref="StorageErrorCode.MultipartConflict"/>, and that
+    /// the upload no longer appears in the active upload listing.
+    /// </summary>
     [Fact]
     public async Task ProviderContract_MultipartUploads_CanBeAborted()
     {
@@ -1498,6 +1595,11 @@ public abstract class StorageProviderContractTests
         Assert.Empty(uploads);
     }
 
+    /// <summary>
+    /// Verifies that a registered <see cref="IStorageObjectStateStore"/> receives metadata, tags,
+    /// and checksums during PUT and tag operations, and that GET returns enriched state.
+    /// Also confirms <see cref="StorageSupportStateOwnership.PlatformManaged"/> ownership.
+    /// </summary>
     [Fact]
     public async Task ProviderContract_PlatformObjectStateStores_RoundTripMetadataTagsAndChecksums()
     {
@@ -1605,6 +1707,11 @@ public abstract class StorageProviderContractTests
         }
     }
 
+    /// <summary>
+    /// Verifies that a registered <see cref="IStorageMultipartStateStore"/> tracks the multipart
+    /// upload lifecycle: state is created on initiate, removed after completion, and
+    /// <see cref="StorageSupportStateOwnership.PlatformManaged"/> is reported.
+    /// </summary>
     [Fact]
     public async Task ProviderContract_PlatformMultipartStateStores_TrackUploadLifecycle()
     {

@@ -20,7 +20,7 @@ public sealed class S3BucketDefaultEncryptionMapperTests
         var rule = Assert.Single(configuration.ServerSideEncryptionRules);
         Assert.Equal(ServerSideEncryptionMethod.AWSKMSDSSE.Value, rule.ServerSideEncryptionByDefault.ServerSideEncryptionAlgorithm?.Value);
         Assert.Equal("alias/test-key", rule.ServerSideEncryptionByDefault.ServerSideEncryptionKeyManagementServiceKeyId);
-        Assert.Null(rule.BucketKeyEnabled);
+        Assert.False(rule.BucketKeyEnabled);
     }
 
     [Fact]
@@ -62,7 +62,7 @@ public sealed class S3BucketDefaultEncryptionMapperTests
     }
 
     [Fact]
-    public void ToBucketDefaultEncryptionConfiguration_ThrowsWhenBucketKeyEnabledIsTrue()
+    public void ToBucketDefaultEncryptionConfiguration_MapsBucketKeyEnabledTrue()
     {
         var configuration = new ServerSideEncryptionConfiguration
         {
@@ -79,9 +79,10 @@ public sealed class S3BucketDefaultEncryptionMapperTests
             ]
         };
 
-        var exception = Assert.Throws<S3ServerSideEncryptionNotSupportedException>(() =>
-            S3BucketDefaultEncryptionMapper.ToBucketDefaultEncryptionConfiguration("my-bucket", configuration));
+        var result = S3BucketDefaultEncryptionMapper.ToBucketDefaultEncryptionConfiguration("my-bucket", configuration);
 
-        Assert.Contains("BucketKeyEnabled=true", exception.Message, StringComparison.Ordinal);
+        Assert.Equal("my-bucket", result.BucketName);
+        Assert.Equal(ObjectServerSideEncryptionAlgorithm.Aes256, result.Rule.Algorithm);
+        Assert.True(result.Rule.BucketKeyEnabled);
     }
 }

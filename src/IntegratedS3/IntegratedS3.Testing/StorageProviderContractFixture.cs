@@ -92,6 +92,7 @@ public abstract class StorageProviderContractFixture : IAsyncDisposable
     /// </summary>
     protected virtual ValueTask DisposeFixtureResourcesAsync() => ValueTask.CompletedTask;
 
+    /// <inheritdoc />
     public async ValueTask DisposeAsync()
     {
         if (_disposed) {

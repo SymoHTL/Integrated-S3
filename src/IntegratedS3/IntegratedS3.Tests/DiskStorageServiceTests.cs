@@ -3,6 +3,8 @@ using IntegratedS3.Abstractions.Errors;
 using IntegratedS3.Abstractions.Models;
 using IntegratedS3.Abstractions.Requests;
 using IntegratedS3.Abstractions.Services;
+using IntegratedS3.Provider.Disk;
+using IntegratedS3.Provider.Disk.DependencyInjection;
 using IntegratedS3.Testing;
 using IntegratedS3.Tests.Infrastructure;
 using Microsoft.Extensions.DependencyInjection;
@@ -557,6 +559,533 @@ public sealed class DiskStorageServiceTests
         var preservedVersioning = await storageService.GetBucketVersioningAsync("bucket-cors");
         Assert.True(preservedVersioning.IsSuccess);
         Assert.Equal(BucketVersioningStatus.Suspended, preservedVersioning.Value!.Status);
+    }
+
+    [Fact]
+    public async Task DiskStorage_BucketMetadataConfigurations_RoundTripAcrossReload()
+    {
+        await using var fixture = new DiskStorageFixture();
+        var storageService = fixture.Services.GetRequiredService<IStorageBackend>();
+        const string bucketName = "bucket-config-roundtrip";
+
+        Assert.True((await storageService.CreateBucketAsync(new CreateBucketRequest
+        {
+            BucketName = bucketName
+        })).IsSuccess);
+
+        var putTagging = await storageService.PutBucketTaggingAsync(new PutBucketTaggingRequest
+        {
+            BucketName = bucketName,
+            Tags = new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["environment"] = "test",
+                ["team"] = "storage"
+            }
+        });
+        Assert.True(putTagging.IsSuccess);
+
+        var putLogging = await storageService.PutBucketLoggingAsync(new PutBucketLoggingRequest
+        {
+            BucketName = bucketName,
+            TargetBucket = "audit-bucket",
+            TargetPrefix = "bucket-config-roundtrip/"
+        });
+        Assert.True(putLogging.IsSuccess);
+
+        var putWebsite = await storageService.PutBucketWebsiteAsync(new PutBucketWebsiteRequest
+        {
+            BucketName = bucketName,
+            IndexDocumentSuffix = "index.html",
+            ErrorDocumentKey = "error.html",
+            RoutingRules =
+            [
+                new BucketWebsiteRoutingRule
+                {
+                    Condition = new BucketWebsiteRoutingRuleCondition
+                    {
+                        KeyPrefixEquals = "docs/",
+                        HttpErrorCodeReturnedEquals = 404
+                    },
+                    Redirect = new BucketWebsiteRoutingRuleRedirect
+                    {
+                        HostName = "www.example.test",
+                        Protocol = "https",
+                        ReplaceKeyPrefixWith = "documents/",
+                        HttpRedirectCode = 302
+                    }
+                }
+            ]
+        });
+        Assert.True(putWebsite.IsSuccess);
+
+        var putRequestPayment = await storageService.PutBucketRequestPaymentAsync(new PutBucketRequestPaymentRequest
+        {
+            BucketName = bucketName,
+            Payer = BucketPayer.Requester
+        });
+        Assert.True(putRequestPayment.IsSuccess);
+
+        var putAccelerate = await storageService.PutBucketAccelerateAsync(new PutBucketAccelerateRequest
+        {
+            BucketName = bucketName,
+            Status = BucketAccelerateStatus.Enabled
+        });
+        Assert.True(putAccelerate.IsSuccess);
+
+        var putLifecycle = await storageService.PutBucketLifecycleAsync(new PutBucketLifecycleRequest
+        {
+            BucketName = bucketName,
+            Rules =
+            [
+                new BucketLifecycleRule
+                {
+                    Id = "expire-docs",
+                    FilterPrefix = "docs/",
+                    FilterTags = new Dictionary<string, string>(StringComparer.Ordinal)
+                    {
+                        ["class"] = "cold"
+                    },
+                    Status = BucketLifecycleRuleStatus.Enabled,
+                    ExpirationDays = 30,
+                    AbortIncompleteMultipartUploadDaysAfterInitiation = 7,
+                    Transitions =
+                    [
+                        new BucketLifecycleTransition
+                        {
+                            Days = 15,
+                            StorageClass = "GLACIER"
+                        }
+                    ],
+                    NoncurrentVersionTransitions =
+                    [
+                        new BucketLifecycleNoncurrentVersionTransition
+                        {
+                            NoncurrentDays = 10,
+                            StorageClass = "DEEP_ARCHIVE"
+                        }
+                    ]
+                }
+            ]
+        });
+        Assert.True(putLifecycle.IsSuccess);
+
+        var putReplication = await storageService.PutBucketReplicationAsync(new PutBucketReplicationRequest
+        {
+            BucketName = bucketName,
+            Role = "arn:aws:iam::123456789012:role/replication",
+            Rules =
+            [
+                new BucketReplicationRule
+                {
+                    Id = "replicate-docs",
+                    Status = BucketReplicationRuleStatus.Enabled,
+                    FilterPrefix = "docs/",
+                    Destination = new BucketReplicationDestination
+                    {
+                        Bucket = "arn:aws:s3:::replica-bucket",
+                        StorageClass = "STANDARD_IA",
+                        Account = "123456789012"
+                    },
+                    Priority = 1,
+                    DeleteMarkerReplication = true
+                }
+            ]
+        });
+        Assert.True(putReplication.IsSuccess);
+
+        var putNotifications = await storageService.PutBucketNotificationConfigurationAsync(new PutBucketNotificationConfigurationRequest
+        {
+            BucketName = bucketName,
+            TopicConfigurations =
+            [
+                new BucketNotificationTopicConfiguration
+                {
+                    Id = "topic-config",
+                    TopicArn = "arn:aws:sns:eu-central-1:123456789012:bucket-events",
+                    Events = ["s3:ObjectCreated:*"],
+                    Filter = new BucketNotificationFilter
+                    {
+                        KeyFilterRules =
+                        [
+                            new BucketNotificationFilterRule { Name = "prefix", Value = "incoming/" }
+                        ]
+                    }
+                }
+            ],
+            QueueConfigurations =
+            [
+                new BucketNotificationQueueConfiguration
+                {
+                    Id = "queue-config",
+                    QueueArn = "arn:aws:sqs:eu-central-1:123456789012:bucket-events",
+                    Events = ["s3:ObjectRemoved:*"]
+                }
+            ],
+            LambdaFunctionConfigurations =
+            [
+                new BucketNotificationLambdaConfiguration
+                {
+                    Id = "lambda-config",
+                    LambdaFunctionArn = "arn:aws:lambda:eu-central-1:123456789012:function:bucket-events",
+                    Events = ["s3:ObjectRestore:*"]
+                }
+            ]
+        });
+        Assert.True(putNotifications.IsSuccess);
+
+        var putObjectLock = await storageService.PutObjectLockConfigurationAsync(new PutObjectLockConfigurationRequest
+        {
+            BucketName = bucketName,
+            ObjectLockEnabled = true,
+            DefaultRetention = new ObjectLockDefaultRetention
+            {
+                Mode = ObjectRetentionMode.Governance,
+                Years = 2
+            }
+        });
+        Assert.True(putObjectLock.IsSuccess);
+
+        var bucketMetadataPath = GetBucketMetadataPath(fixture.RootPath, bucketName);
+        Assert.True(File.Exists(bucketMetadataPath));
+
+        using var reloadedServices = CreateDiskStorageServiceProvider(fixture.RootPath);
+        var reloadedStorageService = reloadedServices.GetRequiredService<IStorageBackend>();
+
+        var tagging = await reloadedStorageService.GetBucketTaggingAsync(bucketName);
+        Assert.True(tagging.IsSuccess);
+        Assert.Equal("test", tagging.Value!.Tags["environment"]);
+        Assert.Equal("storage", tagging.Value.Tags["team"]);
+
+        var logging = await reloadedStorageService.GetBucketLoggingAsync(bucketName);
+        Assert.True(logging.IsSuccess);
+        Assert.Equal("audit-bucket", logging.Value!.TargetBucket);
+        Assert.Equal("bucket-config-roundtrip/", logging.Value.TargetPrefix);
+
+        var website = await reloadedStorageService.GetBucketWebsiteAsync(bucketName);
+        Assert.True(website.IsSuccess);
+        Assert.Equal("index.html", website.Value!.IndexDocumentSuffix);
+        Assert.Equal("error.html", website.Value.ErrorDocumentKey);
+        var routingRule = Assert.Single(website.Value.RoutingRules);
+        Assert.Equal("docs/", routingRule.Condition!.KeyPrefixEquals);
+        Assert.Equal(404, routingRule.Condition.HttpErrorCodeReturnedEquals);
+        Assert.Equal("documents/", routingRule.Redirect.ReplaceKeyPrefixWith);
+        Assert.Equal(302, routingRule.Redirect.HttpRedirectCode);
+
+        var requestPayment = await reloadedStorageService.GetBucketRequestPaymentAsync(bucketName);
+        Assert.True(requestPayment.IsSuccess);
+        Assert.Equal(BucketPayer.Requester, requestPayment.Value!.Payer);
+
+        var accelerate = await reloadedStorageService.GetBucketAccelerateAsync(bucketName);
+        Assert.True(accelerate.IsSuccess);
+        Assert.Equal(BucketAccelerateStatus.Enabled, accelerate.Value!.Status);
+
+        var lifecycle = await reloadedStorageService.GetBucketLifecycleAsync(bucketName);
+        Assert.True(lifecycle.IsSuccess);
+        var lifecycleRule = Assert.Single(lifecycle.Value!.Rules);
+        Assert.Equal("expire-docs", lifecycleRule.Id);
+        Assert.Equal("docs/", lifecycleRule.FilterPrefix);
+        Assert.Equal("cold", lifecycleRule.FilterTags!["class"]);
+        Assert.Equal(30, lifecycleRule.ExpirationDays);
+        Assert.Equal(7, lifecycleRule.AbortIncompleteMultipartUploadDaysAfterInitiation);
+        Assert.Equal("GLACIER", Assert.Single(lifecycleRule.Transitions).StorageClass);
+        Assert.Equal("DEEP_ARCHIVE", Assert.Single(lifecycleRule.NoncurrentVersionTransitions).StorageClass);
+
+        var replication = await reloadedStorageService.GetBucketReplicationAsync(bucketName);
+        Assert.True(replication.IsSuccess);
+        Assert.Equal("arn:aws:iam::123456789012:role/replication", replication.Value!.Role);
+        var replicationRule = Assert.Single(replication.Value.Rules);
+        Assert.Equal("replicate-docs", replicationRule.Id);
+        Assert.Equal(BucketReplicationRuleStatus.Enabled, replicationRule.Status);
+        Assert.Equal("arn:aws:s3:::replica-bucket", replicationRule.Destination.Bucket);
+        Assert.Equal("STANDARD_IA", replicationRule.Destination.StorageClass);
+        Assert.Equal("123456789012", replicationRule.Destination.Account);
+        Assert.True(replicationRule.DeleteMarkerReplication);
+
+        var notifications = await reloadedStorageService.GetBucketNotificationConfigurationAsync(bucketName);
+        Assert.True(notifications.IsSuccess);
+        var topicConfiguration = Assert.Single(notifications.Value!.TopicConfigurations);
+        Assert.Equal("topic-config", topicConfiguration.Id);
+        Assert.Equal("arn:aws:sns:eu-central-1:123456789012:bucket-events", topicConfiguration.TopicArn);
+        Assert.Equal("incoming/", Assert.Single(topicConfiguration.Filter!.KeyFilterRules).Value);
+        Assert.Equal("arn:aws:sqs:eu-central-1:123456789012:bucket-events", Assert.Single(notifications.Value.QueueConfigurations).QueueArn);
+        Assert.Equal("arn:aws:lambda:eu-central-1:123456789012:function:bucket-events", Assert.Single(notifications.Value.LambdaFunctionConfigurations).LambdaFunctionArn);
+
+        var objectLock = await reloadedStorageService.GetObjectLockConfigurationAsync(bucketName);
+        Assert.True(objectLock.IsSuccess);
+        Assert.True(objectLock.Value!.ObjectLockEnabled);
+        Assert.Equal(ObjectRetentionMode.Governance, objectLock.Value.DefaultRetention!.Mode);
+        Assert.Equal(2, objectLock.Value.DefaultRetention.Years);
+    }
+
+    [Fact]
+    public async Task DiskStorage_BucketMetadataDeleteOperations_PreserveOtherConfigurationsUntilEmpty()
+    {
+        await using var fixture = new DiskStorageFixture();
+        var storageService = fixture.Services.GetRequiredService<IStorageBackend>();
+        const string bucketName = "bucket-config-deletes";
+
+        Assert.True((await storageService.CreateBucketAsync(new CreateBucketRequest
+        {
+            BucketName = bucketName
+        })).IsSuccess);
+
+        Assert.True((await storageService.PutBucketTaggingAsync(new PutBucketTaggingRequest
+        {
+            BucketName = bucketName,
+            Tags = new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["state"] = "present"
+            }
+        })).IsSuccess);
+
+        Assert.True((await storageService.PutBucketWebsiteAsync(new PutBucketWebsiteRequest
+        {
+            BucketName = bucketName,
+            IndexDocumentSuffix = "index.html"
+        })).IsSuccess);
+
+        Assert.True((await storageService.PutBucketLifecycleAsync(new PutBucketLifecycleRequest
+        {
+            BucketName = bucketName,
+            Rules =
+            [
+                new BucketLifecycleRule
+                {
+                    Id = "cleanup",
+                    Status = BucketLifecycleRuleStatus.Enabled,
+                    ExpirationDays = 7
+                }
+            ]
+        })).IsSuccess);
+
+        Assert.True((await storageService.PutBucketReplicationAsync(new PutBucketReplicationRequest
+        {
+            BucketName = bucketName,
+            Rules =
+            [
+                new BucketReplicationRule
+                {
+                    Id = "replicate",
+                    Status = BucketReplicationRuleStatus.Enabled,
+                    Destination = new BucketReplicationDestination
+                    {
+                        Bucket = "arn:aws:s3:::replica"
+                    }
+                }
+            ]
+        })).IsSuccess);
+
+        var bucketMetadataPath = GetBucketMetadataPath(fixture.RootPath, bucketName);
+        Assert.True(File.Exists(bucketMetadataPath));
+
+        var deleteTagging = await storageService.DeleteBucketTaggingAsync(new DeleteBucketTaggingRequest
+        {
+            BucketName = bucketName
+        });
+        Assert.True(deleteTagging.IsSuccess);
+        Assert.True(File.Exists(bucketMetadataPath));
+
+        var missingTagging = await storageService.GetBucketTaggingAsync(bucketName);
+        Assert.False(missingTagging.IsSuccess);
+        Assert.Equal(StorageErrorCode.TaggingConfigurationNotFound, missingTagging.Error!.Code);
+        Assert.True((await storageService.GetBucketWebsiteAsync(bucketName)).IsSuccess);
+        Assert.True((await storageService.GetBucketLifecycleAsync(bucketName)).IsSuccess);
+        Assert.True((await storageService.GetBucketReplicationAsync(bucketName)).IsSuccess);
+
+        var deleteWebsite = await storageService.DeleteBucketWebsiteAsync(new DeleteBucketWebsiteRequest
+        {
+            BucketName = bucketName
+        });
+        Assert.True(deleteWebsite.IsSuccess);
+        Assert.True(File.Exists(bucketMetadataPath));
+
+        var missingWebsite = await storageService.GetBucketWebsiteAsync(bucketName);
+        Assert.False(missingWebsite.IsSuccess);
+        Assert.Equal(StorageErrorCode.WebsiteConfigurationNotFound, missingWebsite.Error!.Code);
+        Assert.True((await storageService.GetBucketLifecycleAsync(bucketName)).IsSuccess);
+        Assert.True((await storageService.GetBucketReplicationAsync(bucketName)).IsSuccess);
+
+        var deleteLifecycle = await storageService.DeleteBucketLifecycleAsync(new DeleteBucketLifecycleRequest
+        {
+            BucketName = bucketName
+        });
+        Assert.True(deleteLifecycle.IsSuccess);
+        Assert.True(File.Exists(bucketMetadataPath));
+
+        var missingLifecycle = await storageService.GetBucketLifecycleAsync(bucketName);
+        Assert.False(missingLifecycle.IsSuccess);
+        Assert.Equal(StorageErrorCode.LifecycleConfigurationNotFound, missingLifecycle.Error!.Code);
+        Assert.True((await storageService.GetBucketReplicationAsync(bucketName)).IsSuccess);
+
+        using (var reloadedServices = CreateDiskStorageServiceProvider(fixture.RootPath)) {
+            var reloadedStorageService = reloadedServices.GetRequiredService<IStorageBackend>();
+            Assert.True((await reloadedStorageService.GetBucketReplicationAsync(bucketName)).IsSuccess);
+        }
+
+        var deleteReplication = await storageService.DeleteBucketReplicationAsync(new DeleteBucketReplicationRequest
+        {
+            BucketName = bucketName
+        });
+        Assert.True(deleteReplication.IsSuccess);
+        Assert.False(File.Exists(bucketMetadataPath));
+
+        using var finalReloadedServices = CreateDiskStorageServiceProvider(fixture.RootPath);
+        var finalReloadedStorageService = finalReloadedServices.GetRequiredService<IStorageBackend>();
+        var missingReplication = await finalReloadedStorageService.GetBucketReplicationAsync(bucketName);
+        Assert.False(missingReplication.IsSuccess);
+        Assert.Equal(StorageErrorCode.ReplicationConfigurationNotFound, missingReplication.Error!.Code);
+    }
+
+    [Fact]
+    public async Task DiskStorage_KeyedBucketMetadataConfigurations_RoundTripAndDeleteAcrossReload()
+    {
+        await using var fixture = new DiskStorageFixture();
+        var storageService = fixture.Services.GetRequiredService<IStorageBackend>();
+        const string bucketName = "bucket-config-keyed";
+
+        Assert.True((await storageService.CreateBucketAsync(new CreateBucketRequest
+        {
+            BucketName = bucketName
+        })).IsSuccess);
+
+        var putAnalytics = await storageService.PutBucketAnalyticsConfigurationAsync(new PutBucketAnalyticsConfigurationRequest
+        {
+            BucketName = bucketName,
+            Id = "analytics-1",
+            FilterPrefix = "logs/",
+            FilterTags = new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["dataset"] = "access"
+            },
+            StorageClassAnalysis = new BucketAnalyticsStorageClassAnalysis
+            {
+                DataExport = new BucketAnalyticsDataExport
+                {
+                    OutputSchemaVersion = "V_1",
+                    Destination = new BucketAnalyticsS3BucketDestination
+                    {
+                        Format = "CSV",
+                        BucketAccountId = "123456789012",
+                        Bucket = "arn:aws:s3:::analytics-export",
+                        Prefix = "reports/"
+                    }
+                }
+            }
+        });
+        Assert.True(putAnalytics.IsSuccess);
+
+        var putMetrics = await storageService.PutBucketMetricsConfigurationAsync(new PutBucketMetricsConfigurationRequest
+        {
+            BucketName = bucketName,
+            Id = "metrics-1",
+            Filter = new BucketMetricsFilter
+            {
+                Prefix = "logs/",
+                AccessPointArn = "arn:aws:s3:eu-central-1:123456789012:accesspoint/metrics",
+                Tags = new Dictionary<string, string>(StringComparer.Ordinal)
+                {
+                    ["team"] = "storage"
+                }
+            }
+        });
+        Assert.True(putMetrics.IsSuccess);
+
+        var putInventory = await storageService.PutBucketInventoryConfigurationAsync(new PutBucketInventoryConfigurationRequest
+        {
+            BucketName = bucketName,
+            Id = "inventory-1",
+            IsEnabled = true,
+            Destination = new BucketInventoryDestination
+            {
+                S3BucketDestination = new BucketInventoryS3BucketDestination
+                {
+                    Format = "CSV",
+                    AccountId = "123456789012",
+                    Bucket = "arn:aws:s3:::inventory-export",
+                    Prefix = "daily/"
+                }
+            },
+            Schedule = new BucketInventorySchedule
+            {
+                Frequency = "Daily"
+            },
+            Filter = new BucketInventoryFilter
+            {
+                Prefix = "logs/"
+            },
+            IncludedObjectVersions = "Current",
+            OptionalFields = ["ETag", "Size"]
+        });
+        Assert.True(putInventory.IsSuccess);
+
+        var bucketMetadataPath = GetBucketMetadataPath(fixture.RootPath, bucketName);
+        Assert.True(File.Exists(bucketMetadataPath));
+
+        using (var reloadedServices = CreateDiskStorageServiceProvider(fixture.RootPath)) {
+            var reloadedStorageService = reloadedServices.GetRequiredService<IStorageBackend>();
+
+            var analytics = await reloadedStorageService.GetBucketAnalyticsConfigurationAsync(bucketName, "analytics-1");
+            Assert.True(analytics.IsSuccess);
+            Assert.Equal("logs/", analytics.Value!.FilterPrefix);
+            Assert.Equal("access", analytics.Value.FilterTags!["dataset"]);
+            Assert.Equal("arn:aws:s3:::analytics-export", analytics.Value.StorageClassAnalysis!.DataExport!.Destination!.Bucket);
+
+            var metrics = await reloadedStorageService.GetBucketMetricsConfigurationAsync(bucketName, "metrics-1");
+            Assert.True(metrics.IsSuccess);
+            Assert.Equal("logs/", metrics.Value!.Filter!.Prefix);
+            Assert.Equal("arn:aws:s3:eu-central-1:123456789012:accesspoint/metrics", metrics.Value.Filter.AccessPointArn);
+            Assert.Equal("storage", metrics.Value.Filter.Tags["team"]);
+
+            var inventory = await reloadedStorageService.GetBucketInventoryConfigurationAsync(bucketName, "inventory-1");
+            Assert.True(inventory.IsSuccess);
+            Assert.True(inventory.Value!.IsEnabled);
+            Assert.Equal("arn:aws:s3:::inventory-export", inventory.Value.Destination!.S3BucketDestination!.Bucket);
+            Assert.Equal("Daily", inventory.Value.Schedule!.Frequency);
+            Assert.Equal("logs/", inventory.Value.Filter!.Prefix);
+            Assert.Equal("Current", inventory.Value.IncludedObjectVersions);
+            Assert.Equal(["ETag", "Size"], inventory.Value.OptionalFields);
+        }
+
+        var deleteAnalytics = await storageService.DeleteBucketAnalyticsConfigurationAsync(new DeleteBucketAnalyticsConfigurationRequest
+        {
+            BucketName = bucketName,
+            Id = "analytics-1"
+        });
+        Assert.True(deleteAnalytics.IsSuccess);
+        Assert.True(File.Exists(bucketMetadataPath));
+
+        var missingAnalytics = await storageService.GetBucketAnalyticsConfigurationAsync(bucketName, "analytics-1");
+        Assert.False(missingAnalytics.IsSuccess);
+        Assert.Equal(StorageErrorCode.AnalyticsConfigurationNotFound, missingAnalytics.Error!.Code);
+        Assert.True((await storageService.GetBucketMetricsConfigurationAsync(bucketName, "metrics-1")).IsSuccess);
+        Assert.True((await storageService.GetBucketInventoryConfigurationAsync(bucketName, "inventory-1")).IsSuccess);
+
+        var deleteMetrics = await storageService.DeleteBucketMetricsConfigurationAsync(new DeleteBucketMetricsConfigurationRequest
+        {
+            BucketName = bucketName,
+            Id = "metrics-1"
+        });
+        Assert.True(deleteMetrics.IsSuccess);
+        Assert.True(File.Exists(bucketMetadataPath));
+
+        var missingMetrics = await storageService.GetBucketMetricsConfigurationAsync(bucketName, "metrics-1");
+        Assert.False(missingMetrics.IsSuccess);
+        Assert.Equal(StorageErrorCode.MetricsConfigurationNotFound, missingMetrics.Error!.Code);
+        Assert.True((await storageService.GetBucketInventoryConfigurationAsync(bucketName, "inventory-1")).IsSuccess);
+
+        var deleteInventory = await storageService.DeleteBucketInventoryConfigurationAsync(new DeleteBucketInventoryConfigurationRequest
+        {
+            BucketName = bucketName,
+            Id = "inventory-1"
+        });
+        Assert.True(deleteInventory.IsSuccess);
+        Assert.False(File.Exists(bucketMetadataPath));
+
+        using var finalReloadedServices = CreateDiskStorageServiceProvider(fixture.RootPath);
+        var finalReloadedStorageService = finalReloadedServices.GetRequiredService<IStorageBackend>();
+        var missingInventory = await finalReloadedStorageService.GetBucketInventoryConfigurationAsync(bucketName, "inventory-1");
+        Assert.False(missingInventory.IsSuccess);
+        Assert.Equal(StorageErrorCode.InventoryConfigurationNotFound, missingInventory.Error!.Code);
     }
 
     [Fact]
@@ -3651,5 +4180,23 @@ public sealed class DiskStorageServiceTests
             Key = Convert.ToBase64String(keyBytes),
             KeyMd5 = Convert.ToBase64String(System.Security.Cryptography.MD5.HashData(keyBytes))
         };
+    }
+
+    private static ServiceProvider CreateDiskStorageServiceProvider(string rootPath)
+    {
+        var services = new ServiceCollection();
+        services.AddDiskStorage(new DiskStorageOptions
+        {
+            ProviderName = "test-disk",
+            RootPath = rootPath,
+            CreateRootDirectory = true
+        });
+
+        return services.BuildServiceProvider();
+    }
+
+    private static string GetBucketMetadataPath(string rootPath, string bucketName)
+    {
+        return Path.Combine(rootPath, bucketName, ".integrateds3.bucket.json");
     }
 }

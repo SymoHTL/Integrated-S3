@@ -3,6 +3,9 @@ using IntegratedS3.Abstractions.Models;
 
 namespace IntegratedS3.Provider.S3;
 
+/// <summary>
+/// Defines the S3 capability profile for the AWS S3 storage provider.
+/// </summary>
 public static class S3StorageCapabilities
 {
     /// <summary>

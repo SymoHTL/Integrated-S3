@@ -8,6 +8,8 @@ namespace IntegratedS3.Tests;
 
 public sealed class RcloneS3ListingCompatibilityTests : IClassFixture<WebUiApplicationFactory>
 {
+    private static readonly XNamespace S3Ns = "http://s3.amazonaws.com/doc/2006-03-01/";
+
     private readonly WebUiApplicationFactory _factory;
 
     public RcloneS3ListingCompatibilityTests(WebUiApplicationFactory factory)
@@ -39,19 +41,19 @@ public sealed class RcloneS3ListingCompatibilityTests : IClassFixture<WebUiAppli
         Assert.Equal("1000", RequiredValue(doc, "MaxKeys"));
         Assert.Equal("false", RequiredValue(doc, "IsTruncated"));
 
-        var contents = doc.Root!.Elements("Contents").ToArray();
+        var contents = doc.Root!.Elements(S3Ns + "Contents").ToArray();
         Assert.Equal("4", RequiredValue(doc, "KeyCount"));
         Assert.Equal(4, contents.Length);
 
-        var keys = contents.Select(c => c.Element("Key")?.Value).OrderBy(k => k).ToArray();
+        var keys = contents.Select(c => c.Element(S3Ns + "Key")?.Value).OrderBy(k => k).ToArray();
         Assert.Equal(["another.bin", "flat.txt", "nested/deep/file.txt", "nested/shallow.txt"], keys);
 
         foreach (var content in contents) {
-            Assert.NotNull(content.Element("Key")?.Value);
-            Assert.NotNull(content.Element("LastModified")?.Value);
-            Assert.NotNull(content.Element("ETag")?.Value);
-            Assert.NotNull(content.Element("Size")?.Value);
-            Assert.NotNull(content.Element("StorageClass")?.Value);
+            Assert.NotNull(content.Element(S3Ns + "Key")?.Value);
+            Assert.NotNull(content.Element(S3Ns + "LastModified")?.Value);
+            Assert.NotNull(content.Element(S3Ns + "ETag")?.Value);
+            Assert.NotNull(content.Element(S3Ns + "Size")?.Value);
+            Assert.NotNull(content.Element(S3Ns + "StorageClass")?.Value);
         }
     }
 
@@ -73,14 +75,14 @@ public sealed class RcloneS3ListingCompatibilityTests : IClassFixture<WebUiAppli
         var doc = XDocument.Parse(await response.Content.ReadAsStringAsync());
         Assert.Equal("/", RequiredValue(doc, "Delimiter"));
 
-        var objectKeys = doc.Root!.Elements("Contents")
-            .Select(c => c.Element("Key")?.Value)
+        var objectKeys = doc.Root!.Elements(S3Ns + "Contents")
+            .Select(c => c.Element(S3Ns + "Key")?.Value)
             .ToArray();
         Assert.Single(objectKeys);
         Assert.Equal("file1.txt", objectKeys[0]);
 
-        var prefixes = doc.Root.Elements("CommonPrefixes")
-            .Select(cp => cp.Element("Prefix")?.Value)
+        var prefixes = doc.Root.Elements(S3Ns + "CommonPrefixes")
+            .Select(cp => cp.Element(S3Ns + "Prefix")?.Value)
             .OrderBy(p => p)
             .ToArray();
         Assert.Equal(2, prefixes.Length);
@@ -111,15 +113,15 @@ public sealed class RcloneS3ListingCompatibilityTests : IClassFixture<WebUiAppli
 
         Assert.Equal("dir1/", RequiredValue(doc, "Prefix"));
 
-        var objectKeys = doc.Root!.Elements("Contents")
-            .Select(c => c.Element("Key")?.Value)
+        var objectKeys = doc.Root!.Elements(S3Ns + "Contents")
+            .Select(c => c.Element(S3Ns + "Key")?.Value)
             .OrderBy(k => k)
             .ToArray();
         Assert.Equal(2, objectKeys.Length);
         Assert.Equal("dir1/file2.txt", objectKeys[0]);
         Assert.Equal("dir1/file3.txt", objectKeys[1]);
 
-        Assert.Empty(doc.Root.Elements("CommonPrefixes"));
+        Assert.Empty(doc.Root.Elements(S3Ns + "CommonPrefixes"));
     }
 
     [Fact]
@@ -147,15 +149,15 @@ public sealed class RcloneS3ListingCompatibilityTests : IClassFixture<WebUiAppli
             Assert.Equal(HttpStatusCode.OK, response.StatusCode);
 
             var doc = XDocument.Parse(await response.Content.ReadAsStringAsync());
-            var keys = doc.Root!.Elements("Contents")
-                .Select(c => c.Element("Key")?.Value!)
+            var keys = doc.Root!.Elements(S3Ns + "Contents")
+                .Select(c => c.Element(S3Ns + "Key")?.Value!)
                 .ToList();
             allKeys.AddRange(keys);
             pageCount++;
 
             var isTruncated = RequiredValue(doc, "IsTruncated");
             if (isTruncated == "true") {
-                continuationToken = doc.Root.Element("NextContinuationToken")?.Value;
+                continuationToken = doc.Root.Element(S3Ns + "NextContinuationToken")?.Value;
                 Assert.False(string.IsNullOrWhiteSpace(continuationToken), "NextContinuationToken must be present when IsTruncated=true");
             }
             else {
@@ -187,8 +189,8 @@ public sealed class RcloneS3ListingCompatibilityTests : IClassFixture<WebUiAppli
         var doc = XDocument.Parse(await response.Content.ReadAsStringAsync());
         Assert.Equal("url", RequiredValue(doc, "EncodingType"));
 
-        var keys = doc.Root!.Elements("Contents")
-            .Select(c => c.Element("Key")?.Value)
+        var keys = doc.Root!.Elements(S3Ns + "Contents")
+            .Select(c => c.Element(S3Ns + "Key")?.Value)
             .OrderBy(k => k)
             .ToArray();
 
@@ -211,7 +213,7 @@ public sealed class RcloneS3ListingCompatibilityTests : IClassFixture<WebUiAppli
         var doc = XDocument.Parse(await response.Content.ReadAsStringAsync());
         Assert.Equal("0", RequiredValue(doc, "KeyCount"));
         Assert.Equal("false", RequiredValue(doc, "IsTruncated"));
-        Assert.Empty(doc.Root!.Elements("Contents"));
+        Assert.Empty(doc.Root!.Elements(S3Ns + "Contents"));
     }
 
     [Fact]
@@ -228,18 +230,18 @@ public sealed class RcloneS3ListingCompatibilityTests : IClassFixture<WebUiAppli
             $"/integrated-s3/{bucket}?list-type=2&fetch-owner=true");
         Assert.Equal(HttpStatusCode.OK, withOwner.StatusCode);
         var withOwnerDoc = XDocument.Parse(await withOwner.Content.ReadAsStringAsync());
-        var ownerElement = Assert.Single(withOwnerDoc.Root!.Elements("Contents"))
-            .Element("Owner");
+        var ownerElement = Assert.Single(withOwnerDoc.Root!.Elements(S3Ns + "Contents"))
+            .Element(S3Ns + "Owner");
         Assert.NotNull(ownerElement);
-        Assert.False(string.IsNullOrWhiteSpace(ownerElement!.Element("ID")?.Value));
+        Assert.False(string.IsNullOrWhiteSpace(ownerElement!.Element(S3Ns + "ID")?.Value));
 
         // Without fetch-owner → Owner should NOT be present
         var withoutOwner = await client.GetAsync(
             $"/integrated-s3/{bucket}?list-type=2");
         Assert.Equal(HttpStatusCode.OK, withoutOwner.StatusCode);
         var withoutOwnerDoc = XDocument.Parse(await withoutOwner.Content.ReadAsStringAsync());
-        var noOwner = Assert.Single(withoutOwnerDoc.Root!.Elements("Contents"))
-            .Element("Owner");
+        var noOwner = Assert.Single(withoutOwnerDoc.Root!.Elements(S3Ns + "Contents"))
+            .Element(S3Ns + "Owner");
         Assert.Null(noOwner);
     }
 
@@ -264,12 +266,12 @@ public sealed class RcloneS3ListingCompatibilityTests : IClassFixture<WebUiAppli
         Assert.Equal("ListBucketResult", doc.Root?.Name.LocalName);
 
         // V1 should have Marker, NOT KeyCount
-        Assert.NotNull(doc.Root!.Element("Marker"));
-        Assert.Empty(doc.Root.Elements("KeyCount"));
-        Assert.Empty(doc.Root.Elements("ContinuationToken"));
-        Assert.Empty(doc.Root.Elements("NextContinuationToken"));
+        Assert.NotNull(doc.Root!.Element(S3Ns + "Marker"));
+        Assert.Empty(doc.Root.Elements(S3Ns + "KeyCount"));
+        Assert.Empty(doc.Root.Elements(S3Ns + "ContinuationToken"));
+        Assert.Empty(doc.Root.Elements(S3Ns + "NextContinuationToken"));
 
-        Assert.Equal(4, doc.Root.Elements("Contents").Count());
+        Assert.Equal(4, doc.Root.Elements(S3Ns + "Contents").Count());
 
         // V1 pagination with marker + max-keys
         var page1 = await client.GetAsync(
@@ -278,8 +280,8 @@ public sealed class RcloneS3ListingCompatibilityTests : IClassFixture<WebUiAppli
         var page1Doc = XDocument.Parse(await page1.Content.ReadAsStringAsync());
         Assert.Equal("true", RequiredValue(page1Doc, "IsTruncated"));
         Assert.Equal("2", RequiredValue(page1Doc, "MaxKeys"));
-        var page1Keys = page1Doc.Root!.Elements("Contents")
-            .Select(c => c.Element("Key")?.Value)
+        var page1Keys = page1Doc.Root!.Elements(S3Ns + "Contents")
+            .Select(c => c.Element(S3Ns + "Key")?.Value)
             .ToArray();
         Assert.Equal(2, page1Keys.Length);
 
@@ -289,8 +291,8 @@ public sealed class RcloneS3ListingCompatibilityTests : IClassFixture<WebUiAppli
             $"/integrated-s3/{bucket}?marker={Uri.EscapeDataString(lastKey)}&max-keys=2");
         Assert.Equal(HttpStatusCode.OK, page2.StatusCode);
         var page2Doc = XDocument.Parse(await page2.Content.ReadAsStringAsync());
-        var page2Keys = page2Doc.Root!.Elements("Contents")
-            .Select(c => c.Element("Key")?.Value)
+        var page2Keys = page2Doc.Root!.Elements(S3Ns + "Contents")
+            .Select(c => c.Element(S3Ns + "Key")?.Value)
             .ToArray();
         Assert.Equal(2, page2Keys.Length);
         Assert.True(StringComparer.Ordinal.Compare(page2Keys[0], lastKey) > 0,
@@ -318,16 +320,16 @@ public sealed class RcloneS3ListingCompatibilityTests : IClassFixture<WebUiAppli
         Assert.Equal(HttpStatusCode.OK, listResponse.StatusCode);
         var doc = XDocument.Parse(await listResponse.Content.ReadAsStringAsync());
 
-        var prefixes = doc.Root!.Elements("CommonPrefixes")
-            .Select(cp => cp.Element("Prefix")?.Value)
+        var prefixes = doc.Root!.Elements(S3Ns + "CommonPrefixes")
+            .Select(cp => cp.Element(S3Ns + "Prefix")?.Value)
             .OrderBy(p => p)
             .ToArray();
         Assert.Contains("mydir/", prefixes);
         Assert.Contains("otherdir/", prefixes);
 
         // root.txt should appear in Contents (not under a prefix)
-        var objectKeys = doc.Root.Elements("Contents")
-            .Select(c => c.Element("Key")?.Value)
+        var objectKeys = doc.Root.Elements(S3Ns + "Contents")
+            .Select(c => c.Element(S3Ns + "Key")?.Value)
             .ToArray();
         Assert.Single(objectKeys);
         Assert.Equal("root.txt", objectKeys[0]);
@@ -356,14 +358,14 @@ public sealed class RcloneS3ListingCompatibilityTests : IClassFixture<WebUiAppli
         Assert.Equal(HttpStatusCode.OK, response1.StatusCode);
         var doc1 = XDocument.Parse(await response1.Content.ReadAsStringAsync());
 
-        var prefixes = doc1.Root!.Elements("CommonPrefixes")
-            .Select(cp => cp.Element("Prefix")?.Value)
+        var prefixes = doc1.Root!.Elements(S3Ns + "CommonPrefixes")
+            .Select(cp => cp.Element(S3Ns + "Prefix")?.Value)
             .OrderBy(p => p)
             .ToArray();
         Assert.Equal(2, prefixes.Length);
         Assert.Equal("a/b/", prefixes[0]);
         Assert.Equal("a/e/", prefixes[1]);
-        Assert.Empty(doc1.Root.Elements("Contents"));
+        Assert.Empty(doc1.Root.Elements(S3Ns + "Contents"));
 
         // List at prefix=a/b/ with delimiter=/ → should see actual files
         var response2 = await client.GetAsync(
@@ -371,14 +373,14 @@ public sealed class RcloneS3ListingCompatibilityTests : IClassFixture<WebUiAppli
         Assert.Equal(HttpStatusCode.OK, response2.StatusCode);
         var doc2 = XDocument.Parse(await response2.Content.ReadAsStringAsync());
 
-        var objectKeys = doc2.Root!.Elements("Contents")
-            .Select(c => c.Element("Key")?.Value)
+        var objectKeys = doc2.Root!.Elements(S3Ns + "Contents")
+            .Select(c => c.Element(S3Ns + "Key")?.Value)
             .OrderBy(k => k)
             .ToArray();
         Assert.Equal(2, objectKeys.Length);
         Assert.Equal("a/b/c.txt", objectKeys[0]);
         Assert.Equal("a/b/d.txt", objectKeys[1]);
-        Assert.Empty(doc2.Root.Elements("CommonPrefixes"));
+        Assert.Empty(doc2.Root.Elements(S3Ns + "CommonPrefixes"));
     }
 
     [Fact]
@@ -399,8 +401,8 @@ public sealed class RcloneS3ListingCompatibilityTests : IClassFixture<WebUiAppli
         var doc = XDocument.Parse(await response.Content.ReadAsStringAsync());
         Assert.Equal("b.txt", RequiredValue(doc, "StartAfter"));
 
-        var keys = doc.Root!.Elements("Contents")
-            .Select(c => c.Element("Key")?.Value)
+        var keys = doc.Root!.Elements(S3Ns + "Contents")
+            .Select(c => c.Element(S3Ns + "Key")?.Value)
             .ToArray();
         Assert.Equal(2, keys.Length);
         Assert.Equal("c.txt", keys[0]);
@@ -443,11 +445,11 @@ public sealed class RcloneS3ListingCompatibilityTests : IClassFixture<WebUiAppli
         var doc = XDocument.Parse(await versionsResponse.Content.ReadAsStringAsync());
         Assert.Equal("ListVersionsResult", doc.Root?.Name.LocalName);
 
-        var versions = doc.Root!.Elements("Version").ToArray();
+        var versions = doc.Root!.Elements(S3Ns + "Version").ToArray();
         Assert.True(versions.Length >= 2, $"Expected at least 2 versions, got {versions.Length}");
 
         var versionIds = versions
-            .Select(v => v.Element("VersionId")?.Value)
+            .Select(v => v.Element(S3Ns + "VersionId")?.Value)
             .Where(id => id is not null)
             .ToArray();
         Assert.Contains(v1Id, versionIds);
@@ -455,19 +457,19 @@ public sealed class RcloneS3ListingCompatibilityTests : IClassFixture<WebUiAppli
 
         // Verify Version elements have Key, VersionId, IsLatest, LastModified, ETag, Size, StorageClass
         foreach (var version in versions) {
-            Assert.NotNull(version.Element("Key")?.Value);
-            Assert.NotNull(version.Element("VersionId")?.Value);
-            Assert.NotNull(version.Element("IsLatest")?.Value);
-            Assert.NotNull(version.Element("LastModified")?.Value);
-            Assert.NotNull(version.Element("ETag")?.Value);
-            Assert.NotNull(version.Element("Size")?.Value);
-            Assert.NotNull(version.Element("StorageClass")?.Value);
+            Assert.NotNull(version.Element(S3Ns + "Key")?.Value);
+            Assert.NotNull(version.Element(S3Ns + "VersionId")?.Value);
+            Assert.NotNull(version.Element(S3Ns + "IsLatest")?.Value);
+            Assert.NotNull(version.Element(S3Ns + "LastModified")?.Value);
+            Assert.NotNull(version.Element(S3Ns + "ETag")?.Value);
+            Assert.NotNull(version.Element(S3Ns + "Size")?.Value);
+            Assert.NotNull(version.Element(S3Ns + "StorageClass")?.Value);
         }
 
         // Exactly one version should be marked IsLatest=true for this key
         var latestVersions = versions
-            .Where(v => v.Element("Key")?.Value == "versioned.txt"
-                        && v.Element("IsLatest")?.Value == "true")
+            .Where(v => v.Element(S3Ns + "Key")?.Value == "versioned.txt"
+                        && v.Element(S3Ns + "IsLatest")?.Value == "true")
             .ToArray();
         Assert.Single(latestVersions);
     }
@@ -506,7 +508,7 @@ public sealed class RcloneS3ListingCompatibilityTests : IClassFixture<WebUiAppli
 
     private static string RequiredValue(XDocument document, string elementName)
     {
-        return document.Root?.Element(elementName)?.Value
+        return document.Root?.Element(S3Ns + elementName)?.Value
             ?? throw new Xunit.Sdk.XunitException($"Missing XML element '{elementName}'.");
     }
 }
