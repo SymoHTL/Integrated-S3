@@ -356,6 +356,15 @@ internal sealed class OrchestratedStorageService(
             cancellationToken);
     }
 
+    public async ValueTask<StorageResult<GetObjectAttributesResponse>> GetObjectAttributesAsync(GetObjectAttributesRequest request, CancellationToken cancellationToken = default)
+    {
+        return await ExecuteReadAsync(
+            StorageOperationType.GetObjectAttributes,
+            (backend, ct) => backend.GetObjectAttributesAsync(request, ct),
+            onSuccess: null,
+            cancellationToken);
+    }
+
     public async ValueTask<StorageResult<ObjectTagSet>> GetObjectTagsAsync(GetObjectTagsRequest request, CancellationToken cancellationToken = default)
     {
         return await ExecuteReadAsync(

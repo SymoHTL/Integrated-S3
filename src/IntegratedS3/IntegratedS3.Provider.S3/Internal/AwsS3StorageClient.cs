@@ -23,6 +23,10 @@ using PutBucketInventoryConfigurationStorageRequest = IntegratedS3.Abstractions.
 using PutBucketIntelligentTieringConfigurationStorageRequest = IntegratedS3.Abstractions.Requests.PutBucketIntelligentTieringConfigurationRequest;
 using PutObjectRetentionStorageRequest = IntegratedS3.Abstractions.Requests.PutObjectRetentionRequest;
 using PutObjectLegalHoldStorageRequest = IntegratedS3.Abstractions.Requests.PutObjectLegalHoldRequest;
+using GetObjectAttributesStorageRequest = IntegratedS3.Abstractions.Requests.GetObjectAttributesRequest;
+using GetObjectAttributesStorageResponse = IntegratedS3.Abstractions.Responses.GetObjectAttributesResponse;
+using ObjectPartsInfo = IntegratedS3.Abstractions.Responses.ObjectPartsInfo;
+using ObjectPartInfo = IntegratedS3.Abstractions.Responses.ObjectPartInfo;
 using RestoreObjectStorageRequest = IntegratedS3.Abstractions.Requests.RestoreObjectRequest;
 using SelectObjectContentStorageRequest = IntegratedS3.Abstractions.Requests.SelectObjectContentRequest;
 
@@ -222,7 +226,8 @@ internal sealed class AwsS3StorageClient : IS3StorageClient
             Rule = new BucketDefaultEncryptionRule
             {
                 Algorithm = request.Rule.Algorithm,
-                KeyId = request.Rule.KeyId
+                KeyId = request.Rule.KeyId,
+                BucketKeyEnabled = request.Rule.BucketKeyEnabled
             }
         };
     }
@@ -539,6 +544,67 @@ internal sealed class AwsS3StorageClient : IS3StorageClient
             Key = key,
             VersionId = versionId,
             Status = S3ObjectLockMapper.ToLegalHoldStatus(response.LegalHold?.Status)
+        };
+    }
+
+    public async Task<GetObjectAttributesStorageResponse> GetObjectAttributesAsync(
+        GetObjectAttributesStorageRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        var sdkRequest = new Amazon.S3.Model.GetObjectAttributesRequest
+        {
+            BucketName = request.BucketName,
+            Key = request.Key,
+            VersionId = request.VersionId,
+        };
+
+        foreach (var attr in request.ObjectAttributes)
+        {
+            sdkRequest.ObjectAttributes.Add(new Amazon.S3.ObjectAttributes(attr));
+        }
+
+        var sdkResponse = await _s3.GetObjectAttributesAsync(sdkRequest, cancellationToken).ConfigureAwait(false);
+
+        var checksums = new Dictionary<string, string>();
+        if (sdkResponse.Checksum?.ChecksumCRC32 is not null) checksums["crc32"] = sdkResponse.Checksum.ChecksumCRC32;
+        if (sdkResponse.Checksum?.ChecksumCRC32C is not null) checksums["crc32c"] = sdkResponse.Checksum.ChecksumCRC32C;
+        if (sdkResponse.Checksum?.ChecksumSHA1 is not null) checksums["sha1"] = sdkResponse.Checksum.ChecksumSHA1;
+        if (sdkResponse.Checksum?.ChecksumSHA256 is not null) checksums["sha256"] = sdkResponse.Checksum.ChecksumSHA256;
+        if (sdkResponse.Checksum?.ChecksumCRC64NVME is not null) checksums["crc64nvme"] = sdkResponse.Checksum.ChecksumCRC64NVME;
+
+        ObjectPartsInfo? partsInfo = null;
+        if (sdkResponse.ObjectParts?.TotalPartsCount > 0)
+        {
+            partsInfo = new ObjectPartsInfo
+            {
+                TotalPartsCount = sdkResponse.ObjectParts.TotalPartsCount ?? 0,
+                PartNumberMarker = sdkResponse.ObjectParts.PartNumberMarker,
+                NextPartNumberMarker = sdkResponse.ObjectParts.NextPartNumberMarker,
+                MaxParts = sdkResponse.ObjectParts.MaxParts,
+                IsTruncated = sdkResponse.ObjectParts.IsTruncated ?? false,
+                Parts = sdkResponse.ObjectParts.Parts?.Select(p => new ObjectPartInfo
+                {
+                    PartNumber = p.PartNumber ?? 0,
+                    Size = p.Size ?? 0,
+                    ChecksumCrc32 = p.ChecksumCRC32,
+                    ChecksumCrc32C = p.ChecksumCRC32C,
+                    ChecksumSha1 = p.ChecksumSHA1,
+                    ChecksumSha256 = p.ChecksumSHA256,
+                    ChecksumCrc64Nvme = p.ChecksumCRC64NVME,
+                }).ToList()
+            };
+        }
+
+        return new GetObjectAttributesStorageResponse
+        {
+            VersionId = sdkResponse.VersionId,
+            IsDeleteMarker = sdkResponse.DeleteMarker ?? false,
+            LastModifiedUtc = sdkResponse.LastModified.HasValue && sdkResponse.LastModified.Value != default ? new DateTimeOffset(sdkResponse.LastModified.Value, TimeSpan.Zero) : null,
+            ETag = sdkResponse.ETag?.Trim('"'),
+            ObjectSize = sdkResponse.ObjectSize > 0 ? sdkResponse.ObjectSize : null,
+            StorageClass = sdkResponse.StorageClass?.Value,
+            Checksums = checksums.Count > 0 ? checksums : null,
+            ObjectParts = partsInfo,
         };
     }
 

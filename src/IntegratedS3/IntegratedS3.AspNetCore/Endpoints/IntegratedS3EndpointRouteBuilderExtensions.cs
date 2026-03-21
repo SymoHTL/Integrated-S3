@@ -84,6 +84,7 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
     private const string ObjectLockLegalHoldHeaderName = "x-amz-object-lock-legal-hold";
     private const string StorageClassHeaderName = "x-amz-storage-class";
     private const string ServerSideEncryptionBucketKeyEnabledHeaderName = "x-amz-server-side-encryption-bucket-key-enabled";
+    private const string BucketRegionHeaderName = "x-amz-bucket-region";
     private const string ErrorCodeHeaderName = "x-amz-error-code";
     private const string ErrorMessageHeaderName = "x-amz-error-message";
     private const string NoSuchVersionMessage = "The specified version does not exist.";
@@ -105,6 +106,8 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
     private const string TaggingQueryParameterName = "tagging";
     private const string RetentionQueryParameterName = "retention";
     private const string LegalHoldQueryParameterName = "legal-hold";
+    private const string AttributesQueryParameterName = "attributes";
+    private const string ObjectAttributesHeaderName = "x-amz-object-attributes";
     private const string VersioningQueryParameterName = "versioning";
     private const string EncryptionQueryParameterName = "encryption";
     private const string VersionsQueryParameterName = "versions";
@@ -187,13 +190,14 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
     private static readonly HashSet<string> ObjectTaggingQueryParameters = CreateQueryParameterSet(TaggingQueryParameterName, VersionIdQueryParameterName);
     private static readonly HashSet<string> ObjectRetentionQueryParameters = CreateQueryParameterSet(RetentionQueryParameterName, VersionIdQueryParameterName);
     private static readonly HashSet<string> ObjectLegalHoldQueryParameters = CreateQueryParameterSet(LegalHoldQueryParameterName, VersionIdQueryParameterName);
+    private static readonly HashSet<string> ObjectAttributesQueryParameters = CreateQueryParameterSet(AttributesQueryParameterName, VersionIdQueryParameterName);
     private static readonly HashSet<string> ObjectRestoreQueryParameters = CreateQueryParameterSet(RestoreQueryParameterName, VersionIdQueryParameterName);
     private static readonly HashSet<string> ObjectSelectQueryParameters = CreateQueryParameterSet(SelectQueryParameterName, SelectTypeQueryParameterName);
     private static readonly HashSet<string> ObjectMultipartInitiateQueryParameters = CreateQueryParameterSet(UploadsQueryParameterName);
     private static readonly HashSet<string> ObjectMultipartPartQueryParameters = CreateQueryParameterSet(UploadIdQueryParameterName, PartNumberQueryParameterName);
     private static readonly HashSet<string> ObjectMultipartUploadQueryParameters = CreateQueryParameterSet(UploadIdQueryParameterName);
     private static readonly HashSet<string> ObjectMultipartListPartsQueryParameters = CreateQueryParameterSet(UploadIdQueryParameterName, PartNumberMarkerQueryParameterName, MaxPartsQueryParameterName, EncodingTypeQueryParameterName);
-    private static readonly HashSet<string> KnownObjectQueryParameters = CreateQueryParameterSet(AclQueryParameterName, TaggingQueryParameterName, RetentionQueryParameterName, LegalHoldQueryParameterName, VersionIdQueryParameterName, RestoreQueryParameterName, SelectQueryParameterName, SelectTypeQueryParameterName, UploadsQueryParameterName, UploadIdQueryParameterName, PartNumberQueryParameterName, PartNumberMarkerQueryParameterName, MaxPartsQueryParameterName, EncodingTypeQueryParameterName);
+    private static readonly HashSet<string> KnownObjectQueryParameters = CreateQueryParameterSet(AclQueryParameterName, TaggingQueryParameterName, RetentionQueryParameterName, LegalHoldQueryParameterName, AttributesQueryParameterName, VersionIdQueryParameterName, RestoreQueryParameterName, SelectQueryParameterName, SelectTypeQueryParameterName, UploadsQueryParameterName, UploadIdQueryParameterName, PartNumberQueryParameterName, PartNumberMarkerQueryParameterName, MaxPartsQueryParameterName, EncodingTypeQueryParameterName);
     private static readonly HashSet<string> SupportedManagedServerSideEncryptionRequestHeaders = new(StringComparer.OrdinalIgnoreCase)
     {
         ServerSideEncryptionHeaderName,
@@ -982,11 +986,27 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
     {
         try {
             var result = await ExecuteWithRequestContextAsync(httpContext, requestContextAccessor,
-                innerCancellationToken => storageService.HeadBucketAsync(bucketName, innerCancellationToken).AsTask(),
+                async innerCancellationToken => {
+                    var headResult = await storageService.HeadBucketAsync(bucketName, innerCancellationToken);
+                    if (!headResult.IsSuccess) {
+                        return ToErrorResult(httpContext, headResult.Error, resourceOverride: BuildObjectResource(bucketName, null));
+                    }
+
+                    // Best-effort: add x-amz-bucket-region from GetBucketLocation
+                    try {
+                        var locationResult = await storageService.GetBucketLocationAsync(bucketName, innerCancellationToken);
+                        if (locationResult.IsSuccess && !string.IsNullOrWhiteSpace(locationResult.Value?.LocationConstraint)) {
+                            httpContext.Response.Headers[BucketRegionHeaderName] = locationResult.Value!.LocationConstraint;
+                        }
+                    }
+                    catch {
+                        // Region header is informational; don't fail HeadBucket if location lookup fails
+                    }
+
+                    return (IResult)TypedResults.Ok();
+                },
                 cancellationToken);
-            return result.IsSuccess
-                ? TypedResults.Ok()
-                : ToErrorResult(httpContext, result.Error, resourceOverride: BuildObjectResource(bucketName, null));
+            return result;
         }
         catch (EndpointStorageAuthorizationException exception) {
             return ToErrorResult(httpContext, exception.Error, resourceOverride: BuildObjectResource(bucketName, null));
@@ -2079,17 +2099,6 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
         }
 
         var requestRule = requestBody.Rules[0];
-        if (requestRule.BucketKeyEnabled == true) {
-            rule = null;
-            errorResult = ToErrorResult(
-                httpContext,
-                StatusCodes.Status501NotImplemented,
-                "NotImplemented",
-                "BucketKeyEnabled=true is not currently implemented for bucket default encryption requests.",
-                BuildObjectResource(bucketName, null),
-                bucketName);
-            return false;
-        }
 
         var rawAlgorithm = requestRule.DefaultEncryption.SseAlgorithm?.Trim();
         if (!TryNormalizeServerSideEncryptionAlgorithm(rawAlgorithm ?? string.Empty, out var algorithm)) {
@@ -2136,7 +2145,8 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
         rule = new BucketDefaultEncryptionRule
         {
             Algorithm = algorithm,
-            KeyId = keyId
+            KeyId = keyId,
+            BucketKeyEnabled = requestRule.BucketKeyEnabled == true
         };
         errorResult = null;
         return true;
@@ -2213,6 +2223,7 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
             "GET" when httpContext.Request.Query.ContainsKey(TaggingQueryParameterName) => await GetObjectTaggingAsync(resolvedRequest.BucketName, key, httpContext, requestContextAccessor, storageService, cancellationToken),
             "GET" when httpContext.Request.Query.ContainsKey(RetentionQueryParameterName) => await GetObjectRetentionAsync(resolvedRequest.BucketName, key, httpContext, requestContextAccessor, storageService, cancellationToken),
             "GET" when httpContext.Request.Query.ContainsKey(LegalHoldQueryParameterName) => await GetObjectLegalHoldAsync(resolvedRequest.BucketName, key, httpContext, requestContextAccessor, storageService, cancellationToken),
+            "GET" when httpContext.Request.Query.ContainsKey(AttributesQueryParameterName) => await GetObjectAttributesAsync(resolvedRequest.BucketName, key, httpContext, requestContextAccessor, storageService, cancellationToken),
             "GET" when TryGetMultipartUploadId(httpContext.Request, out _, out _) => await ListMultipartPartsAsync(resolvedRequest.BucketName, key, httpContext, requestContextAccessor, storageService, cancellationToken),
             "PUT" when httpContext.Request.Query.ContainsKey(AclQueryParameterName) => await PutObjectAclAsync(resolvedRequest.BucketName, key, httpContext, requestContextAccessor, cancellationToken),
             "PUT" when httpContext.Request.Query.ContainsKey(TaggingQueryParameterName) => await PutObjectTaggingAsync(resolvedRequest.BucketName, key, httpContext, requestContextAccessor, storageService, cancellationToken),
@@ -2495,6 +2506,66 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
         catch (EndpointStorageAuthorizationException exception) {
             return ToErrorResult(httpContext, exception.Error, resourceOverride: BuildObjectResource(bucketName, key));
         }
+    }
+
+    private static async Task<IResult> GetObjectAttributesAsync(
+        string bucketName,
+        string key,
+        HttpContext httpContext,
+        IIntegratedS3RequestContextAccessor requestContextAccessor,
+        IStorageService storageService,
+        CancellationToken cancellationToken)
+    {
+        try {
+            return await ExecuteWithRequestContextAsync(httpContext, requestContextAccessor, async innerCancellationToken => {
+                var objectAttributes = ParseObjectAttributes(httpContext.Request);
+                if (objectAttributes.Count == 0) {
+                    return ToErrorResult(httpContext, StatusCodes.Status400BadRequest, "InvalidArgument",
+                        "The x-amz-object-attributes header is required.",
+                        BuildObjectResource(bucketName, key), bucketName, key);
+                }
+
+                var versionId = ParseVersionId(httpContext.Request);
+
+                var result = await storageService.GetObjectAttributesAsync(new GetObjectAttributesRequest
+                {
+                    BucketName = bucketName,
+                    Key = key,
+                    VersionId = versionId,
+                    ObjectAttributes = objectAttributes
+                }, innerCancellationToken);
+
+                if (!result.IsSuccess) {
+                    return ToErrorResult(httpContext, result.Error, resourceOverride: BuildObjectResource(bucketName, key));
+                }
+
+                var response = result.Value ?? throw new InvalidOperationException("Object attributes were not returned.");
+                ApplyVersionIdHeader(httpContext.Response, response.VersionId);
+                if (response.IsDeleteMarker) {
+                    httpContext.Response.Headers[DeleteMarkerHeaderName] = "true";
+                }
+                if (response.LastModifiedUtc.HasValue) {
+                    httpContext.Response.Headers["Last-Modified"] = response.LastModifiedUtc.Value.ToString("R");
+                }
+
+                return new XmlContentResult(
+                    S3XmlResponseWriter.WriteGetObjectAttributesResponse(response),
+                    StatusCodes.Status200OK,
+                    XmlContentType);
+            }, cancellationToken);
+        }
+        catch (EndpointStorageAuthorizationException exception) {
+            return ToErrorResult(httpContext, exception.Error, resourceOverride: BuildObjectResource(bucketName, key));
+        }
+    }
+
+    private static List<string> ParseObjectAttributes(HttpRequest request)
+    {
+        var headerValue = request.Headers[ObjectAttributesHeaderName].ToString();
+        if (string.IsNullOrWhiteSpace(headerValue))
+            return [];
+
+        return headerValue.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList();
     }
 
     private static async Task<IResult> DeleteObjectTaggingAsync(
@@ -4526,6 +4597,7 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
         var isTaggingRequest = queryKeys.Contains(TaggingQueryParameterName) && queryKeys.IsSubsetOf(ObjectTaggingQueryParameters);
         var isRetentionRequest = queryKeys.Contains(RetentionQueryParameterName) && queryKeys.IsSubsetOf(ObjectRetentionQueryParameters);
         var isLegalHoldRequest = queryKeys.Contains(LegalHoldQueryParameterName) && queryKeys.IsSubsetOf(ObjectLegalHoldQueryParameters);
+        var isAttributesRequest = queryKeys.Contains(AttributesQueryParameterName) && queryKeys.IsSubsetOf(ObjectAttributesQueryParameters);
         var isRestoreRequest = queryKeys.Contains(RestoreQueryParameterName) && queryKeys.IsSubsetOf(ObjectRestoreQueryParameters);
         var isSelectRequest = queryKeys.Contains(SelectQueryParameterName) && queryKeys.IsSubsetOf(ObjectSelectQueryParameters);
         var isInitiateMultipartRequest = queryKeys.SetEquals(ObjectMultipartInitiateQueryParameters);
@@ -4547,7 +4619,7 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
         }
 
         switch (request.Method) {
-            case "GET" when isCurrentObjectRequest || isVersionedObjectRequest || isAclRequest || isTaggingRequest || isRetentionRequest || isLegalHoldRequest || isListMultipartPartsRequest:
+            case "GET" when isCurrentObjectRequest || isVersionedObjectRequest || isAclRequest || isTaggingRequest || isRetentionRequest || isLegalHoldRequest || isAttributesRequest || isListMultipartPartsRequest:
             case "PUT" when isCurrentObjectRequest || isAclRequest || isTaggingRequest || isRetentionRequest || isLegalHoldRequest || isUploadMultipartPartRequest:
             case "HEAD" when isCurrentObjectRequest || isVersionedObjectRequest:
             case "DELETE" when isCurrentObjectRequest || isVersionedObjectRequest || isTaggingRequest || isUploadScopedMultipartRequest:
@@ -7213,7 +7285,8 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
             {
                 SseAlgorithm = algorithm,
                 KmsMasterKeyId = string.IsNullOrWhiteSpace(rule.KeyId) ? null : rule.KeyId
-            }
+            },
+            BucketKeyEnabled = rule.BucketKeyEnabled ? true : null
         };
     }
 

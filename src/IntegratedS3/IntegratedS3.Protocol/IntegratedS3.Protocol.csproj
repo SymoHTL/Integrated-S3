@@ -2,4 +2,8 @@
   <PropertyGroup>
     <Description>S3-compatible protocol models and helpers for IntegratedS3.</Description>
   </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\IntegratedS3.Abstractions\IntegratedS3.Abstractions.csproj" />
+  </ItemGroup>
 </Project>

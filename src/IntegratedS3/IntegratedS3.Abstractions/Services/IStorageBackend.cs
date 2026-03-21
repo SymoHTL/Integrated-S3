@@ -108,6 +108,18 @@ public interface IStorageBackend
                 request.Key)));
     }
 
+    ValueTask<StorageResult<GetObjectAttributesResponse>> GetObjectAttributesAsync(GetObjectAttributesRequest request, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        cancellationToken.ThrowIfCancellationRequested();
+
+        return ValueTask.FromResult(StorageResult<GetObjectAttributesResponse>.Failure(
+            StorageError.Unsupported(
+                "GetObjectAttributes is not supported by this storage backend.",
+                request.BucketName,
+                request.Key)));
+    }
+
     ValueTask<StorageResult<ObjectTagSet>> GetObjectTagsAsync(GetObjectTagsRequest request, CancellationToken cancellationToken = default);
 
     ValueTask<StorageResult<ObjectInfo>> CopyObjectAsync(CopyObjectRequest request, CancellationToken cancellationToken = default);

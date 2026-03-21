@@ -209,6 +209,17 @@ internal sealed class AuthorizingStorageService(
         }, innerCancellationToken => inner.GetObjectLegalHoldAsync(request, innerCancellationToken), cancellationToken);
     }
 
+    public ValueTask<StorageResult<GetObjectAttributesResponse>> GetObjectAttributesAsync(GetObjectAttributesRequest request, CancellationToken cancellationToken = default)
+    {
+        return ExecuteAuthorizedAsync(new StorageAuthorizationRequest
+        {
+            Operation = StorageOperationType.GetObjectAttributes,
+            BucketName = request.BucketName,
+            Key = request.Key,
+            VersionId = request.VersionId
+        }, innerCancellationToken => inner.GetObjectAttributesAsync(request, innerCancellationToken), cancellationToken);
+    }
+
     public ValueTask<StorageResult<ObjectTagSet>> GetObjectTagsAsync(GetObjectTagsRequest request, CancellationToken cancellationToken = default)
     {
         return ExecuteAuthorizedAsync(new StorageAuthorizationRequest

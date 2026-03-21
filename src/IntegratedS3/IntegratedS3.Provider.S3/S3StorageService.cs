@@ -1300,6 +1300,19 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
         }
     }
 
+    public async ValueTask<StorageResult<GetObjectAttributesResponse>> GetObjectAttributesAsync(GetObjectAttributesRequest request, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var response = await _client.GetObjectAttributesAsync(request, cancellationToken).ConfigureAwait(false);
+            return StorageResult<GetObjectAttributesResponse>.Success(response);
+        }
+        catch (AmazonS3Exception ex)
+        {
+            return StorageResult<GetObjectAttributesResponse>.Failure(S3ErrorTranslator.Translate(ex, Name, request.BucketName, request.Key));
+        }
+    }
+
     public async ValueTask<StorageResult<ObjectInfo>> PutObjectAsync(PutObjectRequest request, CancellationToken cancellationToken = default)
     {
         try

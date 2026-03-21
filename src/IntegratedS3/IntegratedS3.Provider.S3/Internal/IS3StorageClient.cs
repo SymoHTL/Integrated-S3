@@ -1,5 +1,6 @@
 using IntegratedS3.Abstractions.Models;
 using IntegratedS3.Abstractions.Requests;
+using IntegratedS3.Abstractions.Responses;
 
 namespace IntegratedS3.Provider.S3.Internal;
 
@@ -94,6 +95,11 @@ internal interface IS3StorageClient : IDisposable
         string key,
         string? versionId,
         CancellationToken cancellationToken = default);
+
+    Task<GetObjectAttributesResponse> GetObjectAttributesAsync(
+        GetObjectAttributesRequest request,
+        CancellationToken cancellationToken = default)
+        => Task.FromException<GetObjectAttributesResponse>(new NotSupportedException("GetObjectAttributes is not supported."));
 
     Task<S3ObjectEntry> PutObjectAsync(
         string bucketName,

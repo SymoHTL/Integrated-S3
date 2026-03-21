@@ -31,6 +31,7 @@ A large implementation wave landed 13 bucket configuration subresource families,
 - `SelectObjectContent` (`POST ?select`) — S3 passthrough, disk unsupported
 - `RestoreObject` (`POST ?restore`) — S3 passthrough, disk unsupported
 - `PostObject` (browser form upload with policy validation)
+- `GetObjectAttributes` (`GET ?attributes`) — full stack: Abstractions request/response types, `StorageOperationType.GetObjectAttributes`, `IStorageBackend`/`IStorageService` contracts, Core orchestration + auth, Disk provider (delegates to HeadObject and filters by requested attributes), S3 provider (AWS SDK `GetObjectAttributesAsync`), Protocol XML writer (`GetObjectAttributesResponse`), HTTP endpoint with `x-amz-object-attributes` header parsing, S3ActionMapping + IsObjectLevelOperation, test fakes
 
 **Protocol/HTTP Improvements:**
 - Storage Class Headers (`x-amz-storage-class` on PUT/COPY/InitiateMultipart)

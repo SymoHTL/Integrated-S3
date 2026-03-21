@@ -84,4 +84,5 @@ public enum StorageOperationType
     SelectObjectContent,
     RestoreObject,
     PostObject,
+    GetObjectAttributes,
 }

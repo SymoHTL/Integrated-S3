@@ -1229,7 +1229,7 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
     }
 
     [Fact]
-    public async Task S3CompatibleBucketDefaultEncryption_WithBucketKeyEnabledTrue_ReturnsNotImplemented()
+    public async Task S3CompatibleBucketDefaultEncryption_WithBucketKeyEnabledTrue_Succeeds()
     {
         var storageService = new RecordingStorageService();
         await using var isolatedClient = await CreateStorageServiceIsolatedClientAsync(storageService);
@@ -1252,8 +1252,19 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
 
         var response = await client.SendAsync(putRequest);
 
-        await AssertNotImplementedResponseAsync(response);
-        Assert.Null(storageService.LastPutBucketDefaultEncryptionRequest);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var putDefaultEncryption = storageService.LastPutBucketDefaultEncryptionRequest
+            ?? throw new Xunit.Sdk.XunitException("Expected bucket default encryption request to reach the storage service.");
+        Assert.Equal(ObjectServerSideEncryptionAlgorithm.Kms, putDefaultEncryption.Rule.Algorithm);
+        Assert.Equal("alias/default-key", putDefaultEncryption.Rule.KeyId);
+        Assert.True(putDefaultEncryption.Rule.BucketKeyEnabled);
+
+        var getResponse = await client.GetAsync("/integrated-s3/encryption-bucket-key-bucket?encryption");
+        Assert.Equal(HttpStatusCode.OK, getResponse.StatusCode);
+
+        var document = XDocument.Parse(await getResponse.Content.ReadAsStringAsync());
+        var rule = Assert.Single(document.Root!.Elements(S3Ns + "Rule"));
+        Assert.Equal("true", rule.Element(S3Ns + "BucketKeyEnabled")?.Value);
     }
 
     [Fact]
@@ -8727,7 +8738,11 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
 
         public ObjectLegalHoldInfo? GetObjectLegalHoldResult { get; set; }
 
-        public RestoreObjectResponse RestoreObjectResult { get; set; } = new()
+        public GetObjectAttributesRequest? LastGetObjectAttributesRequest { get; private set; }
+
+        public GetObjectAttributesResponse? GetObjectAttributesResult { get; set; }
+
+        public RestoreObjectResponse RestoreObjectResult{ get; set; } = new()
         {
             IsAlreadyRestored = false
         };
@@ -8834,6 +8849,14 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
         }
 
         public ValueTask<StorageResult<ObjectTagSet>> GetObjectTagsAsync(GetObjectTagsRequest request, CancellationToken cancellationToken = default) => throw new NotSupportedException();
+
+        public ValueTask<StorageResult<GetObjectAttributesResponse>> GetObjectAttributesAsync(GetObjectAttributesRequest request, CancellationToken cancellationToken = default)
+        {
+            LastGetObjectAttributesRequest = request;
+
+            return new ValueTask<StorageResult<GetObjectAttributesResponse>>(StorageResult<GetObjectAttributesResponse>.Success(
+                GetObjectAttributesResult ?? new GetObjectAttributesResponse()));
+        }
 
         public ValueTask<StorageResult<ObjectInfo>> CopyObjectAsync(CopyObjectRequest request, CancellationToken cancellationToken = default)
         {
@@ -9053,7 +9076,8 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
             return new BucketDefaultEncryptionRule
             {
                 Algorithm = rule.Algorithm,
-                KeyId = rule.KeyId
+                KeyId = rule.KeyId,
+                BucketKeyEnabled = rule.BucketKeyEnabled
             };
         }
 

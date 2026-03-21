@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Text;
 using System.Xml;
+using IntegratedS3.Abstractions.Responses;
 
 namespace IntegratedS3.Protocol;
 
@@ -770,6 +771,96 @@ public static class S3XmlResponseWriter
         xmlWriter.Flush();
 
         return InjectS3Namespace(builder, "LegalHold");
+    }
+
+    public static string WriteGetObjectAttributesResponse(GetObjectAttributesResponse response)
+    {
+        ArgumentNullException.ThrowIfNull(response);
+
+        var builder = new StringBuilder();
+        using var stringWriter = new StringWriter(builder, CultureInfo.InvariantCulture);
+        using var xmlWriter = XmlWriter.Create(stringWriter, CreateSettings());
+
+        xmlWriter.WriteStartDocument();
+        xmlWriter.WriteStartElement("GetObjectAttributesResponse");
+
+        if (response.ETag is not null)
+        {
+            xmlWriter.WriteElementString("ETag", response.ETag);
+        }
+
+        if (response.Checksums is { Count: > 0 })
+        {
+            xmlWriter.WriteStartElement("Checksum");
+            foreach (var (algo, value) in response.Checksums)
+            {
+                var elementName = algo.ToLowerInvariant() switch
+                {
+                    "crc32" => "ChecksumCRC32",
+                    "crc32c" => "ChecksumCRC32C",
+                    "sha1" => "ChecksumSHA1",
+                    "sha256" => "ChecksumSHA256",
+                    "crc64nvme" => "ChecksumCRC64NVME",
+                    _ => null
+                };
+                if (elementName is not null)
+                {
+                    xmlWriter.WriteElementString(elementName, value);
+                }
+            }
+            xmlWriter.WriteEndElement();
+        }
+
+        if (response.ObjectParts is not null)
+        {
+            xmlWriter.WriteStartElement("ObjectParts");
+            xmlWriter.WriteElementString("TotalPartsCount", response.ObjectParts.TotalPartsCount.ToString(CultureInfo.InvariantCulture));
+            if (response.ObjectParts.PartNumberMarker.HasValue)
+                xmlWriter.WriteElementString("PartNumberMarker", response.ObjectParts.PartNumberMarker.Value.ToString(CultureInfo.InvariantCulture));
+            if (response.ObjectParts.NextPartNumberMarker.HasValue)
+                xmlWriter.WriteElementString("NextPartNumberMarker", response.ObjectParts.NextPartNumberMarker.Value.ToString(CultureInfo.InvariantCulture));
+            if (response.ObjectParts.MaxParts.HasValue)
+                xmlWriter.WriteElementString("MaxParts", response.ObjectParts.MaxParts.Value.ToString(CultureInfo.InvariantCulture));
+            xmlWriter.WriteElementString("IsTruncated", response.ObjectParts.IsTruncated ? "true" : "false");
+
+            if (response.ObjectParts.Parts is { Count: > 0 })
+            {
+                foreach (var part in response.ObjectParts.Parts)
+                {
+                    xmlWriter.WriteStartElement("Part");
+                    xmlWriter.WriteElementString("PartNumber", part.PartNumber.ToString(CultureInfo.InvariantCulture));
+                    xmlWriter.WriteElementString("Size", part.Size.ToString(CultureInfo.InvariantCulture));
+                    if (part.ChecksumCrc32 is not null)
+                        xmlWriter.WriteElementString("ChecksumCRC32", part.ChecksumCrc32);
+                    if (part.ChecksumCrc32C is not null)
+                        xmlWriter.WriteElementString("ChecksumCRC32C", part.ChecksumCrc32C);
+                    if (part.ChecksumSha1 is not null)
+                        xmlWriter.WriteElementString("ChecksumSHA1", part.ChecksumSha1);
+                    if (part.ChecksumSha256 is not null)
+                        xmlWriter.WriteElementString("ChecksumSHA256", part.ChecksumSha256);
+                    if (part.ChecksumCrc64Nvme is not null)
+                        xmlWriter.WriteElementString("ChecksumCRC64NVME", part.ChecksumCrc64Nvme);
+                    xmlWriter.WriteEndElement();
+                }
+            }
+            xmlWriter.WriteEndElement();
+        }
+
+        if (response.StorageClass is not null)
+        {
+            xmlWriter.WriteElementString("StorageClass", response.StorageClass);
+        }
+
+        if (response.ObjectSize.HasValue)
+        {
+            xmlWriter.WriteElementString("ObjectSize", response.ObjectSize.Value.ToString(CultureInfo.InvariantCulture));
+        }
+
+        xmlWriter.WriteEndElement();
+        xmlWriter.WriteEndDocument();
+        xmlWriter.Flush();
+
+        return InjectS3Namespace(builder, "GetObjectAttributesResponse");
     }
 
     public static string WriteAccessControlPolicy(S3AccessControlPolicy response)

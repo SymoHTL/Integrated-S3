@@ -1,10 +1,12 @@
 using System.Net;
+using System.Text;
 using Amazon.Runtime;
 using Amazon.S3;
 using IntegratedS3.Abstractions.Capabilities;
 using IntegratedS3.Abstractions.Errors;
 using IntegratedS3.Abstractions.Models;
 using IntegratedS3.Abstractions.Requests;
+using IntegratedS3.Abstractions.Responses;
 using IntegratedS3.Abstractions.Services;
 using IntegratedS3.AspNetCore.DependencyInjection;
 using IntegratedS3.Core.DependencyInjection;
@@ -769,6 +771,255 @@ public sealed class S3StorageServiceTests
         Assert.True(result.IsSuccess);
         Assert.Equal("v4", result.Value!.VersionId);
         Assert.Equal(ObjectLegalHoldStatus.On, result.Value.Status);
+    }
+
+    [Fact]
+    public async Task GetBucketTaggingAsync_ReturnsTags_WhenProviderSupportsBucketTagging()
+    {
+        var fake = new FakeS3Client
+        {
+            BucketTaggingResult = new BucketTaggingConfiguration
+            {
+                BucketName = "b",
+                Tags = new Dictionary<string, string>(StringComparer.Ordinal)
+                {
+                    ["environment"] = "prod"
+                }
+            }
+        };
+
+        var svc = BuildService(fake);
+        var result = await svc.GetBucketTaggingAsync("b");
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal("prod", result.Value!.Tags["environment"]);
+    }
+
+    [Fact]
+    public async Task DeleteBucketTaggingAsync_DeletesTags_WhenProviderSupportsBucketTagging()
+    {
+        var fake = new FakeS3Client
+        {
+            BucketTaggingResult = new BucketTaggingConfiguration
+            {
+                BucketName = "b",
+                Tags = new Dictionary<string, string>(StringComparer.Ordinal)
+                {
+                    ["environment"] = "test"
+                }
+            }
+        };
+
+        var svc = BuildService(fake);
+        var result = await svc.DeleteBucketTaggingAsync(new DeleteBucketTaggingRequest
+        {
+            BucketName = "b"
+        });
+
+        Assert.True(result.IsSuccess);
+        Assert.True(fake.DeleteBucketTaggingCalled);
+        Assert.Empty(fake.BucketTaggingResult!.Tags);
+    }
+
+    [Fact]
+    public async Task PutBucketWebsiteAsync_ReturnsWebsiteConfiguration_WithRedirectProtocol()
+    {
+        var request = new PutBucketWebsiteRequest
+        {
+            BucketName = "b",
+            IndexDocumentSuffix = "index.html",
+            ErrorDocumentKey = "error.html",
+            RedirectAllRequestsTo = new BucketWebsiteRedirectAllRequestsTo
+            {
+                HostName = "www.example.com",
+                Protocol = "https"
+            },
+            RoutingRules =
+            [
+                new BucketWebsiteRoutingRule
+                {
+                    Condition = new BucketWebsiteRoutingRuleCondition
+                    {
+                        KeyPrefixEquals = "docs/"
+                    },
+                    Redirect = new BucketWebsiteRoutingRuleRedirect
+                    {
+                        HostName = "cdn.example.com",
+                        Protocol = "https",
+                        ReplaceKeyPrefixWith = "public/"
+                    }
+                }
+            ]
+        };
+
+        var fake = new FakeS3Client();
+        var svc = BuildService(fake);
+        var result = await svc.PutBucketWebsiteAsync(request);
+
+        Assert.True(result.IsSuccess);
+        Assert.NotNull(fake.LastPutBucketWebsiteRequest);
+        Assert.Equal("https", fake.LastPutBucketWebsiteRequest!.RedirectAllRequestsTo!.Protocol);
+        Assert.Equal("https", result.Value!.RedirectAllRequestsTo!.Protocol);
+        Assert.Equal("public/", result.Value.RoutingRules[0].Redirect.ReplaceKeyPrefixWith);
+    }
+
+    [Fact]
+    public async Task PutBucketLifecycleAsync_ReturnsLifecycleConfiguration_WithDateBasedRules()
+    {
+        var expirationDate = DateTimeOffset.Parse("2031-02-03T04:05:06Z");
+        var transitionDate = DateTimeOffset.Parse("2031-03-04T05:06:07Z");
+        var request = new PutBucketLifecycleRequest
+        {
+            BucketName = "b",
+            Rules =
+            [
+                new BucketLifecycleRule
+                {
+                    Id = "archive-rule",
+                    FilterPrefix = "logs/",
+                    Status = BucketLifecycleRuleStatus.Enabled,
+                    ExpirationDate = expirationDate,
+                    Transitions =
+                    [
+                        new BucketLifecycleTransition
+                        {
+                            Date = transitionDate,
+                            StorageClass = "GLACIER"
+                        }
+                    ]
+                }
+            ]
+        };
+
+        var fake = new FakeS3Client();
+        var svc = BuildService(fake);
+        var result = await svc.PutBucketLifecycleAsync(request);
+
+        Assert.True(result.IsSuccess);
+        Assert.NotNull(fake.LastPutBucketLifecycleRequest);
+        Assert.Equal(expirationDate, fake.LastPutBucketLifecycleRequest!.Rules[0].ExpirationDate);
+        Assert.Equal(transitionDate, result.Value!.Rules[0].Transitions[0].Date);
+        Assert.Equal("GLACIER", result.Value.Rules[0].Transitions[0].StorageClass);
+    }
+
+    [Fact]
+    public async Task PutObjectRetentionAsync_ReturnsRetentionMetadata_WhenProviderSupportsObjectLockWrites()
+    {
+        var retainUntilDateUtc = DateTimeOffset.Parse("2034-05-06T07:08:09Z");
+        var fake = new FakeS3Client
+        {
+            PutObjectRetentionResult = new ObjectRetentionInfo
+            {
+                BucketName = "b",
+                Key = "k",
+                VersionId = "v5",
+                Mode = ObjectRetentionMode.Compliance,
+                RetainUntilDateUtc = retainUntilDateUtc
+            }
+        };
+
+        var svc = BuildService(fake);
+        var result = await svc.PutObjectRetentionAsync(new PutObjectRetentionRequest
+        {
+            BucketName = "b",
+            Key = "k",
+            VersionId = "v5",
+            Mode = ObjectRetentionMode.Compliance,
+            RetainUntilDateUtc = retainUntilDateUtc,
+            BypassGovernanceRetention = true
+        });
+
+        Assert.True(result.IsSuccess);
+        Assert.NotNull(fake.LastPutObjectRetentionRequest);
+        Assert.True(fake.LastPutObjectRetentionRequest!.BypassGovernanceRetention);
+        Assert.Equal(ObjectRetentionMode.Compliance, result.Value!.Mode);
+        Assert.Equal(retainUntilDateUtc, result.Value.RetainUntilDateUtc);
+    }
+
+    [Fact]
+    public async Task PutObjectLegalHoldAsync_ReturnsLegalHoldMetadata_WhenProviderSupportsObjectLockWrites()
+    {
+        var fake = new FakeS3Client
+        {
+            PutObjectLegalHoldResult = new ObjectLegalHoldInfo
+            {
+                BucketName = "b",
+                Key = "k",
+                VersionId = "v6",
+                Status = ObjectLegalHoldStatus.Off
+            }
+        };
+
+        var svc = BuildService(fake);
+        var result = await svc.PutObjectLegalHoldAsync(new PutObjectLegalHoldRequest
+        {
+            BucketName = "b",
+            Key = "k",
+            VersionId = "v6",
+            Status = ObjectLegalHoldStatus.Off
+        });
+
+        Assert.True(result.IsSuccess);
+        Assert.NotNull(fake.LastPutObjectLegalHoldRequest);
+        Assert.Equal(ObjectLegalHoldStatus.Off, fake.LastPutObjectLegalHoldRequest!.Status);
+        Assert.Equal(ObjectLegalHoldStatus.Off, result.Value!.Status);
+    }
+
+    [Fact]
+    public async Task RestoreObjectAsync_ReturnsProviderResponse_WhenRestoreSucceeds()
+    {
+        var fake = new FakeS3Client
+        {
+            RestoreObjectResult = new S3RestoreObjectResult(
+                IsAlreadyRestored: true,
+                RestoreOutputPath: "s3://restored/archive.zip")
+        };
+
+        var svc = BuildService(fake);
+        var result = await svc.RestoreObjectAsync(new RestoreObjectRequest
+        {
+            BucketName = "b",
+            Key = "archive.zip",
+            Days = 7,
+            GlacierTier = "Bulk"
+        });
+
+        Assert.True(result.IsSuccess);
+        Assert.NotNull(fake.LastRestoreObjectRequest);
+        Assert.Equal("Bulk", fake.LastRestoreObjectRequest!.GlacierTier);
+        Assert.True(result.Value!.IsAlreadyRestored);
+        Assert.Equal("s3://restored/archive.zip", result.Value.RestoreOutputPath);
+    }
+
+    [Fact]
+    public async Task SelectObjectContentAsync_ReturnsProviderStream_WhenSelectionSucceeds()
+    {
+        var fake = new FakeS3Client
+        {
+            SelectObjectContentResult = new S3SelectObjectContentResult(
+                new MemoryStream(Encoding.UTF8.GetBytes("{\"name\":\"copilot\"}")),
+                "application/json")
+        };
+
+        var svc = BuildService(fake);
+        var result = await svc.SelectObjectContentAsync(new SelectObjectContentRequest
+        {
+            BucketName = "b",
+            Key = "people.json",
+            Expression = "SELECT * FROM S3Object",
+            ExpressionType = "SQL",
+            InputSerializationJson = "Document",
+            OutputSerializationJson = "Lines"
+        });
+
+        Assert.True(result.IsSuccess);
+        Assert.NotNull(fake.LastSelectObjectContentRequest);
+        Assert.Equal("SELECT * FROM S3Object", fake.LastSelectObjectContentRequest!.Expression);
+
+        await using var response = result.Value!;
+        using var reader = new StreamReader(response.EventStream, Encoding.UTF8, leaveOpen: true);
+        Assert.Equal("{\"name\":\"copilot\"}", await reader.ReadToEndAsync());
+        Assert.Equal("application/json", response.ContentType);
     }
 
     [Fact]
@@ -2404,8 +2655,23 @@ internal sealed class FakeS3Client : IS3StorageClient
     // Get object
     public S3GetObjectResult? GetObjectResult { get; set; }
     public AmazonS3Exception? GetObjectException { get; set; }
+    public BucketTaggingConfiguration? BucketTaggingResult { get; set; }
+    public bool DeleteBucketTaggingCalled { get; private set; }
+    public PutBucketTaggingRequest? LastPutBucketTaggingRequest { get; private set; }
+    public BucketWebsiteConfiguration? BucketWebsiteResult { get; set; }
+    public PutBucketWebsiteRequest? LastPutBucketWebsiteRequest { get; private set; }
+    public BucketLifecycleConfiguration? BucketLifecycleResult { get; set; }
+    public PutBucketLifecycleRequest? LastPutBucketLifecycleRequest { get; private set; }
     public ObjectRetentionInfo? ObjectRetentionResult { get; set; }
     public ObjectLegalHoldInfo? ObjectLegalHoldResult { get; set; }
+    public ObjectRetentionInfo? PutObjectRetentionResult { get; set; }
+    public PutObjectRetentionRequest? LastPutObjectRetentionRequest { get; private set; }
+    public ObjectLegalHoldInfo? PutObjectLegalHoldResult { get; set; }
+    public PutObjectLegalHoldRequest? LastPutObjectLegalHoldRequest { get; private set; }
+    public S3RestoreObjectResult? RestoreObjectResult { get; set; }
+    public RestoreObjectRequest? LastRestoreObjectRequest { get; private set; }
+    public S3SelectObjectContentResult? SelectObjectContentResult { get; set; }
+    public SelectObjectContentRequest? LastSelectObjectContentRequest { get; private set; }
 
     // Put object
     public S3ObjectEntry? PutObjectResult { get; set; }
@@ -2675,6 +2941,110 @@ internal sealed class FakeS3Client : IS3StorageClient
         });
     }
 
+    public Task<GetObjectAttributesResponse> GetObjectAttributesAsync(GetObjectAttributesRequest request, CancellationToken cancellationToken = default)
+    {
+        return Task.FromResult(GetObjectAttributesResult ?? new GetObjectAttributesResponse());
+    }
+
+    public GetObjectAttributesResponse? GetObjectAttributesResult { get; set; }
+
+    public Task<BucketTaggingConfiguration> GetBucketTaggingAsync(string bucketName, CancellationToken cancellationToken = default)
+        => Task.FromResult(BucketTaggingResult ?? new BucketTaggingConfiguration
+        {
+            BucketName = bucketName
+        });
+
+    public Task<BucketTaggingConfiguration> PutBucketTaggingAsync(PutBucketTaggingRequest request, CancellationToken cancellationToken = default)
+    {
+        LastPutBucketTaggingRequest = request;
+        BucketTaggingResult = BucketTaggingResult ?? new BucketTaggingConfiguration
+        {
+            BucketName = request.BucketName,
+            Tags = new Dictionary<string, string>(request.Tags, StringComparer.Ordinal)
+        };
+
+        return Task.FromResult(BucketTaggingResult);
+    }
+
+    public Task DeleteBucketTaggingAsync(string bucketName, CancellationToken cancellationToken = default)
+    {
+        DeleteBucketTaggingCalled = true;
+        BucketTaggingResult = new BucketTaggingConfiguration
+        {
+            BucketName = bucketName
+        };
+
+        return Task.CompletedTask;
+    }
+
+    public Task<BucketWebsiteConfiguration> PutBucketWebsiteAsync(PutBucketWebsiteRequest request, CancellationToken cancellationToken = default)
+    {
+        LastPutBucketWebsiteRequest = request;
+        BucketWebsiteResult = BucketWebsiteResult ?? new BucketWebsiteConfiguration
+        {
+            BucketName = request.BucketName,
+            IndexDocumentSuffix = request.IndexDocumentSuffix,
+            ErrorDocumentKey = request.ErrorDocumentKey,
+            RedirectAllRequestsTo = request.RedirectAllRequestsTo,
+            RoutingRules = request.RoutingRules
+        };
+
+        return Task.FromResult(BucketWebsiteResult);
+    }
+
+    public Task<BucketLifecycleConfiguration> PutBucketLifecycleAsync(PutBucketLifecycleRequest request, CancellationToken cancellationToken = default)
+    {
+        LastPutBucketLifecycleRequest = request;
+        BucketLifecycleResult = BucketLifecycleResult ?? new BucketLifecycleConfiguration
+        {
+            BucketName = request.BucketName,
+            Rules = request.Rules
+        };
+
+        return Task.FromResult(BucketLifecycleResult);
+    }
+
+    public Task<ObjectRetentionInfo> PutObjectRetentionAsync(PutObjectRetentionRequest request, CancellationToken cancellationToken = default)
+    {
+        LastPutObjectRetentionRequest = request;
+        return Task.FromResult(PutObjectRetentionResult ?? new ObjectRetentionInfo
+        {
+            BucketName = request.BucketName,
+            Key = request.Key,
+            VersionId = request.VersionId,
+            Mode = request.Mode,
+            RetainUntilDateUtc = request.RetainUntilDateUtc
+        });
+    }
+
+    public Task<ObjectLegalHoldInfo> PutObjectLegalHoldAsync(PutObjectLegalHoldRequest request, CancellationToken cancellationToken = default)
+    {
+        LastPutObjectLegalHoldRequest = request;
+        return Task.FromResult(PutObjectLegalHoldResult ?? new ObjectLegalHoldInfo
+        {
+            BucketName = request.BucketName,
+            Key = request.Key,
+            VersionId = request.VersionId,
+            Status = request.Status
+        });
+    }
+
+    public Task<S3RestoreObjectResult> RestoreObjectAsync(RestoreObjectRequest request, CancellationToken cancellationToken = default)
+    {
+        LastRestoreObjectRequest = request;
+        return Task.FromResult(RestoreObjectResult ?? new S3RestoreObjectResult(
+            IsAlreadyRestored: false,
+            RestoreOutputPath: null));
+    }
+
+    public Task<S3SelectObjectContentResult> SelectObjectContentAsync(SelectObjectContentRequest request, CancellationToken cancellationToken = default)
+    {
+        LastSelectObjectContentRequest = request;
+        return Task.FromResult(SelectObjectContentResult ?? new S3SelectObjectContentResult(
+            EventStream: new MemoryStream(),
+            ContentType: "application/octet-stream"));
+    }
+
     public Task<S3ObjectEntry> PutObjectAsync(
         string bucketName,
         string key,
@@ -2691,6 +3061,9 @@ internal sealed class FakeS3Client : IS3StorageClient
         IReadOnlyDictionary<string, string>? checksums,
         ObjectServerSideEncryptionSettings? serverSideEncryption,
         ObjectCustomerEncryptionSettings? customerEncryption,
+        string? storageClass,
+        string? ifMatchETag,
+        string? ifNoneMatchETag,
         CancellationToken cancellationToken = default)
     {
         if (PutObjectException is not null) throw PutObjectException;
@@ -2759,6 +3132,7 @@ internal sealed class FakeS3Client : IS3StorageClient
         ObjectServerSideEncryptionSettings? destinationServerSideEncryption,
         ObjectCustomerEncryptionSettings? sourceCustomerEncryption,
         ObjectCustomerEncryptionSettings? destinationCustomerEncryption,
+        string? storageClass,
         CancellationToken cancellationToken = default)
     {
         if (CopyObjectException is not null) throw CopyObjectException;
@@ -2809,6 +3183,7 @@ internal sealed class FakeS3Client : IS3StorageClient
         string? checksumAlgorithm,
         ObjectServerSideEncryptionSettings? serverSideEncryption,
         ObjectCustomerEncryptionSettings? customerEncryption,
+        string? storageClass,
         CancellationToken cancellationToken = default)
     {
         if (InitiateMultipartUploadException is not null) throw InitiateMultipartUploadException;

@@ -2705,6 +2705,35 @@ internal sealed class DiskStorageService(
         return StorageResult.Success();
     }
 
+    public async ValueTask<StorageResult<GetObjectAttributesResponse>> GetObjectAttributesAsync(GetObjectAttributesRequest request, CancellationToken cancellationToken = default)
+    {
+        var headResult = await HeadObjectAsync(new HeadObjectRequest
+        {
+            BucketName = request.BucketName,
+            Key = request.Key,
+            VersionId = request.VersionId
+        }, cancellationToken);
+
+        if (!headResult.IsSuccess)
+            return StorageResult<GetObjectAttributesResponse>.Failure(headResult.Error!);
+
+        var obj = headResult.Value!;
+        var attrs = request.ObjectAttributes;
+
+        var response = new GetObjectAttributesResponse
+        {
+            VersionId = obj.VersionId,
+            IsDeleteMarker = obj.IsDeleteMarker,
+            LastModifiedUtc = obj.LastModifiedUtc,
+            ETag = attrs.Any(a => string.Equals(a, "ETag", StringComparison.OrdinalIgnoreCase)) ? obj.ETag : null,
+            ObjectSize = attrs.Any(a => string.Equals(a, "ObjectSize", StringComparison.OrdinalIgnoreCase)) ? obj.ContentLength : null,
+            StorageClass = attrs.Any(a => string.Equals(a, "StorageClass", StringComparison.OrdinalIgnoreCase)) ? "STANDARD" : null,
+            Checksums = attrs.Any(a => string.Equals(a, "Checksum", StringComparison.OrdinalIgnoreCase)) ? obj.Checksums : null,
+        };
+
+        return StorageResult<GetObjectAttributesResponse>.Success(response);
+    }
+
     public async ValueTask<StorageResult<ObjectInfo>> HeadObjectAsync(HeadObjectRequest request, CancellationToken cancellationToken = default)
     {
         var serverSideEncryptionError = GetUnsupportedServerSideEncryptionError(
