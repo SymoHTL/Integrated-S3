@@ -8,10 +8,11 @@ using IntegratedS3.Abstractions.Responses;
 using IntegratedS3.Abstractions.Results;
 using IntegratedS3.Abstractions.Services;
 using IntegratedS3.Provider.S3.Internal;
+using Microsoft.Extensions.Logging;
 
 namespace IntegratedS3.Provider.S3;
 
-internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClient client) : IStorageBackend
+internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClient client, ILogger<S3StorageService>? logger = null) : IStorageBackend
 {
     private readonly IS3StorageClient _client = client;
     public string Name => options.ProviderName;
@@ -1162,6 +1163,8 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
 
     public async ValueTask<StorageResult<ObjectInfo>> HeadObjectAsync(HeadObjectRequest request, CancellationToken cancellationToken = default)
     {
+        logger?.LogDebug("S3 provider routing HeadObject for {BucketName}/{Key}", request.BucketName, request.Key);
+
         var serverSideEncryptionError = ValidateReadServerSideEncryptionRequest(request.ServerSideEncryption, request.BucketName, request.Key, "HEAD");
         if (serverSideEncryptionError is not null)
             return StorageResult<ObjectInfo>.Failure(serverSideEncryptionError);
@@ -1197,6 +1200,8 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
 
     public async ValueTask<StorageResult<GetObjectResponse>> GetObjectAsync(GetObjectRequest request, CancellationToken cancellationToken = default)
     {
+        logger?.LogDebug("S3 provider routing GetObject for {BucketName}/{Key}", request.BucketName, request.Key);
+
         var serverSideEncryptionError = ValidateReadServerSideEncryptionRequest(request.ServerSideEncryption, request.BucketName, request.Key, "GET");
         if (serverSideEncryptionError is not null)
             return StorageResult<GetObjectResponse>.Failure(serverSideEncryptionError);
@@ -1315,6 +1320,8 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
 
     public async ValueTask<StorageResult<ObjectInfo>> PutObjectAsync(PutObjectRequest request, CancellationToken cancellationToken = default)
     {
+        logger?.LogDebug("S3 provider routing PutObject for {BucketName}/{Key}", request.BucketName, request.Key);
+
         try
         {
             var serverSideEncryption = request.CustomerEncryption is not null
@@ -1362,6 +1369,8 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
 
     public async ValueTask<StorageResult<DeleteObjectResult>> DeleteObjectAsync(DeleteObjectRequest request, CancellationToken cancellationToken = default)
     {
+        logger?.LogDebug("S3 provider routing DeleteObject for {BucketName}/{Key}", request.BucketName, request.Key);
+
         try
         {
             var result = await _client.DeleteObjectAsync(request.BucketName, request.Key, request.VersionId, cancellationToken).ConfigureAwait(false);
@@ -1448,6 +1457,7 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
     public async ValueTask<StorageResult<ObjectInfo>> CopyObjectAsync(CopyObjectRequest request, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(request);
+        logger?.LogDebug("S3 provider routing CopyObject for {BucketName}/{Key}", request.DestinationBucketName, request.DestinationKey);
 
         var sourceServerSideEncryptionError = ValidateCopySourceServerSideEncryptionRequest(
             request.SourceServerSideEncryption,

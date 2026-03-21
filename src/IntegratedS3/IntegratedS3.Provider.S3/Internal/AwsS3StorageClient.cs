@@ -1,9 +1,11 @@
+using System.Diagnostics;
 using Amazon;
 using Amazon.Runtime;
 using Amazon.Runtime.Internal;
 using Amazon.S3;
 using Amazon.S3.Model;
 using IntegratedS3.Abstractions.Models;
+using Microsoft.Extensions.Logging;
 using System.Globalization;
 using PutBucketDefaultEncryptionStorageRequest = IntegratedS3.Abstractions.Requests.PutBucketDefaultEncryptionRequest;
 using UploadPartCopyStorageRequest = IntegratedS3.Abstractions.Requests.UploadPartCopyRequest;
@@ -36,11 +38,13 @@ internal sealed class AwsS3StorageClient : IS3StorageClient
 {
     private readonly IAmazonS3 _s3;
     private readonly Uri? _serviceUri;
+    private readonly ILogger<AwsS3StorageClient>? _logger;
 
-    public AwsS3StorageClient(S3StorageOptions options)
+    public AwsS3StorageClient(S3StorageOptions options, ILogger<AwsS3StorageClient>? logger = null)
     {
         ArgumentNullException.ThrowIfNull(options);
 
+        _logger = logger;
         _serviceUri = TryCreateAbsoluteUri(options.ServiceUrl);
         var config = CreateConfig(options);
         _s3 = !string.IsNullOrWhiteSpace(options.AccessKey) && !string.IsNullOrWhiteSpace(options.SecretKey)
@@ -97,29 +101,111 @@ internal sealed class AwsS3StorageClient : IS3StorageClient
 
     public async Task<S3BucketEntry> CreateBucketAsync(string bucketName, CancellationToken cancellationToken = default)
     {
-        var request = new PutBucketRequest { BucketName = bucketName };
-        await _s3.PutBucketAsync(request, cancellationToken).ConfigureAwait(false);
-        return new S3BucketEntry(bucketName, DateTimeOffset.UtcNow);
+        using var activity = S3StorageTelemetry.StartActivity("CreateBucket", bucketName);
+        var sw = Stopwatch.StartNew();
+        _logger?.LogDebug("S3 {Operation} starting for {BucketName}", "CreateBucket", bucketName);
+
+        try
+        {
+            var request = new PutBucketRequest { BucketName = bucketName };
+            await _s3.PutBucketAsync(request, cancellationToken).ConfigureAwait(false);
+            var result = new S3BucketEntry(bucketName, DateTimeOffset.UtcNow);
+
+            sw.Stop();
+            S3StorageTelemetry.RecordSuccess("CreateBucket", sw.Elapsed);
+            _logger?.LogDebug("S3 {Operation} completed in {ElapsedMs}ms for {BucketName}", "CreateBucket", sw.ElapsedMilliseconds, bucketName);
+            return result;
+        }
+        catch (AmazonS3Exception ex)
+        {
+            sw.Stop();
+            S3StorageTelemetry.RecordFailure("CreateBucket", sw.Elapsed, ex.ErrorCode);
+            S3StorageTelemetry.MarkFailure(activity, ex.ErrorCode, ex.Message);
+            _logger?.LogWarning(ex, "S3 {Operation} returned error {ErrorCode}: {Message} for {BucketName}", "CreateBucket", ex.ErrorCode, ex.Message, bucketName);
+            throw;
+        }
+        catch (Exception ex)
+        {
+            sw.Stop();
+            S3StorageTelemetry.RecordFailure("CreateBucket", sw.Elapsed, "UnexpectedError");
+            S3StorageTelemetry.MarkFailure(activity, "UnexpectedError", ex.Message);
+            _logger?.LogError(ex, "S3 {Operation} failed unexpectedly for {BucketName}", "CreateBucket", bucketName);
+            throw;
+        }
     }
 
     public async Task<S3BucketEntry?> HeadBucketAsync(string bucketName, CancellationToken cancellationToken = default)
     {
+        using var activity = S3StorageTelemetry.StartActivity("HeadBucket", bucketName);
+        var sw = Stopwatch.StartNew();
+        _logger?.LogDebug("S3 {Operation} starting for {BucketName}", "HeadBucket", bucketName);
+
         try
         {
             var request = new HeadBucketRequest { BucketName = bucketName };
             await _s3.HeadBucketAsync(request, cancellationToken).ConfigureAwait(false);
+
+            sw.Stop();
+            S3StorageTelemetry.RecordSuccess("HeadBucket", sw.Elapsed);
+            _logger?.LogDebug("S3 {Operation} completed in {ElapsedMs}ms for {BucketName}", "HeadBucket", sw.ElapsedMilliseconds, bucketName);
             return new S3BucketEntry(bucketName, DateTimeOffset.UtcNow);
         }
         catch (AmazonS3Exception ex) when (ex.StatusCode == System.Net.HttpStatusCode.NotFound)
         {
+            sw.Stop();
+            S3StorageTelemetry.RecordSuccess("HeadBucket", sw.Elapsed);
+            _logger?.LogDebug("S3 {Operation} completed in {ElapsedMs}ms for {BucketName} (not found)", "HeadBucket", sw.ElapsedMilliseconds, bucketName);
             return null;
+        }
+        catch (AmazonS3Exception ex)
+        {
+            sw.Stop();
+            S3StorageTelemetry.RecordFailure("HeadBucket", sw.Elapsed, ex.ErrorCode);
+            S3StorageTelemetry.MarkFailure(activity, ex.ErrorCode, ex.Message);
+            _logger?.LogWarning(ex, "S3 {Operation} returned error {ErrorCode}: {Message} for {BucketName}", "HeadBucket", ex.ErrorCode, ex.Message, bucketName);
+            throw;
+        }
+        catch (Exception ex)
+        {
+            sw.Stop();
+            S3StorageTelemetry.RecordFailure("HeadBucket", sw.Elapsed, "UnexpectedError");
+            S3StorageTelemetry.MarkFailure(activity, "UnexpectedError", ex.Message);
+            _logger?.LogError(ex, "S3 {Operation} failed unexpectedly for {BucketName}", "HeadBucket", bucketName);
+            throw;
         }
     }
 
     public async Task DeleteBucketAsync(string bucketName, CancellationToken cancellationToken = default)
     {
-        var request = new DeleteBucketRequest { BucketName = bucketName };
-        await _s3.DeleteBucketAsync(request, cancellationToken).ConfigureAwait(false);
+        using var activity = S3StorageTelemetry.StartActivity("DeleteBucket", bucketName);
+        var sw = Stopwatch.StartNew();
+        _logger?.LogDebug("S3 {Operation} starting for {BucketName}", "DeleteBucket", bucketName);
+
+        try
+        {
+            var request = new DeleteBucketRequest { BucketName = bucketName };
+            await _s3.DeleteBucketAsync(request, cancellationToken).ConfigureAwait(false);
+
+            sw.Stop();
+            S3StorageTelemetry.RecordSuccess("DeleteBucket", sw.Elapsed);
+            _logger?.LogDebug("S3 {Operation} completed in {ElapsedMs}ms for {BucketName}", "DeleteBucket", sw.ElapsedMilliseconds, bucketName);
+        }
+        catch (AmazonS3Exception ex)
+        {
+            sw.Stop();
+            S3StorageTelemetry.RecordFailure("DeleteBucket", sw.Elapsed, ex.ErrorCode);
+            S3StorageTelemetry.MarkFailure(activity, ex.ErrorCode, ex.Message);
+            _logger?.LogWarning(ex, "S3 {Operation} returned error {ErrorCode}: {Message} for {BucketName}", "DeleteBucket", ex.ErrorCode, ex.Message, bucketName);
+            throw;
+        }
+        catch (Exception ex)
+        {
+            sw.Stop();
+            S3StorageTelemetry.RecordFailure("DeleteBucket", sw.Elapsed, "UnexpectedError");
+            S3StorageTelemetry.MarkFailure(activity, "UnexpectedError", ex.Message);
+            _logger?.LogError(ex, "S3 {Operation} failed unexpectedly for {BucketName}", "DeleteBucket", bucketName);
+            throw;
+        }
     }
 
     public async Task<S3BucketLocationEntry> GetBucketLocationAsync(string bucketName, CancellationToken cancellationToken = default)
@@ -253,32 +339,60 @@ internal sealed class AwsS3StorageClient : IS3StorageClient
         int? maxKeys,
         CancellationToken cancellationToken = default)
     {
-        var request = new ListObjectsV2Request
+        using var activity = S3StorageTelemetry.StartActivity("ListObjects", bucketName);
+        var sw = Stopwatch.StartNew();
+        _logger?.LogDebug("S3 {Operation} starting for {BucketName}", "ListObjects", bucketName);
+
+        try
         {
-            BucketName = bucketName,
-            Prefix = prefix,
-            ContinuationToken = continuationToken
-        };
+            var request = new ListObjectsV2Request
+            {
+                BucketName = bucketName,
+                Prefix = prefix,
+                ContinuationToken = continuationToken
+            };
 
-        if (maxKeys.HasValue)
-            request.MaxKeys = maxKeys.Value;
+            if (maxKeys.HasValue)
+                request.MaxKeys = maxKeys.Value;
 
-        var response = await _s3.ListObjectsV2Async(request, cancellationToken).ConfigureAwait(false);
+            var response = await _s3.ListObjectsV2Async(request, cancellationToken).ConfigureAwait(false);
 
-        var entries = (response.S3Objects ?? [])
-            .Select(o => new S3ObjectEntry(
-                Key: o.Key ?? string.Empty,
-                ContentLength: o.Size ?? 0,
-                ContentType: null,
-                ETag: o.ETag,
-                LastModifiedUtc: ToDateTimeOffset(o.LastModified),
-                Metadata: null,
-                VersionId: null))
-            .ToList();
+            var entries = (response.S3Objects ?? [])
+                .Select(o => new S3ObjectEntry(
+                    Key: o.Key ?? string.Empty,
+                    ContentLength: o.Size ?? 0,
+                    ContentType: null,
+                    ETag: o.ETag,
+                    LastModifiedUtc: ToDateTimeOffset(o.LastModified),
+                    Metadata: null,
+                    VersionId: null))
+                .ToList();
 
-        return new S3ObjectListPage(
-            entries,
-            response.IsTruncated == true ? response.NextContinuationToken : null);
+            var result = new S3ObjectListPage(
+                entries,
+                response.IsTruncated == true ? response.NextContinuationToken : null);
+
+            sw.Stop();
+            S3StorageTelemetry.RecordSuccess("ListObjects", sw.Elapsed);
+            _logger?.LogDebug("S3 {Operation} completed in {ElapsedMs}ms for {BucketName}", "ListObjects", sw.ElapsedMilliseconds, bucketName);
+            return result;
+        }
+        catch (AmazonS3Exception ex)
+        {
+            sw.Stop();
+            S3StorageTelemetry.RecordFailure("ListObjects", sw.Elapsed, ex.ErrorCode);
+            S3StorageTelemetry.MarkFailure(activity, ex.ErrorCode, ex.Message);
+            _logger?.LogWarning(ex, "S3 {Operation} returned error {ErrorCode}: {Message} for {BucketName}", "ListObjects", ex.ErrorCode, ex.Message, bucketName);
+            throw;
+        }
+        catch (Exception ex)
+        {
+            sw.Stop();
+            S3StorageTelemetry.RecordFailure("ListObjects", sw.Elapsed, "UnexpectedError");
+            S3StorageTelemetry.MarkFailure(activity, "UnexpectedError", ex.Message);
+            _logger?.LogError(ex, "S3 {Operation} failed unexpectedly for {BucketName}", "ListObjects", bucketName);
+            throw;
+        }
     }
 
     public async Task<S3ObjectVersionListPage> ListObjectVersionsAsync(
@@ -290,38 +404,66 @@ internal sealed class AwsS3StorageClient : IS3StorageClient
         int? maxKeys,
         CancellationToken cancellationToken = default)
     {
-        var request = new ListVersionsRequest
+        using var activity = S3StorageTelemetry.StartActivity("ListObjectVersions", bucketName);
+        var sw = Stopwatch.StartNew();
+        _logger?.LogDebug("S3 {Operation} starting for {BucketName}", "ListObjectVersions", bucketName);
+
+        try
         {
-            BucketName = bucketName,
-            Prefix = prefix,
-            Delimiter = delimiter,
-            KeyMarker = keyMarker,
-            VersionIdMarker = versionIdMarker
-        };
+            var request = new ListVersionsRequest
+            {
+                BucketName = bucketName,
+                Prefix = prefix,
+                Delimiter = delimiter,
+                KeyMarker = keyMarker,
+                VersionIdMarker = versionIdMarker
+            };
 
-        if (maxKeys.HasValue)
-            request.MaxKeys = maxKeys.Value;
+            if (maxKeys.HasValue)
+                request.MaxKeys = maxKeys.Value;
 
-        var response = await _s3.ListVersionsAsync(request, cancellationToken).ConfigureAwait(false);
+            var response = await _s3.ListVersionsAsync(request, cancellationToken).ConfigureAwait(false);
 
-        // In SDK v4, Versions contains both object versions and delete markers (distinguished by IsDeleteMarker)
-        var entries = (response.Versions ?? [])
-            .Select(v => new S3ObjectEntry(
-                Key: v.Key ?? string.Empty,
-                ContentLength: v.IsDeleteMarker == true ? 0 : (v.Size ?? 0),
-                ContentType: null,
-                ETag: v.IsDeleteMarker == true ? null : v.ETag,
-                LastModifiedUtc: ToDateTimeOffset(v.LastModified),
-                Metadata: null,
-                VersionId: v.VersionId,
-                IsLatest: v.IsLatest == true,
-                IsDeleteMarker: v.IsDeleteMarker == true))
-            .ToList();
+            // In SDK v4, Versions contains both object versions and delete markers (distinguished by IsDeleteMarker)
+            var entries = (response.Versions ?? [])
+                .Select(v => new S3ObjectEntry(
+                    Key: v.Key ?? string.Empty,
+                    ContentLength: v.IsDeleteMarker == true ? 0 : (v.Size ?? 0),
+                    ContentType: null,
+                    ETag: v.IsDeleteMarker == true ? null : v.ETag,
+                    LastModifiedUtc: ToDateTimeOffset(v.LastModified),
+                    Metadata: null,
+                    VersionId: v.VersionId,
+                    IsLatest: v.IsLatest == true,
+                    IsDeleteMarker: v.IsDeleteMarker == true))
+                .ToList();
 
-        return new S3ObjectVersionListPage(
-            entries,
-            response.IsTruncated == true ? response.NextKeyMarker : null,
-            response.IsTruncated == true ? response.NextVersionIdMarker : null);
+            var result = new S3ObjectVersionListPage(
+                entries,
+                response.IsTruncated == true ? response.NextKeyMarker : null,
+                response.IsTruncated == true ? response.NextVersionIdMarker : null);
+
+            sw.Stop();
+            S3StorageTelemetry.RecordSuccess("ListObjectVersions", sw.Elapsed);
+            _logger?.LogDebug("S3 {Operation} completed in {ElapsedMs}ms for {BucketName}", "ListObjectVersions", sw.ElapsedMilliseconds, bucketName);
+            return result;
+        }
+        catch (AmazonS3Exception ex)
+        {
+            sw.Stop();
+            S3StorageTelemetry.RecordFailure("ListObjectVersions", sw.Elapsed, ex.ErrorCode);
+            S3StorageTelemetry.MarkFailure(activity, ex.ErrorCode, ex.Message);
+            _logger?.LogWarning(ex, "S3 {Operation} returned error {ErrorCode}: {Message} for {BucketName}", "ListObjectVersions", ex.ErrorCode, ex.Message, bucketName);
+            throw;
+        }
+        catch (Exception ex)
+        {
+            sw.Stop();
+            S3StorageTelemetry.RecordFailure("ListObjectVersions", sw.Elapsed, "UnexpectedError");
+            S3StorageTelemetry.MarkFailure(activity, "UnexpectedError", ex.Message);
+            _logger?.LogError(ex, "S3 {Operation} failed unexpectedly for {BucketName}", "ListObjectVersions", bucketName);
+            throw;
+        }
     }
 
     // -------------------------------------------------------------------------
@@ -335,6 +477,10 @@ internal sealed class AwsS3StorageClient : IS3StorageClient
         ObjectCustomerEncryptionSettings? customerEncryption,
         CancellationToken cancellationToken = default)
     {
+        using var activity = S3StorageTelemetry.StartActivity("HeadObject", bucketName, key);
+        var sw = Stopwatch.StartNew();
+        _logger?.LogDebug("S3 {Operation} starting for {BucketName}/{Key}", "HeadObject", bucketName, key);
+
         try
         {
             var request = new GetObjectMetadataRequest
@@ -348,7 +494,7 @@ internal sealed class AwsS3StorageClient : IS3StorageClient
 
             var response = await _s3.GetObjectMetadataAsync(request, cancellationToken).ConfigureAwait(false);
 
-            return new S3ObjectEntry(
+            var result = new S3ObjectEntry(
                 Key: key,
                 ContentLength: response.ContentLength,
                 ContentType: response.ContentType,
@@ -371,10 +517,34 @@ internal sealed class AwsS3StorageClient : IS3StorageClient
                 CustomerEncryption: S3ServerSideEncryptionMapper.ToCustomerEncryptionInfo(
                     response.ServerSideEncryptionCustomerMethod,
                     response.ServerSideEncryptionCustomerProvidedKeyMD5));
+
+            sw.Stop();
+            S3StorageTelemetry.RecordSuccess("HeadObject", sw.Elapsed);
+            _logger?.LogDebug("S3 {Operation} completed in {ElapsedMs}ms for {BucketName}/{Key}", "HeadObject", sw.ElapsedMilliseconds, bucketName, key);
+            return result;
         }
         catch (AmazonS3Exception ex) when (ex.StatusCode == System.Net.HttpStatusCode.NotFound)
         {
+            sw.Stop();
+            S3StorageTelemetry.RecordSuccess("HeadObject", sw.Elapsed);
+            _logger?.LogDebug("S3 {Operation} completed in {ElapsedMs}ms for {BucketName}/{Key} (not found)", "HeadObject", sw.ElapsedMilliseconds, bucketName, key);
             return null;
+        }
+        catch (AmazonS3Exception ex)
+        {
+            sw.Stop();
+            S3StorageTelemetry.RecordFailure("HeadObject", sw.Elapsed, ex.ErrorCode);
+            S3StorageTelemetry.MarkFailure(activity, ex.ErrorCode, ex.Message);
+            _logger?.LogWarning(ex, "S3 {Operation} returned error {ErrorCode}: {Message} for {BucketName}/{Key}", "HeadObject", ex.ErrorCode, ex.Message, bucketName, key);
+            throw;
+        }
+        catch (Exception ex)
+        {
+            sw.Stop();
+            S3StorageTelemetry.RecordFailure("HeadObject", sw.Elapsed, "UnexpectedError");
+            S3StorageTelemetry.MarkFailure(activity, "UnexpectedError", ex.Message);
+            _logger?.LogError(ex, "S3 {Operation} failed unexpectedly for {BucketName}/{Key}", "HeadObject", bucketName, key);
+            throw;
         }
     }
 
@@ -434,68 +604,98 @@ internal sealed class AwsS3StorageClient : IS3StorageClient
         ObjectCustomerEncryptionSettings? customerEncryption,
         CancellationToken cancellationToken = default)
     {
-        var request = new Amazon.S3.Model.GetObjectRequest
-        {
-            BucketName = bucketName,
-            Key = key,
-            VersionId = versionId
-        };
+        // Activity is not disposed here because the response stream outlives this call.
+        var activity = S3StorageTelemetry.StartActivity("GetObject", bucketName, key);
+        var sw = Stopwatch.StartNew();
+        _logger?.LogDebug("S3 {Operation} starting for {BucketName}/{Key}", "GetObject", bucketName, key);
 
-        if (range?.Start.HasValue == true || range?.End.HasValue == true)
+        try
         {
-            request.ByteRange = range switch
+            var request = new Amazon.S3.Model.GetObjectRequest
             {
-                { Start: not null, End: not null } => new ByteRange(range.Start.Value, range.End.Value),
-                { Start: not null } => new ByteRange($"bytes={range.Start.Value}-"),
-                { End: not null } => new ByteRange($"bytes=-{range.End.Value}"),
-                _ => null
+                BucketName = bucketName,
+                Key = key,
+                VersionId = versionId
             };
+
+            if (range?.Start.HasValue == true || range?.End.HasValue == true)
+            {
+                request.ByteRange = range switch
+                {
+                    { Start: not null, End: not null } => new ByteRange(range.Start.Value, range.End.Value),
+                    { Start: not null } => new ByteRange($"bytes={range.Start.Value}-"),
+                    { End: not null } => new ByteRange($"bytes=-{range.End.Value}"),
+                    _ => null
+                };
+            }
+
+            if (!string.IsNullOrEmpty(ifMatchETag))
+                request.EtagToMatch = ifMatchETag;
+
+            if (!string.IsNullOrEmpty(ifNoneMatchETag))
+                request.EtagToNotMatch = ifNoneMatchETag;
+
+            if (ifModifiedSinceUtc.HasValue)
+                request.ModifiedSinceDate = ifModifiedSinceUtc.Value.UtcDateTime;
+
+            if (ifUnmodifiedSinceUtc.HasValue)
+                request.UnmodifiedSinceDate = ifUnmodifiedSinceUtc.Value.UtcDateTime;
+
+            S3ServerSideEncryptionMapper.ApplyCustomerEncryption(request, customerEncryption);
+
+            var response = await _s3.GetObjectAsync(request, cancellationToken).ConfigureAwait(false);
+
+            var entry = new S3ObjectEntry(
+                Key: key,
+                ContentLength: response.ContentLength,
+                ContentType: response.Headers.ContentType,
+                ETag: response.ETag,
+                LastModifiedUtc: ToDateTimeOffset(response.LastModified),
+                Metadata: BuildMetadataDictionary(response.Metadata),
+                VersionId: response.VersionId,
+                CacheControl: response.Headers.CacheControl,
+                ContentDisposition: response.Headers.ContentDisposition,
+                ContentEncoding: response.Headers.ContentEncoding,
+                ContentLanguage: GetHeaderValue(response.Headers, "Content-Language"),
+                ExpiresUtc: ParseExpiresString(response.ExpiresString),
+                ServerSideEncryption: S3ServerSideEncryptionMapper.ToInfo(
+                    response.ServerSideEncryptionMethod,
+                    response.ServerSideEncryptionKeyManagementServiceKeyId,
+                    response.BucketKeyEnabled),
+                RetentionMode: S3ObjectLockMapper.ToRetentionMode(response.ObjectLockMode),
+                RetainUntilDateUtc: ToNullableDateTimeOffset(response.ObjectLockRetainUntilDate),
+                LegalHoldStatus: S3ObjectLockMapper.ToLegalHoldStatus(response.ObjectLockLegalHoldStatus),
+                CustomerEncryption: S3ServerSideEncryptionMapper.ToCustomerEncryptionInfo(
+                    response.ServerSideEncryptionCustomerMethod,
+                    response.ServerSideEncryptionCustomerProvidedKeyMD5));
+
+            long totalContentLength = TryParseContentRangeTotal(response.ContentRange)
+                ?? response.ContentLength;
+
+            sw.Stop();
+            S3StorageTelemetry.RecordSuccess("GetObject", sw.Elapsed);
+            _logger?.LogDebug("S3 {Operation} completed in {ElapsedMs}ms for {BucketName}/{Key}", "GetObject", sw.ElapsedMilliseconds, bucketName, key);
+            activity?.Dispose();
+            return new S3GetObjectResult(entry, response.ResponseStream, totalContentLength, response);
         }
-
-        if (!string.IsNullOrEmpty(ifMatchETag))
-            request.EtagToMatch = ifMatchETag;
-
-        if (!string.IsNullOrEmpty(ifNoneMatchETag))
-            request.EtagToNotMatch = ifNoneMatchETag;
-
-        if (ifModifiedSinceUtc.HasValue)
-            request.ModifiedSinceDate = ifModifiedSinceUtc.Value.UtcDateTime;
-
-        if (ifUnmodifiedSinceUtc.HasValue)
-            request.UnmodifiedSinceDate = ifUnmodifiedSinceUtc.Value.UtcDateTime;
-
-        S3ServerSideEncryptionMapper.ApplyCustomerEncryption(request, customerEncryption);
-
-        var response = await _s3.GetObjectAsync(request, cancellationToken).ConfigureAwait(false);
-
-        var entry = new S3ObjectEntry(
-            Key: key,
-            ContentLength: response.ContentLength,
-            ContentType: response.Headers.ContentType,
-            ETag: response.ETag,
-            LastModifiedUtc: ToDateTimeOffset(response.LastModified),
-            Metadata: BuildMetadataDictionary(response.Metadata),
-            VersionId: response.VersionId,
-            CacheControl: response.Headers.CacheControl,
-            ContentDisposition: response.Headers.ContentDisposition,
-            ContentEncoding: response.Headers.ContentEncoding,
-            ContentLanguage: GetHeaderValue(response.Headers, "Content-Language"),
-            ExpiresUtc: ParseExpiresString(response.ExpiresString),
-            ServerSideEncryption: S3ServerSideEncryptionMapper.ToInfo(
-                response.ServerSideEncryptionMethod,
-                response.ServerSideEncryptionKeyManagementServiceKeyId,
-                response.BucketKeyEnabled),
-            RetentionMode: S3ObjectLockMapper.ToRetentionMode(response.ObjectLockMode),
-            RetainUntilDateUtc: ToNullableDateTimeOffset(response.ObjectLockRetainUntilDate),
-            LegalHoldStatus: S3ObjectLockMapper.ToLegalHoldStatus(response.ObjectLockLegalHoldStatus),
-            CustomerEncryption: S3ServerSideEncryptionMapper.ToCustomerEncryptionInfo(
-                response.ServerSideEncryptionCustomerMethod,
-                response.ServerSideEncryptionCustomerProvidedKeyMD5));
-
-        long totalContentLength = TryParseContentRangeTotal(response.ContentRange)
-            ?? response.ContentLength;
-
-        return new S3GetObjectResult(entry, response.ResponseStream, totalContentLength, response);
+        catch (AmazonS3Exception ex)
+        {
+            sw.Stop();
+            S3StorageTelemetry.RecordFailure("GetObject", sw.Elapsed, ex.ErrorCode);
+            S3StorageTelemetry.MarkFailure(activity, ex.ErrorCode, ex.Message);
+            _logger?.LogWarning(ex, "S3 {Operation} returned error {ErrorCode}: {Message} for {BucketName}/{Key}", "GetObject", ex.ErrorCode, ex.Message, bucketName, key);
+            activity?.Dispose();
+            throw;
+        }
+        catch (Exception ex)
+        {
+            sw.Stop();
+            S3StorageTelemetry.RecordFailure("GetObject", sw.Elapsed, "UnexpectedError");
+            S3StorageTelemetry.MarkFailure(activity, "UnexpectedError", ex.Message);
+            _logger?.LogError(ex, "S3 {Operation} failed unexpectedly for {BucketName}/{Key}", "GetObject", bucketName, key);
+            activity?.Dispose();
+            throw;
+        }
     }
 
     public async Task<ObjectRetentionInfo> GetObjectRetentionAsync(
@@ -629,68 +829,96 @@ internal sealed class AwsS3StorageClient : IS3StorageClient
         string? ifNoneMatchETag,
         CancellationToken cancellationToken = default)
     {
-        var request = new Amazon.S3.Model.PutObjectRequest
+        using var activity = S3StorageTelemetry.StartActivity("PutObject", bucketName, key);
+        var sw = Stopwatch.StartNew();
+        _logger?.LogDebug("S3 {Operation} starting for {BucketName}/{Key}", "PutObject", bucketName, key);
+
+        try
         {
-            BucketName = bucketName,
-            Key = key,
-            InputStream = content,
-            ContentType = contentType ?? "application/octet-stream",
-            AutoCloseStream = false
-        };
+            var request = new Amazon.S3.Model.PutObjectRequest
+            {
+                BucketName = bucketName,
+                Key = key,
+                InputStream = content,
+                ContentType = contentType ?? "application/octet-stream",
+                AutoCloseStream = false
+            };
 
-        if (contentLength.HasValue)
-            request.Headers.ContentLength = contentLength.Value;
+            if (contentLength.HasValue)
+                request.Headers.ContentLength = contentLength.Value;
 
-        ApplyStandardObjectHeaders(request.Headers, cacheControl, contentDisposition, contentEncoding, contentLanguage, expiresUtc);
+            ApplyStandardObjectHeaders(request.Headers, cacheControl, contentDisposition, contentEncoding, contentLanguage, expiresUtc);
 
-        if (metadata is not null)
-        {
-            foreach (var (k, v) in metadata)
-                request.Metadata[k] = v;
+            if (metadata is not null)
+            {
+                foreach (var (k, v) in metadata)
+                    request.Metadata[k] = v;
+            }
+
+            request.TagSet = BuildTagSet(tags);
+            ApplyChecksumHeaders(request, checksumAlgorithm: null, checksums);
+            S3ServerSideEncryptionMapper.ApplyTo(request, serverSideEncryption);
+            S3ServerSideEncryptionMapper.ApplyCustomerEncryption(request, customerEncryption);
+
+            if (!string.IsNullOrWhiteSpace(storageClass))
+                request.StorageClass = new S3StorageClass(storageClass);
+
+            if (!string.IsNullOrWhiteSpace(ifMatchETag))
+                request.IfMatch = ifMatchETag;
+
+            if (!string.IsNullOrWhiteSpace(ifNoneMatchETag))
+                request.IfNoneMatch = ifNoneMatchETag;
+
+            var response = await _s3.PutObjectAsync(request, cancellationToken).ConfigureAwait(false);
+
+            var result = new S3ObjectEntry(
+                Key: key,
+                ContentLength: contentLength ?? 0,
+                ContentType: contentType,
+                ETag: response.ETag,
+                LastModifiedUtc: DateTimeOffset.UtcNow,
+                Metadata: metadata,
+                VersionId: response.VersionId,
+                Checksums: BuildChecksums(
+                    response.ChecksumCRC32,
+                    response.ChecksumCRC32C,
+                    response.ChecksumCRC64NVME,
+                    response.ChecksumSHA1,
+                    response.ChecksumSHA256),
+                CacheControl: cacheControl,
+                ContentDisposition: contentDisposition,
+                ContentEncoding: contentEncoding,
+                ContentLanguage: contentLanguage,
+                ExpiresUtc: expiresUtc,
+                ServerSideEncryption: S3ServerSideEncryptionMapper.ToInfo(
+                    response.ServerSideEncryptionMethod,
+                    response.ServerSideEncryptionKeyManagementServiceKeyId,
+                    response.BucketKeyEnabled),
+                CustomerEncryption: S3ServerSideEncryptionMapper.ToCustomerEncryptionInfo(
+                    response.ServerSideEncryptionCustomerMethod,
+                    response.ServerSideEncryptionCustomerProvidedKeyMD5));
+
+            sw.Stop();
+            S3StorageTelemetry.RecordSuccess("PutObject", sw.Elapsed);
+            _logger?.LogDebug("S3 {Operation} completed in {ElapsedMs}ms for {BucketName}/{Key}", "PutObject", sw.ElapsedMilliseconds, bucketName, key);
+            return result;
         }
-
-        request.TagSet = BuildTagSet(tags);
-        ApplyChecksumHeaders(request, checksumAlgorithm: null, checksums);
-        S3ServerSideEncryptionMapper.ApplyTo(request, serverSideEncryption);
-        S3ServerSideEncryptionMapper.ApplyCustomerEncryption(request, customerEncryption);
-
-        if (!string.IsNullOrWhiteSpace(storageClass))
-            request.StorageClass = new S3StorageClass(storageClass);
-
-        if (!string.IsNullOrWhiteSpace(ifMatchETag))
-            request.IfMatch = ifMatchETag;
-
-        if (!string.IsNullOrWhiteSpace(ifNoneMatchETag))
-            request.IfNoneMatch = ifNoneMatchETag;
-
-        var response = await _s3.PutObjectAsync(request, cancellationToken).ConfigureAwait(false);
-
-        return new S3ObjectEntry(
-            Key: key,
-            ContentLength: contentLength ?? 0,
-            ContentType: contentType,
-            ETag: response.ETag,
-            LastModifiedUtc: DateTimeOffset.UtcNow,
-            Metadata: metadata,
-            VersionId: response.VersionId,
-            Checksums: BuildChecksums(
-                response.ChecksumCRC32,
-                response.ChecksumCRC32C,
-                response.ChecksumCRC64NVME,
-                response.ChecksumSHA1,
-                response.ChecksumSHA256),
-            CacheControl: cacheControl,
-            ContentDisposition: contentDisposition,
-            ContentEncoding: contentEncoding,
-            ContentLanguage: contentLanguage,
-            ExpiresUtc: expiresUtc,
-            ServerSideEncryption: S3ServerSideEncryptionMapper.ToInfo(
-                response.ServerSideEncryptionMethod,
-                response.ServerSideEncryptionKeyManagementServiceKeyId,
-                response.BucketKeyEnabled),
-            CustomerEncryption: S3ServerSideEncryptionMapper.ToCustomerEncryptionInfo(
-                response.ServerSideEncryptionCustomerMethod,
-                response.ServerSideEncryptionCustomerProvidedKeyMD5));
+        catch (AmazonS3Exception ex)
+        {
+            sw.Stop();
+            S3StorageTelemetry.RecordFailure("PutObject", sw.Elapsed, ex.ErrorCode);
+            S3StorageTelemetry.MarkFailure(activity, ex.ErrorCode, ex.Message);
+            _logger?.LogWarning(ex, "S3 {Operation} returned error {ErrorCode}: {Message} for {BucketName}/{Key}", "PutObject", ex.ErrorCode, ex.Message, bucketName, key);
+            throw;
+        }
+        catch (Exception ex)
+        {
+            sw.Stop();
+            S3StorageTelemetry.RecordFailure("PutObject", sw.Elapsed, "UnexpectedError");
+            S3StorageTelemetry.MarkFailure(activity, "UnexpectedError", ex.Message);
+            _logger?.LogError(ex, "S3 {Operation} failed unexpectedly for {BucketName}/{Key}", "PutObject", bucketName, key);
+            throw;
+        }
     }
 
     public async Task<S3DeleteObjectResult> DeleteObjectAsync(
@@ -699,19 +927,46 @@ internal sealed class AwsS3StorageClient : IS3StorageClient
         string? versionId,
         CancellationToken cancellationToken = default)
     {
-        var request = new Amazon.S3.Model.DeleteObjectRequest
+        using var activity = S3StorageTelemetry.StartActivity("DeleteObject", bucketName, key);
+        var sw = Stopwatch.StartNew();
+        _logger?.LogDebug("S3 {Operation} starting for {BucketName}/{Key}", "DeleteObject", bucketName, key);
+
+        try
         {
-            BucketName = bucketName,
-            Key = key,
-            VersionId = versionId
-        };
+            var request = new Amazon.S3.Model.DeleteObjectRequest
+            {
+                BucketName = bucketName,
+                Key = key,
+                VersionId = versionId
+            };
 
-        var response = await _s3.DeleteObjectAsync(request, cancellationToken).ConfigureAwait(false);
+            var response = await _s3.DeleteObjectAsync(request, cancellationToken).ConfigureAwait(false);
 
-        // In SDK v4, DeleteMarker is a string ("true"/"false") not a bool
-        var isDeleteMarker = string.Equals(response.DeleteMarker, "true", StringComparison.OrdinalIgnoreCase);
+            // In SDK v4, DeleteMarker is a string ("true"/"false") not a bool
+            var isDeleteMarker = string.Equals(response.DeleteMarker, "true", StringComparison.OrdinalIgnoreCase);
+            var result = new S3DeleteObjectResult(key, response.VersionId, isDeleteMarker);
 
-        return new S3DeleteObjectResult(key, response.VersionId, isDeleteMarker);
+            sw.Stop();
+            S3StorageTelemetry.RecordSuccess("DeleteObject", sw.Elapsed);
+            _logger?.LogDebug("S3 {Operation} completed in {ElapsedMs}ms for {BucketName}/{Key}", "DeleteObject", sw.ElapsedMilliseconds, bucketName, key);
+            return result;
+        }
+        catch (AmazonS3Exception ex)
+        {
+            sw.Stop();
+            S3StorageTelemetry.RecordFailure("DeleteObject", sw.Elapsed, ex.ErrorCode);
+            S3StorageTelemetry.MarkFailure(activity, ex.ErrorCode, ex.Message);
+            _logger?.LogWarning(ex, "S3 {Operation} returned error {ErrorCode}: {Message} for {BucketName}/{Key}", "DeleteObject", ex.ErrorCode, ex.Message, bucketName, key);
+            throw;
+        }
+        catch (Exception ex)
+        {
+            sw.Stop();
+            S3StorageTelemetry.RecordFailure("DeleteObject", sw.Elapsed, "UnexpectedError");
+            S3StorageTelemetry.MarkFailure(activity, "UnexpectedError", ex.Message);
+            _logger?.LogError(ex, "S3 {Operation} failed unexpectedly for {BucketName}/{Key}", "DeleteObject", bucketName, key);
+            throw;
+        }
     }
 
     // -------------------------------------------------------------------------
@@ -747,88 +1002,116 @@ internal sealed class AwsS3StorageClient : IS3StorageClient
         string? storageClass,
         CancellationToken cancellationToken = default)
     {
-        var request = new CopyObjectRequest
+        using var activity = S3StorageTelemetry.StartActivity("CopyObject", destinationBucketName, destinationKey);
+        var sw = Stopwatch.StartNew();
+        _logger?.LogDebug("S3 {Operation} starting for {BucketName}/{Key}", "CopyObject", destinationBucketName, destinationKey);
+
+        try
         {
-            SourceBucket = sourceBucketName,
-            SourceKey = sourceKey,
-            SourceVersionId = sourceVersionId,
-            DestinationBucket = destinationBucketName,
-            DestinationKey = destinationKey,
-            ETagToMatch = sourceIfMatchETag,
-            ETagToNotMatch = sourceIfNoneMatchETag
-        };
-
-        if (sourceIfModifiedSinceUtc.HasValue)
-            request.ModifiedSinceDate = sourceIfModifiedSinceUtc.Value.UtcDateTime;
-
-        if (sourceIfUnmodifiedSinceUtc.HasValue)
-            request.UnmodifiedSinceDate = sourceIfUnmodifiedSinceUtc.Value.UtcDateTime;
-
-        if (!overwriteIfExists)
-            request.IfNoneMatch = "*";
-
-        request.MetadataDirective = metadataDirective == CopyObjectMetadataDirective.Replace
-            ? S3MetadataDirective.REPLACE
-            : S3MetadataDirective.COPY;
-
-        if (metadataDirective == CopyObjectMetadataDirective.Replace)
-        {
-            request.ContentType = contentType;
-            ApplyStandardObjectHeaders(request.Headers, cacheControl, contentDisposition, contentEncoding, contentLanguage, expiresUtc);
-
-            if (metadata is not null)
+            var request = new CopyObjectRequest
             {
-                foreach (var (name, value) in metadata)
-                    request.Metadata[name] = value;
+                SourceBucket = sourceBucketName,
+                SourceKey = sourceKey,
+                SourceVersionId = sourceVersionId,
+                DestinationBucket = destinationBucketName,
+                DestinationKey = destinationKey,
+                ETagToMatch = sourceIfMatchETag,
+                ETagToNotMatch = sourceIfNoneMatchETag
+            };
+
+            if (sourceIfModifiedSinceUtc.HasValue)
+                request.ModifiedSinceDate = sourceIfModifiedSinceUtc.Value.UtcDateTime;
+
+            if (sourceIfUnmodifiedSinceUtc.HasValue)
+                request.UnmodifiedSinceDate = sourceIfUnmodifiedSinceUtc.Value.UtcDateTime;
+
+            if (!overwriteIfExists)
+                request.IfNoneMatch = "*";
+
+            request.MetadataDirective = metadataDirective == CopyObjectMetadataDirective.Replace
+                ? S3MetadataDirective.REPLACE
+                : S3MetadataDirective.COPY;
+
+            if (metadataDirective == CopyObjectMetadataDirective.Replace)
+            {
+                request.ContentType = contentType;
+                ApplyStandardObjectHeaders(request.Headers, cacheControl, contentDisposition, contentEncoding, contentLanguage, expiresUtc);
+
+                if (metadata is not null)
+                {
+                    foreach (var (name, value) in metadata)
+                        request.Metadata[name] = value;
+                }
             }
+
+            request.TaggingDirective = taggingDirective == ObjectTaggingDirective.Replace
+                ? TaggingDirective.REPLACE
+                : TaggingDirective.COPY;
+
+            if (taggingDirective == ObjectTaggingDirective.Replace)
+            {
+                request.TagSet = BuildTagSet(tags) ?? new List<Tag>();
+            }
+
+            if (!string.IsNullOrWhiteSpace(storageClass))
+                request.StorageClass = new S3StorageClass(storageClass);
+
+            ApplyChecksumHeaders(request, checksumAlgorithm, checksums);
+            S3ServerSideEncryptionMapper.ApplyTo(request, destinationServerSideEncryption);
+            S3ServerSideEncryptionMapper.ApplyCopySourceCustomerEncryption(request, sourceCustomerEncryption);
+            S3ServerSideEncryptionMapper.ApplyCustomerEncryption(request, destinationCustomerEncryption);
+
+            var response = await _s3.CopyObjectAsync(request, cancellationToken).ConfigureAwait(false);
+
+            var result = new S3ObjectEntry(
+                Key: destinationKey,
+                ContentLength: 0,
+                ContentType: metadataDirective == CopyObjectMetadataDirective.Replace ? contentType : null,
+                ETag: response.ETag,
+                LastModifiedUtc: string.IsNullOrEmpty(response.LastModified) ? DateTimeOffset.UtcNow
+                    : DateTime.TryParse(response.LastModified, out var dt) ? new DateTimeOffset(dt, TimeSpan.Zero) : DateTimeOffset.UtcNow,
+                Metadata: metadataDirective == CopyObjectMetadataDirective.Replace ? metadata : null,
+                VersionId: response.VersionId,
+                Checksums: BuildChecksums(
+                    response.ChecksumCRC32,
+                    response.ChecksumCRC32C,
+                    response.ChecksumCRC64NVME,
+                    response.ChecksumSHA1,
+                    response.ChecksumSHA256),
+                CacheControl: metadataDirective == CopyObjectMetadataDirective.Replace ? cacheControl : null,
+                ContentDisposition: metadataDirective == CopyObjectMetadataDirective.Replace ? contentDisposition : null,
+                ContentEncoding: metadataDirective == CopyObjectMetadataDirective.Replace ? contentEncoding : null,
+                ContentLanguage: metadataDirective == CopyObjectMetadataDirective.Replace ? contentLanguage : null,
+                ExpiresUtc: metadataDirective == CopyObjectMetadataDirective.Replace ? expiresUtc : null,
+                ServerSideEncryption: S3ServerSideEncryptionMapper.ToInfo(
+                    response.ServerSideEncryptionMethod,
+                    response.ServerSideEncryptionKeyManagementServiceKeyId,
+                    response.BucketKeyEnabled),
+                CustomerEncryption: S3ServerSideEncryptionMapper.ToCustomerEncryptionInfo(
+                    response.ServerSideEncryptionCustomerMethod,
+                    response.ServerSideEncryptionCustomerProvidedKeyMD5));
+
+            sw.Stop();
+            S3StorageTelemetry.RecordSuccess("CopyObject", sw.Elapsed);
+            _logger?.LogDebug("S3 {Operation} completed in {ElapsedMs}ms for {BucketName}/{Key}", "CopyObject", sw.ElapsedMilliseconds, destinationBucketName, destinationKey);
+            return result;
         }
-
-        request.TaggingDirective = taggingDirective == ObjectTaggingDirective.Replace
-            ? TaggingDirective.REPLACE
-            : TaggingDirective.COPY;
-
-        if (taggingDirective == ObjectTaggingDirective.Replace)
+        catch (AmazonS3Exception ex)
         {
-            request.TagSet = BuildTagSet(tags) ?? new List<Tag>();
+            sw.Stop();
+            S3StorageTelemetry.RecordFailure("CopyObject", sw.Elapsed, ex.ErrorCode);
+            S3StorageTelemetry.MarkFailure(activity, ex.ErrorCode, ex.Message);
+            _logger?.LogWarning(ex, "S3 {Operation} returned error {ErrorCode}: {Message} for {BucketName}/{Key}", "CopyObject", ex.ErrorCode, ex.Message, destinationBucketName, destinationKey);
+            throw;
         }
-
-        if (!string.IsNullOrWhiteSpace(storageClass))
-            request.StorageClass = new S3StorageClass(storageClass);
-
-        ApplyChecksumHeaders(request, checksumAlgorithm, checksums);
-        S3ServerSideEncryptionMapper.ApplyTo(request, destinationServerSideEncryption);
-        S3ServerSideEncryptionMapper.ApplyCopySourceCustomerEncryption(request, sourceCustomerEncryption);
-        S3ServerSideEncryptionMapper.ApplyCustomerEncryption(request, destinationCustomerEncryption);
-
-        var response = await _s3.CopyObjectAsync(request, cancellationToken).ConfigureAwait(false);
-
-        return new S3ObjectEntry(
-            Key: destinationKey,
-            ContentLength: 0,
-            ContentType: metadataDirective == CopyObjectMetadataDirective.Replace ? contentType : null,
-            ETag: response.ETag,
-            LastModifiedUtc: string.IsNullOrEmpty(response.LastModified) ? DateTimeOffset.UtcNow
-                : DateTime.TryParse(response.LastModified, out var dt) ? new DateTimeOffset(dt, TimeSpan.Zero) : DateTimeOffset.UtcNow,
-            Metadata: metadataDirective == CopyObjectMetadataDirective.Replace ? metadata : null,
-            VersionId: response.VersionId,
-            Checksums: BuildChecksums(
-                response.ChecksumCRC32,
-                response.ChecksumCRC32C,
-                response.ChecksumCRC64NVME,
-                response.ChecksumSHA1,
-                response.ChecksumSHA256),
-            CacheControl: metadataDirective == CopyObjectMetadataDirective.Replace ? cacheControl : null,
-            ContentDisposition: metadataDirective == CopyObjectMetadataDirective.Replace ? contentDisposition : null,
-            ContentEncoding: metadataDirective == CopyObjectMetadataDirective.Replace ? contentEncoding : null,
-            ContentLanguage: metadataDirective == CopyObjectMetadataDirective.Replace ? contentLanguage : null,
-            ExpiresUtc: metadataDirective == CopyObjectMetadataDirective.Replace ? expiresUtc : null,
-            ServerSideEncryption: S3ServerSideEncryptionMapper.ToInfo(
-                response.ServerSideEncryptionMethod,
-                response.ServerSideEncryptionKeyManagementServiceKeyId,
-                response.BucketKeyEnabled),
-            CustomerEncryption: S3ServerSideEncryptionMapper.ToCustomerEncryptionInfo(
-                response.ServerSideEncryptionCustomerMethod,
-                response.ServerSideEncryptionCustomerProvidedKeyMD5));
+        catch (Exception ex)
+        {
+            sw.Stop();
+            S3StorageTelemetry.RecordFailure("CopyObject", sw.Elapsed, "UnexpectedError");
+            S3StorageTelemetry.MarkFailure(activity, "UnexpectedError", ex.Message);
+            _logger?.LogError(ex, "S3 {Operation} failed unexpectedly for {BucketName}/{Key}", "CopyObject", destinationBucketName, destinationKey);
+            throw;
+        }
     }
 
     public async Task<MultipartUploadInfo> InitiateMultipartUploadAsync(
@@ -848,49 +1131,77 @@ internal sealed class AwsS3StorageClient : IS3StorageClient
         string? storageClass,
         CancellationToken cancellationToken = default)
     {
-        var request = new InitiateMultipartUploadRequest
-        {
-            BucketName = bucketName,
-            Key = key,
-            ContentType = contentType
-        };
+        using var activity = S3StorageTelemetry.StartActivity("InitiateMultipartUpload", bucketName, key);
+        var sw = Stopwatch.StartNew();
+        _logger?.LogDebug("S3 {Operation} starting for {BucketName}/{Key}", "InitiateMultipartUpload", bucketName, key);
 
-        ApplyStandardObjectHeaders(request.Headers, cacheControl, contentDisposition, contentEncoding, contentLanguage, expiresUtc);
-
-        if (metadata is not null)
+        try
         {
-            foreach (var (name, value) in metadata)
-                request.Metadata[name] = value;
+            var request = new InitiateMultipartUploadRequest
+            {
+                BucketName = bucketName,
+                Key = key,
+                ContentType = contentType
+            };
+
+            ApplyStandardObjectHeaders(request.Headers, cacheControl, contentDisposition, contentEncoding, contentLanguage, expiresUtc);
+
+            if (metadata is not null)
+            {
+                foreach (var (name, value) in metadata)
+                    request.Metadata[name] = value;
+            }
+
+            request.TagSet = BuildTagSet(tags);
+            var sdkChecksumAlgorithm = MapChecksumAlgorithm(checksumAlgorithm);
+            if (sdkChecksumAlgorithm is not null)
+                request.ChecksumAlgorithm = sdkChecksumAlgorithm;
+
+            S3ServerSideEncryptionMapper.ApplyTo(request, serverSideEncryption);
+            S3ServerSideEncryptionMapper.ApplyCustomerEncryption(request, customerEncryption);
+
+            if (!string.IsNullOrWhiteSpace(storageClass))
+                request.StorageClass = new S3StorageClass(storageClass);
+
+            var response = await _s3.InitiateMultipartUploadAsync(request, cancellationToken).ConfigureAwait(false);
+
+            var result = new MultipartUploadInfo
+            {
+                BucketName = bucketName,
+                Key = key,
+                UploadId = response.UploadId,
+                InitiatedAtUtc = DateTimeOffset.UtcNow,
+                ChecksumAlgorithm = NormalizeChecksumAlgorithm(response.ChecksumAlgorithm?.ToString()) ?? NormalizeChecksumAlgorithm(checksumAlgorithm),
+                ServerSideEncryption = S3ServerSideEncryptionMapper.ToInfo(
+                    response.ServerSideEncryptionMethod,
+                    response.ServerSideEncryptionKeyManagementServiceKeyId,
+                    response.BucketKeyEnabled),
+                CustomerEncryption = S3ServerSideEncryptionMapper.ToCustomerEncryptionInfo(
+                    response.ServerSideEncryptionCustomerMethod,
+                    response.ServerSideEncryptionCustomerProvidedKeyMD5)
+            };
+
+            sw.Stop();
+            S3StorageTelemetry.RecordSuccess("InitiateMultipartUpload", sw.Elapsed);
+            _logger?.LogDebug("S3 {Operation} completed in {ElapsedMs}ms for {BucketName}/{Key}", "InitiateMultipartUpload", sw.ElapsedMilliseconds, bucketName, key);
+            return result;
         }
-
-        request.TagSet = BuildTagSet(tags);
-        var sdkChecksumAlgorithm = MapChecksumAlgorithm(checksumAlgorithm);
-        if (sdkChecksumAlgorithm is not null)
-            request.ChecksumAlgorithm = sdkChecksumAlgorithm;
-
-        S3ServerSideEncryptionMapper.ApplyTo(request, serverSideEncryption);
-        S3ServerSideEncryptionMapper.ApplyCustomerEncryption(request, customerEncryption);
-
-        if (!string.IsNullOrWhiteSpace(storageClass))
-            request.StorageClass = new S3StorageClass(storageClass);
-
-        var response = await _s3.InitiateMultipartUploadAsync(request, cancellationToken).ConfigureAwait(false);
-
-        return new MultipartUploadInfo
+        catch (AmazonS3Exception ex)
         {
-            BucketName = bucketName,
-            Key = key,
-            UploadId = response.UploadId,
-            InitiatedAtUtc = DateTimeOffset.UtcNow,
-            ChecksumAlgorithm = NormalizeChecksumAlgorithm(response.ChecksumAlgorithm?.ToString()) ?? NormalizeChecksumAlgorithm(checksumAlgorithm),
-            ServerSideEncryption = S3ServerSideEncryptionMapper.ToInfo(
-                response.ServerSideEncryptionMethod,
-                response.ServerSideEncryptionKeyManagementServiceKeyId,
-                response.BucketKeyEnabled),
-            CustomerEncryption = S3ServerSideEncryptionMapper.ToCustomerEncryptionInfo(
-                response.ServerSideEncryptionCustomerMethod,
-                response.ServerSideEncryptionCustomerProvidedKeyMD5)
-        };
+            sw.Stop();
+            S3StorageTelemetry.RecordFailure("InitiateMultipartUpload", sw.Elapsed, ex.ErrorCode);
+            S3StorageTelemetry.MarkFailure(activity, ex.ErrorCode, ex.Message);
+            _logger?.LogWarning(ex, "S3 {Operation} returned error {ErrorCode}: {Message} for {BucketName}/{Key}", "InitiateMultipartUpload", ex.ErrorCode, ex.Message, bucketName, key);
+            throw;
+        }
+        catch (Exception ex)
+        {
+            sw.Stop();
+            S3StorageTelemetry.RecordFailure("InitiateMultipartUpload", sw.Elapsed, "UnexpectedError");
+            S3StorageTelemetry.MarkFailure(activity, "UnexpectedError", ex.Message);
+            _logger?.LogError(ex, "S3 {Operation} failed unexpectedly for {BucketName}/{Key}", "InitiateMultipartUpload", bucketName, key);
+            throw;
+        }
     }
 
     public async Task<MultipartUploadPart> UploadMultipartPartAsync(
@@ -905,36 +1216,64 @@ internal sealed class AwsS3StorageClient : IS3StorageClient
         ObjectCustomerEncryptionSettings? customerEncryption,
         CancellationToken cancellationToken = default)
     {
-        var request = new UploadPartRequest
+        using var activity = S3StorageTelemetry.StartActivity("UploadPart", bucketName, key);
+        var sw = Stopwatch.StartNew();
+        _logger?.LogDebug("S3 {Operation} starting for {BucketName}/{Key}", "UploadPart", bucketName, key);
+
+        try
         {
-            BucketName = bucketName,
-            Key = key,
-            UploadId = uploadId,
-            PartNumber = partNumber,
-            InputStream = content
-        };
+            var request = new UploadPartRequest
+            {
+                BucketName = bucketName,
+                Key = key,
+                UploadId = uploadId,
+                PartNumber = partNumber,
+                InputStream = content
+            };
 
-        if (contentLength.HasValue)
-            request.PartSize = contentLength.Value;
+            if (contentLength.HasValue)
+                request.PartSize = contentLength.Value;
 
-        ApplyChecksumHeaders(request, checksumAlgorithm, checksums);
-        S3ServerSideEncryptionMapper.ApplyCustomerEncryption(request, customerEncryption);
+            ApplyChecksumHeaders(request, checksumAlgorithm, checksums);
+            S3ServerSideEncryptionMapper.ApplyCustomerEncryption(request, customerEncryption);
 
-        var response = await _s3.UploadPartAsync(request, cancellationToken).ConfigureAwait(false);
+            var response = await _s3.UploadPartAsync(request, cancellationToken).ConfigureAwait(false);
 
-        return new MultipartUploadPart
+            var result = new MultipartUploadPart
+            {
+                PartNumber = response.PartNumber.GetValueOrDefault(partNumber),
+                ETag = response.ETag ?? string.Empty,
+                ContentLength = contentLength ?? 0,
+                LastModifiedUtc = DateTimeOffset.UtcNow,
+                Checksums = BuildChecksums(
+                    response.ChecksumCRC32,
+                    response.ChecksumCRC32C,
+                    response.ChecksumCRC64NVME,
+                    response.ChecksumSHA1,
+                    response.ChecksumSHA256)
+            };
+
+            sw.Stop();
+            S3StorageTelemetry.RecordSuccess("UploadPart", sw.Elapsed);
+            _logger?.LogDebug("S3 {Operation} completed in {ElapsedMs}ms for {BucketName}/{Key}", "UploadPart", sw.ElapsedMilliseconds, bucketName, key);
+            return result;
+        }
+        catch (AmazonS3Exception ex)
         {
-            PartNumber = response.PartNumber.GetValueOrDefault(partNumber),
-            ETag = response.ETag ?? string.Empty,
-            ContentLength = contentLength ?? 0,
-            LastModifiedUtc = DateTimeOffset.UtcNow,
-            Checksums = BuildChecksums(
-                response.ChecksumCRC32,
-                response.ChecksumCRC32C,
-                response.ChecksumCRC64NVME,
-                response.ChecksumSHA1,
-                response.ChecksumSHA256)
-        };
+            sw.Stop();
+            S3StorageTelemetry.RecordFailure("UploadPart", sw.Elapsed, ex.ErrorCode);
+            S3StorageTelemetry.MarkFailure(activity, ex.ErrorCode, ex.Message);
+            _logger?.LogWarning(ex, "S3 {Operation} returned error {ErrorCode}: {Message} for {BucketName}/{Key}", "UploadPart", ex.ErrorCode, ex.Message, bucketName, key);
+            throw;
+        }
+        catch (Exception ex)
+        {
+            sw.Stop();
+            S3StorageTelemetry.RecordFailure("UploadPart", sw.Elapsed, "UnexpectedError");
+            S3StorageTelemetry.MarkFailure(activity, "UnexpectedError", ex.Message);
+            _logger?.LogError(ex, "S3 {Operation} failed unexpectedly for {BucketName}/{Key}", "UploadPart", bucketName, key);
+            throw;
+        }
     }
 
     public async Task<MultipartUploadPart> UploadPartCopyAsync(
@@ -1026,38 +1365,66 @@ internal sealed class AwsS3StorageClient : IS3StorageClient
         IReadOnlyList<MultipartUploadPart> parts,
         CancellationToken cancellationToken = default)
     {
-        var request = new CompleteMultipartUploadRequest
+        using var activity = S3StorageTelemetry.StartActivity("CompleteMultipartUpload", bucketName, key);
+        var sw = Stopwatch.StartNew();
+        _logger?.LogDebug("S3 {Operation} starting for {BucketName}/{Key}", "CompleteMultipartUpload", bucketName, key);
+
+        try
         {
-            BucketName = bucketName,
-            Key = key,
-            UploadId = uploadId
-        };
+            var request = new CompleteMultipartUploadRequest
+            {
+                BucketName = bucketName,
+                Key = key,
+                UploadId = uploadId
+            };
 
-        request.PartETags = parts
-            .OrderBy(static part => part.PartNumber)
-            .Select(CreatePartETag)
-            .ToList();
+            request.PartETags = parts
+                .OrderBy(static part => part.PartNumber)
+                .Select(CreatePartETag)
+                .ToList();
 
-        var response = await _s3.CompleteMultipartUploadAsync(request, cancellationToken).ConfigureAwait(false);
+            var response = await _s3.CompleteMultipartUploadAsync(request, cancellationToken).ConfigureAwait(false);
 
-        return new S3ObjectEntry(
-            Key: key,
-            ContentLength: 0,
-            ContentType: null,
-            ETag: response.ETag,
-            LastModifiedUtc: DateTimeOffset.UtcNow,
-            Metadata: null,
-            VersionId: response.VersionId,
-            Checksums: BuildChecksums(
-                response.ChecksumCRC32,
-                response.ChecksumCRC32C,
-                response.ChecksumCRC64NVME,
-                response.ChecksumSHA1,
-                response.ChecksumSHA256),
-            ServerSideEncryption: S3ServerSideEncryptionMapper.ToInfo(
-                response.ServerSideEncryptionMethod,
-                response.ServerSideEncryptionKeyManagementServiceKeyId,
-                response.BucketKeyEnabled));
+            var result = new S3ObjectEntry(
+                Key: key,
+                ContentLength: 0,
+                ContentType: null,
+                ETag: response.ETag,
+                LastModifiedUtc: DateTimeOffset.UtcNow,
+                Metadata: null,
+                VersionId: response.VersionId,
+                Checksums: BuildChecksums(
+                    response.ChecksumCRC32,
+                    response.ChecksumCRC32C,
+                    response.ChecksumCRC64NVME,
+                    response.ChecksumSHA1,
+                    response.ChecksumSHA256),
+                ServerSideEncryption: S3ServerSideEncryptionMapper.ToInfo(
+                    response.ServerSideEncryptionMethod,
+                    response.ServerSideEncryptionKeyManagementServiceKeyId,
+                    response.BucketKeyEnabled));
+
+            sw.Stop();
+            S3StorageTelemetry.RecordSuccess("CompleteMultipartUpload", sw.Elapsed);
+            _logger?.LogDebug("S3 {Operation} completed in {ElapsedMs}ms for {BucketName}/{Key}", "CompleteMultipartUpload", sw.ElapsedMilliseconds, bucketName, key);
+            return result;
+        }
+        catch (AmazonS3Exception ex)
+        {
+            sw.Stop();
+            S3StorageTelemetry.RecordFailure("CompleteMultipartUpload", sw.Elapsed, ex.ErrorCode);
+            S3StorageTelemetry.MarkFailure(activity, ex.ErrorCode, ex.Message);
+            _logger?.LogWarning(ex, "S3 {Operation} returned error {ErrorCode}: {Message} for {BucketName}/{Key}", "CompleteMultipartUpload", ex.ErrorCode, ex.Message, bucketName, key);
+            throw;
+        }
+        catch (Exception ex)
+        {
+            sw.Stop();
+            S3StorageTelemetry.RecordFailure("CompleteMultipartUpload", sw.Elapsed, "UnexpectedError");
+            S3StorageTelemetry.MarkFailure(activity, "UnexpectedError", ex.Message);
+            _logger?.LogError(ex, "S3 {Operation} failed unexpectedly for {BucketName}/{Key}", "CompleteMultipartUpload", bucketName, key);
+            throw;
+        }
     }
 
     public async Task AbortMultipartUploadAsync(

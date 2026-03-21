@@ -1,6 +1,7 @@
 using IntegratedS3.Abstractions.Services;
 using IntegratedS3.Provider.S3.Internal;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 
 namespace IntegratedS3.Provider.S3.DependencyInjection;
 
@@ -13,9 +14,11 @@ public static class S3StorageServiceCollectionExtensions
 
         Normalize(options);
 
-        services.AddSingleton<IS3StorageClient>(_ => new AwsS3StorageClient(options));
+        services.AddSingleton<IS3StorageClient>(sp =>
+            new AwsS3StorageClient(options, sp.GetRequiredService<ILoggerFactory>().CreateLogger<AwsS3StorageClient>()));
         services.AddSingleton<IStorageBackend>(sp =>
-            new S3StorageService(options, sp.GetRequiredService<IS3StorageClient>()));
+            new S3StorageService(options, sp.GetRequiredService<IS3StorageClient>(),
+            sp.GetRequiredService<ILoggerFactory>().CreateLogger<S3StorageService>()));
         services.AddSingleton<IStorageObjectLocationResolver>(sp =>
             new S3StorageObjectLocationResolver(options, sp.GetRequiredService<IS3StorageClient>()));
 
