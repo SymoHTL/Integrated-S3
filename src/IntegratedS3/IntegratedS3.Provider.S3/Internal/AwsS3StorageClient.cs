@@ -7,6 +7,24 @@ using IntegratedS3.Abstractions.Models;
 using System.Globalization;
 using PutBucketDefaultEncryptionStorageRequest = IntegratedS3.Abstractions.Requests.PutBucketDefaultEncryptionRequest;
 using UploadPartCopyStorageRequest = IntegratedS3.Abstractions.Requests.UploadPartCopyRequest;
+using PutBucketTaggingStorageRequest = IntegratedS3.Abstractions.Requests.PutBucketTaggingRequest;
+using PutBucketLoggingStorageRequest = IntegratedS3.Abstractions.Requests.PutBucketLoggingRequest;
+using PutBucketWebsiteStorageRequest = IntegratedS3.Abstractions.Requests.PutBucketWebsiteRequest;
+using PutBucketRequestPaymentStorageRequest = IntegratedS3.Abstractions.Requests.PutBucketRequestPaymentRequest;
+using PutBucketAccelerateStorageRequest = IntegratedS3.Abstractions.Requests.PutBucketAccelerateRequest;
+using PutBucketLifecycleStorageRequest = IntegratedS3.Abstractions.Requests.PutBucketLifecycleRequest;
+using PutBucketReplicationStorageRequest = IntegratedS3.Abstractions.Requests.PutBucketReplicationRequest;
+using PutBucketNotificationConfigurationStorageRequest = IntegratedS3.Abstractions.Requests.PutBucketNotificationConfigurationRequest;
+using PutObjectLockConfigurationStorageRequest = IntegratedS3.Abstractions.Requests.PutObjectLockConfigurationRequest;
+using ObjectLockConfiguration = IntegratedS3.Abstractions.Models.ObjectLockConfiguration;
+using PutBucketAnalyticsConfigurationStorageRequest = IntegratedS3.Abstractions.Requests.PutBucketAnalyticsConfigurationRequest;
+using PutBucketMetricsConfigurationStorageRequest = IntegratedS3.Abstractions.Requests.PutBucketMetricsConfigurationRequest;
+using PutBucketInventoryConfigurationStorageRequest = IntegratedS3.Abstractions.Requests.PutBucketInventoryConfigurationRequest;
+using PutBucketIntelligentTieringConfigurationStorageRequest = IntegratedS3.Abstractions.Requests.PutBucketIntelligentTieringConfigurationRequest;
+using PutObjectRetentionStorageRequest = IntegratedS3.Abstractions.Requests.PutObjectRetentionRequest;
+using PutObjectLegalHoldStorageRequest = IntegratedS3.Abstractions.Requests.PutObjectLegalHoldRequest;
+using RestoreObjectStorageRequest = IntegratedS3.Abstractions.Requests.RestoreObjectRequest;
+using SelectObjectContentStorageRequest = IntegratedS3.Abstractions.Requests.SelectObjectContentRequest;
 
 namespace IntegratedS3.Provider.S3.Internal;
 
@@ -340,7 +358,8 @@ internal sealed class AwsS3StorageClient : IS3StorageClient
                 ExpiresUtc: ParseExpiresString(response.ExpiresString),
                 ServerSideEncryption: S3ServerSideEncryptionMapper.ToInfo(
                     response.ServerSideEncryptionMethod,
-                    response.ServerSideEncryptionKeyManagementServiceKeyId),
+                    response.ServerSideEncryptionKeyManagementServiceKeyId,
+                    response.BucketKeyEnabled),
                 RetentionMode: S3ObjectLockMapper.ToRetentionMode(response.ObjectLockMode),
                 RetainUntilDateUtc: ToNullableDateTimeOffset(response.ObjectLockRetainUntilDate),
                 LegalHoldStatus: S3ObjectLockMapper.ToLegalHoldStatus(response.ObjectLockLegalHoldStatus),
@@ -459,7 +478,8 @@ internal sealed class AwsS3StorageClient : IS3StorageClient
             ExpiresUtc: ParseExpiresString(response.ExpiresString),
             ServerSideEncryption: S3ServerSideEncryptionMapper.ToInfo(
                 response.ServerSideEncryptionMethod,
-                response.ServerSideEncryptionKeyManagementServiceKeyId),
+                response.ServerSideEncryptionKeyManagementServiceKeyId,
+                response.BucketKeyEnabled),
             RetentionMode: S3ObjectLockMapper.ToRetentionMode(response.ObjectLockMode),
             RetainUntilDateUtc: ToNullableDateTimeOffset(response.ObjectLockRetainUntilDate),
             LegalHoldStatus: S3ObjectLockMapper.ToLegalHoldStatus(response.ObjectLockLegalHoldStatus),
@@ -538,6 +558,9 @@ internal sealed class AwsS3StorageClient : IS3StorageClient
         IReadOnlyDictionary<string, string>? checksums,
         ObjectServerSideEncryptionSettings? serverSideEncryption,
         ObjectCustomerEncryptionSettings? customerEncryption,
+        string? storageClass,
+        string? ifMatchETag,
+        string? ifNoneMatchETag,
         CancellationToken cancellationToken = default)
     {
         var request = new Amazon.S3.Model.PutObjectRequest
@@ -565,6 +588,15 @@ internal sealed class AwsS3StorageClient : IS3StorageClient
         S3ServerSideEncryptionMapper.ApplyTo(request, serverSideEncryption);
         S3ServerSideEncryptionMapper.ApplyCustomerEncryption(request, customerEncryption);
 
+        if (!string.IsNullOrWhiteSpace(storageClass))
+            request.StorageClass = new S3StorageClass(storageClass);
+
+        if (!string.IsNullOrWhiteSpace(ifMatchETag))
+            request.IfMatch = ifMatchETag;
+
+        if (!string.IsNullOrWhiteSpace(ifNoneMatchETag))
+            request.IfNoneMatch = ifNoneMatchETag;
+
         var response = await _s3.PutObjectAsync(request, cancellationToken).ConfigureAwait(false);
 
         return new S3ObjectEntry(
@@ -588,7 +620,8 @@ internal sealed class AwsS3StorageClient : IS3StorageClient
             ExpiresUtc: expiresUtc,
             ServerSideEncryption: S3ServerSideEncryptionMapper.ToInfo(
                 response.ServerSideEncryptionMethod,
-                response.ServerSideEncryptionKeyManagementServiceKeyId),
+                response.ServerSideEncryptionKeyManagementServiceKeyId,
+                response.BucketKeyEnabled),
             CustomerEncryption: S3ServerSideEncryptionMapper.ToCustomerEncryptionInfo(
                 response.ServerSideEncryptionCustomerMethod,
                 response.ServerSideEncryptionCustomerProvidedKeyMD5));
@@ -645,6 +678,7 @@ internal sealed class AwsS3StorageClient : IS3StorageClient
         ObjectServerSideEncryptionSettings? destinationServerSideEncryption,
         ObjectCustomerEncryptionSettings? sourceCustomerEncryption,
         ObjectCustomerEncryptionSettings? destinationCustomerEncryption,
+        string? storageClass,
         CancellationToken cancellationToken = default)
     {
         var request = new CopyObjectRequest
@@ -692,6 +726,9 @@ internal sealed class AwsS3StorageClient : IS3StorageClient
             request.TagSet = BuildTagSet(tags) ?? new List<Tag>();
         }
 
+        if (!string.IsNullOrWhiteSpace(storageClass))
+            request.StorageClass = new S3StorageClass(storageClass);
+
         ApplyChecksumHeaders(request, checksumAlgorithm, checksums);
         S3ServerSideEncryptionMapper.ApplyTo(request, destinationServerSideEncryption);
         S3ServerSideEncryptionMapper.ApplyCopySourceCustomerEncryption(request, sourceCustomerEncryption);
@@ -721,7 +758,8 @@ internal sealed class AwsS3StorageClient : IS3StorageClient
             ExpiresUtc: metadataDirective == CopyObjectMetadataDirective.Replace ? expiresUtc : null,
             ServerSideEncryption: S3ServerSideEncryptionMapper.ToInfo(
                 response.ServerSideEncryptionMethod,
-                response.ServerSideEncryptionKeyManagementServiceKeyId),
+                response.ServerSideEncryptionKeyManagementServiceKeyId,
+                response.BucketKeyEnabled),
             CustomerEncryption: S3ServerSideEncryptionMapper.ToCustomerEncryptionInfo(
                 response.ServerSideEncryptionCustomerMethod,
                 response.ServerSideEncryptionCustomerProvidedKeyMD5));
@@ -741,6 +779,7 @@ internal sealed class AwsS3StorageClient : IS3StorageClient
         string? checksumAlgorithm,
         ObjectServerSideEncryptionSettings? serverSideEncryption,
         ObjectCustomerEncryptionSettings? customerEncryption,
+        string? storageClass,
         CancellationToken cancellationToken = default)
     {
         var request = new InitiateMultipartUploadRequest
@@ -766,6 +805,9 @@ internal sealed class AwsS3StorageClient : IS3StorageClient
         S3ServerSideEncryptionMapper.ApplyTo(request, serverSideEncryption);
         S3ServerSideEncryptionMapper.ApplyCustomerEncryption(request, customerEncryption);
 
+        if (!string.IsNullOrWhiteSpace(storageClass))
+            request.StorageClass = new S3StorageClass(storageClass);
+
         var response = await _s3.InitiateMultipartUploadAsync(request, cancellationToken).ConfigureAwait(false);
 
         return new MultipartUploadInfo
@@ -777,7 +819,8 @@ internal sealed class AwsS3StorageClient : IS3StorageClient
             ChecksumAlgorithm = NormalizeChecksumAlgorithm(response.ChecksumAlgorithm?.ToString()) ?? NormalizeChecksumAlgorithm(checksumAlgorithm),
             ServerSideEncryption = S3ServerSideEncryptionMapper.ToInfo(
                 response.ServerSideEncryptionMethod,
-                response.ServerSideEncryptionKeyManagementServiceKeyId),
+                response.ServerSideEncryptionKeyManagementServiceKeyId,
+                response.BucketKeyEnabled),
             CustomerEncryption = S3ServerSideEncryptionMapper.ToCustomerEncryptionInfo(
                 response.ServerSideEncryptionCustomerMethod,
                 response.ServerSideEncryptionCustomerProvidedKeyMD5)
@@ -947,7 +990,8 @@ internal sealed class AwsS3StorageClient : IS3StorageClient
                 response.ChecksumSHA256),
             ServerSideEncryption: S3ServerSideEncryptionMapper.ToInfo(
                 response.ServerSideEncryptionMethod,
-                response.ServerSideEncryptionKeyManagementServiceKeyId));
+                response.ServerSideEncryptionKeyManagementServiceKeyId,
+                response.BucketKeyEnabled));
     }
 
     public async Task AbortMultipartUploadAsync(
@@ -1051,6 +1095,868 @@ internal sealed class AwsS3StorageClient : IS3StorageClient
     }
 
     // -------------------------------------------------------------------------
+    // Bucket Tagging
+    // -------------------------------------------------------------------------
+
+    public async Task<BucketTaggingConfiguration> GetBucketTaggingAsync(string bucketName, CancellationToken cancellationToken = default)
+    {
+        var request = new Amazon.S3.Model.GetBucketTaggingRequest { BucketName = bucketName };
+        var response = await _s3.GetBucketTaggingAsync(request, cancellationToken).ConfigureAwait(false);
+        return new BucketTaggingConfiguration
+        {
+            BucketName = bucketName,
+            Tags = (response.TagSet ?? []).ToDictionary(t => t.Key, t => t.Value, StringComparer.Ordinal)
+        };
+    }
+
+    public async Task<BucketTaggingConfiguration> PutBucketTaggingAsync(PutBucketTaggingStorageRequest request, CancellationToken cancellationToken = default)
+    {
+        var sdkRequest = new Amazon.S3.Model.PutBucketTaggingRequest
+        {
+            BucketName = request.BucketName,
+            TagSet = request.Tags.Select(kvp => new Tag { Key = kvp.Key, Value = kvp.Value }).ToList()
+        };
+        await _s3.PutBucketTaggingAsync(sdkRequest, cancellationToken).ConfigureAwait(false);
+        return new BucketTaggingConfiguration
+        {
+            BucketName = request.BucketName,
+            Tags = request.Tags
+        };
+    }
+
+    public async Task DeleteBucketTaggingAsync(string bucketName, CancellationToken cancellationToken = default)
+    {
+        var request = new Amazon.S3.Model.DeleteBucketTaggingRequest { BucketName = bucketName };
+        await _s3.DeleteBucketTaggingAsync(request, cancellationToken).ConfigureAwait(false);
+    }
+
+    // -------------------------------------------------------------------------
+    // Bucket Logging
+    // -------------------------------------------------------------------------
+
+    public async Task<BucketLoggingConfiguration> GetBucketLoggingAsync(string bucketName, CancellationToken cancellationToken = default)
+    {
+        var request = new Amazon.S3.Model.GetBucketLoggingRequest { BucketName = bucketName };
+        var response = await _s3.GetBucketLoggingAsync(request, cancellationToken).ConfigureAwait(false);
+        return new BucketLoggingConfiguration
+        {
+            BucketName = bucketName,
+            TargetBucket = response.BucketLoggingConfig?.TargetBucketName,
+            TargetPrefix = response.BucketLoggingConfig?.TargetPrefix
+        };
+    }
+
+    public async Task<BucketLoggingConfiguration> PutBucketLoggingAsync(PutBucketLoggingStorageRequest request, CancellationToken cancellationToken = default)
+    {
+        var sdkRequest = new Amazon.S3.Model.PutBucketLoggingRequest
+        {
+            BucketName = request.BucketName,
+            LoggingConfig = new S3BucketLoggingConfig
+            {
+                TargetBucketName = request.TargetBucket,
+                TargetPrefix = request.TargetPrefix
+            }
+        };
+        await _s3.PutBucketLoggingAsync(sdkRequest, cancellationToken).ConfigureAwait(false);
+        return new BucketLoggingConfiguration
+        {
+            BucketName = request.BucketName,
+            TargetBucket = request.TargetBucket,
+            TargetPrefix = request.TargetPrefix
+        };
+    }
+
+    // -------------------------------------------------------------------------
+    // Bucket Website
+    // -------------------------------------------------------------------------
+
+    public async Task<BucketWebsiteConfiguration> GetBucketWebsiteAsync(string bucketName, CancellationToken cancellationToken = default)
+    {
+        var request = new Amazon.S3.Model.GetBucketWebsiteRequest { BucketName = bucketName };
+        var response = await _s3.GetBucketWebsiteAsync(request, cancellationToken).ConfigureAwait(false);
+        return new BucketWebsiteConfiguration
+        {
+            BucketName = bucketName,
+            IndexDocumentSuffix = response.WebsiteConfiguration?.IndexDocumentSuffix,
+            ErrorDocumentKey = response.WebsiteConfiguration?.ErrorDocument,
+            RedirectAllRequestsTo = response.WebsiteConfiguration?.RedirectAllRequestsTo is { } redirect
+                ? new BucketWebsiteRedirectAllRequestsTo
+                {
+                    HostName = redirect.HostName,
+                    Protocol = redirect.Protocol
+                }
+                : null,
+            RoutingRules = (response.WebsiteConfiguration?.RoutingRules ?? []).Select(r => new BucketWebsiteRoutingRule
+            {
+                Condition = r.Condition is not null
+                    ? new BucketWebsiteRoutingRuleCondition
+                    {
+                        KeyPrefixEquals = r.Condition.KeyPrefixEquals,
+                        HttpErrorCodeReturnedEquals = int.TryParse(r.Condition.HttpErrorCodeReturnedEquals, out var code) ? code : null
+                    }
+                    : null,
+                Redirect = new BucketWebsiteRoutingRuleRedirect
+                {
+                    HostName = r.Redirect?.HostName,
+                    Protocol = r.Redirect?.Protocol,
+                    ReplaceKeyPrefixWith = r.Redirect?.ReplaceKeyPrefixWith,
+                    ReplaceKeyWith = r.Redirect?.ReplaceKeyWith,
+                    HttpRedirectCode = r.Redirect?.HttpRedirectCode is { } hrc
+                        ? int.TryParse(hrc, out var hrcCode) ? hrcCode : null
+                        : null
+                }
+            }).ToArray()
+        };
+    }
+
+    public async Task<BucketWebsiteConfiguration> PutBucketWebsiteAsync(PutBucketWebsiteStorageRequest request, CancellationToken cancellationToken = default)
+    {
+        var websiteConfig = new WebsiteConfiguration
+        {
+            IndexDocumentSuffix = request.IndexDocumentSuffix,
+            ErrorDocument = request.ErrorDocumentKey
+        };
+        if (request.RedirectAllRequestsTo is { } rart)
+        {
+            websiteConfig.RedirectAllRequestsTo = new RoutingRuleRedirect
+            {
+                HostName = rart.HostName,
+                Protocol = rart.Protocol
+            };
+        }
+        if (request.RoutingRules.Count > 0)
+        {
+            websiteConfig.RoutingRules = request.RoutingRules.Select(r => new RoutingRule
+            {
+                Condition = r.Condition is not null
+                    ? new RoutingRuleCondition
+                    {
+                        KeyPrefixEquals = r.Condition.KeyPrefixEquals,
+                        HttpErrorCodeReturnedEquals = r.Condition.HttpErrorCodeReturnedEquals?.ToString()
+                    }
+                    : null,
+                Redirect = new RoutingRuleRedirect
+                {
+                    HostName = r.Redirect.HostName,
+                    Protocol = r.Redirect.Protocol,
+                    ReplaceKeyPrefixWith = r.Redirect.ReplaceKeyPrefixWith,
+                    ReplaceKeyWith = r.Redirect.ReplaceKeyWith,
+                    HttpRedirectCode = r.Redirect.HttpRedirectCode?.ToString()
+                }
+            }).ToList();
+        }
+        var sdkRequest = new Amazon.S3.Model.PutBucketWebsiteRequest
+        {
+            BucketName = request.BucketName,
+            WebsiteConfiguration = websiteConfig
+        };
+        await _s3.PutBucketWebsiteAsync(sdkRequest, cancellationToken).ConfigureAwait(false);
+        return new BucketWebsiteConfiguration
+        {
+            BucketName = request.BucketName,
+            IndexDocumentSuffix = request.IndexDocumentSuffix,
+            ErrorDocumentKey = request.ErrorDocumentKey,
+            RedirectAllRequestsTo = request.RedirectAllRequestsTo,
+            RoutingRules = request.RoutingRules
+        };
+    }
+
+    public async Task DeleteBucketWebsiteAsync(string bucketName, CancellationToken cancellationToken = default)
+    {
+        var request = new Amazon.S3.Model.DeleteBucketWebsiteRequest { BucketName = bucketName };
+        await _s3.DeleteBucketWebsiteAsync(request, cancellationToken).ConfigureAwait(false);
+    }
+
+    // -------------------------------------------------------------------------
+    // Bucket Request Payment
+    // -------------------------------------------------------------------------
+
+    public async Task<BucketRequestPaymentConfiguration> GetBucketRequestPaymentAsync(string bucketName, CancellationToken cancellationToken = default)
+    {
+        var request = new Amazon.S3.Model.GetBucketRequestPaymentRequest { BucketName = bucketName };
+        var response = await _s3.GetBucketRequestPaymentAsync(request, cancellationToken).ConfigureAwait(false);
+        var payer = string.Equals(response.Payer, "Requester", StringComparison.OrdinalIgnoreCase)
+            ? BucketPayer.Requester
+            : BucketPayer.BucketOwner;
+        return new BucketRequestPaymentConfiguration { BucketName = bucketName, Payer = payer };
+    }
+
+    public async Task<BucketRequestPaymentConfiguration> PutBucketRequestPaymentAsync(PutBucketRequestPaymentStorageRequest request, CancellationToken cancellationToken = default)
+    {
+        var sdkRequest = new Amazon.S3.Model.PutBucketRequestPaymentRequest
+        {
+            BucketName = request.BucketName,
+            RequestPaymentConfiguration = new RequestPaymentConfiguration
+            {
+                Payer = request.Payer == BucketPayer.Requester ? "Requester" : "BucketOwner"
+            }
+        };
+        await _s3.PutBucketRequestPaymentAsync(sdkRequest, cancellationToken).ConfigureAwait(false);
+        return new BucketRequestPaymentConfiguration { BucketName = request.BucketName, Payer = request.Payer };
+    }
+
+    // -------------------------------------------------------------------------
+    // Bucket Accelerate
+    // -------------------------------------------------------------------------
+
+    public async Task<BucketAccelerateConfiguration> GetBucketAccelerateAsync(string bucketName, CancellationToken cancellationToken = default)
+    {
+        var request = new GetBucketAccelerateConfigurationRequest { BucketName = bucketName };
+        var response = await _s3.GetBucketAccelerateConfigurationAsync(request, cancellationToken).ConfigureAwait(false);
+        var status = string.Equals(response.Status, "Enabled", StringComparison.OrdinalIgnoreCase)
+            ? Abstractions.Models.BucketAccelerateStatus.Enabled
+            : Abstractions.Models.BucketAccelerateStatus.Suspended;
+        return new BucketAccelerateConfiguration { BucketName = bucketName, Status = status };
+    }
+
+    public async Task<BucketAccelerateConfiguration> PutBucketAccelerateAsync(PutBucketAccelerateStorageRequest request, CancellationToken cancellationToken = default)
+    {
+        var sdkRequest = new PutBucketAccelerateConfigurationRequest
+        {
+            BucketName = request.BucketName,
+            AccelerateConfiguration = new AccelerateConfiguration
+            {
+                Status = request.Status == Abstractions.Models.BucketAccelerateStatus.Enabled ? "Enabled" : "Suspended"
+            }
+        };
+        await _s3.PutBucketAccelerateConfigurationAsync(sdkRequest, cancellationToken).ConfigureAwait(false);
+        return new BucketAccelerateConfiguration { BucketName = request.BucketName, Status = request.Status };
+    }
+
+    // -------------------------------------------------------------------------
+    // Bucket Lifecycle
+    // -------------------------------------------------------------------------
+
+    public async Task<BucketLifecycleConfiguration> GetBucketLifecycleAsync(string bucketName, CancellationToken cancellationToken = default)
+    {
+        var request = new GetLifecycleConfigurationRequest { BucketName = bucketName };
+        var response = await _s3.GetLifecycleConfigurationAsync(request, cancellationToken).ConfigureAwait(false);
+        return new BucketLifecycleConfiguration
+        {
+            BucketName = bucketName,
+            Rules = (response.Configuration?.Rules ?? []).Select(MapLifecycleRule).ToArray()
+        };
+    }
+
+    public async Task<BucketLifecycleConfiguration> PutBucketLifecycleAsync(PutBucketLifecycleStorageRequest request, CancellationToken cancellationToken = default)
+    {
+        var sdkRequest = new PutLifecycleConfigurationRequest
+        {
+            BucketName = request.BucketName,
+            Configuration = new LifecycleConfiguration
+            {
+                Rules = request.Rules.Select(MapLifecycleRuleToSdk).ToList()
+            }
+        };
+        await _s3.PutLifecycleConfigurationAsync(sdkRequest, cancellationToken).ConfigureAwait(false);
+        return new BucketLifecycleConfiguration { BucketName = request.BucketName, Rules = request.Rules };
+    }
+
+    public async Task DeleteBucketLifecycleAsync(string bucketName, CancellationToken cancellationToken = default)
+    {
+        var request = new DeleteLifecycleConfigurationRequest { BucketName = bucketName };
+        await _s3.DeleteLifecycleConfigurationAsync(request, cancellationToken).ConfigureAwait(false);
+    }
+
+    // -------------------------------------------------------------------------
+    // Bucket Replication
+    // -------------------------------------------------------------------------
+
+    public async Task<BucketReplicationConfiguration> GetBucketReplicationAsync(string bucketName, CancellationToken cancellationToken = default)
+    {
+        var request = new Amazon.S3.Model.GetBucketReplicationRequest { BucketName = bucketName };
+        var response = await _s3.GetBucketReplicationAsync(request, cancellationToken).ConfigureAwait(false);
+        return new BucketReplicationConfiguration
+        {
+            BucketName = bucketName,
+            Role = response.Configuration?.Role,
+            Rules = (response.Configuration?.Rules ?? []).Select(r => new BucketReplicationRule
+            {
+                Id = r.Id,
+                Status = string.Equals(r.Status?.Value, "Enabled", StringComparison.OrdinalIgnoreCase)
+                    ? BucketReplicationRuleStatus.Enabled
+                    : BucketReplicationRuleStatus.Disabled,
+                FilterPrefix = r.Filter?.Prefix,
+                Destination = new BucketReplicationDestination
+                {
+                    Bucket = r.Destination?.BucketArn ?? string.Empty,
+                    StorageClass = r.Destination?.StorageClass?.Value,
+                    Account = r.Destination?.AccountId
+                },
+                Priority = r.Priority,
+                DeleteMarkerReplication = string.Equals(r.DeleteMarkerReplication?.Status?.Value, "Enabled", StringComparison.OrdinalIgnoreCase)
+            }).ToArray()
+        };
+    }
+
+    public async Task<BucketReplicationConfiguration> PutBucketReplicationAsync(PutBucketReplicationStorageRequest request, CancellationToken cancellationToken = default)
+    {
+        var sdkRequest = new Amazon.S3.Model.PutBucketReplicationRequest
+        {
+            BucketName = request.BucketName,
+            Configuration = new Amazon.S3.Model.ReplicationConfiguration
+            {
+                Role = request.Role,
+                Rules = request.Rules.Select(r => new Amazon.S3.Model.ReplicationRule
+                {
+                    Id = r.Id,
+                    Status = r.Status == BucketReplicationRuleStatus.Enabled
+                        ? ReplicationRuleStatus.Enabled
+                        : ReplicationRuleStatus.Disabled,
+                    Filter = new ReplicationRuleFilter { Prefix = r.FilterPrefix },
+                    Destination = new Amazon.S3.Model.ReplicationDestination
+                    {
+                        BucketArn = r.Destination.Bucket,
+                        StorageClass = !string.IsNullOrWhiteSpace(r.Destination.StorageClass)
+                            ? new S3StorageClass(r.Destination.StorageClass)
+                            : null,
+                        AccountId = r.Destination.Account
+                    },
+                    Priority = r.Priority ?? 0,
+                    DeleteMarkerReplication = new DeleteMarkerReplication
+                    {
+                        Status = r.DeleteMarkerReplication
+                            ? DeleteMarkerReplicationStatus.Enabled
+                            : DeleteMarkerReplicationStatus.Disabled
+                    }
+                }).ToList()
+            }
+        };
+        await _s3.PutBucketReplicationAsync(sdkRequest, cancellationToken).ConfigureAwait(false);
+        return new BucketReplicationConfiguration
+        {
+            BucketName = request.BucketName,
+            Role = request.Role,
+            Rules = request.Rules
+        };
+    }
+
+    public async Task DeleteBucketReplicationAsync(string bucketName, CancellationToken cancellationToken = default)
+    {
+        var request = new Amazon.S3.Model.DeleteBucketReplicationRequest { BucketName = bucketName };
+        await _s3.DeleteBucketReplicationAsync(request, cancellationToken).ConfigureAwait(false);
+    }
+
+    // -------------------------------------------------------------------------
+    // Bucket Notifications
+    // -------------------------------------------------------------------------
+
+    public async Task<BucketNotificationConfiguration> GetBucketNotificationConfigurationAsync(string bucketName, CancellationToken cancellationToken = default)
+    {
+        var request = new Amazon.S3.Model.GetBucketNotificationRequest { BucketName = bucketName };
+        var response = await _s3.GetBucketNotificationAsync(request, cancellationToken).ConfigureAwait(false);
+        return new BucketNotificationConfiguration
+        {
+            BucketName = bucketName,
+            TopicConfigurations = (response.TopicConfigurations ?? []).Select(t => new BucketNotificationTopicConfiguration
+            {
+                Id = t.Id,
+                TopicArn = t.Topic ?? string.Empty,
+                Events = (t.Events ?? []).Select(e => e.Value).ToArray(),
+                Filter = MapNotificationFilter(t.Filter)
+            }).ToArray(),
+            QueueConfigurations = (response.QueueConfigurations ?? []).Select(q => new BucketNotificationQueueConfiguration
+            {
+                Id = q.Id,
+                QueueArn = q.Queue ?? string.Empty,
+                Events = (q.Events ?? []).Select(e => e.Value).ToArray(),
+                Filter = MapNotificationFilter(q.Filter)
+            }).ToArray(),
+            LambdaFunctionConfigurations = (response.LambdaFunctionConfigurations ?? []).Select(l => new BucketNotificationLambdaConfiguration
+            {
+                Id = l.Id,
+                LambdaFunctionArn = l.FunctionArn ?? string.Empty,
+                Events = (l.Events ?? []).Select(e => e.Value).ToArray(),
+                Filter = MapNotificationFilter(l.Filter)
+            }).ToArray()
+        };
+    }
+
+    public async Task<BucketNotificationConfiguration> PutBucketNotificationConfigurationAsync(PutBucketNotificationConfigurationStorageRequest request, CancellationToken cancellationToken = default)
+    {
+        var sdkRequest = new Amazon.S3.Model.PutBucketNotificationRequest
+        {
+            BucketName = request.BucketName,
+            TopicConfigurations = request.TopicConfigurations.Select(t => new TopicConfiguration
+            {
+                Id = t.Id,
+                Topic = t.TopicArn,
+                Events = t.Events.Select(e => new EventType(e)).ToList(),
+                Filter = MapNotificationFilterToSdk(t.Filter)
+            }).ToList(),
+            QueueConfigurations = request.QueueConfigurations.Select(q => new QueueConfiguration
+            {
+                Id = q.Id,
+                Queue = q.QueueArn,
+                Events = q.Events.Select(e => new EventType(e)).ToList(),
+                Filter = MapNotificationFilterToSdk(q.Filter)
+            }).ToList(),
+            LambdaFunctionConfigurations = request.LambdaFunctionConfigurations.Select(l => new LambdaFunctionConfiguration
+            {
+                Id = l.Id,
+                FunctionArn = l.LambdaFunctionArn,
+                Events = l.Events.Select(e => new EventType(e)).ToList(),
+                Filter = MapNotificationFilterToSdk(l.Filter)
+            }).ToList()
+        };
+        await _s3.PutBucketNotificationAsync(sdkRequest, cancellationToken).ConfigureAwait(false);
+        return new BucketNotificationConfiguration
+        {
+            BucketName = request.BucketName,
+            TopicConfigurations = request.TopicConfigurations,
+            QueueConfigurations = request.QueueConfigurations,
+            LambdaFunctionConfigurations = request.LambdaFunctionConfigurations
+        };
+    }
+
+    // -------------------------------------------------------------------------
+    // Object Lock Configuration (bucket-level)
+    // -------------------------------------------------------------------------
+
+    public async Task<ObjectLockConfiguration> GetObjectLockConfigurationAsync(string bucketName, CancellationToken cancellationToken = default)
+    {
+        var request = new Amazon.S3.Model.GetObjectLockConfigurationRequest { BucketName = bucketName };
+        var response = await _s3.GetObjectLockConfigurationAsync(request, cancellationToken).ConfigureAwait(false);
+        var cfg = response.ObjectLockConfiguration;
+        return new ObjectLockConfiguration
+        {
+            BucketName = bucketName,
+            ObjectLockEnabled = cfg?.ObjectLockEnabled == ObjectLockEnabled.Enabled,
+            DefaultRetention = cfg?.Rule?.DefaultRetention is { } dr
+                ? new ObjectLockDefaultRetention
+                {
+                    Mode = S3ObjectLockMapper.ToRetentionMode(dr.Mode) ?? ObjectRetentionMode.Compliance,
+                    Days = dr.Days > 0 ? dr.Days : null,
+                    Years = dr.Years > 0 ? dr.Years : null
+                }
+                : null
+        };
+    }
+
+    public async Task<ObjectLockConfiguration> PutObjectLockConfigurationAsync(PutObjectLockConfigurationStorageRequest request, CancellationToken cancellationToken = default)
+    {
+        var sdkConfig = new Amazon.S3.Model.ObjectLockConfiguration
+        {
+            ObjectLockEnabled = request.ObjectLockEnabled ? ObjectLockEnabled.Enabled : new ObjectLockEnabled("Disabled")
+        };
+        if (request.DefaultRetention is { } retention)
+        {
+            sdkConfig.Rule = new ObjectLockRule
+            {
+                DefaultRetention = new DefaultRetention
+                {
+                    Mode = retention.Mode == ObjectRetentionMode.Governance
+                        ? ObjectLockRetentionMode.Governance
+                        : ObjectLockRetentionMode.Compliance,
+                    Days = retention.Days ?? 0,
+                    Years = retention.Years ?? 0
+                }
+            };
+        }
+        var sdkRequest = new Amazon.S3.Model.PutObjectLockConfigurationRequest
+        {
+            BucketName = request.BucketName,
+            ObjectLockConfiguration = sdkConfig
+        };
+        await _s3.PutObjectLockConfigurationAsync(sdkRequest, cancellationToken).ConfigureAwait(false);
+        return new ObjectLockConfiguration
+        {
+            BucketName = request.BucketName,
+            ObjectLockEnabled = request.ObjectLockEnabled,
+            DefaultRetention = request.DefaultRetention
+        };
+    }
+
+    // -------------------------------------------------------------------------
+    // Bucket Analytics
+    // -------------------------------------------------------------------------
+
+    public async Task<BucketAnalyticsConfiguration> GetBucketAnalyticsConfigurationAsync(string bucketName, string id, CancellationToken cancellationToken = default)
+    {
+        var request = new Amazon.S3.Model.GetBucketAnalyticsConfigurationRequest { BucketName = bucketName, AnalyticsId = id };
+        var response = await _s3.GetBucketAnalyticsConfigurationAsync(request, cancellationToken).ConfigureAwait(false);
+        var cfg = response.AnalyticsConfiguration;
+        return MapAnalyticsConfigurationFromSdk(bucketName, cfg);
+    }
+
+    public async Task<BucketAnalyticsConfiguration> PutBucketAnalyticsConfigurationAsync(PutBucketAnalyticsConfigurationStorageRequest request, CancellationToken cancellationToken = default)
+    {
+        var sdkConfig = new Amazon.S3.Model.AnalyticsConfiguration
+        {
+            AnalyticsId = request.Id,
+            AnalyticsFilter = new AnalyticsFilter { AnalyticsFilterPredicate = !string.IsNullOrWhiteSpace(request.FilterPrefix) ? new AnalyticsPrefixPredicate(request.FilterPrefix) : null },
+            StorageClassAnalysis = request.StorageClassAnalysis is { DataExport: { } dataExport }
+                ? new Amazon.S3.Model.StorageClassAnalysis
+                {
+                    DataExport = new StorageClassAnalysisDataExport
+                    {
+                        OutputSchemaVersion = new StorageClassAnalysisSchemaVersion(dataExport.OutputSchemaVersion),
+                        Destination = dataExport.Destination is { } dest
+                            ? new AnalyticsExportDestination
+                            {
+                                S3BucketDestination = new AnalyticsS3BucketDestination
+                                {
+                                    Format = new AnalyticsS3ExportFileFormat(dest.Format),
+                                    BucketAccountId = dest.BucketAccountId,
+                                    BucketName = dest.Bucket,
+                                    Prefix = dest.Prefix
+                                }
+                            }
+                            : null
+                    }
+                }
+                : null
+        };
+        var sdkRequest = new Amazon.S3.Model.PutBucketAnalyticsConfigurationRequest
+        {
+            BucketName = request.BucketName,
+            AnalyticsConfiguration = sdkConfig
+        };
+        await _s3.PutBucketAnalyticsConfigurationAsync(sdkRequest, cancellationToken).ConfigureAwait(false);
+        return new BucketAnalyticsConfiguration
+        {
+            BucketName = request.BucketName,
+            Id = request.Id,
+            FilterPrefix = request.FilterPrefix,
+            FilterTags = request.FilterTags,
+            StorageClassAnalysis = request.StorageClassAnalysis
+        };
+    }
+
+    public async Task DeleteBucketAnalyticsConfigurationAsync(string bucketName, string id, CancellationToken cancellationToken = default)
+    {
+        var request = new Amazon.S3.Model.DeleteBucketAnalyticsConfigurationRequest { BucketName = bucketName, AnalyticsId = id };
+        await _s3.DeleteBucketAnalyticsConfigurationAsync(request, cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<IReadOnlyList<BucketAnalyticsConfiguration>> ListBucketAnalyticsConfigurationsAsync(string bucketName, CancellationToken cancellationToken = default)
+    {
+        var request = new Amazon.S3.Model.ListBucketAnalyticsConfigurationsRequest { BucketName = bucketName };
+        var response = await _s3.ListBucketAnalyticsConfigurationsAsync(request, cancellationToken).ConfigureAwait(false);
+        return response.AnalyticsConfigurationList
+            .Select(cfg => MapAnalyticsConfigurationFromSdk(bucketName, cfg))
+            .ToList();
+    }
+
+    // -------------------------------------------------------------------------
+    // Bucket Metrics
+    // -------------------------------------------------------------------------
+
+    public async Task<BucketMetricsConfiguration> GetBucketMetricsConfigurationAsync(string bucketName, string id, CancellationToken cancellationToken = default)
+    {
+        var request = new Amazon.S3.Model.GetBucketMetricsConfigurationRequest { BucketName = bucketName, MetricsId = id };
+        var response = await _s3.GetBucketMetricsConfigurationAsync(request, cancellationToken).ConfigureAwait(false);
+        var cfg = response.MetricsConfiguration;
+        return MapMetricsConfigurationFromSdk(bucketName, cfg);
+    }
+
+    public async Task<BucketMetricsConfiguration> PutBucketMetricsConfigurationAsync(PutBucketMetricsConfigurationStorageRequest request, CancellationToken cancellationToken = default)
+    {
+        var sdkConfig = new Amazon.S3.Model.MetricsConfiguration
+        {
+            MetricsId = request.Id
+        };
+        if (request.Filter is { } filter)
+        {
+            sdkConfig.MetricsFilter = new MetricsFilter
+            {
+                MetricsFilterPredicate = !string.IsNullOrWhiteSpace(filter.Prefix)
+                    ? new MetricsPrefixPredicate(filter.Prefix)
+                    : null
+            };
+        }
+        var sdkRequest = new Amazon.S3.Model.PutBucketMetricsConfigurationRequest
+        {
+            BucketName = request.BucketName,
+            MetricsConfiguration = sdkConfig
+        };
+        await _s3.PutBucketMetricsConfigurationAsync(sdkRequest, cancellationToken).ConfigureAwait(false);
+        return new BucketMetricsConfiguration
+        {
+            BucketName = request.BucketName,
+            Id = request.Id,
+            Filter = request.Filter
+        };
+    }
+
+    public async Task DeleteBucketMetricsConfigurationAsync(string bucketName, string id, CancellationToken cancellationToken = default)
+    {
+        var request = new Amazon.S3.Model.DeleteBucketMetricsConfigurationRequest { BucketName = bucketName, MetricsId = id };
+        await _s3.DeleteBucketMetricsConfigurationAsync(request, cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<IReadOnlyList<BucketMetricsConfiguration>> ListBucketMetricsConfigurationsAsync(string bucketName, CancellationToken cancellationToken = default)
+    {
+        var request = new Amazon.S3.Model.ListBucketMetricsConfigurationsRequest { BucketName = bucketName };
+        var response = await _s3.ListBucketMetricsConfigurationsAsync(request, cancellationToken).ConfigureAwait(false);
+        return response.MetricsConfigurationList
+            .Select(cfg => MapMetricsConfigurationFromSdk(bucketName, cfg))
+            .ToList();
+    }
+
+    // -------------------------------------------------------------------------
+    // Bucket Inventory
+    // -------------------------------------------------------------------------
+
+    public async Task<BucketInventoryConfiguration> GetBucketInventoryConfigurationAsync(string bucketName, string id, CancellationToken cancellationToken = default)
+    {
+        var request = new Amazon.S3.Model.GetBucketInventoryConfigurationRequest { BucketName = bucketName, InventoryId = id };
+        var response = await _s3.GetBucketInventoryConfigurationAsync(request, cancellationToken).ConfigureAwait(false);
+        var cfg = response.InventoryConfiguration;
+        return MapInventoryConfigurationFromSdk(bucketName, cfg);
+    }
+
+    public async Task<BucketInventoryConfiguration> PutBucketInventoryConfigurationAsync(PutBucketInventoryConfigurationStorageRequest request, CancellationToken cancellationToken = default)
+    {
+        var sdkConfig = new Amazon.S3.Model.InventoryConfiguration
+        {
+            InventoryId = request.Id,
+            IsEnabled = request.IsEnabled,
+            IncludedObjectVersions = new InventoryIncludedObjectVersions(request.IncludedObjectVersions),
+            InventoryOptionalFields = request.OptionalFields.Select(f => new InventoryOptionalField(f)).ToList(),
+            Schedule = request.Schedule is { } sched
+                ? new InventorySchedule { Frequency = new InventoryFrequency(sched.Frequency) }
+                : null,
+            InventoryFilter = request.Filter is { Prefix: { } prefix }
+                ? new InventoryFilter { InventoryFilterPredicate = new InventoryPrefixPredicate(prefix) }
+                : null,
+            Destination = request.Destination is { S3BucketDestination: { } s3Dest }
+                ? new InventoryDestination
+                {
+                    S3BucketDestination = new InventoryS3BucketDestination
+                    {
+                        InventoryFormat = new InventoryFormat(s3Dest.Format),
+                        AccountId = s3Dest.AccountId,
+                        BucketName = s3Dest.Bucket,
+                        Prefix = s3Dest.Prefix
+                    }
+                }
+                : null
+        };
+        var sdkRequest = new Amazon.S3.Model.PutBucketInventoryConfigurationRequest
+        {
+            BucketName = request.BucketName,
+            InventoryConfiguration = sdkConfig
+        };
+        await _s3.PutBucketInventoryConfigurationAsync(sdkRequest, cancellationToken).ConfigureAwait(false);
+        return new BucketInventoryConfiguration
+        {
+            BucketName = request.BucketName,
+            Id = request.Id,
+            IsEnabled = request.IsEnabled,
+            Destination = request.Destination,
+            Schedule = request.Schedule,
+            Filter = request.Filter,
+            IncludedObjectVersions = request.IncludedObjectVersions,
+            OptionalFields = request.OptionalFields
+        };
+    }
+
+    public async Task DeleteBucketInventoryConfigurationAsync(string bucketName, string id, CancellationToken cancellationToken = default)
+    {
+        var request = new Amazon.S3.Model.DeleteBucketInventoryConfigurationRequest { BucketName = bucketName, InventoryId = id };
+        await _s3.DeleteBucketInventoryConfigurationAsync(request, cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<IReadOnlyList<BucketInventoryConfiguration>> ListBucketInventoryConfigurationsAsync(string bucketName, CancellationToken cancellationToken = default)
+    {
+        var request = new Amazon.S3.Model.ListBucketInventoryConfigurationsRequest { BucketName = bucketName };
+        var response = await _s3.ListBucketInventoryConfigurationsAsync(request, cancellationToken).ConfigureAwait(false);
+        return response.InventoryConfigurationList
+            .Select(cfg => MapInventoryConfigurationFromSdk(bucketName, cfg))
+            .ToList();
+    }
+
+    // -------------------------------------------------------------------------
+    // Bucket Intelligent-Tiering
+    // -------------------------------------------------------------------------
+
+    public async Task<BucketIntelligentTieringConfiguration> GetBucketIntelligentTieringConfigurationAsync(string bucketName, string id, CancellationToken cancellationToken = default)
+    {
+        var request = new Amazon.S3.Model.GetBucketIntelligentTieringConfigurationRequest { BucketName = bucketName, IntelligentTieringId = id };
+        var response = await _s3.GetBucketIntelligentTieringConfigurationAsync(request, cancellationToken).ConfigureAwait(false);
+        var cfg = response.IntelligentTieringConfiguration;
+        return MapIntelligentTieringConfigurationFromSdk(bucketName, cfg);
+    }
+
+    public async Task<BucketIntelligentTieringConfiguration> PutBucketIntelligentTieringConfigurationAsync(PutBucketIntelligentTieringConfigurationStorageRequest request, CancellationToken cancellationToken = default)
+    {
+        var sdkConfig = new IntelligentTieringConfiguration
+        {
+            IntelligentTieringId = request.Id,
+            Status = string.Equals(request.Status, "Enabled", StringComparison.OrdinalIgnoreCase)
+                ? IntelligentTieringStatus.Enabled
+                : IntelligentTieringStatus.Disabled,
+            Tierings = request.Tierings.Select(t => new Tiering
+            {
+                AccessTier = new IntelligentTieringAccessTier(t.AccessTier),
+                Days = t.Days
+            }).ToList()
+        };
+        if (request.Filter is { } filter)
+        {
+            sdkConfig.IntelligentTieringFilter = new IntelligentTieringFilter
+            {
+                IntelligentTieringFilterPredicate = !string.IsNullOrWhiteSpace(filter.Prefix)
+                    ? new IntelligentTieringPrefixPredicate(filter.Prefix)
+                    : null
+            };
+        }
+        var sdkRequest = new Amazon.S3.Model.PutBucketIntelligentTieringConfigurationRequest
+        {
+            BucketName = request.BucketName,
+            IntelligentTieringConfiguration = sdkConfig
+        };
+        await _s3.PutBucketIntelligentTieringConfigurationAsync(sdkRequest, cancellationToken).ConfigureAwait(false);
+        return new BucketIntelligentTieringConfiguration
+        {
+            BucketName = request.BucketName,
+            Id = request.Id,
+            Status = request.Status,
+            Filter = request.Filter,
+            Tierings = request.Tierings
+        };
+    }
+
+    public async Task DeleteBucketIntelligentTieringConfigurationAsync(string bucketName, string id, CancellationToken cancellationToken = default)
+    {
+        var request = new Amazon.S3.Model.DeleteBucketIntelligentTieringConfigurationRequest { BucketName = bucketName, IntelligentTieringId = id };
+        await _s3.DeleteBucketIntelligentTieringConfigurationAsync(request, cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<IReadOnlyList<BucketIntelligentTieringConfiguration>> ListBucketIntelligentTieringConfigurationsAsync(string bucketName, CancellationToken cancellationToken = default)
+    {
+        var request = new Amazon.S3.Model.ListBucketIntelligentTieringConfigurationsRequest { BucketName = bucketName };
+        var response = await _s3.ListBucketIntelligentTieringConfigurationsAsync(request, cancellationToken).ConfigureAwait(false);
+        return response.IntelligentTieringConfigurationList
+            .Select(cfg => MapIntelligentTieringConfigurationFromSdk(bucketName, cfg))
+            .ToList();
+    }
+
+    // -------------------------------------------------------------------------
+    // Object Lock Write Operations
+    // -------------------------------------------------------------------------
+
+    public async Task<ObjectRetentionInfo> PutObjectRetentionAsync(PutObjectRetentionStorageRequest request, CancellationToken cancellationToken = default)
+    {
+        var sdkRequest = new Amazon.S3.Model.PutObjectRetentionRequest
+        {
+            BucketName = request.BucketName,
+            Key = request.Key,
+            VersionId = request.VersionId,
+            BypassGovernanceRetention = request.BypassGovernanceRetention,
+            Retention = new ObjectLockRetention
+            {
+                Mode = request.Mode switch
+                {
+                    ObjectRetentionMode.Governance => ObjectLockRetentionMode.Governance,
+                    ObjectRetentionMode.Compliance => ObjectLockRetentionMode.Compliance,
+                    _ => null
+                },
+                RetainUntilDate = request.RetainUntilDateUtc?.UtcDateTime ?? default
+            }
+        };
+        await _s3.PutObjectRetentionAsync(sdkRequest, cancellationToken).ConfigureAwait(false);
+        return new ObjectRetentionInfo
+        {
+            BucketName = request.BucketName,
+            Key = request.Key,
+            VersionId = request.VersionId,
+            Mode = request.Mode,
+            RetainUntilDateUtc = request.RetainUntilDateUtc
+        };
+    }
+
+    public async Task<ObjectLegalHoldInfo> PutObjectLegalHoldAsync(PutObjectLegalHoldStorageRequest request, CancellationToken cancellationToken = default)
+    {
+        var sdkRequest = new Amazon.S3.Model.PutObjectLegalHoldRequest
+        {
+            BucketName = request.BucketName,
+            Key = request.Key,
+            VersionId = request.VersionId,
+            LegalHold = new ObjectLockLegalHold
+            {
+                Status = request.Status == ObjectLegalHoldStatus.On
+                    ? ObjectLockLegalHoldStatus.On
+                    : ObjectLockLegalHoldStatus.Off
+            }
+        };
+        await _s3.PutObjectLegalHoldAsync(sdkRequest, cancellationToken).ConfigureAwait(false);
+        return new ObjectLegalHoldInfo
+        {
+            BucketName = request.BucketName,
+            Key = request.Key,
+            VersionId = request.VersionId,
+            Status = request.Status
+        };
+    }
+
+    // -------------------------------------------------------------------------
+    // Restore Object
+    // -------------------------------------------------------------------------
+
+    public async Task<S3RestoreObjectResult> RestoreObjectAsync(RestoreObjectStorageRequest request, CancellationToken cancellationToken = default)
+    {
+        var sdkRequest = new Amazon.S3.Model.RestoreObjectRequest
+        {
+            BucketName = request.BucketName,
+            Key = request.Key,
+            VersionId = request.VersionId,
+            Days = request.Days ?? 1
+        };
+        if (!string.IsNullOrWhiteSpace(request.GlacierTier))
+        {
+            sdkRequest.Tier = request.GlacierTier switch
+            {
+                "Expedited" => GlacierJobTier.Expedited,
+                "Standard" => GlacierJobTier.Standard,
+                "Bulk" => GlacierJobTier.Bulk,
+                _ => GlacierJobTier.Standard
+            };
+        }
+        var response = await _s3.RestoreObjectAsync(sdkRequest, cancellationToken).ConfigureAwait(false);
+        return new S3RestoreObjectResult(
+            IsAlreadyRestored: (int)response.HttpStatusCode == 200,
+            RestoreOutputPath: response.RestoreOutputPath);
+    }
+
+    // -------------------------------------------------------------------------
+    // Select Object Content
+    // -------------------------------------------------------------------------
+
+    public async Task<S3SelectObjectContentResult> SelectObjectContentAsync(SelectObjectContentStorageRequest request, CancellationToken cancellationToken = default)
+    {
+        var sdkRequest = new Amazon.S3.Model.SelectObjectContentRequest
+        {
+            BucketName = request.BucketName,
+            Key = request.Key,
+            Expression = request.Expression,
+            ExpressionType = new ExpressionType(request.ExpressionType),
+            InputSerialization = BuildInputSerialization(request),
+            OutputSerialization = BuildOutputSerialization(request)
+        };
+        var response = await _s3.SelectObjectContentAsync(sdkRequest, cancellationToken).ConfigureAwait(false);
+        var outputStream = new MemoryStream();
+        if (response.Payload is { } payload)
+        {
+            var tcs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            payload.RecordsEventReceived += (_, args) =>
+            {
+                if (args.EventStreamEvent?.Payload is { } recordPayload)
+                    recordPayload.CopyTo(outputStream);
+            };
+            payload.EndEventReceived += (_, _) => tcs.TrySetResult();
+            payload.ExceptionReceived += (_, args) => tcs.TrySetException(args.EventStreamException);
+            payload.StartProcessing();
+            await tcs.Task.ConfigureAwait(false);
+            outputStream.Position = 0;
+        }
+        return new S3SelectObjectContentResult(
+            EventStream: outputStream,
+            ContentType: "application/octet-stream");
+    }
+
+    // -------------------------------------------------------------------------
     // Object tags
     // -------------------------------------------------------------------------
 
@@ -1113,6 +2019,221 @@ internal sealed class AwsS3StorageClient : IS3StorageClient
     // -------------------------------------------------------------------------
     // Helpers
     // -------------------------------------------------------------------------
+
+    // -------------------------------------------------------------------------
+    // Mapping helpers for new bucket config operations
+    // -------------------------------------------------------------------------
+
+    private static BucketLifecycleRule MapLifecycleRule(LifecycleRule rule) => new()
+    {
+        Id = rule.Id,
+        FilterPrefix = rule.Filter?.LifecycleFilterPredicate is LifecyclePrefixPredicate pp ? pp.Prefix : null,
+        Status = string.Equals(rule.Status?.Value, "Enabled", StringComparison.OrdinalIgnoreCase)
+            ? BucketLifecycleRuleStatus.Enabled
+            : BucketLifecycleRuleStatus.Disabled,
+        ExpirationDays = rule.Expiration?.Days > 0 ? rule.Expiration.Days : null,
+        ExpirationDate = rule.Expiration?.Date is { } date && date != default
+            ? new DateTimeOffset(DateTime.SpecifyKind(date, DateTimeKind.Utc))
+            : null,
+        ExpiredObjectDeleteMarker = rule.Expiration?.ExpiredObjectDeleteMarker,
+        NoncurrentVersionExpirationDays = rule.NoncurrentVersionExpiration?.NoncurrentDays > 0
+            ? rule.NoncurrentVersionExpiration.NoncurrentDays
+            : null,
+        AbortIncompleteMultipartUploadDaysAfterInitiation = rule.AbortIncompleteMultipartUpload?.DaysAfterInitiation > 0
+            ? rule.AbortIncompleteMultipartUpload.DaysAfterInitiation
+            : null,
+        Transitions = (rule.Transitions ?? []).Select(t => new BucketLifecycleTransition
+        {
+            Days = t.Days > 0 ? t.Days : null,
+            Date = t.Date is { } td && td != default
+                ? new DateTimeOffset(DateTime.SpecifyKind(td, DateTimeKind.Utc))
+                : null,
+            StorageClass = t.StorageClass?.Value ?? string.Empty
+        }).ToArray(),
+        NoncurrentVersionTransitions = (rule.NoncurrentVersionTransitions ?? []).Select(t => new BucketLifecycleNoncurrentVersionTransition
+        {
+            NoncurrentDays = t.NoncurrentDays > 0 ? t.NoncurrentDays : null,
+            StorageClass = t.StorageClass?.Value ?? string.Empty
+        }).ToArray()
+    };
+
+    private static LifecycleRule MapLifecycleRuleToSdk(BucketLifecycleRule rule)
+    {
+        var sdkRule = new LifecycleRule
+        {
+            Id = rule.Id,
+            Status = rule.Status == BucketLifecycleRuleStatus.Enabled
+                ? LifecycleRuleStatus.Enabled
+                : LifecycleRuleStatus.Disabled,
+            Filter = new LifecycleFilter
+            {
+                Prefix = rule.FilterPrefix
+            },
+            Expiration = new LifecycleRuleExpiration
+            {
+                Days = rule.ExpirationDays ?? 0,
+                Date = rule.ExpirationDate?.UtcDateTime,
+                ExpiredObjectDeleteMarker = rule.ExpiredObjectDeleteMarker ?? false
+            },
+            Transitions = rule.Transitions.Select(t => new LifecycleTransition
+            {
+                Days = t.Days ?? 0,
+                Date = t.Date?.UtcDateTime,
+                StorageClass = new S3StorageClass(t.StorageClass)
+            }).ToList(),
+            NoncurrentVersionTransitions = rule.NoncurrentVersionTransitions.Select(t => new LifecycleRuleNoncurrentVersionTransition
+            {
+                NoncurrentDays = t.NoncurrentDays ?? 0,
+                StorageClass = new S3StorageClass(t.StorageClass)
+            }).ToList()
+        };
+        if (rule.NoncurrentVersionExpirationDays.HasValue)
+        {
+            sdkRule.NoncurrentVersionExpiration = new LifecycleRuleNoncurrentVersionExpiration
+            {
+                NoncurrentDays = rule.NoncurrentVersionExpirationDays.Value
+            };
+        }
+        if (rule.AbortIncompleteMultipartUploadDaysAfterInitiation.HasValue)
+        {
+            sdkRule.AbortIncompleteMultipartUpload = new LifecycleRuleAbortIncompleteMultipartUpload
+            {
+                DaysAfterInitiation = rule.AbortIncompleteMultipartUploadDaysAfterInitiation.Value
+            };
+        }
+        return sdkRule;
+    }
+
+    private static BucketNotificationFilter? MapNotificationFilter(Filter? filter)
+    {
+        if (filter?.S3KeyFilter?.FilterRules is not { Count: > 0 } rules)
+            return null;
+        return new BucketNotificationFilter
+        {
+            KeyFilterRules = rules.Select(r => new BucketNotificationFilterRule
+            {
+                Name = r.Name ?? string.Empty,
+                Value = r.Value ?? string.Empty
+            }).ToArray()
+        };
+    }
+
+    private static Filter? MapNotificationFilterToSdk(BucketNotificationFilter? filter)
+    {
+        if (filter is null || filter.KeyFilterRules.Count == 0)
+            return null;
+        return new Filter
+        {
+            S3KeyFilter = new S3KeyFilter
+            {
+                FilterRules = filter.KeyFilterRules.Select(r => new FilterRule
+                {
+                    Name = new FilterRuleName(r.Name),
+                    Value = r.Value
+                }).ToList()
+            }
+        };
+    }
+
+    private static BucketAnalyticsConfiguration MapAnalyticsConfigurationFromSdk(string bucketName, AnalyticsConfiguration cfg) => new()
+    {
+        BucketName = bucketName,
+        Id = cfg.AnalyticsId ?? string.Empty,
+        FilterPrefix = cfg.AnalyticsFilter?.AnalyticsFilterPredicate is AnalyticsPrefixPredicate ap ? ap.Prefix : null,
+        StorageClassAnalysis = cfg.StorageClassAnalysis is { } sca
+            ? new BucketAnalyticsStorageClassAnalysis
+            {
+                DataExport = sca.DataExport is { } de
+                    ? new BucketAnalyticsDataExport
+                    {
+                        OutputSchemaVersion = de.OutputSchemaVersion?.Value ?? "V_1",
+                        Destination = de.Destination?.S3BucketDestination is { } s3d
+                            ? new BucketAnalyticsS3BucketDestination
+                            {
+                                Format = s3d.Format ?? "CSV",
+                                BucketAccountId = s3d.BucketAccountId,
+                                Bucket = s3d.BucketName ?? string.Empty,
+                                Prefix = s3d.Prefix
+                            }
+                            : null
+                    }
+                    : null
+            }
+            : null
+    };
+
+    private static BucketMetricsConfiguration MapMetricsConfigurationFromSdk(string bucketName, MetricsConfiguration cfg) => new()
+    {
+        BucketName = bucketName,
+        Id = cfg.MetricsId ?? string.Empty,
+        Filter = cfg.MetricsFilter?.MetricsFilterPredicate is MetricsPrefixPredicate mp
+            ? new BucketMetricsFilter { Prefix = mp.Prefix }
+            : null
+    };
+
+    private static BucketInventoryConfiguration MapInventoryConfigurationFromSdk(string bucketName, InventoryConfiguration cfg) => new()
+    {
+        BucketName = bucketName,
+        Id = cfg.InventoryId ?? string.Empty,
+        IsEnabled = cfg.IsEnabled ?? false,
+        IncludedObjectVersions = cfg.IncludedObjectVersions?.Value ?? "All",
+        OptionalFields = (cfg.InventoryOptionalFields ?? []).Select(f => f.Value).ToArray(),
+        Schedule = cfg.Schedule is { } sched
+            ? new BucketInventorySchedule { Frequency = sched.Frequency?.Value ?? "Daily" }
+            : null,
+        Filter = cfg.InventoryFilter?.InventoryFilterPredicate is InventoryPrefixPredicate ip
+            ? new BucketInventoryFilter { Prefix = ip.Prefix }
+            : null,
+        Destination = cfg.Destination?.S3BucketDestination is { } s3d
+            ? new BucketInventoryDestination
+            {
+                S3BucketDestination = new BucketInventoryS3BucketDestination
+                {
+                    Format = s3d.InventoryFormat?.Value ?? "CSV",
+                    AccountId = s3d.AccountId,
+                    Bucket = s3d.BucketName ?? string.Empty,
+                    Prefix = s3d.Prefix
+                }
+            }
+            : null
+    };
+
+    private static BucketIntelligentTieringConfiguration MapIntelligentTieringConfigurationFromSdk(string bucketName, IntelligentTieringConfiguration cfg) => new()
+    {
+        BucketName = bucketName,
+        Id = cfg.IntelligentTieringId ?? string.Empty,
+        Status = cfg.Status?.Value ?? "Enabled",
+        Filter = cfg.IntelligentTieringFilter?.IntelligentTieringFilterPredicate is IntelligentTieringPrefixPredicate itp
+            ? new BucketIntelligentTieringFilter { Prefix = itp.Prefix }
+            : null,
+        Tierings = (cfg.Tierings ?? []).Select(t => new BucketIntelligentTiering
+        {
+            AccessTier = t.AccessTier?.Value ?? string.Empty,
+            Days = t.Days ?? 0
+        }).ToArray()
+    };
+
+    private static InputSerialization BuildInputSerialization(SelectObjectContentStorageRequest request)
+    {
+        var input = new InputSerialization();
+        if (request.InputSerializationJson is not null)
+            input.JSON = new JSONInput { JsonType = new JsonType(request.InputSerializationJson) };
+        else if (request.InputSerializationCsv is not null)
+            input.CSV = new CSVInput();
+        else if (request.InputSerializationParquet is not null)
+            input.Parquet = new ParquetInput();
+        return input;
+    }
+
+    private static OutputSerialization BuildOutputSerialization(SelectObjectContentStorageRequest request)
+    {
+        var output = new OutputSerialization();
+        if (request.OutputSerializationJson is not null)
+            output.JSON = new JSONOutput();
+        else if (request.OutputSerializationCsv is not null)
+            output.CSV = new CSVOutput();
+        return output;
+    }
 
     public void Dispose() => _s3.Dispose();
 

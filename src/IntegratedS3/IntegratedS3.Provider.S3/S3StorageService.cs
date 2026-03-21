@@ -290,6 +290,624 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
         }
     }
 
+    // -------------------------------------------------------------------------
+    // Bucket Tagging
+    // -------------------------------------------------------------------------
+
+    public async ValueTask<StorageResult<BucketTaggingConfiguration>> GetBucketTaggingAsync(string bucketName, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var config = await _client.GetBucketTaggingAsync(bucketName, cancellationToken).ConfigureAwait(false);
+            return StorageResult<BucketTaggingConfiguration>.Success(config);
+        }
+        catch (AmazonS3Exception ex)
+        {
+            return StorageResult<BucketTaggingConfiguration>.Failure(S3ErrorTranslator.Translate(ex, Name, bucketName));
+        }
+    }
+
+    public async ValueTask<StorageResult<BucketTaggingConfiguration>> PutBucketTaggingAsync(PutBucketTaggingRequest request, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var config = await _client.PutBucketTaggingAsync(request, cancellationToken).ConfigureAwait(false);
+            return StorageResult<BucketTaggingConfiguration>.Success(config);
+        }
+        catch (AmazonS3Exception ex)
+        {
+            return StorageResult<BucketTaggingConfiguration>.Failure(S3ErrorTranslator.Translate(ex, Name, request.BucketName));
+        }
+    }
+
+    public async ValueTask<StorageResult> DeleteBucketTaggingAsync(DeleteBucketTaggingRequest request, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            await _client.DeleteBucketTaggingAsync(request.BucketName, cancellationToken).ConfigureAwait(false);
+            return StorageResult.Success();
+        }
+        catch (AmazonS3Exception ex)
+        {
+            return StorageResult.Failure(S3ErrorTranslator.Translate(ex, Name, request.BucketName));
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Bucket Logging
+    // -------------------------------------------------------------------------
+
+    public async ValueTask<StorageResult<BucketLoggingConfiguration>> GetBucketLoggingAsync(string bucketName, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var config = await _client.GetBucketLoggingAsync(bucketName, cancellationToken).ConfigureAwait(false);
+            return StorageResult<BucketLoggingConfiguration>.Success(config);
+        }
+        catch (AmazonS3Exception ex)
+        {
+            return StorageResult<BucketLoggingConfiguration>.Failure(S3ErrorTranslator.Translate(ex, Name, bucketName));
+        }
+    }
+
+    public async ValueTask<StorageResult<BucketLoggingConfiguration>> PutBucketLoggingAsync(PutBucketLoggingRequest request, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var config = await _client.PutBucketLoggingAsync(request, cancellationToken).ConfigureAwait(false);
+            return StorageResult<BucketLoggingConfiguration>.Success(config);
+        }
+        catch (AmazonS3Exception ex)
+        {
+            return StorageResult<BucketLoggingConfiguration>.Failure(S3ErrorTranslator.Translate(ex, Name, request.BucketName));
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Bucket Website
+    // -------------------------------------------------------------------------
+
+    public async ValueTask<StorageResult<BucketWebsiteConfiguration>> GetBucketWebsiteAsync(string bucketName, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var config = await _client.GetBucketWebsiteAsync(bucketName, cancellationToken).ConfigureAwait(false);
+            return StorageResult<BucketWebsiteConfiguration>.Success(config);
+        }
+        catch (AmazonS3Exception ex)
+        {
+            return StorageResult<BucketWebsiteConfiguration>.Failure(S3ErrorTranslator.Translate(ex, Name, bucketName));
+        }
+    }
+
+    public async ValueTask<StorageResult<BucketWebsiteConfiguration>> PutBucketWebsiteAsync(PutBucketWebsiteRequest request, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var config = await _client.PutBucketWebsiteAsync(request, cancellationToken).ConfigureAwait(false);
+            return StorageResult<BucketWebsiteConfiguration>.Success(config);
+        }
+        catch (AmazonS3Exception ex)
+        {
+            return StorageResult<BucketWebsiteConfiguration>.Failure(S3ErrorTranslator.Translate(ex, Name, request.BucketName));
+        }
+    }
+
+    public async ValueTask<StorageResult> DeleteBucketWebsiteAsync(DeleteBucketWebsiteRequest request, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            await _client.DeleteBucketWebsiteAsync(request.BucketName, cancellationToken).ConfigureAwait(false);
+            return StorageResult.Success();
+        }
+        catch (AmazonS3Exception ex)
+        {
+            return StorageResult.Failure(S3ErrorTranslator.Translate(ex, Name, request.BucketName));
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Bucket Request Payment
+    // -------------------------------------------------------------------------
+
+    public async ValueTask<StorageResult<BucketRequestPaymentConfiguration>> GetBucketRequestPaymentAsync(string bucketName, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var config = await _client.GetBucketRequestPaymentAsync(bucketName, cancellationToken).ConfigureAwait(false);
+            return StorageResult<BucketRequestPaymentConfiguration>.Success(config);
+        }
+        catch (AmazonS3Exception ex)
+        {
+            return StorageResult<BucketRequestPaymentConfiguration>.Failure(S3ErrorTranslator.Translate(ex, Name, bucketName));
+        }
+    }
+
+    public async ValueTask<StorageResult<BucketRequestPaymentConfiguration>> PutBucketRequestPaymentAsync(PutBucketRequestPaymentRequest request, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var config = await _client.PutBucketRequestPaymentAsync(request, cancellationToken).ConfigureAwait(false);
+            return StorageResult<BucketRequestPaymentConfiguration>.Success(config);
+        }
+        catch (AmazonS3Exception ex)
+        {
+            return StorageResult<BucketRequestPaymentConfiguration>.Failure(S3ErrorTranslator.Translate(ex, Name, request.BucketName));
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Bucket Accelerate
+    // -------------------------------------------------------------------------
+
+    public async ValueTask<StorageResult<BucketAccelerateConfiguration>> GetBucketAccelerateAsync(string bucketName, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var config = await _client.GetBucketAccelerateAsync(bucketName, cancellationToken).ConfigureAwait(false);
+            return StorageResult<BucketAccelerateConfiguration>.Success(config);
+        }
+        catch (AmazonS3Exception ex)
+        {
+            return StorageResult<BucketAccelerateConfiguration>.Failure(S3ErrorTranslator.Translate(ex, Name, bucketName));
+        }
+    }
+
+    public async ValueTask<StorageResult<BucketAccelerateConfiguration>> PutBucketAccelerateAsync(PutBucketAccelerateRequest request, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var config = await _client.PutBucketAccelerateAsync(request, cancellationToken).ConfigureAwait(false);
+            return StorageResult<BucketAccelerateConfiguration>.Success(config);
+        }
+        catch (AmazonS3Exception ex)
+        {
+            return StorageResult<BucketAccelerateConfiguration>.Failure(S3ErrorTranslator.Translate(ex, Name, request.BucketName));
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Bucket Lifecycle
+    // -------------------------------------------------------------------------
+
+    public async ValueTask<StorageResult<BucketLifecycleConfiguration>> GetBucketLifecycleAsync(string bucketName, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var config = await _client.GetBucketLifecycleAsync(bucketName, cancellationToken).ConfigureAwait(false);
+            return StorageResult<BucketLifecycleConfiguration>.Success(config);
+        }
+        catch (AmazonS3Exception ex)
+        {
+            return StorageResult<BucketLifecycleConfiguration>.Failure(S3ErrorTranslator.Translate(ex, Name, bucketName));
+        }
+    }
+
+    public async ValueTask<StorageResult<BucketLifecycleConfiguration>> PutBucketLifecycleAsync(PutBucketLifecycleRequest request, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var config = await _client.PutBucketLifecycleAsync(request, cancellationToken).ConfigureAwait(false);
+            return StorageResult<BucketLifecycleConfiguration>.Success(config);
+        }
+        catch (AmazonS3Exception ex)
+        {
+            return StorageResult<BucketLifecycleConfiguration>.Failure(S3ErrorTranslator.Translate(ex, Name, request.BucketName));
+        }
+    }
+
+    public async ValueTask<StorageResult> DeleteBucketLifecycleAsync(DeleteBucketLifecycleRequest request, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            await _client.DeleteBucketLifecycleAsync(request.BucketName, cancellationToken).ConfigureAwait(false);
+            return StorageResult.Success();
+        }
+        catch (AmazonS3Exception ex)
+        {
+            return StorageResult.Failure(S3ErrorTranslator.Translate(ex, Name, request.BucketName));
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Bucket Replication
+    // -------------------------------------------------------------------------
+
+    public async ValueTask<StorageResult<BucketReplicationConfiguration>> GetBucketReplicationAsync(string bucketName, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var config = await _client.GetBucketReplicationAsync(bucketName, cancellationToken).ConfigureAwait(false);
+            return StorageResult<BucketReplicationConfiguration>.Success(config);
+        }
+        catch (AmazonS3Exception ex)
+        {
+            return StorageResult<BucketReplicationConfiguration>.Failure(S3ErrorTranslator.Translate(ex, Name, bucketName));
+        }
+    }
+
+    public async ValueTask<StorageResult<BucketReplicationConfiguration>> PutBucketReplicationAsync(PutBucketReplicationRequest request, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var config = await _client.PutBucketReplicationAsync(request, cancellationToken).ConfigureAwait(false);
+            return StorageResult<BucketReplicationConfiguration>.Success(config);
+        }
+        catch (AmazonS3Exception ex)
+        {
+            return StorageResult<BucketReplicationConfiguration>.Failure(S3ErrorTranslator.Translate(ex, Name, request.BucketName));
+        }
+    }
+
+    public async ValueTask<StorageResult> DeleteBucketReplicationAsync(DeleteBucketReplicationRequest request, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            await _client.DeleteBucketReplicationAsync(request.BucketName, cancellationToken).ConfigureAwait(false);
+            return StorageResult.Success();
+        }
+        catch (AmazonS3Exception ex)
+        {
+            return StorageResult.Failure(S3ErrorTranslator.Translate(ex, Name, request.BucketName));
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Bucket Notifications
+    // -------------------------------------------------------------------------
+
+    public async ValueTask<StorageResult<BucketNotificationConfiguration>> GetBucketNotificationConfigurationAsync(string bucketName, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var config = await _client.GetBucketNotificationConfigurationAsync(bucketName, cancellationToken).ConfigureAwait(false);
+            return StorageResult<BucketNotificationConfiguration>.Success(config);
+        }
+        catch (AmazonS3Exception ex)
+        {
+            return StorageResult<BucketNotificationConfiguration>.Failure(S3ErrorTranslator.Translate(ex, Name, bucketName));
+        }
+    }
+
+    public async ValueTask<StorageResult<BucketNotificationConfiguration>> PutBucketNotificationConfigurationAsync(PutBucketNotificationConfigurationRequest request, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var config = await _client.PutBucketNotificationConfigurationAsync(request, cancellationToken).ConfigureAwait(false);
+            return StorageResult<BucketNotificationConfiguration>.Success(config);
+        }
+        catch (AmazonS3Exception ex)
+        {
+            return StorageResult<BucketNotificationConfiguration>.Failure(S3ErrorTranslator.Translate(ex, Name, request.BucketName));
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Object Lock Configuration (bucket-level)
+    // -------------------------------------------------------------------------
+
+    public async ValueTask<StorageResult<ObjectLockConfiguration>> GetObjectLockConfigurationAsync(string bucketName, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var config = await _client.GetObjectLockConfigurationAsync(bucketName, cancellationToken).ConfigureAwait(false);
+            return StorageResult<ObjectLockConfiguration>.Success(config);
+        }
+        catch (AmazonS3Exception ex)
+        {
+            return StorageResult<ObjectLockConfiguration>.Failure(S3ErrorTranslator.Translate(ex, Name, bucketName));
+        }
+    }
+
+    public async ValueTask<StorageResult<ObjectLockConfiguration>> PutObjectLockConfigurationAsync(PutObjectLockConfigurationRequest request, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var config = await _client.PutObjectLockConfigurationAsync(request, cancellationToken).ConfigureAwait(false);
+            return StorageResult<ObjectLockConfiguration>.Success(config);
+        }
+        catch (AmazonS3Exception ex)
+        {
+            return StorageResult<ObjectLockConfiguration>.Failure(S3ErrorTranslator.Translate(ex, Name, request.BucketName));
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Bucket Analytics
+    // -------------------------------------------------------------------------
+
+    public async ValueTask<StorageResult<BucketAnalyticsConfiguration>> GetBucketAnalyticsConfigurationAsync(string bucketName, string id, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var config = await _client.GetBucketAnalyticsConfigurationAsync(bucketName, id, cancellationToken).ConfigureAwait(false);
+            return StorageResult<BucketAnalyticsConfiguration>.Success(config);
+        }
+        catch (AmazonS3Exception ex)
+        {
+            return StorageResult<BucketAnalyticsConfiguration>.Failure(S3ErrorTranslator.Translate(ex, Name, bucketName));
+        }
+    }
+
+    public async ValueTask<StorageResult<BucketAnalyticsConfiguration>> PutBucketAnalyticsConfigurationAsync(PutBucketAnalyticsConfigurationRequest request, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var config = await _client.PutBucketAnalyticsConfigurationAsync(request, cancellationToken).ConfigureAwait(false);
+            return StorageResult<BucketAnalyticsConfiguration>.Success(config);
+        }
+        catch (AmazonS3Exception ex)
+        {
+            return StorageResult<BucketAnalyticsConfiguration>.Failure(S3ErrorTranslator.Translate(ex, Name, request.BucketName));
+        }
+    }
+
+    public async ValueTask<StorageResult> DeleteBucketAnalyticsConfigurationAsync(DeleteBucketAnalyticsConfigurationRequest request, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            await _client.DeleteBucketAnalyticsConfigurationAsync(request.BucketName, request.Id, cancellationToken).ConfigureAwait(false);
+            return StorageResult.Success();
+        }
+        catch (AmazonS3Exception ex)
+        {
+            return StorageResult.Failure(S3ErrorTranslator.Translate(ex, Name, request.BucketName));
+        }
+    }
+
+    public async ValueTask<StorageResult<IReadOnlyList<BucketAnalyticsConfiguration>>> ListBucketAnalyticsConfigurationsAsync(string bucketName, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var configs = await _client.ListBucketAnalyticsConfigurationsAsync(bucketName, cancellationToken).ConfigureAwait(false);
+            return StorageResult<IReadOnlyList<BucketAnalyticsConfiguration>>.Success(configs);
+        }
+        catch (AmazonS3Exception ex)
+        {
+            return StorageResult<IReadOnlyList<BucketAnalyticsConfiguration>>.Failure(S3ErrorTranslator.Translate(ex, Name, bucketName));
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Bucket Metrics
+    // -------------------------------------------------------------------------
+
+    public async ValueTask<StorageResult<BucketMetricsConfiguration>> GetBucketMetricsConfigurationAsync(string bucketName, string id, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var config = await _client.GetBucketMetricsConfigurationAsync(bucketName, id, cancellationToken).ConfigureAwait(false);
+            return StorageResult<BucketMetricsConfiguration>.Success(config);
+        }
+        catch (AmazonS3Exception ex)
+        {
+            return StorageResult<BucketMetricsConfiguration>.Failure(S3ErrorTranslator.Translate(ex, Name, bucketName));
+        }
+    }
+
+    public async ValueTask<StorageResult<BucketMetricsConfiguration>> PutBucketMetricsConfigurationAsync(PutBucketMetricsConfigurationRequest request, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var config = await _client.PutBucketMetricsConfigurationAsync(request, cancellationToken).ConfigureAwait(false);
+            return StorageResult<BucketMetricsConfiguration>.Success(config);
+        }
+        catch (AmazonS3Exception ex)
+        {
+            return StorageResult<BucketMetricsConfiguration>.Failure(S3ErrorTranslator.Translate(ex, Name, request.BucketName));
+        }
+    }
+
+    public async ValueTask<StorageResult> DeleteBucketMetricsConfigurationAsync(DeleteBucketMetricsConfigurationRequest request, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            await _client.DeleteBucketMetricsConfigurationAsync(request.BucketName, request.Id, cancellationToken).ConfigureAwait(false);
+            return StorageResult.Success();
+        }
+        catch (AmazonS3Exception ex)
+        {
+            return StorageResult.Failure(S3ErrorTranslator.Translate(ex, Name, request.BucketName));
+        }
+    }
+
+    public async ValueTask<StorageResult<IReadOnlyList<BucketMetricsConfiguration>>> ListBucketMetricsConfigurationsAsync(string bucketName, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var configs = await _client.ListBucketMetricsConfigurationsAsync(bucketName, cancellationToken).ConfigureAwait(false);
+            return StorageResult<IReadOnlyList<BucketMetricsConfiguration>>.Success(configs);
+        }
+        catch (AmazonS3Exception ex)
+        {
+            return StorageResult<IReadOnlyList<BucketMetricsConfiguration>>.Failure(S3ErrorTranslator.Translate(ex, Name, bucketName));
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Bucket Inventory
+    // -------------------------------------------------------------------------
+
+    public async ValueTask<StorageResult<BucketInventoryConfiguration>> GetBucketInventoryConfigurationAsync(string bucketName, string id, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var config = await _client.GetBucketInventoryConfigurationAsync(bucketName, id, cancellationToken).ConfigureAwait(false);
+            return StorageResult<BucketInventoryConfiguration>.Success(config);
+        }
+        catch (AmazonS3Exception ex)
+        {
+            return StorageResult<BucketInventoryConfiguration>.Failure(S3ErrorTranslator.Translate(ex, Name, bucketName));
+        }
+    }
+
+    public async ValueTask<StorageResult<BucketInventoryConfiguration>> PutBucketInventoryConfigurationAsync(PutBucketInventoryConfigurationRequest request, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var config = await _client.PutBucketInventoryConfigurationAsync(request, cancellationToken).ConfigureAwait(false);
+            return StorageResult<BucketInventoryConfiguration>.Success(config);
+        }
+        catch (AmazonS3Exception ex)
+        {
+            return StorageResult<BucketInventoryConfiguration>.Failure(S3ErrorTranslator.Translate(ex, Name, request.BucketName));
+        }
+    }
+
+    public async ValueTask<StorageResult> DeleteBucketInventoryConfigurationAsync(DeleteBucketInventoryConfigurationRequest request, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            await _client.DeleteBucketInventoryConfigurationAsync(request.BucketName, request.Id, cancellationToken).ConfigureAwait(false);
+            return StorageResult.Success();
+        }
+        catch (AmazonS3Exception ex)
+        {
+            return StorageResult.Failure(S3ErrorTranslator.Translate(ex, Name, request.BucketName));
+        }
+    }
+
+    public async ValueTask<StorageResult<IReadOnlyList<BucketInventoryConfiguration>>> ListBucketInventoryConfigurationsAsync(string bucketName, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var configs = await _client.ListBucketInventoryConfigurationsAsync(bucketName, cancellationToken).ConfigureAwait(false);
+            return StorageResult<IReadOnlyList<BucketInventoryConfiguration>>.Success(configs);
+        }
+        catch (AmazonS3Exception ex)
+        {
+            return StorageResult<IReadOnlyList<BucketInventoryConfiguration>>.Failure(S3ErrorTranslator.Translate(ex, Name, bucketName));
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Bucket Intelligent-Tiering
+    // -------------------------------------------------------------------------
+
+    public async ValueTask<StorageResult<BucketIntelligentTieringConfiguration>> GetBucketIntelligentTieringConfigurationAsync(string bucketName, string id, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var config = await _client.GetBucketIntelligentTieringConfigurationAsync(bucketName, id, cancellationToken).ConfigureAwait(false);
+            return StorageResult<BucketIntelligentTieringConfiguration>.Success(config);
+        }
+        catch (AmazonS3Exception ex)
+        {
+            return StorageResult<BucketIntelligentTieringConfiguration>.Failure(S3ErrorTranslator.Translate(ex, Name, bucketName));
+        }
+    }
+
+    public async ValueTask<StorageResult<BucketIntelligentTieringConfiguration>> PutBucketIntelligentTieringConfigurationAsync(PutBucketIntelligentTieringConfigurationRequest request, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var config = await _client.PutBucketIntelligentTieringConfigurationAsync(request, cancellationToken).ConfigureAwait(false);
+            return StorageResult<BucketIntelligentTieringConfiguration>.Success(config);
+        }
+        catch (AmazonS3Exception ex)
+        {
+            return StorageResult<BucketIntelligentTieringConfiguration>.Failure(S3ErrorTranslator.Translate(ex, Name, request.BucketName));
+        }
+    }
+
+    public async ValueTask<StorageResult> DeleteBucketIntelligentTieringConfigurationAsync(DeleteBucketIntelligentTieringConfigurationRequest request, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            await _client.DeleteBucketIntelligentTieringConfigurationAsync(request.BucketName, request.Id, cancellationToken).ConfigureAwait(false);
+            return StorageResult.Success();
+        }
+        catch (AmazonS3Exception ex)
+        {
+            return StorageResult.Failure(S3ErrorTranslator.Translate(ex, Name, request.BucketName));
+        }
+    }
+
+    public async ValueTask<StorageResult<IReadOnlyList<BucketIntelligentTieringConfiguration>>> ListBucketIntelligentTieringConfigurationsAsync(string bucketName, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var configs = await _client.ListBucketIntelligentTieringConfigurationsAsync(bucketName, cancellationToken).ConfigureAwait(false);
+            return StorageResult<IReadOnlyList<BucketIntelligentTieringConfiguration>>.Success(configs);
+        }
+        catch (AmazonS3Exception ex)
+        {
+            return StorageResult<IReadOnlyList<BucketIntelligentTieringConfiguration>>.Failure(S3ErrorTranslator.Translate(ex, Name, bucketName));
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Object Lock Write Operations
+    // -------------------------------------------------------------------------
+
+    public async ValueTask<StorageResult<ObjectRetentionInfo>> PutObjectRetentionAsync(PutObjectRetentionRequest request, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var result = await _client.PutObjectRetentionAsync(request, cancellationToken).ConfigureAwait(false);
+            return StorageResult<ObjectRetentionInfo>.Success(result);
+        }
+        catch (AmazonS3Exception ex)
+        {
+            return StorageResult<ObjectRetentionInfo>.Failure(S3ErrorTranslator.Translate(ex, Name, request.BucketName, request.Key));
+        }
+    }
+
+    public async ValueTask<StorageResult<ObjectLegalHoldInfo>> PutObjectLegalHoldAsync(PutObjectLegalHoldRequest request, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var result = await _client.PutObjectLegalHoldAsync(request, cancellationToken).ConfigureAwait(false);
+            return StorageResult<ObjectLegalHoldInfo>.Success(result);
+        }
+        catch (AmazonS3Exception ex)
+        {
+            return StorageResult<ObjectLegalHoldInfo>.Failure(S3ErrorTranslator.Translate(ex, Name, request.BucketName, request.Key));
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Restore Object
+    // -------------------------------------------------------------------------
+
+    public async ValueTask<StorageResult<RestoreObjectResponse>> RestoreObjectAsync(RestoreObjectRequest request, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var result = await _client.RestoreObjectAsync(request, cancellationToken).ConfigureAwait(false);
+            return StorageResult<RestoreObjectResponse>.Success(new RestoreObjectResponse
+            {
+                IsAlreadyRestored = result.IsAlreadyRestored,
+                RestoreOutputPath = result.RestoreOutputPath
+            });
+        }
+        catch (AmazonS3Exception ex)
+        {
+            return StorageResult<RestoreObjectResponse>.Failure(S3ErrorTranslator.Translate(ex, Name, request.BucketName, request.Key));
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Select Object Content
+    // -------------------------------------------------------------------------
+
+    public async ValueTask<StorageResult<SelectObjectContentResponse>> SelectObjectContentAsync(SelectObjectContentRequest request, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var result = await _client.SelectObjectContentAsync(request, cancellationToken).ConfigureAwait(false);
+            return StorageResult<SelectObjectContentResponse>.Success(new SelectObjectContentResponse
+            {
+                EventStream = result.EventStream,
+                ContentType = result.ContentType
+            });
+        }
+        catch (AmazonS3Exception ex)
+        {
+            return StorageResult<SelectObjectContentResponse>.Failure(S3ErrorTranslator.Translate(ex, Name, request.BucketName, request.Key));
+        }
+    }
+
     public async ValueTask<StorageResult<BucketInfo>> HeadBucketAsync(string bucketName, CancellationToken cancellationToken = default)
     {
         try
@@ -712,6 +1330,9 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
                 request.Checksums,
                 serverSideEncryption,
                 request.CustomerEncryption,
+                request.StorageClass,
+                request.IfMatchETag,
+                request.IfNoneMatchETag,
                 cancellationToken).ConfigureAwait(false);
 
             return StorageResult<ObjectInfo>.Success(EntryToObjectInfo(request.BucketName, entry));
@@ -863,6 +1484,7 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
                 destinationServerSideEncryption,
                 request.SourceCustomerEncryption,
                 request.DestinationCustomerEncryption,
+                request.StorageClass,
                 cancellationToken).ConfigureAwait(false);
 
             var enrichedEntry = await EnrichObjectEntryAsync(
@@ -914,6 +1536,7 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
                 request.ChecksumAlgorithm,
                 serverSideEncryption,
                 request.CustomerEncryption,
+                request.StorageClass,
                 cancellationToken).ConfigureAwait(false);
 
             return StorageResult<MultipartUploadInfo>.Success(upload);

@@ -141,4 +141,146 @@ public interface IStorageBackend
     ValueTask<StorageResult<ObjectInfo>> HeadObjectAsync(HeadObjectRequest request, CancellationToken cancellationToken = default);
 
     ValueTask<StorageResult<DeleteObjectResult>> DeleteObjectAsync(DeleteObjectRequest request, CancellationToken cancellationToken = default);
+
+    // Bucket Tagging
+    ValueTask<StorageResult<BucketTaggingConfiguration>> GetBucketTaggingAsync(string bucketName, CancellationToken cancellationToken = default)
+        => ValueTask.FromResult(StorageResult<BucketTaggingConfiguration>.Failure(StorageError.Unsupported("Bucket tagging is not supported by this storage backend.", bucketName)));
+
+    ValueTask<StorageResult<BucketTaggingConfiguration>> PutBucketTaggingAsync(PutBucketTaggingRequest request, CancellationToken cancellationToken = default)
+        => ValueTask.FromResult(StorageResult<BucketTaggingConfiguration>.Failure(StorageError.Unsupported("Bucket tagging is not supported by this storage backend.", request.BucketName)));
+
+    ValueTask<StorageResult> DeleteBucketTaggingAsync(DeleteBucketTaggingRequest request, CancellationToken cancellationToken = default)
+        => ValueTask.FromResult(StorageResult.Failure(StorageError.Unsupported("Bucket tagging is not supported by this storage backend.", request.BucketName)));
+
+    // Bucket Logging
+    ValueTask<StorageResult<BucketLoggingConfiguration>> GetBucketLoggingAsync(string bucketName, CancellationToken cancellationToken = default)
+        => ValueTask.FromResult(StorageResult<BucketLoggingConfiguration>.Failure(StorageError.Unsupported("Bucket logging is not supported by this storage backend.", bucketName)));
+
+    ValueTask<StorageResult<BucketLoggingConfiguration>> PutBucketLoggingAsync(PutBucketLoggingRequest request, CancellationToken cancellationToken = default)
+        => ValueTask.FromResult(StorageResult<BucketLoggingConfiguration>.Failure(StorageError.Unsupported("Bucket logging is not supported by this storage backend.", request.BucketName)));
+
+    // Bucket Website
+    ValueTask<StorageResult<BucketWebsiteConfiguration>> GetBucketWebsiteAsync(string bucketName, CancellationToken cancellationToken = default)
+        => ValueTask.FromResult(StorageResult<BucketWebsiteConfiguration>.Failure(StorageError.Unsupported("Bucket website is not supported by this storage backend.", bucketName)));
+
+    ValueTask<StorageResult<BucketWebsiteConfiguration>> PutBucketWebsiteAsync(PutBucketWebsiteRequest request, CancellationToken cancellationToken = default)
+        => ValueTask.FromResult(StorageResult<BucketWebsiteConfiguration>.Failure(StorageError.Unsupported("Bucket website is not supported by this storage backend.", request.BucketName)));
+
+    ValueTask<StorageResult> DeleteBucketWebsiteAsync(DeleteBucketWebsiteRequest request, CancellationToken cancellationToken = default)
+        => ValueTask.FromResult(StorageResult.Failure(StorageError.Unsupported("Bucket website is not supported by this storage backend.", request.BucketName)));
+
+    // Bucket Request Payment
+    ValueTask<StorageResult<BucketRequestPaymentConfiguration>> GetBucketRequestPaymentAsync(string bucketName, CancellationToken cancellationToken = default)
+        => ValueTask.FromResult(StorageResult<BucketRequestPaymentConfiguration>.Failure(StorageError.Unsupported("Bucket request payment is not supported by this storage backend.", bucketName)));
+
+    ValueTask<StorageResult<BucketRequestPaymentConfiguration>> PutBucketRequestPaymentAsync(PutBucketRequestPaymentRequest request, CancellationToken cancellationToken = default)
+        => ValueTask.FromResult(StorageResult<BucketRequestPaymentConfiguration>.Failure(StorageError.Unsupported("Bucket request payment is not supported by this storage backend.", request.BucketName)));
+
+    // Bucket Accelerate
+    ValueTask<StorageResult<BucketAccelerateConfiguration>> GetBucketAccelerateAsync(string bucketName, CancellationToken cancellationToken = default)
+        => ValueTask.FromResult(StorageResult<BucketAccelerateConfiguration>.Failure(StorageError.Unsupported("Bucket accelerate is not supported by this storage backend.", bucketName)));
+
+    ValueTask<StorageResult<BucketAccelerateConfiguration>> PutBucketAccelerateAsync(PutBucketAccelerateRequest request, CancellationToken cancellationToken = default)
+        => ValueTask.FromResult(StorageResult<BucketAccelerateConfiguration>.Failure(StorageError.Unsupported("Bucket accelerate is not supported by this storage backend.", request.BucketName)));
+
+    // Bucket Lifecycle
+    ValueTask<StorageResult<BucketLifecycleConfiguration>> GetBucketLifecycleAsync(string bucketName, CancellationToken cancellationToken = default)
+        => ValueTask.FromResult(StorageResult<BucketLifecycleConfiguration>.Failure(StorageError.Unsupported("Bucket lifecycle is not supported by this storage backend.", bucketName)));
+
+    ValueTask<StorageResult<BucketLifecycleConfiguration>> PutBucketLifecycleAsync(PutBucketLifecycleRequest request, CancellationToken cancellationToken = default)
+        => ValueTask.FromResult(StorageResult<BucketLifecycleConfiguration>.Failure(StorageError.Unsupported("Bucket lifecycle is not supported by this storage backend.", request.BucketName)));
+
+    ValueTask<StorageResult> DeleteBucketLifecycleAsync(DeleteBucketLifecycleRequest request, CancellationToken cancellationToken = default)
+        => ValueTask.FromResult(StorageResult.Failure(StorageError.Unsupported("Bucket lifecycle is not supported by this storage backend.", request.BucketName)));
+
+    // Bucket Replication
+    ValueTask<StorageResult<BucketReplicationConfiguration>> GetBucketReplicationAsync(string bucketName, CancellationToken cancellationToken = default)
+        => ValueTask.FromResult(StorageResult<BucketReplicationConfiguration>.Failure(StorageError.Unsupported("Bucket replication configuration is not supported by this storage backend.", bucketName)));
+
+    ValueTask<StorageResult<BucketReplicationConfiguration>> PutBucketReplicationAsync(PutBucketReplicationRequest request, CancellationToken cancellationToken = default)
+        => ValueTask.FromResult(StorageResult<BucketReplicationConfiguration>.Failure(StorageError.Unsupported("Bucket replication configuration is not supported by this storage backend.", request.BucketName)));
+
+    ValueTask<StorageResult> DeleteBucketReplicationAsync(DeleteBucketReplicationRequest request, CancellationToken cancellationToken = default)
+        => ValueTask.FromResult(StorageResult.Failure(StorageError.Unsupported("Bucket replication configuration is not supported by this storage backend.", request.BucketName)));
+
+    // Bucket Notifications
+    ValueTask<StorageResult<BucketNotificationConfiguration>> GetBucketNotificationConfigurationAsync(string bucketName, CancellationToken cancellationToken = default)
+        => ValueTask.FromResult(StorageResult<BucketNotificationConfiguration>.Failure(StorageError.Unsupported("Bucket notification configuration is not supported by this storage backend.", bucketName)));
+
+    ValueTask<StorageResult<BucketNotificationConfiguration>> PutBucketNotificationConfigurationAsync(PutBucketNotificationConfigurationRequest request, CancellationToken cancellationToken = default)
+        => ValueTask.FromResult(StorageResult<BucketNotificationConfiguration>.Failure(StorageError.Unsupported("Bucket notification configuration is not supported by this storage backend.", request.BucketName)));
+
+    // Object Lock Configuration (bucket-level)
+    ValueTask<StorageResult<ObjectLockConfiguration>> GetObjectLockConfigurationAsync(string bucketName, CancellationToken cancellationToken = default)
+        => ValueTask.FromResult(StorageResult<ObjectLockConfiguration>.Failure(StorageError.Unsupported("Object lock configuration is not supported by this storage backend.", bucketName)));
+
+    ValueTask<StorageResult<ObjectLockConfiguration>> PutObjectLockConfigurationAsync(PutObjectLockConfigurationRequest request, CancellationToken cancellationToken = default)
+        => ValueTask.FromResult(StorageResult<ObjectLockConfiguration>.Failure(StorageError.Unsupported("Object lock configuration is not supported by this storage backend.", request.BucketName)));
+
+    // Bucket Analytics
+    ValueTask<StorageResult<BucketAnalyticsConfiguration>> GetBucketAnalyticsConfigurationAsync(string bucketName, string id, CancellationToken cancellationToken = default)
+        => ValueTask.FromResult(StorageResult<BucketAnalyticsConfiguration>.Failure(StorageError.Unsupported("Bucket analytics configuration is not supported by this storage backend.", bucketName)));
+
+    ValueTask<StorageResult<BucketAnalyticsConfiguration>> PutBucketAnalyticsConfigurationAsync(PutBucketAnalyticsConfigurationRequest request, CancellationToken cancellationToken = default)
+        => ValueTask.FromResult(StorageResult<BucketAnalyticsConfiguration>.Failure(StorageError.Unsupported("Bucket analytics configuration is not supported by this storage backend.", request.BucketName)));
+
+    ValueTask<StorageResult> DeleteBucketAnalyticsConfigurationAsync(DeleteBucketAnalyticsConfigurationRequest request, CancellationToken cancellationToken = default)
+        => ValueTask.FromResult(StorageResult.Failure(StorageError.Unsupported("Bucket analytics configuration is not supported by this storage backend.", request.BucketName)));
+
+    ValueTask<StorageResult<IReadOnlyList<BucketAnalyticsConfiguration>>> ListBucketAnalyticsConfigurationsAsync(string bucketName, CancellationToken cancellationToken = default)
+        => ValueTask.FromResult(StorageResult<IReadOnlyList<BucketAnalyticsConfiguration>>.Failure(StorageError.Unsupported("Listing bucket analytics configurations is not supported by this storage backend.", bucketName)));
+
+    // Bucket Metrics
+    ValueTask<StorageResult<BucketMetricsConfiguration>> GetBucketMetricsConfigurationAsync(string bucketName, string id, CancellationToken cancellationToken = default)
+        => ValueTask.FromResult(StorageResult<BucketMetricsConfiguration>.Failure(StorageError.Unsupported("Bucket metrics configuration is not supported by this storage backend.", bucketName)));
+
+    ValueTask<StorageResult<BucketMetricsConfiguration>> PutBucketMetricsConfigurationAsync(PutBucketMetricsConfigurationRequest request, CancellationToken cancellationToken = default)
+        => ValueTask.FromResult(StorageResult<BucketMetricsConfiguration>.Failure(StorageError.Unsupported("Bucket metrics configuration is not supported by this storage backend.", request.BucketName)));
+
+    ValueTask<StorageResult> DeleteBucketMetricsConfigurationAsync(DeleteBucketMetricsConfigurationRequest request, CancellationToken cancellationToken = default)
+        => ValueTask.FromResult(StorageResult.Failure(StorageError.Unsupported("Bucket metrics configuration is not supported by this storage backend.", request.BucketName)));
+
+    ValueTask<StorageResult<IReadOnlyList<BucketMetricsConfiguration>>> ListBucketMetricsConfigurationsAsync(string bucketName, CancellationToken cancellationToken = default)
+        => ValueTask.FromResult(StorageResult<IReadOnlyList<BucketMetricsConfiguration>>.Failure(StorageError.Unsupported("Listing bucket metrics configurations is not supported by this storage backend.", bucketName)));
+
+    // Bucket Inventory
+    ValueTask<StorageResult<BucketInventoryConfiguration>> GetBucketInventoryConfigurationAsync(string bucketName, string id, CancellationToken cancellationToken = default)
+        => ValueTask.FromResult(StorageResult<BucketInventoryConfiguration>.Failure(StorageError.Unsupported("Bucket inventory configuration is not supported by this storage backend.", bucketName)));
+
+    ValueTask<StorageResult<BucketInventoryConfiguration>> PutBucketInventoryConfigurationAsync(PutBucketInventoryConfigurationRequest request, CancellationToken cancellationToken = default)
+        => ValueTask.FromResult(StorageResult<BucketInventoryConfiguration>.Failure(StorageError.Unsupported("Bucket inventory configuration is not supported by this storage backend.", request.BucketName)));
+
+    ValueTask<StorageResult> DeleteBucketInventoryConfigurationAsync(DeleteBucketInventoryConfigurationRequest request, CancellationToken cancellationToken = default)
+        => ValueTask.FromResult(StorageResult.Failure(StorageError.Unsupported("Bucket inventory configuration is not supported by this storage backend.", request.BucketName)));
+
+    ValueTask<StorageResult<IReadOnlyList<BucketInventoryConfiguration>>> ListBucketInventoryConfigurationsAsync(string bucketName, CancellationToken cancellationToken = default)
+        => ValueTask.FromResult(StorageResult<IReadOnlyList<BucketInventoryConfiguration>>.Failure(StorageError.Unsupported("Listing bucket inventory configurations is not supported by this storage backend.", bucketName)));
+
+    // Bucket Intelligent-Tiering
+    ValueTask<StorageResult<BucketIntelligentTieringConfiguration>> GetBucketIntelligentTieringConfigurationAsync(string bucketName, string id, CancellationToken cancellationToken = default)
+        => ValueTask.FromResult(StorageResult<BucketIntelligentTieringConfiguration>.Failure(StorageError.Unsupported("Bucket intelligent-tiering configuration is not supported by this storage backend.", bucketName)));
+
+    ValueTask<StorageResult<BucketIntelligentTieringConfiguration>> PutBucketIntelligentTieringConfigurationAsync(PutBucketIntelligentTieringConfigurationRequest request, CancellationToken cancellationToken = default)
+        => ValueTask.FromResult(StorageResult<BucketIntelligentTieringConfiguration>.Failure(StorageError.Unsupported("Bucket intelligent-tiering configuration is not supported by this storage backend.", request.BucketName)));
+
+    ValueTask<StorageResult> DeleteBucketIntelligentTieringConfigurationAsync(DeleteBucketIntelligentTieringConfigurationRequest request, CancellationToken cancellationToken = default)
+        => ValueTask.FromResult(StorageResult.Failure(StorageError.Unsupported("Bucket intelligent-tiering configuration is not supported by this storage backend.", request.BucketName)));
+
+    ValueTask<StorageResult<IReadOnlyList<BucketIntelligentTieringConfiguration>>> ListBucketIntelligentTieringConfigurationsAsync(string bucketName, CancellationToken cancellationToken = default)
+        => ValueTask.FromResult(StorageResult<IReadOnlyList<BucketIntelligentTieringConfiguration>>.Failure(StorageError.Unsupported("Listing bucket intelligent-tiering configurations is not supported by this storage backend.", bucketName)));
+
+    // Object Lock Write Operations
+    ValueTask<StorageResult<ObjectRetentionInfo>> PutObjectRetentionAsync(PutObjectRetentionRequest request, CancellationToken cancellationToken = default)
+        => ValueTask.FromResult(StorageResult<ObjectRetentionInfo>.Failure(StorageError.Unsupported("Object retention is not supported by this storage backend.", request.BucketName, request.Key)));
+
+    ValueTask<StorageResult<ObjectLegalHoldInfo>> PutObjectLegalHoldAsync(PutObjectLegalHoldRequest request, CancellationToken cancellationToken = default)
+        => ValueTask.FromResult(StorageResult<ObjectLegalHoldInfo>.Failure(StorageError.Unsupported("Object legal hold is not supported by this storage backend.", request.BucketName, request.Key)));
+
+    // SelectObjectContent
+    ValueTask<StorageResult<SelectObjectContentResponse>> SelectObjectContentAsync(SelectObjectContentRequest request, CancellationToken cancellationToken = default)
+        => ValueTask.FromResult(StorageResult<SelectObjectContentResponse>.Failure(StorageError.Unsupported("SelectObjectContent is not supported by this storage backend.", request.BucketName, request.Key)));
+
+    // RestoreObject
+    ValueTask<StorageResult<RestoreObjectResponse>> RestoreObjectAsync(RestoreObjectRequest request, CancellationToken cancellationToken = default)
+        => ValueTask.FromResult(StorageResult<RestoreObjectResponse>.Failure(StorageError.Unsupported("RestoreObject is not supported by this storage backend.", request.BucketName, request.Key)));
 }

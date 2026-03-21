@@ -343,6 +343,407 @@ internal sealed class AuthorizingStorageService(
         }, innerCancellationToken => inner.DeleteObjectAsync(request, innerCancellationToken), (_, innerCancellationToken) => authorizationCompatibilityService.RecordObjectDeletedAsync(request.BucketName, request.Key, innerCancellationToken), cancellationToken);
     }
 
+    // Bucket Tagging
+    public ValueTask<StorageResult<BucketTaggingConfiguration>> GetBucketTaggingAsync(string bucketName, CancellationToken cancellationToken = default)
+    {
+        return ExecuteAuthorizedAsync(new StorageAuthorizationRequest
+        {
+            Operation = StorageOperationType.GetBucketTagging,
+            BucketName = bucketName
+        }, innerCancellationToken => inner.GetBucketTaggingAsync(bucketName, innerCancellationToken), cancellationToken);
+    }
+
+    public ValueTask<StorageResult<BucketTaggingConfiguration>> PutBucketTaggingAsync(PutBucketTaggingRequest request, CancellationToken cancellationToken = default)
+    {
+        return ExecuteAuthorizedAsync(new StorageAuthorizationRequest
+        {
+            Operation = StorageOperationType.PutBucketTagging,
+            BucketName = request.BucketName
+        }, innerCancellationToken => inner.PutBucketTaggingAsync(request, innerCancellationToken), cancellationToken);
+    }
+
+    public ValueTask<StorageResult> DeleteBucketTaggingAsync(DeleteBucketTaggingRequest request, CancellationToken cancellationToken = default)
+    {
+        return ExecuteAuthorizedAsync(new StorageAuthorizationRequest
+        {
+            Operation = StorageOperationType.DeleteBucketTagging,
+            BucketName = request.BucketName
+        }, innerCancellationToken => inner.DeleteBucketTaggingAsync(request, innerCancellationToken), cancellationToken);
+    }
+
+    // Bucket Logging
+    public ValueTask<StorageResult<BucketLoggingConfiguration>> GetBucketLoggingAsync(string bucketName, CancellationToken cancellationToken = default)
+    {
+        return ExecuteAuthorizedAsync(new StorageAuthorizationRequest
+        {
+            Operation = StorageOperationType.GetBucketLogging,
+            BucketName = bucketName
+        }, innerCancellationToken => inner.GetBucketLoggingAsync(bucketName, innerCancellationToken), cancellationToken);
+    }
+
+    public ValueTask<StorageResult<BucketLoggingConfiguration>> PutBucketLoggingAsync(PutBucketLoggingRequest request, CancellationToken cancellationToken = default)
+    {
+        return ExecuteAuthorizedAsync(new StorageAuthorizationRequest
+        {
+            Operation = StorageOperationType.PutBucketLogging,
+            BucketName = request.BucketName
+        }, innerCancellationToken => inner.PutBucketLoggingAsync(request, innerCancellationToken), cancellationToken);
+    }
+
+    // Bucket Website
+    public ValueTask<StorageResult<BucketWebsiteConfiguration>> GetBucketWebsiteAsync(string bucketName, CancellationToken cancellationToken = default)
+    {
+        return ExecuteAuthorizedAsync(new StorageAuthorizationRequest
+        {
+            Operation = StorageOperationType.GetBucketWebsite,
+            BucketName = bucketName
+        }, innerCancellationToken => inner.GetBucketWebsiteAsync(bucketName, innerCancellationToken), cancellationToken);
+    }
+
+    public ValueTask<StorageResult<BucketWebsiteConfiguration>> PutBucketWebsiteAsync(PutBucketWebsiteRequest request, CancellationToken cancellationToken = default)
+    {
+        return ExecuteAuthorizedAsync(new StorageAuthorizationRequest
+        {
+            Operation = StorageOperationType.PutBucketWebsite,
+            BucketName = request.BucketName
+        }, innerCancellationToken => inner.PutBucketWebsiteAsync(request, innerCancellationToken), cancellationToken);
+    }
+
+    public ValueTask<StorageResult> DeleteBucketWebsiteAsync(DeleteBucketWebsiteRequest request, CancellationToken cancellationToken = default)
+    {
+        return ExecuteAuthorizedAsync(new StorageAuthorizationRequest
+        {
+            Operation = StorageOperationType.DeleteBucketWebsite,
+            BucketName = request.BucketName
+        }, innerCancellationToken => inner.DeleteBucketWebsiteAsync(request, innerCancellationToken), cancellationToken);
+    }
+
+    // Bucket Request Payment
+    public ValueTask<StorageResult<BucketRequestPaymentConfiguration>> GetBucketRequestPaymentAsync(string bucketName, CancellationToken cancellationToken = default)
+    {
+        return ExecuteAuthorizedAsync(new StorageAuthorizationRequest
+        {
+            Operation = StorageOperationType.GetBucketRequestPayment,
+            BucketName = bucketName
+        }, innerCancellationToken => inner.GetBucketRequestPaymentAsync(bucketName, innerCancellationToken), cancellationToken);
+    }
+
+    public ValueTask<StorageResult<BucketRequestPaymentConfiguration>> PutBucketRequestPaymentAsync(PutBucketRequestPaymentRequest request, CancellationToken cancellationToken = default)
+    {
+        return ExecuteAuthorizedAsync(new StorageAuthorizationRequest
+        {
+            Operation = StorageOperationType.PutBucketRequestPayment,
+            BucketName = request.BucketName
+        }, innerCancellationToken => inner.PutBucketRequestPaymentAsync(request, innerCancellationToken), cancellationToken);
+    }
+
+    // Bucket Accelerate
+    public ValueTask<StorageResult<BucketAccelerateConfiguration>> GetBucketAccelerateAsync(string bucketName, CancellationToken cancellationToken = default)
+    {
+        return ExecuteAuthorizedAsync(new StorageAuthorizationRequest
+        {
+            Operation = StorageOperationType.GetBucketAccelerate,
+            BucketName = bucketName
+        }, innerCancellationToken => inner.GetBucketAccelerateAsync(bucketName, innerCancellationToken), cancellationToken);
+    }
+
+    public ValueTask<StorageResult<BucketAccelerateConfiguration>> PutBucketAccelerateAsync(PutBucketAccelerateRequest request, CancellationToken cancellationToken = default)
+    {
+        return ExecuteAuthorizedAsync(new StorageAuthorizationRequest
+        {
+            Operation = StorageOperationType.PutBucketAccelerate,
+            BucketName = request.BucketName
+        }, innerCancellationToken => inner.PutBucketAccelerateAsync(request, innerCancellationToken), cancellationToken);
+    }
+
+    // Bucket Lifecycle
+    public ValueTask<StorageResult<BucketLifecycleConfiguration>> GetBucketLifecycleAsync(string bucketName, CancellationToken cancellationToken = default)
+    {
+        return ExecuteAuthorizedAsync(new StorageAuthorizationRequest
+        {
+            Operation = StorageOperationType.GetBucketLifecycle,
+            BucketName = bucketName
+        }, innerCancellationToken => inner.GetBucketLifecycleAsync(bucketName, innerCancellationToken), cancellationToken);
+    }
+
+    public ValueTask<StorageResult<BucketLifecycleConfiguration>> PutBucketLifecycleAsync(PutBucketLifecycleRequest request, CancellationToken cancellationToken = default)
+    {
+        return ExecuteAuthorizedAsync(new StorageAuthorizationRequest
+        {
+            Operation = StorageOperationType.PutBucketLifecycle,
+            BucketName = request.BucketName
+        }, innerCancellationToken => inner.PutBucketLifecycleAsync(request, innerCancellationToken), cancellationToken);
+    }
+
+    public ValueTask<StorageResult> DeleteBucketLifecycleAsync(DeleteBucketLifecycleRequest request, CancellationToken cancellationToken = default)
+    {
+        return ExecuteAuthorizedAsync(new StorageAuthorizationRequest
+        {
+            Operation = StorageOperationType.DeleteBucketLifecycle,
+            BucketName = request.BucketName
+        }, innerCancellationToken => inner.DeleteBucketLifecycleAsync(request, innerCancellationToken), cancellationToken);
+    }
+
+    // Bucket Replication
+    public ValueTask<StorageResult<BucketReplicationConfiguration>> GetBucketReplicationAsync(string bucketName, CancellationToken cancellationToken = default)
+    {
+        return ExecuteAuthorizedAsync(new StorageAuthorizationRequest
+        {
+            Operation = StorageOperationType.GetBucketReplication,
+            BucketName = bucketName
+        }, innerCancellationToken => inner.GetBucketReplicationAsync(bucketName, innerCancellationToken), cancellationToken);
+    }
+
+    public ValueTask<StorageResult<BucketReplicationConfiguration>> PutBucketReplicationAsync(PutBucketReplicationRequest request, CancellationToken cancellationToken = default)
+    {
+        return ExecuteAuthorizedAsync(new StorageAuthorizationRequest
+        {
+            Operation = StorageOperationType.PutBucketReplication,
+            BucketName = request.BucketName
+        }, innerCancellationToken => inner.PutBucketReplicationAsync(request, innerCancellationToken), cancellationToken);
+    }
+
+    public ValueTask<StorageResult> DeleteBucketReplicationAsync(DeleteBucketReplicationRequest request, CancellationToken cancellationToken = default)
+    {
+        return ExecuteAuthorizedAsync(new StorageAuthorizationRequest
+        {
+            Operation = StorageOperationType.DeleteBucketReplication,
+            BucketName = request.BucketName
+        }, innerCancellationToken => inner.DeleteBucketReplicationAsync(request, innerCancellationToken), cancellationToken);
+    }
+
+    // Bucket Notifications
+    public ValueTask<StorageResult<BucketNotificationConfiguration>> GetBucketNotificationConfigurationAsync(string bucketName, CancellationToken cancellationToken = default)
+    {
+        return ExecuteAuthorizedAsync(new StorageAuthorizationRequest
+        {
+            Operation = StorageOperationType.GetBucketNotificationConfiguration,
+            BucketName = bucketName
+        }, innerCancellationToken => inner.GetBucketNotificationConfigurationAsync(bucketName, innerCancellationToken), cancellationToken);
+    }
+
+    public ValueTask<StorageResult<BucketNotificationConfiguration>> PutBucketNotificationConfigurationAsync(PutBucketNotificationConfigurationRequest request, CancellationToken cancellationToken = default)
+    {
+        return ExecuteAuthorizedAsync(new StorageAuthorizationRequest
+        {
+            Operation = StorageOperationType.PutBucketNotificationConfiguration,
+            BucketName = request.BucketName
+        }, innerCancellationToken => inner.PutBucketNotificationConfigurationAsync(request, innerCancellationToken), cancellationToken);
+    }
+
+    // Object Lock Configuration (bucket-level)
+    public ValueTask<StorageResult<ObjectLockConfiguration>> GetObjectLockConfigurationAsync(string bucketName, CancellationToken cancellationToken = default)
+    {
+        return ExecuteAuthorizedAsync(new StorageAuthorizationRequest
+        {
+            Operation = StorageOperationType.GetObjectLockConfiguration,
+            BucketName = bucketName
+        }, innerCancellationToken => inner.GetObjectLockConfigurationAsync(bucketName, innerCancellationToken), cancellationToken);
+    }
+
+    public ValueTask<StorageResult<ObjectLockConfiguration>> PutObjectLockConfigurationAsync(PutObjectLockConfigurationRequest request, CancellationToken cancellationToken = default)
+    {
+        return ExecuteAuthorizedAsync(new StorageAuthorizationRequest
+        {
+            Operation = StorageOperationType.PutObjectLockConfiguration,
+            BucketName = request.BucketName
+        }, innerCancellationToken => inner.PutObjectLockConfigurationAsync(request, innerCancellationToken), cancellationToken);
+    }
+
+    // Bucket Analytics
+    public ValueTask<StorageResult<BucketAnalyticsConfiguration>> GetBucketAnalyticsConfigurationAsync(string bucketName, string id, CancellationToken cancellationToken = default)
+    {
+        return ExecuteAuthorizedAsync(new StorageAuthorizationRequest
+        {
+            Operation = StorageOperationType.GetBucketAnalyticsConfiguration,
+            BucketName = bucketName
+        }, innerCancellationToken => inner.GetBucketAnalyticsConfigurationAsync(bucketName, id, innerCancellationToken), cancellationToken);
+    }
+
+    public ValueTask<StorageResult<BucketAnalyticsConfiguration>> PutBucketAnalyticsConfigurationAsync(PutBucketAnalyticsConfigurationRequest request, CancellationToken cancellationToken = default)
+    {
+        return ExecuteAuthorizedAsync(new StorageAuthorizationRequest
+        {
+            Operation = StorageOperationType.PutBucketAnalyticsConfiguration,
+            BucketName = request.BucketName
+        }, innerCancellationToken => inner.PutBucketAnalyticsConfigurationAsync(request, innerCancellationToken), cancellationToken);
+    }
+
+    public ValueTask<StorageResult> DeleteBucketAnalyticsConfigurationAsync(DeleteBucketAnalyticsConfigurationRequest request, CancellationToken cancellationToken = default)
+    {
+        return ExecuteAuthorizedAsync(new StorageAuthorizationRequest
+        {
+            Operation = StorageOperationType.DeleteBucketAnalyticsConfiguration,
+            BucketName = request.BucketName
+        }, innerCancellationToken => inner.DeleteBucketAnalyticsConfigurationAsync(request, innerCancellationToken), cancellationToken);
+    }
+
+    public ValueTask<StorageResult<IReadOnlyList<BucketAnalyticsConfiguration>>> ListBucketAnalyticsConfigurationsAsync(string bucketName, CancellationToken cancellationToken = default)
+    {
+        return ExecuteAuthorizedAsync(new StorageAuthorizationRequest
+        {
+            Operation = StorageOperationType.ListBucketAnalyticsConfigurations,
+            BucketName = bucketName
+        }, innerCancellationToken => inner.ListBucketAnalyticsConfigurationsAsync(bucketName, innerCancellationToken), cancellationToken);
+    }
+
+    // Bucket Metrics
+    public ValueTask<StorageResult<BucketMetricsConfiguration>> GetBucketMetricsConfigurationAsync(string bucketName, string id, CancellationToken cancellationToken = default)
+    {
+        return ExecuteAuthorizedAsync(new StorageAuthorizationRequest
+        {
+            Operation = StorageOperationType.GetBucketMetricsConfiguration,
+            BucketName = bucketName
+        }, innerCancellationToken => inner.GetBucketMetricsConfigurationAsync(bucketName, id, innerCancellationToken), cancellationToken);
+    }
+
+    public ValueTask<StorageResult<BucketMetricsConfiguration>> PutBucketMetricsConfigurationAsync(PutBucketMetricsConfigurationRequest request, CancellationToken cancellationToken = default)
+    {
+        return ExecuteAuthorizedAsync(new StorageAuthorizationRequest
+        {
+            Operation = StorageOperationType.PutBucketMetricsConfiguration,
+            BucketName = request.BucketName
+        }, innerCancellationToken => inner.PutBucketMetricsConfigurationAsync(request, innerCancellationToken), cancellationToken);
+    }
+
+    public ValueTask<StorageResult> DeleteBucketMetricsConfigurationAsync(DeleteBucketMetricsConfigurationRequest request, CancellationToken cancellationToken = default)
+    {
+        return ExecuteAuthorizedAsync(new StorageAuthorizationRequest
+        {
+            Operation = StorageOperationType.DeleteBucketMetricsConfiguration,
+            BucketName = request.BucketName
+        }, innerCancellationToken => inner.DeleteBucketMetricsConfigurationAsync(request, innerCancellationToken), cancellationToken);
+    }
+
+    public ValueTask<StorageResult<IReadOnlyList<BucketMetricsConfiguration>>> ListBucketMetricsConfigurationsAsync(string bucketName, CancellationToken cancellationToken = default)
+    {
+        return ExecuteAuthorizedAsync(new StorageAuthorizationRequest
+        {
+            Operation = StorageOperationType.ListBucketMetricsConfigurations,
+            BucketName = bucketName
+        }, innerCancellationToken => inner.ListBucketMetricsConfigurationsAsync(bucketName, innerCancellationToken), cancellationToken);
+    }
+
+    // Bucket Inventory
+    public ValueTask<StorageResult<BucketInventoryConfiguration>> GetBucketInventoryConfigurationAsync(string bucketName, string id, CancellationToken cancellationToken = default)
+    {
+        return ExecuteAuthorizedAsync(new StorageAuthorizationRequest
+        {
+            Operation = StorageOperationType.GetBucketInventoryConfiguration,
+            BucketName = bucketName
+        }, innerCancellationToken => inner.GetBucketInventoryConfigurationAsync(bucketName, id, innerCancellationToken), cancellationToken);
+    }
+
+    public ValueTask<StorageResult<BucketInventoryConfiguration>> PutBucketInventoryConfigurationAsync(PutBucketInventoryConfigurationRequest request, CancellationToken cancellationToken = default)
+    {
+        return ExecuteAuthorizedAsync(new StorageAuthorizationRequest
+        {
+            Operation = StorageOperationType.PutBucketInventoryConfiguration,
+            BucketName = request.BucketName
+        }, innerCancellationToken => inner.PutBucketInventoryConfigurationAsync(request, innerCancellationToken), cancellationToken);
+    }
+
+    public ValueTask<StorageResult> DeleteBucketInventoryConfigurationAsync(DeleteBucketInventoryConfigurationRequest request, CancellationToken cancellationToken = default)
+    {
+        return ExecuteAuthorizedAsync(new StorageAuthorizationRequest
+        {
+            Operation = StorageOperationType.DeleteBucketInventoryConfiguration,
+            BucketName = request.BucketName
+        }, innerCancellationToken => inner.DeleteBucketInventoryConfigurationAsync(request, innerCancellationToken), cancellationToken);
+    }
+
+    public ValueTask<StorageResult<IReadOnlyList<BucketInventoryConfiguration>>> ListBucketInventoryConfigurationsAsync(string bucketName, CancellationToken cancellationToken = default)
+    {
+        return ExecuteAuthorizedAsync(new StorageAuthorizationRequest
+        {
+            Operation = StorageOperationType.ListBucketInventoryConfigurations,
+            BucketName = bucketName
+        }, innerCancellationToken => inner.ListBucketInventoryConfigurationsAsync(bucketName, innerCancellationToken), cancellationToken);
+    }
+
+    // Bucket Intelligent-Tiering
+    public ValueTask<StorageResult<BucketIntelligentTieringConfiguration>> GetBucketIntelligentTieringConfigurationAsync(string bucketName, string id, CancellationToken cancellationToken = default)
+    {
+        return ExecuteAuthorizedAsync(new StorageAuthorizationRequest
+        {
+            Operation = StorageOperationType.GetBucketIntelligentTieringConfiguration,
+            BucketName = bucketName
+        }, innerCancellationToken => inner.GetBucketIntelligentTieringConfigurationAsync(bucketName, id, innerCancellationToken), cancellationToken);
+    }
+
+    public ValueTask<StorageResult<BucketIntelligentTieringConfiguration>> PutBucketIntelligentTieringConfigurationAsync(PutBucketIntelligentTieringConfigurationRequest request, CancellationToken cancellationToken = default)
+    {
+        return ExecuteAuthorizedAsync(new StorageAuthorizationRequest
+        {
+            Operation = StorageOperationType.PutBucketIntelligentTieringConfiguration,
+            BucketName = request.BucketName
+        }, innerCancellationToken => inner.PutBucketIntelligentTieringConfigurationAsync(request, innerCancellationToken), cancellationToken);
+    }
+
+    public ValueTask<StorageResult> DeleteBucketIntelligentTieringConfigurationAsync(DeleteBucketIntelligentTieringConfigurationRequest request, CancellationToken cancellationToken = default)
+    {
+        return ExecuteAuthorizedAsync(new StorageAuthorizationRequest
+        {
+            Operation = StorageOperationType.DeleteBucketIntelligentTieringConfiguration,
+            BucketName = request.BucketName
+        }, innerCancellationToken => inner.DeleteBucketIntelligentTieringConfigurationAsync(request, innerCancellationToken), cancellationToken);
+    }
+
+    public ValueTask<StorageResult<IReadOnlyList<BucketIntelligentTieringConfiguration>>> ListBucketIntelligentTieringConfigurationsAsync(string bucketName, CancellationToken cancellationToken = default)
+    {
+        return ExecuteAuthorizedAsync(new StorageAuthorizationRequest
+        {
+            Operation = StorageOperationType.ListBucketIntelligentTieringConfigurations,
+            BucketName = bucketName
+        }, innerCancellationToken => inner.ListBucketIntelligentTieringConfigurationsAsync(bucketName, innerCancellationToken), cancellationToken);
+    }
+
+    // Object Lock Write Operations
+    public ValueTask<StorageResult<ObjectRetentionInfo>> PutObjectRetentionAsync(PutObjectRetentionRequest request, CancellationToken cancellationToken = default)
+    {
+        return ExecuteAuthorizedAsync(new StorageAuthorizationRequest
+        {
+            Operation = StorageOperationType.PutObjectRetention,
+            BucketName = request.BucketName,
+            Key = request.Key,
+            VersionId = request.VersionId
+        }, innerCancellationToken => inner.PutObjectRetentionAsync(request, innerCancellationToken), cancellationToken);
+    }
+
+    public ValueTask<StorageResult<ObjectLegalHoldInfo>> PutObjectLegalHoldAsync(PutObjectLegalHoldRequest request, CancellationToken cancellationToken = default)
+    {
+        return ExecuteAuthorizedAsync(new StorageAuthorizationRequest
+        {
+            Operation = StorageOperationType.PutObjectLegalHold,
+            BucketName = request.BucketName,
+            Key = request.Key,
+            VersionId = request.VersionId
+        }, innerCancellationToken => inner.PutObjectLegalHoldAsync(request, innerCancellationToken), cancellationToken);
+    }
+
+    // SelectObjectContent
+    public ValueTask<StorageResult<SelectObjectContentResponse>> SelectObjectContentAsync(SelectObjectContentRequest request, CancellationToken cancellationToken = default)
+    {
+        return ExecuteAuthorizedAsync(new StorageAuthorizationRequest
+        {
+            Operation = StorageOperationType.SelectObjectContent,
+            BucketName = request.BucketName,
+            Key = request.Key
+        }, innerCancellationToken => inner.SelectObjectContentAsync(request, innerCancellationToken), cancellationToken);
+    }
+
+    // RestoreObject
+    public ValueTask<StorageResult<RestoreObjectResponse>> RestoreObjectAsync(RestoreObjectRequest request, CancellationToken cancellationToken = default)
+    {
+        return ExecuteAuthorizedAsync(new StorageAuthorizationRequest
+        {
+            Operation = StorageOperationType.RestoreObject,
+            BucketName = request.BucketName,
+            Key = request.Key,
+            VersionId = request.VersionId
+        }, innerCancellationToken => inner.RestoreObjectAsync(request, innerCancellationToken), cancellationToken);
+    }
+
     private async ValueTask<StorageResult> AuthorizeAsync(StorageAuthorizationRequest request, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(request);

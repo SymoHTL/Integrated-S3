@@ -1,4 +1,4 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using IntegratedS3.Abstractions.Errors;
 using IntegratedS3.Abstractions.Models;
@@ -659,6 +659,857 @@ internal sealed class OrchestratedStorageService(
             }
         }
 
+        return result;
+    }
+
+
+    // ── Bucket Tagging ──────────────────────────────────────────────────
+
+    public async ValueTask<StorageResult<BucketTaggingConfiguration>> GetBucketTaggingAsync(string bucketName, CancellationToken cancellationToken = default)
+    {
+        return await ExecuteReadAsync(
+            StorageOperationType.GetBucketTagging,
+            (backend, ct) => backend.GetBucketTaggingAsync(bucketName, ct),
+            onSuccess: null,
+            cancellationToken);
+    }
+
+    public async ValueTask<StorageResult<BucketTaggingConfiguration>> PutBucketTaggingAsync(PutBucketTaggingRequest request, CancellationToken cancellationToken = default)
+    {
+        var backend = GetPrimaryBackend();
+        var strictReplicationError = await GetStrictReplicaWritePreflightErrorAsync(backend, request.BucketName, objectKey: null, versionId: null, cancellationToken: cancellationToken);
+        if (strictReplicationError is not null) {
+            return StorageResult<BucketTaggingConfiguration>.Failure(strictReplicationError);
+        }
+
+        var result = await backend.PutBucketTaggingAsync(request, cancellationToken);
+        ObserveResult(backend, result);
+        if (result.IsSuccess && result.Value is not null) {
+            var replicationError = await ApplyReplicaWritePolicyAsync(
+                StorageOperationType.PutBucketTagging,
+                backend,
+                request.BucketName,
+                objectKey: null,
+                versionId: null,
+                writeThroughOperation: (replicaBackend, ct) => WriteReplicaPutBucketTaggingAsync(replicaBackend, request, ct),
+                asyncOperation: (replicaBackend, ct) => RepairReplicaBucketTaggingAsync(backend, replicaBackend, request.BucketName, ct),
+                CancellationToken.None);
+            if (replicationError is not null) {
+                return StorageResult<BucketTaggingConfiguration>.Failure(replicationError);
+            }
+        }
+
+        return result;
+    }
+
+    public async ValueTask<StorageResult> DeleteBucketTaggingAsync(DeleteBucketTaggingRequest request, CancellationToken cancellationToken = default)
+    {
+        var backend = GetPrimaryBackend();
+        var strictReplicationError = await GetStrictReplicaWritePreflightErrorAsync(backend, request.BucketName, objectKey: null, versionId: null, cancellationToken: cancellationToken);
+        if (strictReplicationError is not null) {
+            return StorageResult.Failure(strictReplicationError);
+        }
+
+        var result = await backend.DeleteBucketTaggingAsync(request, cancellationToken);
+        ObserveResult(backend, result);
+        if (result.IsSuccess) {
+            var replicationError = await ApplyReplicaWritePolicyAsync(
+                StorageOperationType.DeleteBucketTagging,
+                backend,
+                request.BucketName,
+                objectKey: null,
+                versionId: null,
+                writeThroughOperation: (replicaBackend, ct) => WriteReplicaDeleteBucketTaggingAsync(replicaBackend, request, ct),
+                asyncOperation: (replicaBackend, ct) => RepairReplicaBucketTaggingAsync(backend, replicaBackend, request.BucketName, ct),
+                CancellationToken.None);
+            if (replicationError is not null) {
+                return StorageResult.Failure(replicationError);
+            }
+        }
+
+        return result;
+    }
+
+    // ── Bucket Logging ──────────────────────────────────────────────────
+
+    public async ValueTask<StorageResult<BucketLoggingConfiguration>> GetBucketLoggingAsync(string bucketName, CancellationToken cancellationToken = default)
+    {
+        return await ExecuteReadAsync(
+            StorageOperationType.GetBucketLogging,
+            (backend, ct) => backend.GetBucketLoggingAsync(bucketName, ct),
+            onSuccess: null,
+            cancellationToken);
+    }
+
+    public async ValueTask<StorageResult<BucketLoggingConfiguration>> PutBucketLoggingAsync(PutBucketLoggingRequest request, CancellationToken cancellationToken = default)
+    {
+        var backend = GetPrimaryBackend();
+        var strictReplicationError = await GetStrictReplicaWritePreflightErrorAsync(backend, request.BucketName, objectKey: null, versionId: null, cancellationToken: cancellationToken);
+        if (strictReplicationError is not null) {
+            return StorageResult<BucketLoggingConfiguration>.Failure(strictReplicationError);
+        }
+
+        var result = await backend.PutBucketLoggingAsync(request, cancellationToken);
+        ObserveResult(backend, result);
+        if (result.IsSuccess && result.Value is not null) {
+            var replicationError = await ApplyReplicaWritePolicyAsync(
+                StorageOperationType.PutBucketLogging,
+                backend,
+                request.BucketName,
+                objectKey: null,
+                versionId: null,
+                writeThroughOperation: (replicaBackend, ct) => WriteReplicaPutBucketLoggingAsync(replicaBackend, request, ct),
+                asyncOperation: (replicaBackend, ct) => RepairReplicaBucketLoggingAsync(backend, replicaBackend, request.BucketName, ct),
+                CancellationToken.None);
+            if (replicationError is not null) {
+                return StorageResult<BucketLoggingConfiguration>.Failure(replicationError);
+            }
+        }
+
+        return result;
+    }
+
+    // ── Bucket Website ──────────────────────────────────────────────────
+
+    public async ValueTask<StorageResult<BucketWebsiteConfiguration>> GetBucketWebsiteAsync(string bucketName, CancellationToken cancellationToken = default)
+    {
+        return await ExecuteReadAsync(
+            StorageOperationType.GetBucketWebsite,
+            (backend, ct) => backend.GetBucketWebsiteAsync(bucketName, ct),
+            onSuccess: null,
+            cancellationToken);
+    }
+
+    public async ValueTask<StorageResult<BucketWebsiteConfiguration>> PutBucketWebsiteAsync(PutBucketWebsiteRequest request, CancellationToken cancellationToken = default)
+    {
+        var backend = GetPrimaryBackend();
+        var strictReplicationError = await GetStrictReplicaWritePreflightErrorAsync(backend, request.BucketName, objectKey: null, versionId: null, cancellationToken: cancellationToken);
+        if (strictReplicationError is not null) {
+            return StorageResult<BucketWebsiteConfiguration>.Failure(strictReplicationError);
+        }
+
+        var result = await backend.PutBucketWebsiteAsync(request, cancellationToken);
+        ObserveResult(backend, result);
+        if (result.IsSuccess && result.Value is not null) {
+            var replicationError = await ApplyReplicaWritePolicyAsync(
+                StorageOperationType.PutBucketWebsite,
+                backend,
+                request.BucketName,
+                objectKey: null,
+                versionId: null,
+                writeThroughOperation: (replicaBackend, ct) => WriteReplicaPutBucketWebsiteAsync(replicaBackend, request, ct),
+                asyncOperation: (replicaBackend, ct) => RepairReplicaBucketWebsiteAsync(backend, replicaBackend, request.BucketName, ct),
+                CancellationToken.None);
+            if (replicationError is not null) {
+                return StorageResult<BucketWebsiteConfiguration>.Failure(replicationError);
+            }
+        }
+
+        return result;
+    }
+
+    public async ValueTask<StorageResult> DeleteBucketWebsiteAsync(DeleteBucketWebsiteRequest request, CancellationToken cancellationToken = default)
+    {
+        var backend = GetPrimaryBackend();
+        var strictReplicationError = await GetStrictReplicaWritePreflightErrorAsync(backend, request.BucketName, objectKey: null, versionId: null, cancellationToken: cancellationToken);
+        if (strictReplicationError is not null) {
+            return StorageResult.Failure(strictReplicationError);
+        }
+
+        var result = await backend.DeleteBucketWebsiteAsync(request, cancellationToken);
+        ObserveResult(backend, result);
+        if (result.IsSuccess) {
+            var replicationError = await ApplyReplicaWritePolicyAsync(
+                StorageOperationType.DeleteBucketWebsite,
+                backend,
+                request.BucketName,
+                objectKey: null,
+                versionId: null,
+                writeThroughOperation: (replicaBackend, ct) => WriteReplicaDeleteBucketWebsiteAsync(replicaBackend, request, ct),
+                asyncOperation: (replicaBackend, ct) => RepairReplicaBucketWebsiteAsync(backend, replicaBackend, request.BucketName, ct),
+                CancellationToken.None);
+            if (replicationError is not null) {
+                return StorageResult.Failure(replicationError);
+            }
+        }
+
+        return result;
+    }
+
+    // ── Bucket Request Payment ──────────────────────────────────────────
+
+    public async ValueTask<StorageResult<BucketRequestPaymentConfiguration>> GetBucketRequestPaymentAsync(string bucketName, CancellationToken cancellationToken = default)
+    {
+        return await ExecuteReadAsync(
+            StorageOperationType.GetBucketRequestPayment,
+            (backend, ct) => backend.GetBucketRequestPaymentAsync(bucketName, ct),
+            onSuccess: null,
+            cancellationToken);
+    }
+
+    public async ValueTask<StorageResult<BucketRequestPaymentConfiguration>> PutBucketRequestPaymentAsync(PutBucketRequestPaymentRequest request, CancellationToken cancellationToken = default)
+    {
+        var backend = GetPrimaryBackend();
+        var strictReplicationError = await GetStrictReplicaWritePreflightErrorAsync(backend, request.BucketName, objectKey: null, versionId: null, cancellationToken: cancellationToken);
+        if (strictReplicationError is not null) {
+            return StorageResult<BucketRequestPaymentConfiguration>.Failure(strictReplicationError);
+        }
+
+        var result = await backend.PutBucketRequestPaymentAsync(request, cancellationToken);
+        ObserveResult(backend, result);
+        if (result.IsSuccess && result.Value is not null) {
+            var replicationError = await ApplyReplicaWritePolicyAsync(
+                StorageOperationType.PutBucketRequestPayment,
+                backend,
+                request.BucketName,
+                objectKey: null,
+                versionId: null,
+                writeThroughOperation: (replicaBackend, ct) => WriteReplicaPutBucketRequestPaymentAsync(replicaBackend, request, ct),
+                asyncOperation: (replicaBackend, ct) => RepairReplicaBucketRequestPaymentAsync(backend, replicaBackend, request.BucketName, ct),
+                CancellationToken.None);
+            if (replicationError is not null) {
+                return StorageResult<BucketRequestPaymentConfiguration>.Failure(replicationError);
+            }
+        }
+
+        return result;
+    }
+
+    // ── Bucket Accelerate ───────────────────────────────────────────────
+
+    public async ValueTask<StorageResult<BucketAccelerateConfiguration>> GetBucketAccelerateAsync(string bucketName, CancellationToken cancellationToken = default)
+    {
+        return await ExecuteReadAsync(
+            StorageOperationType.GetBucketAccelerate,
+            (backend, ct) => backend.GetBucketAccelerateAsync(bucketName, ct),
+            onSuccess: null,
+            cancellationToken);
+    }
+
+    public async ValueTask<StorageResult<BucketAccelerateConfiguration>> PutBucketAccelerateAsync(PutBucketAccelerateRequest request, CancellationToken cancellationToken = default)
+    {
+        var backend = GetPrimaryBackend();
+        var strictReplicationError = await GetStrictReplicaWritePreflightErrorAsync(backend, request.BucketName, objectKey: null, versionId: null, cancellationToken: cancellationToken);
+        if (strictReplicationError is not null) {
+            return StorageResult<BucketAccelerateConfiguration>.Failure(strictReplicationError);
+        }
+
+        var result = await backend.PutBucketAccelerateAsync(request, cancellationToken);
+        ObserveResult(backend, result);
+        if (result.IsSuccess && result.Value is not null) {
+            var replicationError = await ApplyReplicaWritePolicyAsync(
+                StorageOperationType.PutBucketAccelerate,
+                backend,
+                request.BucketName,
+                objectKey: null,
+                versionId: null,
+                writeThroughOperation: (replicaBackend, ct) => WriteReplicaPutBucketAccelerateAsync(replicaBackend, request, ct),
+                asyncOperation: (replicaBackend, ct) => RepairReplicaBucketAccelerateAsync(backend, replicaBackend, request.BucketName, ct),
+                CancellationToken.None);
+            if (replicationError is not null) {
+                return StorageResult<BucketAccelerateConfiguration>.Failure(replicationError);
+            }
+        }
+
+        return result;
+    }
+
+    // ── Bucket Lifecycle ────────────────────────────────────────────────
+
+    public async ValueTask<StorageResult<BucketLifecycleConfiguration>> GetBucketLifecycleAsync(string bucketName, CancellationToken cancellationToken = default)
+    {
+        return await ExecuteReadAsync(
+            StorageOperationType.GetBucketLifecycle,
+            (backend, ct) => backend.GetBucketLifecycleAsync(bucketName, ct),
+            onSuccess: null,
+            cancellationToken);
+    }
+
+    public async ValueTask<StorageResult<BucketLifecycleConfiguration>> PutBucketLifecycleAsync(PutBucketLifecycleRequest request, CancellationToken cancellationToken = default)
+    {
+        var backend = GetPrimaryBackend();
+        var strictReplicationError = await GetStrictReplicaWritePreflightErrorAsync(backend, request.BucketName, objectKey: null, versionId: null, cancellationToken: cancellationToken);
+        if (strictReplicationError is not null) {
+            return StorageResult<BucketLifecycleConfiguration>.Failure(strictReplicationError);
+        }
+
+        var result = await backend.PutBucketLifecycleAsync(request, cancellationToken);
+        ObserveResult(backend, result);
+        if (result.IsSuccess && result.Value is not null) {
+            var replicationError = await ApplyReplicaWritePolicyAsync(
+                StorageOperationType.PutBucketLifecycle,
+                backend,
+                request.BucketName,
+                objectKey: null,
+                versionId: null,
+                writeThroughOperation: (replicaBackend, ct) => WriteReplicaPutBucketLifecycleAsync(replicaBackend, request, ct),
+                asyncOperation: (replicaBackend, ct) => RepairReplicaBucketLifecycleAsync(backend, replicaBackend, request.BucketName, ct),
+                CancellationToken.None);
+            if (replicationError is not null) {
+                return StorageResult<BucketLifecycleConfiguration>.Failure(replicationError);
+            }
+        }
+
+        return result;
+    }
+
+    public async ValueTask<StorageResult> DeleteBucketLifecycleAsync(DeleteBucketLifecycleRequest request, CancellationToken cancellationToken = default)
+    {
+        var backend = GetPrimaryBackend();
+        var strictReplicationError = await GetStrictReplicaWritePreflightErrorAsync(backend, request.BucketName, objectKey: null, versionId: null, cancellationToken: cancellationToken);
+        if (strictReplicationError is not null) {
+            return StorageResult.Failure(strictReplicationError);
+        }
+
+        var result = await backend.DeleteBucketLifecycleAsync(request, cancellationToken);
+        ObserveResult(backend, result);
+        if (result.IsSuccess) {
+            var replicationError = await ApplyReplicaWritePolicyAsync(
+                StorageOperationType.DeleteBucketLifecycle,
+                backend,
+                request.BucketName,
+                objectKey: null,
+                versionId: null,
+                writeThroughOperation: (replicaBackend, ct) => WriteReplicaDeleteBucketLifecycleAsync(replicaBackend, request, ct),
+                asyncOperation: (replicaBackend, ct) => RepairReplicaBucketLifecycleAsync(backend, replicaBackend, request.BucketName, ct),
+                CancellationToken.None);
+            if (replicationError is not null) {
+                return StorageResult.Failure(replicationError);
+            }
+        }
+
+        return result;
+    }
+
+    // ── Bucket Replication ──────────────────────────────────────────────
+
+    public async ValueTask<StorageResult<BucketReplicationConfiguration>> GetBucketReplicationAsync(string bucketName, CancellationToken cancellationToken = default)
+    {
+        return await ExecuteReadAsync(
+            StorageOperationType.GetBucketReplication,
+            (backend, ct) => backend.GetBucketReplicationAsync(bucketName, ct),
+            onSuccess: null,
+            cancellationToken);
+    }
+
+    public async ValueTask<StorageResult<BucketReplicationConfiguration>> PutBucketReplicationAsync(PutBucketReplicationRequest request, CancellationToken cancellationToken = default)
+    {
+        var backend = GetPrimaryBackend();
+        var strictReplicationError = await GetStrictReplicaWritePreflightErrorAsync(backend, request.BucketName, objectKey: null, versionId: null, cancellationToken: cancellationToken);
+        if (strictReplicationError is not null) {
+            return StorageResult<BucketReplicationConfiguration>.Failure(strictReplicationError);
+        }
+
+        var result = await backend.PutBucketReplicationAsync(request, cancellationToken);
+        ObserveResult(backend, result);
+        if (result.IsSuccess && result.Value is not null) {
+            var replicationError = await ApplyReplicaWritePolicyAsync(
+                StorageOperationType.PutBucketReplication,
+                backend,
+                request.BucketName,
+                objectKey: null,
+                versionId: null,
+                writeThroughOperation: (replicaBackend, ct) => WriteReplicaPutBucketReplicationAsync(replicaBackend, request, ct),
+                asyncOperation: (replicaBackend, ct) => RepairReplicaBucketReplicationAsync(backend, replicaBackend, request.BucketName, ct),
+                CancellationToken.None);
+            if (replicationError is not null) {
+                return StorageResult<BucketReplicationConfiguration>.Failure(replicationError);
+            }
+        }
+
+        return result;
+    }
+
+    public async ValueTask<StorageResult> DeleteBucketReplicationAsync(DeleteBucketReplicationRequest request, CancellationToken cancellationToken = default)
+    {
+        var backend = GetPrimaryBackend();
+        var strictReplicationError = await GetStrictReplicaWritePreflightErrorAsync(backend, request.BucketName, objectKey: null, versionId: null, cancellationToken: cancellationToken);
+        if (strictReplicationError is not null) {
+            return StorageResult.Failure(strictReplicationError);
+        }
+
+        var result = await backend.DeleteBucketReplicationAsync(request, cancellationToken);
+        ObserveResult(backend, result);
+        if (result.IsSuccess) {
+            var replicationError = await ApplyReplicaWritePolicyAsync(
+                StorageOperationType.DeleteBucketReplication,
+                backend,
+                request.BucketName,
+                objectKey: null,
+                versionId: null,
+                writeThroughOperation: (replicaBackend, ct) => WriteReplicaDeleteBucketReplicationAsync(replicaBackend, request, ct),
+                asyncOperation: (replicaBackend, ct) => RepairReplicaBucketReplicationAsync(backend, replicaBackend, request.BucketName, ct),
+                CancellationToken.None);
+            if (replicationError is not null) {
+                return StorageResult.Failure(replicationError);
+            }
+        }
+
+        return result;
+    }
+
+    // ── Bucket Notifications ────────────────────────────────────────────
+
+    public async ValueTask<StorageResult<BucketNotificationConfiguration>> GetBucketNotificationConfigurationAsync(string bucketName, CancellationToken cancellationToken = default)
+    {
+        return await ExecuteReadAsync(
+            StorageOperationType.GetBucketNotificationConfiguration,
+            (backend, ct) => backend.GetBucketNotificationConfigurationAsync(bucketName, ct),
+            onSuccess: null,
+            cancellationToken);
+    }
+
+    public async ValueTask<StorageResult<BucketNotificationConfiguration>> PutBucketNotificationConfigurationAsync(PutBucketNotificationConfigurationRequest request, CancellationToken cancellationToken = default)
+    {
+        var backend = GetPrimaryBackend();
+        var strictReplicationError = await GetStrictReplicaWritePreflightErrorAsync(backend, request.BucketName, objectKey: null, versionId: null, cancellationToken: cancellationToken);
+        if (strictReplicationError is not null) {
+            return StorageResult<BucketNotificationConfiguration>.Failure(strictReplicationError);
+        }
+
+        var result = await backend.PutBucketNotificationConfigurationAsync(request, cancellationToken);
+        ObserveResult(backend, result);
+        if (result.IsSuccess && result.Value is not null) {
+            var replicationError = await ApplyReplicaWritePolicyAsync(
+                StorageOperationType.PutBucketNotificationConfiguration,
+                backend,
+                request.BucketName,
+                objectKey: null,
+                versionId: null,
+                writeThroughOperation: (replicaBackend, ct) => WriteReplicaPutBucketNotificationConfigurationAsync(replicaBackend, request, ct),
+                asyncOperation: (replicaBackend, ct) => RepairReplicaBucketNotificationConfigurationAsync(backend, replicaBackend, request.BucketName, ct),
+                CancellationToken.None);
+            if (replicationError is not null) {
+                return StorageResult<BucketNotificationConfiguration>.Failure(replicationError);
+            }
+        }
+
+        return result;
+    }
+
+    // ── Object Lock Configuration ───────────────────────────────────────
+
+    public async ValueTask<StorageResult<ObjectLockConfiguration>> GetObjectLockConfigurationAsync(string bucketName, CancellationToken cancellationToken = default)
+    {
+        return await ExecuteReadAsync(
+            StorageOperationType.GetObjectLockConfiguration,
+            (backend, ct) => backend.GetObjectLockConfigurationAsync(bucketName, ct),
+            onSuccess: null,
+            cancellationToken);
+    }
+
+    public async ValueTask<StorageResult<ObjectLockConfiguration>> PutObjectLockConfigurationAsync(PutObjectLockConfigurationRequest request, CancellationToken cancellationToken = default)
+    {
+        var backend = GetPrimaryBackend();
+        var strictReplicationError = await GetStrictReplicaWritePreflightErrorAsync(backend, request.BucketName, objectKey: null, versionId: null, cancellationToken: cancellationToken);
+        if (strictReplicationError is not null) {
+            return StorageResult<ObjectLockConfiguration>.Failure(strictReplicationError);
+        }
+
+        var result = await backend.PutObjectLockConfigurationAsync(request, cancellationToken);
+        ObserveResult(backend, result);
+        if (result.IsSuccess && result.Value is not null) {
+            var replicationError = await ApplyReplicaWritePolicyAsync(
+                StorageOperationType.PutObjectLockConfiguration,
+                backend,
+                request.BucketName,
+                objectKey: null,
+                versionId: null,
+                writeThroughOperation: (replicaBackend, ct) => WriteReplicaPutObjectLockConfigurationAsync(replicaBackend, request, ct),
+                asyncOperation: (replicaBackend, ct) => RepairReplicaObjectLockConfigurationAsync(backend, replicaBackend, request.BucketName, ct),
+                CancellationToken.None);
+            if (replicationError is not null) {
+                return StorageResult<ObjectLockConfiguration>.Failure(replicationError);
+            }
+        }
+
+        return result;
+    }
+
+    // ── Bucket Analytics (ID-based) ─────────────────────────────────────
+
+    public async ValueTask<StorageResult<BucketAnalyticsConfiguration>> GetBucketAnalyticsConfigurationAsync(string bucketName, string id, CancellationToken cancellationToken = default)
+    {
+        return await ExecuteReadAsync(
+            StorageOperationType.GetBucketAnalyticsConfiguration,
+            (backend, ct) => backend.GetBucketAnalyticsConfigurationAsync(bucketName, id, ct),
+            onSuccess: null,
+            cancellationToken);
+    }
+
+    public async ValueTask<StorageResult<BucketAnalyticsConfiguration>> PutBucketAnalyticsConfigurationAsync(PutBucketAnalyticsConfigurationRequest request, CancellationToken cancellationToken = default)
+    {
+        var backend = GetPrimaryBackend();
+        var strictReplicationError = await GetStrictReplicaWritePreflightErrorAsync(backend, request.BucketName, objectKey: null, versionId: null, cancellationToken: cancellationToken);
+        if (strictReplicationError is not null) {
+            return StorageResult<BucketAnalyticsConfiguration>.Failure(strictReplicationError);
+        }
+
+        var result = await backend.PutBucketAnalyticsConfigurationAsync(request, cancellationToken);
+        ObserveResult(backend, result);
+        if (result.IsSuccess && result.Value is not null) {
+            var replicationError = await ApplyReplicaWritePolicyAsync(
+                StorageOperationType.PutBucketAnalyticsConfiguration,
+                backend,
+                request.BucketName,
+                objectKey: null,
+                versionId: null,
+                writeThroughOperation: (replicaBackend, ct) => WriteReplicaPutBucketAnalyticsConfigurationAsync(replicaBackend, request, ct),
+                asyncOperation: (replicaBackend, ct) => RepairReplicaBucketAnalyticsConfigurationAsync(backend, replicaBackend, request.BucketName, request.Id, ct),
+                CancellationToken.None);
+            if (replicationError is not null) {
+                return StorageResult<BucketAnalyticsConfiguration>.Failure(replicationError);
+            }
+        }
+
+        return result;
+    }
+
+    public async ValueTask<StorageResult> DeleteBucketAnalyticsConfigurationAsync(DeleteBucketAnalyticsConfigurationRequest request, CancellationToken cancellationToken = default)
+    {
+        var backend = GetPrimaryBackend();
+        var strictReplicationError = await GetStrictReplicaWritePreflightErrorAsync(backend, request.BucketName, objectKey: null, versionId: null, cancellationToken: cancellationToken);
+        if (strictReplicationError is not null) {
+            return StorageResult.Failure(strictReplicationError);
+        }
+
+        var result = await backend.DeleteBucketAnalyticsConfigurationAsync(request, cancellationToken);
+        ObserveResult(backend, result);
+        if (result.IsSuccess) {
+            var replicationError = await ApplyReplicaWritePolicyAsync(
+                StorageOperationType.DeleteBucketAnalyticsConfiguration,
+                backend,
+                request.BucketName,
+                objectKey: null,
+                versionId: null,
+                writeThroughOperation: (replicaBackend, ct) => WriteReplicaDeleteBucketAnalyticsConfigurationAsync(replicaBackend, request, ct),
+                asyncOperation: (replicaBackend, ct) => RepairReplicaBucketAnalyticsConfigurationAsync(backend, replicaBackend, request.BucketName, request.Id, ct),
+                CancellationToken.None);
+            if (replicationError is not null) {
+                return StorageResult.Failure(replicationError);
+            }
+        }
+
+        return result;
+    }
+
+    public async ValueTask<StorageResult<IReadOnlyList<BucketAnalyticsConfiguration>>> ListBucketAnalyticsConfigurationsAsync(string bucketName, CancellationToken cancellationToken = default)
+    {
+        return await ExecuteReadAsync(
+            StorageOperationType.ListBucketAnalyticsConfigurations,
+            (backend, ct) => backend.ListBucketAnalyticsConfigurationsAsync(bucketName, ct),
+            onSuccess: null,
+            cancellationToken);
+    }
+
+    // ── Bucket Metrics (ID-based) ───────────────────────────────────────
+
+    public async ValueTask<StorageResult<BucketMetricsConfiguration>> GetBucketMetricsConfigurationAsync(string bucketName, string id, CancellationToken cancellationToken = default)
+    {
+        return await ExecuteReadAsync(
+            StorageOperationType.GetBucketMetricsConfiguration,
+            (backend, ct) => backend.GetBucketMetricsConfigurationAsync(bucketName, id, ct),
+            onSuccess: null,
+            cancellationToken);
+    }
+
+    public async ValueTask<StorageResult<BucketMetricsConfiguration>> PutBucketMetricsConfigurationAsync(PutBucketMetricsConfigurationRequest request, CancellationToken cancellationToken = default)
+    {
+        var backend = GetPrimaryBackend();
+        var strictReplicationError = await GetStrictReplicaWritePreflightErrorAsync(backend, request.BucketName, objectKey: null, versionId: null, cancellationToken: cancellationToken);
+        if (strictReplicationError is not null) {
+            return StorageResult<BucketMetricsConfiguration>.Failure(strictReplicationError);
+        }
+
+        var result = await backend.PutBucketMetricsConfigurationAsync(request, cancellationToken);
+        ObserveResult(backend, result);
+        if (result.IsSuccess && result.Value is not null) {
+            var replicationError = await ApplyReplicaWritePolicyAsync(
+                StorageOperationType.PutBucketMetricsConfiguration,
+                backend,
+                request.BucketName,
+                objectKey: null,
+                versionId: null,
+                writeThroughOperation: (replicaBackend, ct) => WriteReplicaPutBucketMetricsConfigurationAsync(replicaBackend, request, ct),
+                asyncOperation: (replicaBackend, ct) => RepairReplicaBucketMetricsConfigurationAsync(backend, replicaBackend, request.BucketName, request.Id, ct),
+                CancellationToken.None);
+            if (replicationError is not null) {
+                return StorageResult<BucketMetricsConfiguration>.Failure(replicationError);
+            }
+        }
+
+        return result;
+    }
+
+    public async ValueTask<StorageResult> DeleteBucketMetricsConfigurationAsync(DeleteBucketMetricsConfigurationRequest request, CancellationToken cancellationToken = default)
+    {
+        var backend = GetPrimaryBackend();
+        var strictReplicationError = await GetStrictReplicaWritePreflightErrorAsync(backend, request.BucketName, objectKey: null, versionId: null, cancellationToken: cancellationToken);
+        if (strictReplicationError is not null) {
+            return StorageResult.Failure(strictReplicationError);
+        }
+
+        var result = await backend.DeleteBucketMetricsConfigurationAsync(request, cancellationToken);
+        ObserveResult(backend, result);
+        if (result.IsSuccess) {
+            var replicationError = await ApplyReplicaWritePolicyAsync(
+                StorageOperationType.DeleteBucketMetricsConfiguration,
+                backend,
+                request.BucketName,
+                objectKey: null,
+                versionId: null,
+                writeThroughOperation: (replicaBackend, ct) => WriteReplicaDeleteBucketMetricsConfigurationAsync(replicaBackend, request, ct),
+                asyncOperation: (replicaBackend, ct) => RepairReplicaBucketMetricsConfigurationAsync(backend, replicaBackend, request.BucketName, request.Id, ct),
+                CancellationToken.None);
+            if (replicationError is not null) {
+                return StorageResult.Failure(replicationError);
+            }
+        }
+
+        return result;
+    }
+
+    public async ValueTask<StorageResult<IReadOnlyList<BucketMetricsConfiguration>>> ListBucketMetricsConfigurationsAsync(string bucketName, CancellationToken cancellationToken = default)
+    {
+        return await ExecuteReadAsync(
+            StorageOperationType.ListBucketMetricsConfigurations,
+            (backend, ct) => backend.ListBucketMetricsConfigurationsAsync(bucketName, ct),
+            onSuccess: null,
+            cancellationToken);
+    }
+
+    // ── Bucket Inventory (ID-based) ─────────────────────────────────────
+
+    public async ValueTask<StorageResult<BucketInventoryConfiguration>> GetBucketInventoryConfigurationAsync(string bucketName, string id, CancellationToken cancellationToken = default)
+    {
+        return await ExecuteReadAsync(
+            StorageOperationType.GetBucketInventoryConfiguration,
+            (backend, ct) => backend.GetBucketInventoryConfigurationAsync(bucketName, id, ct),
+            onSuccess: null,
+            cancellationToken);
+    }
+
+    public async ValueTask<StorageResult<BucketInventoryConfiguration>> PutBucketInventoryConfigurationAsync(PutBucketInventoryConfigurationRequest request, CancellationToken cancellationToken = default)
+    {
+        var backend = GetPrimaryBackend();
+        var strictReplicationError = await GetStrictReplicaWritePreflightErrorAsync(backend, request.BucketName, objectKey: null, versionId: null, cancellationToken: cancellationToken);
+        if (strictReplicationError is not null) {
+            return StorageResult<BucketInventoryConfiguration>.Failure(strictReplicationError);
+        }
+
+        var result = await backend.PutBucketInventoryConfigurationAsync(request, cancellationToken);
+        ObserveResult(backend, result);
+        if (result.IsSuccess && result.Value is not null) {
+            var replicationError = await ApplyReplicaWritePolicyAsync(
+                StorageOperationType.PutBucketInventoryConfiguration,
+                backend,
+                request.BucketName,
+                objectKey: null,
+                versionId: null,
+                writeThroughOperation: (replicaBackend, ct) => WriteReplicaPutBucketInventoryConfigurationAsync(replicaBackend, request, ct),
+                asyncOperation: (replicaBackend, ct) => RepairReplicaBucketInventoryConfigurationAsync(backend, replicaBackend, request.BucketName, request.Id, ct),
+                CancellationToken.None);
+            if (replicationError is not null) {
+                return StorageResult<BucketInventoryConfiguration>.Failure(replicationError);
+            }
+        }
+
+        return result;
+    }
+
+    public async ValueTask<StorageResult> DeleteBucketInventoryConfigurationAsync(DeleteBucketInventoryConfigurationRequest request, CancellationToken cancellationToken = default)
+    {
+        var backend = GetPrimaryBackend();
+        var strictReplicationError = await GetStrictReplicaWritePreflightErrorAsync(backend, request.BucketName, objectKey: null, versionId: null, cancellationToken: cancellationToken);
+        if (strictReplicationError is not null) {
+            return StorageResult.Failure(strictReplicationError);
+        }
+
+        var result = await backend.DeleteBucketInventoryConfigurationAsync(request, cancellationToken);
+        ObserveResult(backend, result);
+        if (result.IsSuccess) {
+            var replicationError = await ApplyReplicaWritePolicyAsync(
+                StorageOperationType.DeleteBucketInventoryConfiguration,
+                backend,
+                request.BucketName,
+                objectKey: null,
+                versionId: null,
+                writeThroughOperation: (replicaBackend, ct) => WriteReplicaDeleteBucketInventoryConfigurationAsync(replicaBackend, request, ct),
+                asyncOperation: (replicaBackend, ct) => RepairReplicaBucketInventoryConfigurationAsync(backend, replicaBackend, request.BucketName, request.Id, ct),
+                CancellationToken.None);
+            if (replicationError is not null) {
+                return StorageResult.Failure(replicationError);
+            }
+        }
+
+        return result;
+    }
+
+    public async ValueTask<StorageResult<IReadOnlyList<BucketInventoryConfiguration>>> ListBucketInventoryConfigurationsAsync(string bucketName, CancellationToken cancellationToken = default)
+    {
+        return await ExecuteReadAsync(
+            StorageOperationType.ListBucketInventoryConfigurations,
+            (backend, ct) => backend.ListBucketInventoryConfigurationsAsync(bucketName, ct),
+            onSuccess: null,
+            cancellationToken);
+    }
+
+    // ── Bucket Intelligent-Tiering (ID-based) ───────────────────────────
+
+    public async ValueTask<StorageResult<BucketIntelligentTieringConfiguration>> GetBucketIntelligentTieringConfigurationAsync(string bucketName, string id, CancellationToken cancellationToken = default)
+    {
+        return await ExecuteReadAsync(
+            StorageOperationType.GetBucketIntelligentTieringConfiguration,
+            (backend, ct) => backend.GetBucketIntelligentTieringConfigurationAsync(bucketName, id, ct),
+            onSuccess: null,
+            cancellationToken);
+    }
+
+    public async ValueTask<StorageResult<BucketIntelligentTieringConfiguration>> PutBucketIntelligentTieringConfigurationAsync(PutBucketIntelligentTieringConfigurationRequest request, CancellationToken cancellationToken = default)
+    {
+        var backend = GetPrimaryBackend();
+        var strictReplicationError = await GetStrictReplicaWritePreflightErrorAsync(backend, request.BucketName, objectKey: null, versionId: null, cancellationToken: cancellationToken);
+        if (strictReplicationError is not null) {
+            return StorageResult<BucketIntelligentTieringConfiguration>.Failure(strictReplicationError);
+        }
+
+        var result = await backend.PutBucketIntelligentTieringConfigurationAsync(request, cancellationToken);
+        ObserveResult(backend, result);
+        if (result.IsSuccess && result.Value is not null) {
+            var replicationError = await ApplyReplicaWritePolicyAsync(
+                StorageOperationType.PutBucketIntelligentTieringConfiguration,
+                backend,
+                request.BucketName,
+                objectKey: null,
+                versionId: null,
+                writeThroughOperation: (replicaBackend, ct) => WriteReplicaPutBucketIntelligentTieringConfigurationAsync(replicaBackend, request, ct),
+                asyncOperation: (replicaBackend, ct) => RepairReplicaBucketIntelligentTieringConfigurationAsync(backend, replicaBackend, request.BucketName, request.Id, ct),
+                CancellationToken.None);
+            if (replicationError is not null) {
+                return StorageResult<BucketIntelligentTieringConfiguration>.Failure(replicationError);
+            }
+        }
+
+        return result;
+    }
+
+    public async ValueTask<StorageResult> DeleteBucketIntelligentTieringConfigurationAsync(DeleteBucketIntelligentTieringConfigurationRequest request, CancellationToken cancellationToken = default)
+    {
+        var backend = GetPrimaryBackend();
+        var strictReplicationError = await GetStrictReplicaWritePreflightErrorAsync(backend, request.BucketName, objectKey: null, versionId: null, cancellationToken: cancellationToken);
+        if (strictReplicationError is not null) {
+            return StorageResult.Failure(strictReplicationError);
+        }
+
+        var result = await backend.DeleteBucketIntelligentTieringConfigurationAsync(request, cancellationToken);
+        ObserveResult(backend, result);
+        if (result.IsSuccess) {
+            var replicationError = await ApplyReplicaWritePolicyAsync(
+                StorageOperationType.DeleteBucketIntelligentTieringConfiguration,
+                backend,
+                request.BucketName,
+                objectKey: null,
+                versionId: null,
+                writeThroughOperation: (replicaBackend, ct) => WriteReplicaDeleteBucketIntelligentTieringConfigurationAsync(replicaBackend, request, ct),
+                asyncOperation: (replicaBackend, ct) => RepairReplicaBucketIntelligentTieringConfigurationAsync(backend, replicaBackend, request.BucketName, request.Id, ct),
+                CancellationToken.None);
+            if (replicationError is not null) {
+                return StorageResult.Failure(replicationError);
+            }
+        }
+
+        return result;
+    }
+
+    public async ValueTask<StorageResult<IReadOnlyList<BucketIntelligentTieringConfiguration>>> ListBucketIntelligentTieringConfigurationsAsync(string bucketName, CancellationToken cancellationToken = default)
+    {
+        return await ExecuteReadAsync(
+            StorageOperationType.ListBucketIntelligentTieringConfigurations,
+            (backend, ct) => backend.ListBucketIntelligentTieringConfigurationsAsync(bucketName, ct),
+            onSuccess: null,
+            cancellationToken);
+    }
+
+    // ── Object Lock Write Operations ────────────────────────────────────
+
+    public async ValueTask<StorageResult<ObjectRetentionInfo>> PutObjectRetentionAsync(PutObjectRetentionRequest request, CancellationToken cancellationToken = default)
+    {
+        var backend = GetPrimaryBackend();
+        var strictReplicationError = await GetStrictReplicaWritePreflightErrorAsync(backend, request.BucketName, request.Key, request.VersionId, cancellationToken: cancellationToken);
+        if (strictReplicationError is not null) {
+            return StorageResult<ObjectRetentionInfo>.Failure(strictReplicationError);
+        }
+
+        var result = await backend.PutObjectRetentionAsync(request, cancellationToken);
+        ObserveResult(backend, result);
+        if (result.IsSuccess && result.Value is not null) {
+            var resolvedVersionId = GetEffectiveVersionId(request.VersionId, result.Value.VersionId);
+
+            var replicationError = await ApplyReplicaWritePolicyAsync(
+                StorageOperationType.PutObjectRetention,
+                backend,
+                request.BucketName,
+                request.Key,
+                resolvedVersionId,
+                writeThroughOperation: (replicaBackend, ct) => WriteReplicaPutObjectRetentionAsync(replicaBackend, request, ct),
+                asyncOperation: (replicaBackend, ct) => RepairReplicaObjectRetentionFromPrimaryAsync(backend, replicaBackend, request.BucketName, request.Key, request.VersionId, ct),
+                CancellationToken.None);
+            if (replicationError is not null) {
+                return StorageResult<ObjectRetentionInfo>.Failure(replicationError);
+            }
+        }
+
+        return result;
+    }
+
+    public async ValueTask<StorageResult<ObjectLegalHoldInfo>> PutObjectLegalHoldAsync(PutObjectLegalHoldRequest request, CancellationToken cancellationToken = default)
+    {
+        var backend = GetPrimaryBackend();
+        var strictReplicationError = await GetStrictReplicaWritePreflightErrorAsync(backend, request.BucketName, request.Key, request.VersionId, cancellationToken: cancellationToken);
+        if (strictReplicationError is not null) {
+            return StorageResult<ObjectLegalHoldInfo>.Failure(strictReplicationError);
+        }
+
+        var result = await backend.PutObjectLegalHoldAsync(request, cancellationToken);
+        ObserveResult(backend, result);
+        if (result.IsSuccess && result.Value is not null) {
+            var resolvedVersionId = GetEffectiveVersionId(request.VersionId, result.Value.VersionId);
+
+            var replicationError = await ApplyReplicaWritePolicyAsync(
+                StorageOperationType.PutObjectLegalHold,
+                backend,
+                request.BucketName,
+                request.Key,
+                resolvedVersionId,
+                writeThroughOperation: (replicaBackend, ct) => WriteReplicaPutObjectLegalHoldAsync(replicaBackend, request, ct),
+                asyncOperation: (replicaBackend, ct) => RepairReplicaObjectLegalHoldFromPrimaryAsync(backend, replicaBackend, request.BucketName, request.Key, request.VersionId, ct),
+                CancellationToken.None);
+            if (replicationError is not null) {
+                return StorageResult<ObjectLegalHoldInfo>.Failure(replicationError);
+            }
+        }
+
+        return result;
+    }
+
+    // ── SelectObjectContent ─────────────────────────────────────────────
+
+    public async ValueTask<StorageResult<SelectObjectContentResponse>> SelectObjectContentAsync(SelectObjectContentRequest request, CancellationToken cancellationToken = default)
+    {
+        return await ExecuteReadAsync(
+            StorageOperationType.SelectObjectContent,
+            (backend, ct) => backend.SelectObjectContentAsync(request, ct),
+            onSuccess: null,
+            cancellationToken);
+    }
+
+    // ── RestoreObject ───────────────────────────────────────────────────
+
+    public async ValueTask<StorageResult<RestoreObjectResponse>> RestoreObjectAsync(RestoreObjectRequest request, CancellationToken cancellationToken = default)
+    {
+        var backend = GetPrimaryBackend();
+        var result = await backend.RestoreObjectAsync(request, cancellationToken);
+        ObserveResult(backend, result);
         return result;
     }
 
@@ -1587,6 +2438,731 @@ internal sealed class OrchestratedStorageService(
     private ValueTask<StorageError?> RepairReplicaDeleteObjectAsync(IStorageBackend replicaBackend, DeleteObjectRequest request, CancellationToken cancellationToken)
     {
         return WriteReplicaDeleteObjectAsync(replicaBackend, request, cancellationToken);
+    }
+
+    // ── Bucket Tagging replication helpers ───────────────────────────────
+
+    private async ValueTask<StorageError?> WriteReplicaPutBucketTaggingAsync(IStorageBackend replicaBackend, PutBucketTaggingRequest request, CancellationToken cancellationToken)
+    {
+        var replicaResult = await replicaBackend.PutBucketTaggingAsync(request, cancellationToken);
+        ObserveResult(replicaBackend, replicaResult);
+        if (!replicaResult.IsSuccess || replicaResult.Value is null) {
+            return replicaResult.Error ?? CreateReplicaOperationError(replicaBackend, request.BucketName, objectKey: null, versionId: null, message: "Replica bucket tagging update did not return configuration metadata.");
+        }
+
+        return null;
+    }
+
+    private async ValueTask<StorageError?> WriteReplicaDeleteBucketTaggingAsync(IStorageBackend replicaBackend, DeleteBucketTaggingRequest request, CancellationToken cancellationToken)
+    {
+        var replicaResult = await replicaBackend.DeleteBucketTaggingAsync(request, cancellationToken);
+        ObserveResult(replicaBackend, replicaResult);
+        if (!replicaResult.IsSuccess && replicaResult.Error?.Code is not (StorageErrorCode.TaggingConfigurationNotFound or StorageErrorCode.BucketNotFound)) {
+            return replicaResult.Error ?? CreateReplicaOperationError(replicaBackend, request.BucketName, objectKey: null, versionId: null, message: "Replica bucket tagging delete did not succeed.");
+        }
+
+        return null;
+    }
+
+    private async ValueTask<StorageError?> RepairReplicaBucketTaggingAsync(
+        IStorageBackend primaryBackend,
+        IStorageBackend replicaBackend,
+        string bucketName,
+        CancellationToken cancellationToken)
+    {
+        var primaryResult = await primaryBackend.GetBucketTaggingAsync(bucketName, cancellationToken);
+        ObserveResult(primaryBackend, primaryResult);
+        if (primaryResult.IsSuccess && primaryResult.Value is not null) {
+            return await WriteReplicaPutBucketTaggingAsync(replicaBackend, new PutBucketTaggingRequest
+            {
+                BucketName = bucketName,
+                Tags = primaryResult.Value.Tags
+            }, cancellationToken);
+        }
+
+        if (primaryResult.Error?.Code == StorageErrorCode.BucketNotFound) {
+            return await RepairReplicaBucketDeleteAsync(replicaBackend, bucketName, cancellationToken);
+        }
+
+        if (primaryResult.Error?.Code == StorageErrorCode.TaggingConfigurationNotFound) {
+            return await WriteReplicaDeleteBucketTaggingAsync(replicaBackend, new DeleteBucketTaggingRequest
+            {
+                BucketName = bucketName
+            }, cancellationToken);
+        }
+
+        return primaryResult.Error ?? CreatePrimaryReplicationSourceError(primaryBackend, bucketName, objectKey: null, versionId: null, message: "Primary bucket tagging configuration could not be resolved for replica repair.");
+    }
+
+    // ── Bucket Logging replication helpers ───────────────────────────────
+
+    private async ValueTask<StorageError?> WriteReplicaPutBucketLoggingAsync(IStorageBackend replicaBackend, PutBucketLoggingRequest request, CancellationToken cancellationToken)
+    {
+        var replicaResult = await replicaBackend.PutBucketLoggingAsync(request, cancellationToken);
+        ObserveResult(replicaBackend, replicaResult);
+        if (!replicaResult.IsSuccess || replicaResult.Value is null) {
+            return replicaResult.Error ?? CreateReplicaOperationError(replicaBackend, request.BucketName, objectKey: null, versionId: null, message: "Replica bucket logging update did not return configuration metadata.");
+        }
+
+        return null;
+    }
+
+    private async ValueTask<StorageError?> RepairReplicaBucketLoggingAsync(
+        IStorageBackend primaryBackend,
+        IStorageBackend replicaBackend,
+        string bucketName,
+        CancellationToken cancellationToken)
+    {
+        var primaryResult = await primaryBackend.GetBucketLoggingAsync(bucketName, cancellationToken);
+        ObserveResult(primaryBackend, primaryResult);
+        if (primaryResult.IsSuccess && primaryResult.Value is not null) {
+            return await WriteReplicaPutBucketLoggingAsync(replicaBackend, new PutBucketLoggingRequest
+            {
+                BucketName = bucketName,
+                TargetBucket = primaryResult.Value.TargetBucket,
+                TargetPrefix = primaryResult.Value.TargetPrefix
+            }, cancellationToken);
+        }
+
+        if (primaryResult.Error?.Code == StorageErrorCode.BucketNotFound) {
+            return await RepairReplicaBucketDeleteAsync(replicaBackend, bucketName, cancellationToken);
+        }
+
+        if (primaryResult.Error?.Code == StorageErrorCode.LoggingConfigurationNotFound) {
+            return await WriteReplicaPutBucketLoggingAsync(replicaBackend, new PutBucketLoggingRequest
+            {
+                BucketName = bucketName
+            }, cancellationToken);
+        }
+
+        return primaryResult.Error ?? CreatePrimaryReplicationSourceError(primaryBackend, bucketName, objectKey: null, versionId: null, message: "Primary bucket logging configuration could not be resolved for replica repair.");
+    }
+
+    // ── Bucket Website replication helpers ───────────────────────────────
+
+    private async ValueTask<StorageError?> WriteReplicaPutBucketWebsiteAsync(IStorageBackend replicaBackend, PutBucketWebsiteRequest request, CancellationToken cancellationToken)
+    {
+        var replicaResult = await replicaBackend.PutBucketWebsiteAsync(request, cancellationToken);
+        ObserveResult(replicaBackend, replicaResult);
+        if (!replicaResult.IsSuccess || replicaResult.Value is null) {
+            return replicaResult.Error ?? CreateReplicaOperationError(replicaBackend, request.BucketName, objectKey: null, versionId: null, message: "Replica bucket website update did not return configuration metadata.");
+        }
+
+        return null;
+    }
+
+    private async ValueTask<StorageError?> WriteReplicaDeleteBucketWebsiteAsync(IStorageBackend replicaBackend, DeleteBucketWebsiteRequest request, CancellationToken cancellationToken)
+    {
+        var replicaResult = await replicaBackend.DeleteBucketWebsiteAsync(request, cancellationToken);
+        ObserveResult(replicaBackend, replicaResult);
+        if (!replicaResult.IsSuccess && replicaResult.Error?.Code is not (StorageErrorCode.WebsiteConfigurationNotFound or StorageErrorCode.BucketNotFound)) {
+            return replicaResult.Error ?? CreateReplicaOperationError(replicaBackend, request.BucketName, objectKey: null, versionId: null, message: "Replica bucket website delete did not succeed.");
+        }
+
+        return null;
+    }
+
+    private async ValueTask<StorageError?> RepairReplicaBucketWebsiteAsync(
+        IStorageBackend primaryBackend,
+        IStorageBackend replicaBackend,
+        string bucketName,
+        CancellationToken cancellationToken)
+    {
+        var primaryResult = await primaryBackend.GetBucketWebsiteAsync(bucketName, cancellationToken);
+        ObserveResult(primaryBackend, primaryResult);
+        if (primaryResult.IsSuccess && primaryResult.Value is not null) {
+            return await WriteReplicaPutBucketWebsiteAsync(replicaBackend, new PutBucketWebsiteRequest
+            {
+                BucketName = bucketName,
+                IndexDocumentSuffix = primaryResult.Value.IndexDocumentSuffix,
+                ErrorDocumentKey = primaryResult.Value.ErrorDocumentKey,
+                RedirectAllRequestsTo = primaryResult.Value.RedirectAllRequestsTo,
+                RoutingRules = primaryResult.Value.RoutingRules
+            }, cancellationToken);
+        }
+
+        if (primaryResult.Error?.Code == StorageErrorCode.BucketNotFound) {
+            return await RepairReplicaBucketDeleteAsync(replicaBackend, bucketName, cancellationToken);
+        }
+
+        if (primaryResult.Error?.Code == StorageErrorCode.WebsiteConfigurationNotFound) {
+            return await WriteReplicaDeleteBucketWebsiteAsync(replicaBackend, new DeleteBucketWebsiteRequest
+            {
+                BucketName = bucketName
+            }, cancellationToken);
+        }
+
+        return primaryResult.Error ?? CreatePrimaryReplicationSourceError(primaryBackend, bucketName, objectKey: null, versionId: null, message: "Primary bucket website configuration could not be resolved for replica repair.");
+    }
+
+    // ── Bucket Request Payment replication helpers ───────────────────────
+
+    private async ValueTask<StorageError?> WriteReplicaPutBucketRequestPaymentAsync(IStorageBackend replicaBackend, PutBucketRequestPaymentRequest request, CancellationToken cancellationToken)
+    {
+        var replicaResult = await replicaBackend.PutBucketRequestPaymentAsync(request, cancellationToken);
+        ObserveResult(replicaBackend, replicaResult);
+        if (!replicaResult.IsSuccess || replicaResult.Value is null) {
+            return replicaResult.Error ?? CreateReplicaOperationError(replicaBackend, request.BucketName, objectKey: null, versionId: null, message: "Replica bucket request payment update did not return configuration metadata.");
+        }
+
+        return null;
+    }
+
+    private async ValueTask<StorageError?> RepairReplicaBucketRequestPaymentAsync(
+        IStorageBackend primaryBackend,
+        IStorageBackend replicaBackend,
+        string bucketName,
+        CancellationToken cancellationToken)
+    {
+        var primaryResult = await primaryBackend.GetBucketRequestPaymentAsync(bucketName, cancellationToken);
+        ObserveResult(primaryBackend, primaryResult);
+        if (primaryResult.IsSuccess && primaryResult.Value is not null) {
+            return await WriteReplicaPutBucketRequestPaymentAsync(replicaBackend, new PutBucketRequestPaymentRequest
+            {
+                BucketName = bucketName,
+                Payer = primaryResult.Value.Payer
+            }, cancellationToken);
+        }
+
+        if (primaryResult.Error?.Code == StorageErrorCode.BucketNotFound) {
+            return await RepairReplicaBucketDeleteAsync(replicaBackend, bucketName, cancellationToken);
+        }
+
+        return primaryResult.Error ?? CreatePrimaryReplicationSourceError(primaryBackend, bucketName, objectKey: null, versionId: null, message: "Primary bucket request payment configuration could not be resolved for replica repair.");
+    }
+
+    // ── Bucket Accelerate replication helpers ────────────────────────────
+
+    private async ValueTask<StorageError?> WriteReplicaPutBucketAccelerateAsync(IStorageBackend replicaBackend, PutBucketAccelerateRequest request, CancellationToken cancellationToken)
+    {
+        var replicaResult = await replicaBackend.PutBucketAccelerateAsync(request, cancellationToken);
+        ObserveResult(replicaBackend, replicaResult);
+        if (!replicaResult.IsSuccess || replicaResult.Value is null) {
+            return replicaResult.Error ?? CreateReplicaOperationError(replicaBackend, request.BucketName, objectKey: null, versionId: null, message: "Replica bucket accelerate update did not return configuration metadata.");
+        }
+
+        return null;
+    }
+
+    private async ValueTask<StorageError?> RepairReplicaBucketAccelerateAsync(
+        IStorageBackend primaryBackend,
+        IStorageBackend replicaBackend,
+        string bucketName,
+        CancellationToken cancellationToken)
+    {
+        var primaryResult = await primaryBackend.GetBucketAccelerateAsync(bucketName, cancellationToken);
+        ObserveResult(primaryBackend, primaryResult);
+        if (primaryResult.IsSuccess && primaryResult.Value is not null) {
+            return await WriteReplicaPutBucketAccelerateAsync(replicaBackend, new PutBucketAccelerateRequest
+            {
+                BucketName = bucketName,
+                Status = primaryResult.Value.Status
+            }, cancellationToken);
+        }
+
+        if (primaryResult.Error?.Code == StorageErrorCode.BucketNotFound) {
+            return await RepairReplicaBucketDeleteAsync(replicaBackend, bucketName, cancellationToken);
+        }
+
+        return primaryResult.Error ?? CreatePrimaryReplicationSourceError(primaryBackend, bucketName, objectKey: null, versionId: null, message: "Primary bucket accelerate configuration could not be resolved for replica repair.");
+    }
+
+    // ── Bucket Lifecycle replication helpers ─────────────────────────────
+
+    private async ValueTask<StorageError?> WriteReplicaPutBucketLifecycleAsync(IStorageBackend replicaBackend, PutBucketLifecycleRequest request, CancellationToken cancellationToken)
+    {
+        var replicaResult = await replicaBackend.PutBucketLifecycleAsync(request, cancellationToken);
+        ObserveResult(replicaBackend, replicaResult);
+        if (!replicaResult.IsSuccess || replicaResult.Value is null) {
+            return replicaResult.Error ?? CreateReplicaOperationError(replicaBackend, request.BucketName, objectKey: null, versionId: null, message: "Replica bucket lifecycle update did not return configuration metadata.");
+        }
+
+        return null;
+    }
+
+    private async ValueTask<StorageError?> WriteReplicaDeleteBucketLifecycleAsync(IStorageBackend replicaBackend, DeleteBucketLifecycleRequest request, CancellationToken cancellationToken)
+    {
+        var replicaResult = await replicaBackend.DeleteBucketLifecycleAsync(request, cancellationToken);
+        ObserveResult(replicaBackend, replicaResult);
+        if (!replicaResult.IsSuccess && replicaResult.Error?.Code is not (StorageErrorCode.LifecycleConfigurationNotFound or StorageErrorCode.BucketNotFound)) {
+            return replicaResult.Error ?? CreateReplicaOperationError(replicaBackend, request.BucketName, objectKey: null, versionId: null, message: "Replica bucket lifecycle delete did not succeed.");
+        }
+
+        return null;
+    }
+
+    private async ValueTask<StorageError?> RepairReplicaBucketLifecycleAsync(
+        IStorageBackend primaryBackend,
+        IStorageBackend replicaBackend,
+        string bucketName,
+        CancellationToken cancellationToken)
+    {
+        var primaryResult = await primaryBackend.GetBucketLifecycleAsync(bucketName, cancellationToken);
+        ObserveResult(primaryBackend, primaryResult);
+        if (primaryResult.IsSuccess && primaryResult.Value is not null) {
+            return await WriteReplicaPutBucketLifecycleAsync(replicaBackend, new PutBucketLifecycleRequest
+            {
+                BucketName = bucketName,
+                Rules = primaryResult.Value.Rules
+            }, cancellationToken);
+        }
+
+        if (primaryResult.Error?.Code == StorageErrorCode.BucketNotFound) {
+            return await RepairReplicaBucketDeleteAsync(replicaBackend, bucketName, cancellationToken);
+        }
+
+        if (primaryResult.Error?.Code == StorageErrorCode.LifecycleConfigurationNotFound) {
+            return await WriteReplicaDeleteBucketLifecycleAsync(replicaBackend, new DeleteBucketLifecycleRequest
+            {
+                BucketName = bucketName
+            }, cancellationToken);
+        }
+
+        return primaryResult.Error ?? CreatePrimaryReplicationSourceError(primaryBackend, bucketName, objectKey: null, versionId: null, message: "Primary bucket lifecycle configuration could not be resolved for replica repair.");
+    }
+
+    // ── Bucket Replication replication helpers ───────────────────────────
+
+    private async ValueTask<StorageError?> WriteReplicaPutBucketReplicationAsync(IStorageBackend replicaBackend, PutBucketReplicationRequest request, CancellationToken cancellationToken)
+    {
+        var replicaResult = await replicaBackend.PutBucketReplicationAsync(request, cancellationToken);
+        ObserveResult(replicaBackend, replicaResult);
+        if (!replicaResult.IsSuccess || replicaResult.Value is null) {
+            return replicaResult.Error ?? CreateReplicaOperationError(replicaBackend, request.BucketName, objectKey: null, versionId: null, message: "Replica bucket replication configuration update did not return configuration metadata.");
+        }
+
+        return null;
+    }
+
+    private async ValueTask<StorageError?> WriteReplicaDeleteBucketReplicationAsync(IStorageBackend replicaBackend, DeleteBucketReplicationRequest request, CancellationToken cancellationToken)
+    {
+        var replicaResult = await replicaBackend.DeleteBucketReplicationAsync(request, cancellationToken);
+        ObserveResult(replicaBackend, replicaResult);
+        if (!replicaResult.IsSuccess && replicaResult.Error?.Code is not (StorageErrorCode.ReplicationConfigurationNotFound or StorageErrorCode.BucketNotFound)) {
+            return replicaResult.Error ?? CreateReplicaOperationError(replicaBackend, request.BucketName, objectKey: null, versionId: null, message: "Replica bucket replication configuration delete did not succeed.");
+        }
+
+        return null;
+    }
+
+    private async ValueTask<StorageError?> RepairReplicaBucketReplicationAsync(
+        IStorageBackend primaryBackend,
+        IStorageBackend replicaBackend,
+        string bucketName,
+        CancellationToken cancellationToken)
+    {
+        var primaryResult = await primaryBackend.GetBucketReplicationAsync(bucketName, cancellationToken);
+        ObserveResult(primaryBackend, primaryResult);
+        if (primaryResult.IsSuccess && primaryResult.Value is not null) {
+            return await WriteReplicaPutBucketReplicationAsync(replicaBackend, new PutBucketReplicationRequest
+            {
+                BucketName = bucketName,
+                Role = primaryResult.Value.Role,
+                Rules = primaryResult.Value.Rules
+            }, cancellationToken);
+        }
+
+        if (primaryResult.Error?.Code == StorageErrorCode.BucketNotFound) {
+            return await RepairReplicaBucketDeleteAsync(replicaBackend, bucketName, cancellationToken);
+        }
+
+        if (primaryResult.Error?.Code == StorageErrorCode.ReplicationConfigurationNotFound) {
+            return await WriteReplicaDeleteBucketReplicationAsync(replicaBackend, new DeleteBucketReplicationRequest
+            {
+                BucketName = bucketName
+            }, cancellationToken);
+        }
+
+        return primaryResult.Error ?? CreatePrimaryReplicationSourceError(primaryBackend, bucketName, objectKey: null, versionId: null, message: "Primary bucket replication configuration could not be resolved for replica repair.");
+    }
+
+    // ── Bucket Notification replication helpers ──────────────────────────
+
+    private async ValueTask<StorageError?> WriteReplicaPutBucketNotificationConfigurationAsync(IStorageBackend replicaBackend, PutBucketNotificationConfigurationRequest request, CancellationToken cancellationToken)
+    {
+        var replicaResult = await replicaBackend.PutBucketNotificationConfigurationAsync(request, cancellationToken);
+        ObserveResult(replicaBackend, replicaResult);
+        if (!replicaResult.IsSuccess || replicaResult.Value is null) {
+            return replicaResult.Error ?? CreateReplicaOperationError(replicaBackend, request.BucketName, objectKey: null, versionId: null, message: "Replica bucket notification configuration update did not return configuration metadata.");
+        }
+
+        return null;
+    }
+
+    private async ValueTask<StorageError?> RepairReplicaBucketNotificationConfigurationAsync(
+        IStorageBackend primaryBackend,
+        IStorageBackend replicaBackend,
+        string bucketName,
+        CancellationToken cancellationToken)
+    {
+        var primaryResult = await primaryBackend.GetBucketNotificationConfigurationAsync(bucketName, cancellationToken);
+        ObserveResult(primaryBackend, primaryResult);
+        if (primaryResult.IsSuccess && primaryResult.Value is not null) {
+            return await WriteReplicaPutBucketNotificationConfigurationAsync(replicaBackend, new PutBucketNotificationConfigurationRequest
+            {
+                BucketName = bucketName,
+                TopicConfigurations = primaryResult.Value.TopicConfigurations,
+                QueueConfigurations = primaryResult.Value.QueueConfigurations,
+                LambdaFunctionConfigurations = primaryResult.Value.LambdaFunctionConfigurations
+            }, cancellationToken);
+        }
+
+        if (primaryResult.Error?.Code == StorageErrorCode.BucketNotFound) {
+            return await RepairReplicaBucketDeleteAsync(replicaBackend, bucketName, cancellationToken);
+        }
+
+        return primaryResult.Error ?? CreatePrimaryReplicationSourceError(primaryBackend, bucketName, objectKey: null, versionId: null, message: "Primary bucket notification configuration could not be resolved for replica repair.");
+    }
+
+    // ── Object Lock Configuration replication helpers ────────────────────
+
+    private async ValueTask<StorageError?> WriteReplicaPutObjectLockConfigurationAsync(IStorageBackend replicaBackend, PutObjectLockConfigurationRequest request, CancellationToken cancellationToken)
+    {
+        var replicaResult = await replicaBackend.PutObjectLockConfigurationAsync(request, cancellationToken);
+        ObserveResult(replicaBackend, replicaResult);
+        if (!replicaResult.IsSuccess || replicaResult.Value is null) {
+            return replicaResult.Error ?? CreateReplicaOperationError(replicaBackend, request.BucketName, objectKey: null, versionId: null, message: "Replica object lock configuration update did not return configuration metadata.");
+        }
+
+        return null;
+    }
+
+    private async ValueTask<StorageError?> RepairReplicaObjectLockConfigurationAsync(
+        IStorageBackend primaryBackend,
+        IStorageBackend replicaBackend,
+        string bucketName,
+        CancellationToken cancellationToken)
+    {
+        var primaryResult = await primaryBackend.GetObjectLockConfigurationAsync(bucketName, cancellationToken);
+        ObserveResult(primaryBackend, primaryResult);
+        if (primaryResult.IsSuccess && primaryResult.Value is not null) {
+            return await WriteReplicaPutObjectLockConfigurationAsync(replicaBackend, new PutObjectLockConfigurationRequest
+            {
+                BucketName = bucketName,
+                ObjectLockEnabled = primaryResult.Value.ObjectLockEnabled,
+                DefaultRetention = primaryResult.Value.DefaultRetention
+            }, cancellationToken);
+        }
+
+        if (primaryResult.Error?.Code == StorageErrorCode.BucketNotFound) {
+            return await RepairReplicaBucketDeleteAsync(replicaBackend, bucketName, cancellationToken);
+        }
+
+        if (primaryResult.Error?.Code == StorageErrorCode.ObjectLockConfigurationNotFound) {
+            return await WriteReplicaPutObjectLockConfigurationAsync(replicaBackend, new PutObjectLockConfigurationRequest
+            {
+                BucketName = bucketName,
+                ObjectLockEnabled = false
+            }, cancellationToken);
+        }
+
+        return primaryResult.Error ?? CreatePrimaryReplicationSourceError(primaryBackend, bucketName, objectKey: null, versionId: null, message: "Primary object lock configuration could not be resolved for replica repair.");
+    }
+
+    // ── Bucket Analytics replication helpers ─────────────────────────────
+
+    private async ValueTask<StorageError?> WriteReplicaPutBucketAnalyticsConfigurationAsync(IStorageBackend replicaBackend, PutBucketAnalyticsConfigurationRequest request, CancellationToken cancellationToken)
+    {
+        var replicaResult = await replicaBackend.PutBucketAnalyticsConfigurationAsync(request, cancellationToken);
+        ObserveResult(replicaBackend, replicaResult);
+        if (!replicaResult.IsSuccess || replicaResult.Value is null) {
+            return replicaResult.Error ?? CreateReplicaOperationError(replicaBackend, request.BucketName, objectKey: null, versionId: null, message: "Replica bucket analytics configuration update did not return configuration metadata.");
+        }
+
+        return null;
+    }
+
+    private async ValueTask<StorageError?> WriteReplicaDeleteBucketAnalyticsConfigurationAsync(IStorageBackend replicaBackend, DeleteBucketAnalyticsConfigurationRequest request, CancellationToken cancellationToken)
+    {
+        var replicaResult = await replicaBackend.DeleteBucketAnalyticsConfigurationAsync(request, cancellationToken);
+        ObserveResult(replicaBackend, replicaResult);
+        if (!replicaResult.IsSuccess && replicaResult.Error?.Code is not StorageErrorCode.BucketNotFound) {
+            return replicaResult.Error ?? CreateReplicaOperationError(replicaBackend, request.BucketName, objectKey: null, versionId: null, message: "Replica bucket analytics configuration delete did not succeed.");
+        }
+
+        return null;
+    }
+
+    private async ValueTask<StorageError?> RepairReplicaBucketAnalyticsConfigurationAsync(
+        IStorageBackend primaryBackend,
+        IStorageBackend replicaBackend,
+        string bucketName,
+        string id,
+        CancellationToken cancellationToken)
+    {
+        var primaryResult = await primaryBackend.GetBucketAnalyticsConfigurationAsync(bucketName, id, cancellationToken);
+        ObserveResult(primaryBackend, primaryResult);
+        if (primaryResult.IsSuccess && primaryResult.Value is not null) {
+            return await WriteReplicaPutBucketAnalyticsConfigurationAsync(replicaBackend, new PutBucketAnalyticsConfigurationRequest
+            {
+                BucketName = bucketName,
+                Id = id,
+                FilterPrefix = primaryResult.Value.FilterPrefix,
+                FilterTags = primaryResult.Value.FilterTags,
+                StorageClassAnalysis = primaryResult.Value.StorageClassAnalysis
+            }, cancellationToken);
+        }
+
+        if (primaryResult.Error?.Code == StorageErrorCode.BucketNotFound) {
+            return await RepairReplicaBucketDeleteAsync(replicaBackend, bucketName, cancellationToken);
+        }
+
+        return primaryResult.Error ?? CreatePrimaryReplicationSourceError(primaryBackend, bucketName, objectKey: null, versionId: null, message: "Primary bucket analytics configuration could not be resolved for replica repair.");
+    }
+
+    // ── Bucket Metrics replication helpers ───────────────────────────────
+
+    private async ValueTask<StorageError?> WriteReplicaPutBucketMetricsConfigurationAsync(IStorageBackend replicaBackend, PutBucketMetricsConfigurationRequest request, CancellationToken cancellationToken)
+    {
+        var replicaResult = await replicaBackend.PutBucketMetricsConfigurationAsync(request, cancellationToken);
+        ObserveResult(replicaBackend, replicaResult);
+        if (!replicaResult.IsSuccess || replicaResult.Value is null) {
+            return replicaResult.Error ?? CreateReplicaOperationError(replicaBackend, request.BucketName, objectKey: null, versionId: null, message: "Replica bucket metrics configuration update did not return configuration metadata.");
+        }
+
+        return null;
+    }
+
+    private async ValueTask<StorageError?> WriteReplicaDeleteBucketMetricsConfigurationAsync(IStorageBackend replicaBackend, DeleteBucketMetricsConfigurationRequest request, CancellationToken cancellationToken)
+    {
+        var replicaResult = await replicaBackend.DeleteBucketMetricsConfigurationAsync(request, cancellationToken);
+        ObserveResult(replicaBackend, replicaResult);
+        if (!replicaResult.IsSuccess && replicaResult.Error?.Code is not StorageErrorCode.BucketNotFound) {
+            return replicaResult.Error ?? CreateReplicaOperationError(replicaBackend, request.BucketName, objectKey: null, versionId: null, message: "Replica bucket metrics configuration delete did not succeed.");
+        }
+
+        return null;
+    }
+
+    private async ValueTask<StorageError?> RepairReplicaBucketMetricsConfigurationAsync(
+        IStorageBackend primaryBackend,
+        IStorageBackend replicaBackend,
+        string bucketName,
+        string id,
+        CancellationToken cancellationToken)
+    {
+        var primaryResult = await primaryBackend.GetBucketMetricsConfigurationAsync(bucketName, id, cancellationToken);
+        ObserveResult(primaryBackend, primaryResult);
+        if (primaryResult.IsSuccess && primaryResult.Value is not null) {
+            return await WriteReplicaPutBucketMetricsConfigurationAsync(replicaBackend, new PutBucketMetricsConfigurationRequest
+            {
+                BucketName = bucketName,
+                Id = id,
+                Filter = primaryResult.Value.Filter
+            }, cancellationToken);
+        }
+
+        if (primaryResult.Error?.Code == StorageErrorCode.BucketNotFound) {
+            return await RepairReplicaBucketDeleteAsync(replicaBackend, bucketName, cancellationToken);
+        }
+
+        return primaryResult.Error ?? CreatePrimaryReplicationSourceError(primaryBackend, bucketName, objectKey: null, versionId: null, message: "Primary bucket metrics configuration could not be resolved for replica repair.");
+    }
+
+    // ── Bucket Inventory replication helpers ─────────────────────────────
+
+    private async ValueTask<StorageError?> WriteReplicaPutBucketInventoryConfigurationAsync(IStorageBackend replicaBackend, PutBucketInventoryConfigurationRequest request, CancellationToken cancellationToken)
+    {
+        var replicaResult = await replicaBackend.PutBucketInventoryConfigurationAsync(request, cancellationToken);
+        ObserveResult(replicaBackend, replicaResult);
+        if (!replicaResult.IsSuccess || replicaResult.Value is null) {
+            return replicaResult.Error ?? CreateReplicaOperationError(replicaBackend, request.BucketName, objectKey: null, versionId: null, message: "Replica bucket inventory configuration update did not return configuration metadata.");
+        }
+
+        return null;
+    }
+
+    private async ValueTask<StorageError?> WriteReplicaDeleteBucketInventoryConfigurationAsync(IStorageBackend replicaBackend, DeleteBucketInventoryConfigurationRequest request, CancellationToken cancellationToken)
+    {
+        var replicaResult = await replicaBackend.DeleteBucketInventoryConfigurationAsync(request, cancellationToken);
+        ObserveResult(replicaBackend, replicaResult);
+        if (!replicaResult.IsSuccess && replicaResult.Error?.Code is not StorageErrorCode.BucketNotFound) {
+            return replicaResult.Error ?? CreateReplicaOperationError(replicaBackend, request.BucketName, objectKey: null, versionId: null, message: "Replica bucket inventory configuration delete did not succeed.");
+        }
+
+        return null;
+    }
+
+    private async ValueTask<StorageError?> RepairReplicaBucketInventoryConfigurationAsync(
+        IStorageBackend primaryBackend,
+        IStorageBackend replicaBackend,
+        string bucketName,
+        string id,
+        CancellationToken cancellationToken)
+    {
+        var primaryResult = await primaryBackend.GetBucketInventoryConfigurationAsync(bucketName, id, cancellationToken);
+        ObserveResult(primaryBackend, primaryResult);
+        if (primaryResult.IsSuccess && primaryResult.Value is not null) {
+            return await WriteReplicaPutBucketInventoryConfigurationAsync(replicaBackend, new PutBucketInventoryConfigurationRequest
+            {
+                BucketName = bucketName,
+                Id = id,
+                IsEnabled = primaryResult.Value.IsEnabled,
+                Destination = primaryResult.Value.Destination,
+                Schedule = primaryResult.Value.Schedule,
+                Filter = primaryResult.Value.Filter,
+                IncludedObjectVersions = primaryResult.Value.IncludedObjectVersions,
+                OptionalFields = primaryResult.Value.OptionalFields
+            }, cancellationToken);
+        }
+
+        if (primaryResult.Error?.Code == StorageErrorCode.BucketNotFound) {
+            return await RepairReplicaBucketDeleteAsync(replicaBackend, bucketName, cancellationToken);
+        }
+
+        return primaryResult.Error ?? CreatePrimaryReplicationSourceError(primaryBackend, bucketName, objectKey: null, versionId: null, message: "Primary bucket inventory configuration could not be resolved for replica repair.");
+    }
+
+    // ── Bucket Intelligent-Tiering replication helpers ───────────────────
+
+    private async ValueTask<StorageError?> WriteReplicaPutBucketIntelligentTieringConfigurationAsync(IStorageBackend replicaBackend, PutBucketIntelligentTieringConfigurationRequest request, CancellationToken cancellationToken)
+    {
+        var replicaResult = await replicaBackend.PutBucketIntelligentTieringConfigurationAsync(request, cancellationToken);
+        ObserveResult(replicaBackend, replicaResult);
+        if (!replicaResult.IsSuccess || replicaResult.Value is null) {
+            return replicaResult.Error ?? CreateReplicaOperationError(replicaBackend, request.BucketName, objectKey: null, versionId: null, message: "Replica bucket intelligent-tiering configuration update did not return configuration metadata.");
+        }
+
+        return null;
+    }
+
+    private async ValueTask<StorageError?> WriteReplicaDeleteBucketIntelligentTieringConfigurationAsync(IStorageBackend replicaBackend, DeleteBucketIntelligentTieringConfigurationRequest request, CancellationToken cancellationToken)
+    {
+        var replicaResult = await replicaBackend.DeleteBucketIntelligentTieringConfigurationAsync(request, cancellationToken);
+        ObserveResult(replicaBackend, replicaResult);
+        if (!replicaResult.IsSuccess && replicaResult.Error?.Code is not StorageErrorCode.BucketNotFound) {
+            return replicaResult.Error ?? CreateReplicaOperationError(replicaBackend, request.BucketName, objectKey: null, versionId: null, message: "Replica bucket intelligent-tiering configuration delete did not succeed.");
+        }
+
+        return null;
+    }
+
+    private async ValueTask<StorageError?> RepairReplicaBucketIntelligentTieringConfigurationAsync(
+        IStorageBackend primaryBackend,
+        IStorageBackend replicaBackend,
+        string bucketName,
+        string id,
+        CancellationToken cancellationToken)
+    {
+        var primaryResult = await primaryBackend.GetBucketIntelligentTieringConfigurationAsync(bucketName, id, cancellationToken);
+        ObserveResult(primaryBackend, primaryResult);
+        if (primaryResult.IsSuccess && primaryResult.Value is not null) {
+            return await WriteReplicaPutBucketIntelligentTieringConfigurationAsync(replicaBackend, new PutBucketIntelligentTieringConfigurationRequest
+            {
+                BucketName = bucketName,
+                Id = id,
+                Status = primaryResult.Value.Status,
+                Filter = primaryResult.Value.Filter,
+                Tierings = primaryResult.Value.Tierings
+            }, cancellationToken);
+        }
+
+        if (primaryResult.Error?.Code == StorageErrorCode.BucketNotFound) {
+            return await RepairReplicaBucketDeleteAsync(replicaBackend, bucketName, cancellationToken);
+        }
+
+        return primaryResult.Error ?? CreatePrimaryReplicationSourceError(primaryBackend, bucketName, objectKey: null, versionId: null, message: "Primary bucket intelligent-tiering configuration could not be resolved for replica repair.");
+    }
+
+    // ── Object Retention replication helpers ─────────────────────────────
+
+    private async ValueTask<StorageError?> WriteReplicaPutObjectRetentionAsync(IStorageBackend replicaBackend, PutObjectRetentionRequest request, CancellationToken cancellationToken)
+    {
+        var replicaResult = await replicaBackend.PutObjectRetentionAsync(request, cancellationToken);
+        ObserveResult(replicaBackend, replicaResult);
+        if (!replicaResult.IsSuccess || replicaResult.Value is null) {
+            return replicaResult.Error ?? CreateReplicaOperationError(replicaBackend, request.BucketName, request.Key, request.VersionId, "Replica object retention update did not return retention metadata.");
+        }
+
+        return null;
+    }
+
+    private async ValueTask<StorageError?> RepairReplicaObjectRetentionFromPrimaryAsync(
+        IStorageBackend primaryBackend,
+        IStorageBackend replicaBackend,
+        string bucketName,
+        string key,
+        string? requestedVersionId,
+        CancellationToken cancellationToken)
+    {
+        var primaryResult = await primaryBackend.GetObjectRetentionAsync(new GetObjectRetentionRequest
+        {
+            BucketName = bucketName,
+            Key = key,
+            VersionId = requestedVersionId
+        }, cancellationToken);
+        ObserveResult(primaryBackend, primaryResult);
+        if (!primaryResult.IsSuccess || primaryResult.Value is null) {
+            if (primaryResult.Error?.Code is StorageErrorCode.ObjectNotFound or StorageErrorCode.BucketNotFound) {
+                return await WriteReplicaDeleteObjectAsync(replicaBackend, new DeleteObjectRequest
+                {
+                    BucketName = bucketName,
+                    Key = key,
+                    VersionId = requestedVersionId
+                }, cancellationToken);
+            }
+
+            return primaryResult.Error ?? CreatePrimaryReplicationSourceError(primaryBackend, bucketName, key, requestedVersionId, "Primary object retention could not be resolved for replica repair.");
+        }
+
+        return await WriteReplicaPutObjectRetentionAsync(replicaBackend, new PutObjectRetentionRequest
+        {
+            BucketName = bucketName,
+            Key = key,
+            VersionId = requestedVersionId,
+            Mode = primaryResult.Value.Mode,
+            RetainUntilDateUtc = primaryResult.Value.RetainUntilDateUtc
+        }, cancellationToken);
+    }
+
+    // ── Object Legal Hold replication helpers ────────────────────────────
+
+    private async ValueTask<StorageError?> WriteReplicaPutObjectLegalHoldAsync(IStorageBackend replicaBackend, PutObjectLegalHoldRequest request, CancellationToken cancellationToken)
+    {
+        var replicaResult = await replicaBackend.PutObjectLegalHoldAsync(request, cancellationToken);
+        ObserveResult(replicaBackend, replicaResult);
+        if (!replicaResult.IsSuccess || replicaResult.Value is null) {
+            return replicaResult.Error ?? CreateReplicaOperationError(replicaBackend, request.BucketName, request.Key, request.VersionId, "Replica object legal hold update did not return legal hold metadata.");
+        }
+
+        return null;
+    }
+
+    private async ValueTask<StorageError?> RepairReplicaObjectLegalHoldFromPrimaryAsync(
+        IStorageBackend primaryBackend,
+        IStorageBackend replicaBackend,
+        string bucketName,
+        string key,
+        string? requestedVersionId,
+        CancellationToken cancellationToken)
+    {
+        var primaryResult = await primaryBackend.GetObjectLegalHoldAsync(new GetObjectLegalHoldRequest
+        {
+            BucketName = bucketName,
+            Key = key,
+            VersionId = requestedVersionId
+        }, cancellationToken);
+        ObserveResult(primaryBackend, primaryResult);
+        if (!primaryResult.IsSuccess || primaryResult.Value is null) {
+            if (primaryResult.Error?.Code is StorageErrorCode.ObjectNotFound or StorageErrorCode.BucketNotFound) {
+                return await WriteReplicaDeleteObjectAsync(replicaBackend, new DeleteObjectRequest
+                {
+                    BucketName = bucketName,
+                    Key = key,
+                    VersionId = requestedVersionId
+                }, cancellationToken);
+            }
+
+            return primaryResult.Error ?? CreatePrimaryReplicationSourceError(primaryBackend, bucketName, key, requestedVersionId, "Primary object legal hold could not be resolved for replica repair.");
+        }
+
+        return await WriteReplicaPutObjectLegalHoldAsync(replicaBackend, new PutObjectLegalHoldRequest
+        {
+            BucketName = bucketName,
+            Key = key,
+            VersionId = requestedVersionId,
+            Status = primaryResult.Value.Status ?? ObjectLegalHoldStatus.Off
+        }, cancellationToken);
     }
 
     private async ValueTask<StorageResult<GetObjectResponse>> GetObjectForReplicationAsync(

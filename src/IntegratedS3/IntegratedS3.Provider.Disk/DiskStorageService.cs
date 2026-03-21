@@ -27,6 +27,7 @@ internal sealed class DiskStorageService(
     private const string Sha1ChecksumAlgorithm = "sha1";
     private const string Crc32ChecksumAlgorithm = "crc32";
     private const string Crc32cChecksumAlgorithm = "crc32c";
+    private const string Crc64NvmeChecksumAlgorithm = "crc64nvme";
 
     private readonly string _rootPath = InitializeRootPath(options);
     private readonly IStorageObjectStateStore? _objectStateStore = objectStateStore;
@@ -198,7 +199,20 @@ internal sealed class DiskStorageService(
         var metadata = new DiskBucketMetadata
         {
             VersioningStatus = request.Status,
-            CorsConfiguration = existingMetadata.CorsConfiguration
+            CorsConfiguration = existingMetadata.CorsConfiguration,
+            TaggingConfiguration = existingMetadata.TaggingConfiguration,
+            LoggingConfiguration = existingMetadata.LoggingConfiguration,
+            WebsiteConfiguration = existingMetadata.WebsiteConfiguration,
+            RequestPaymentConfiguration = existingMetadata.RequestPaymentConfiguration,
+            AccelerateConfiguration = existingMetadata.AccelerateConfiguration,
+            LifecycleConfiguration = existingMetadata.LifecycleConfiguration,
+            ReplicationConfiguration = existingMetadata.ReplicationConfiguration,
+            NotificationConfiguration = existingMetadata.NotificationConfiguration,
+            ObjectLockConfiguration = existingMetadata.ObjectLockConfiguration,
+            AnalyticsConfigurations = existingMetadata.AnalyticsConfigurations,
+            MetricsConfigurations = existingMetadata.MetricsConfigurations,
+            InventoryConfigurations = existingMetadata.InventoryConfigurations,
+            IntelligentTieringConfigurations = existingMetadata.IntelligentTieringConfigurations,
         };
 
         if (!ShouldPersistBucketMetadata(metadata)) {
@@ -249,7 +263,20 @@ internal sealed class DiskStorageService(
             CorsConfiguration = new DiskBucketCorsConfiguration
             {
                 Rules = request.Rules.Select(ToDiskBucketCorsRule).ToArray()
-            }
+            },
+            TaggingConfiguration = existingMetadata.TaggingConfiguration,
+            LoggingConfiguration = existingMetadata.LoggingConfiguration,
+            WebsiteConfiguration = existingMetadata.WebsiteConfiguration,
+            RequestPaymentConfiguration = existingMetadata.RequestPaymentConfiguration,
+            AccelerateConfiguration = existingMetadata.AccelerateConfiguration,
+            LifecycleConfiguration = existingMetadata.LifecycleConfiguration,
+            ReplicationConfiguration = existingMetadata.ReplicationConfiguration,
+            NotificationConfiguration = existingMetadata.NotificationConfiguration,
+            ObjectLockConfiguration = existingMetadata.ObjectLockConfiguration,
+            AnalyticsConfigurations = existingMetadata.AnalyticsConfigurations,
+            MetricsConfigurations = existingMetadata.MetricsConfigurations,
+            InventoryConfigurations = existingMetadata.InventoryConfigurations,
+            IntelligentTieringConfigurations = existingMetadata.IntelligentTieringConfigurations,
         };
 
         if (!ShouldPersistBucketMetadata(updatedMetadata)) {
@@ -276,7 +303,20 @@ internal sealed class DiskStorageService(
         var updatedMetadata = new DiskBucketMetadata
         {
             VersioningStatus = existingMetadata.VersioningStatus,
-            CorsConfiguration = null
+            CorsConfiguration = null,
+            TaggingConfiguration = existingMetadata.TaggingConfiguration,
+            LoggingConfiguration = existingMetadata.LoggingConfiguration,
+            WebsiteConfiguration = existingMetadata.WebsiteConfiguration,
+            RequestPaymentConfiguration = existingMetadata.RequestPaymentConfiguration,
+            AccelerateConfiguration = existingMetadata.AccelerateConfiguration,
+            LifecycleConfiguration = existingMetadata.LifecycleConfiguration,
+            ReplicationConfiguration = existingMetadata.ReplicationConfiguration,
+            NotificationConfiguration = existingMetadata.NotificationConfiguration,
+            ObjectLockConfiguration = existingMetadata.ObjectLockConfiguration,
+            AnalyticsConfigurations = existingMetadata.AnalyticsConfigurations,
+            MetricsConfigurations = existingMetadata.MetricsConfigurations,
+            InventoryConfigurations = existingMetadata.InventoryConfigurations,
+            IntelligentTieringConfigurations = existingMetadata.IntelligentTieringConfigurations,
         };
 
         if (!ShouldPersistBucketMetadata(updatedMetadata)) {
@@ -287,6 +327,1181 @@ internal sealed class DiskStorageService(
         }
 
         return StorageResult.Success();
+    }
+
+    // -------------------------------------------------------------------------
+    // Bucket Tagging
+    // -------------------------------------------------------------------------
+
+    public async ValueTask<StorageResult<BucketTaggingConfiguration>> GetBucketTaggingAsync(string bucketName, CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+
+        var bucketPath = GetBucketPath(bucketName);
+        if (!Directory.Exists(bucketPath)) {
+            return StorageResult<BucketTaggingConfiguration>.Failure(BucketNotFound(bucketName));
+        }
+
+        var metadata = await ReadBucketMetadataAsync(bucketPath, cancellationToken);
+        if (metadata.TaggingConfiguration is null) {
+            return StorageResult<BucketTaggingConfiguration>.Failure(ConfigurationNotFound(StorageErrorCode.TaggingConfigurationNotFound, bucketName, "tagging"));
+        }
+
+        return StorageResult<BucketTaggingConfiguration>.Success(new BucketTaggingConfiguration
+        {
+            BucketName = bucketName,
+            Tags = new Dictionary<string, string>(metadata.TaggingConfiguration.Tags, StringComparer.Ordinal)
+        });
+    }
+
+    public async ValueTask<StorageResult<BucketTaggingConfiguration>> PutBucketTaggingAsync(PutBucketTaggingRequest request, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        cancellationToken.ThrowIfCancellationRequested();
+
+        var bucketPath = GetBucketPath(request.BucketName);
+        if (!Directory.Exists(bucketPath)) {
+            return StorageResult<BucketTaggingConfiguration>.Failure(BucketNotFound(request.BucketName));
+        }
+
+        var diskConfig = new DiskBucketTaggingConfiguration
+        {
+            Tags = new Dictionary<string, string>(request.Tags, StringComparer.Ordinal)
+        };
+
+        var existingMetadata = await ReadBucketMetadataAsync(bucketPath, cancellationToken);
+        var updatedMetadata = new DiskBucketMetadata
+        {
+            VersioningStatus = existingMetadata.VersioningStatus,
+            CorsConfiguration = existingMetadata.CorsConfiguration,
+            TaggingConfiguration = diskConfig,
+            LoggingConfiguration = existingMetadata.LoggingConfiguration,
+            WebsiteConfiguration = existingMetadata.WebsiteConfiguration,
+            RequestPaymentConfiguration = existingMetadata.RequestPaymentConfiguration,
+            AccelerateConfiguration = existingMetadata.AccelerateConfiguration,
+            LifecycleConfiguration = existingMetadata.LifecycleConfiguration,
+            ReplicationConfiguration = existingMetadata.ReplicationConfiguration,
+            NotificationConfiguration = existingMetadata.NotificationConfiguration,
+            ObjectLockConfiguration = existingMetadata.ObjectLockConfiguration,
+            AnalyticsConfigurations = existingMetadata.AnalyticsConfigurations,
+            MetricsConfigurations = existingMetadata.MetricsConfigurations,
+            InventoryConfigurations = existingMetadata.InventoryConfigurations,
+            IntelligentTieringConfigurations = existingMetadata.IntelligentTieringConfigurations,
+        };
+
+        await PersistBucketMetadataAsync(bucketPath, updatedMetadata, cancellationToken);
+
+        return StorageResult<BucketTaggingConfiguration>.Success(new BucketTaggingConfiguration
+        {
+            BucketName = request.BucketName,
+            Tags = new Dictionary<string, string>(diskConfig.Tags, StringComparer.Ordinal)
+        });
+    }
+
+    public async ValueTask<StorageResult> DeleteBucketTaggingAsync(DeleteBucketTaggingRequest request, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        cancellationToken.ThrowIfCancellationRequested();
+
+        var bucketPath = GetBucketPath(request.BucketName);
+        if (!Directory.Exists(bucketPath)) {
+            return StorageResult.Failure(BucketNotFound(request.BucketName));
+        }
+
+        var existingMetadata = await ReadBucketMetadataAsync(bucketPath, cancellationToken);
+        var updatedMetadata = new DiskBucketMetadata
+        {
+            VersioningStatus = existingMetadata.VersioningStatus,
+            CorsConfiguration = existingMetadata.CorsConfiguration,
+            TaggingConfiguration = null,
+            LoggingConfiguration = existingMetadata.LoggingConfiguration,
+            WebsiteConfiguration = existingMetadata.WebsiteConfiguration,
+            RequestPaymentConfiguration = existingMetadata.RequestPaymentConfiguration,
+            AccelerateConfiguration = existingMetadata.AccelerateConfiguration,
+            LifecycleConfiguration = existingMetadata.LifecycleConfiguration,
+            ReplicationConfiguration = existingMetadata.ReplicationConfiguration,
+            NotificationConfiguration = existingMetadata.NotificationConfiguration,
+            ObjectLockConfiguration = existingMetadata.ObjectLockConfiguration,
+            AnalyticsConfigurations = existingMetadata.AnalyticsConfigurations,
+            MetricsConfigurations = existingMetadata.MetricsConfigurations,
+            InventoryConfigurations = existingMetadata.InventoryConfigurations,
+            IntelligentTieringConfigurations = existingMetadata.IntelligentTieringConfigurations,
+        };
+
+        await PersistBucketMetadataAsync(bucketPath, updatedMetadata, cancellationToken);
+        return StorageResult.Success();
+    }
+    // -------------------------------------------------------------------------
+    // Bucket Logging
+    // -------------------------------------------------------------------------
+
+    public async ValueTask<StorageResult<BucketLoggingConfiguration>> GetBucketLoggingAsync(string bucketName, CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+
+        var bucketPath = GetBucketPath(bucketName);
+        if (!Directory.Exists(bucketPath)) {
+            return StorageResult<BucketLoggingConfiguration>.Failure(BucketNotFound(bucketName));
+        }
+
+        var metadata = await ReadBucketMetadataAsync(bucketPath, cancellationToken);
+        return StorageResult<BucketLoggingConfiguration>.Success(new BucketLoggingConfiguration
+        {
+            BucketName = bucketName,
+            TargetBucket = metadata.LoggingConfiguration?.TargetBucket,
+            TargetPrefix = metadata.LoggingConfiguration?.TargetPrefix
+        });
+    }
+
+    public async ValueTask<StorageResult<BucketLoggingConfiguration>> PutBucketLoggingAsync(PutBucketLoggingRequest request, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        cancellationToken.ThrowIfCancellationRequested();
+
+        var bucketPath = GetBucketPath(request.BucketName);
+        if (!Directory.Exists(bucketPath)) {
+            return StorageResult<BucketLoggingConfiguration>.Failure(BucketNotFound(request.BucketName));
+        }
+
+        var diskConfig = new DiskBucketLoggingConfiguration
+        {
+            TargetBucket = request.TargetBucket,
+            TargetPrefix = request.TargetPrefix
+        };
+
+        var existingMetadata = await ReadBucketMetadataAsync(bucketPath, cancellationToken);
+        var updatedMetadata = new DiskBucketMetadata
+        {
+            VersioningStatus = existingMetadata.VersioningStatus,
+            CorsConfiguration = existingMetadata.CorsConfiguration,
+            TaggingConfiguration = existingMetadata.TaggingConfiguration,
+            LoggingConfiguration = diskConfig,
+            WebsiteConfiguration = existingMetadata.WebsiteConfiguration,
+            RequestPaymentConfiguration = existingMetadata.RequestPaymentConfiguration,
+            AccelerateConfiguration = existingMetadata.AccelerateConfiguration,
+            LifecycleConfiguration = existingMetadata.LifecycleConfiguration,
+            ReplicationConfiguration = existingMetadata.ReplicationConfiguration,
+            NotificationConfiguration = existingMetadata.NotificationConfiguration,
+            ObjectLockConfiguration = existingMetadata.ObjectLockConfiguration,
+            AnalyticsConfigurations = existingMetadata.AnalyticsConfigurations,
+            MetricsConfigurations = existingMetadata.MetricsConfigurations,
+            InventoryConfigurations = existingMetadata.InventoryConfigurations,
+            IntelligentTieringConfigurations = existingMetadata.IntelligentTieringConfigurations,
+        };
+
+        await PersistBucketMetadataAsync(bucketPath, updatedMetadata, cancellationToken);
+
+        return StorageResult<BucketLoggingConfiguration>.Success(new BucketLoggingConfiguration
+        {
+            BucketName = request.BucketName,
+            TargetBucket = diskConfig.TargetBucket,
+            TargetPrefix = diskConfig.TargetPrefix
+        });
+    }
+    // -------------------------------------------------------------------------
+    // Bucket Website
+    // -------------------------------------------------------------------------
+
+    public async ValueTask<StorageResult<BucketWebsiteConfiguration>> GetBucketWebsiteAsync(string bucketName, CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+
+        var bucketPath = GetBucketPath(bucketName);
+        if (!Directory.Exists(bucketPath)) {
+            return StorageResult<BucketWebsiteConfiguration>.Failure(BucketNotFound(bucketName));
+        }
+
+        var metadata = await ReadBucketMetadataAsync(bucketPath, cancellationToken);
+        if (metadata.WebsiteConfiguration is null) {
+            return StorageResult<BucketWebsiteConfiguration>.Failure(ConfigurationNotFound(StorageErrorCode.WebsiteConfigurationNotFound, bucketName, "website"));
+        }
+
+        return StorageResult<BucketWebsiteConfiguration>.Success(ToDomainWebsiteConfiguration(bucketName, metadata.WebsiteConfiguration));
+    }
+
+    public async ValueTask<StorageResult<BucketWebsiteConfiguration>> PutBucketWebsiteAsync(PutBucketWebsiteRequest request, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        cancellationToken.ThrowIfCancellationRequested();
+
+        var bucketPath = GetBucketPath(request.BucketName);
+        if (!Directory.Exists(bucketPath)) {
+            return StorageResult<BucketWebsiteConfiguration>.Failure(BucketNotFound(request.BucketName));
+        }
+
+        var diskConfig = ToDiskWebsiteConfiguration(request);
+
+        var existingMetadata = await ReadBucketMetadataAsync(bucketPath, cancellationToken);
+        var updatedMetadata = new DiskBucketMetadata
+        {
+            VersioningStatus = existingMetadata.VersioningStatus,
+            CorsConfiguration = existingMetadata.CorsConfiguration,
+            TaggingConfiguration = existingMetadata.TaggingConfiguration,
+            LoggingConfiguration = existingMetadata.LoggingConfiguration,
+            WebsiteConfiguration = diskConfig,
+            RequestPaymentConfiguration = existingMetadata.RequestPaymentConfiguration,
+            AccelerateConfiguration = existingMetadata.AccelerateConfiguration,
+            LifecycleConfiguration = existingMetadata.LifecycleConfiguration,
+            ReplicationConfiguration = existingMetadata.ReplicationConfiguration,
+            NotificationConfiguration = existingMetadata.NotificationConfiguration,
+            ObjectLockConfiguration = existingMetadata.ObjectLockConfiguration,
+            AnalyticsConfigurations = existingMetadata.AnalyticsConfigurations,
+            MetricsConfigurations = existingMetadata.MetricsConfigurations,
+            InventoryConfigurations = existingMetadata.InventoryConfigurations,
+            IntelligentTieringConfigurations = existingMetadata.IntelligentTieringConfigurations,
+        };
+
+        await PersistBucketMetadataAsync(bucketPath, updatedMetadata, cancellationToken);
+
+        return StorageResult<BucketWebsiteConfiguration>.Success(ToDomainWebsiteConfiguration(request.BucketName, diskConfig));
+    }
+
+    public async ValueTask<StorageResult> DeleteBucketWebsiteAsync(DeleteBucketWebsiteRequest request, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        cancellationToken.ThrowIfCancellationRequested();
+
+        var bucketPath = GetBucketPath(request.BucketName);
+        if (!Directory.Exists(bucketPath)) {
+            return StorageResult.Failure(BucketNotFound(request.BucketName));
+        }
+
+        var existingMetadata = await ReadBucketMetadataAsync(bucketPath, cancellationToken);
+        var updatedMetadata = new DiskBucketMetadata
+        {
+            VersioningStatus = existingMetadata.VersioningStatus,
+            CorsConfiguration = existingMetadata.CorsConfiguration,
+            TaggingConfiguration = existingMetadata.TaggingConfiguration,
+            LoggingConfiguration = existingMetadata.LoggingConfiguration,
+            WebsiteConfiguration = null,
+            RequestPaymentConfiguration = existingMetadata.RequestPaymentConfiguration,
+            AccelerateConfiguration = existingMetadata.AccelerateConfiguration,
+            LifecycleConfiguration = existingMetadata.LifecycleConfiguration,
+            ReplicationConfiguration = existingMetadata.ReplicationConfiguration,
+            NotificationConfiguration = existingMetadata.NotificationConfiguration,
+            ObjectLockConfiguration = existingMetadata.ObjectLockConfiguration,
+            AnalyticsConfigurations = existingMetadata.AnalyticsConfigurations,
+            MetricsConfigurations = existingMetadata.MetricsConfigurations,
+            InventoryConfigurations = existingMetadata.InventoryConfigurations,
+            IntelligentTieringConfigurations = existingMetadata.IntelligentTieringConfigurations,
+        };
+
+        await PersistBucketMetadataAsync(bucketPath, updatedMetadata, cancellationToken);
+        return StorageResult.Success();
+    }
+    // -------------------------------------------------------------------------
+    // Bucket Request Payment
+    // -------------------------------------------------------------------------
+
+    public async ValueTask<StorageResult<BucketRequestPaymentConfiguration>> GetBucketRequestPaymentAsync(string bucketName, CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+
+        var bucketPath = GetBucketPath(bucketName);
+        if (!Directory.Exists(bucketPath)) {
+            return StorageResult<BucketRequestPaymentConfiguration>.Failure(BucketNotFound(bucketName));
+        }
+
+        var metadata = await ReadBucketMetadataAsync(bucketPath, cancellationToken);
+        var payer = metadata.RequestPaymentConfiguration is not null
+            ? Enum.Parse<BucketPayer>(metadata.RequestPaymentConfiguration.Payer, ignoreCase: true)
+            : BucketPayer.BucketOwner;
+
+        return StorageResult<BucketRequestPaymentConfiguration>.Success(new BucketRequestPaymentConfiguration
+        {
+            BucketName = bucketName,
+            Payer = payer
+        });
+    }
+
+    public async ValueTask<StorageResult<BucketRequestPaymentConfiguration>> PutBucketRequestPaymentAsync(PutBucketRequestPaymentRequest request, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        cancellationToken.ThrowIfCancellationRequested();
+
+        var bucketPath = GetBucketPath(request.BucketName);
+        if (!Directory.Exists(bucketPath)) {
+            return StorageResult<BucketRequestPaymentConfiguration>.Failure(BucketNotFound(request.BucketName));
+        }
+
+        var diskConfig = new DiskBucketRequestPaymentConfiguration
+        {
+            Payer = request.Payer.ToString()
+        };
+
+        var existingMetadata = await ReadBucketMetadataAsync(bucketPath, cancellationToken);
+        var updatedMetadata = new DiskBucketMetadata
+        {
+            VersioningStatus = existingMetadata.VersioningStatus,
+            CorsConfiguration = existingMetadata.CorsConfiguration,
+            TaggingConfiguration = existingMetadata.TaggingConfiguration,
+            LoggingConfiguration = existingMetadata.LoggingConfiguration,
+            WebsiteConfiguration = existingMetadata.WebsiteConfiguration,
+            RequestPaymentConfiguration = diskConfig,
+            AccelerateConfiguration = existingMetadata.AccelerateConfiguration,
+            LifecycleConfiguration = existingMetadata.LifecycleConfiguration,
+            ReplicationConfiguration = existingMetadata.ReplicationConfiguration,
+            NotificationConfiguration = existingMetadata.NotificationConfiguration,
+            ObjectLockConfiguration = existingMetadata.ObjectLockConfiguration,
+            AnalyticsConfigurations = existingMetadata.AnalyticsConfigurations,
+            MetricsConfigurations = existingMetadata.MetricsConfigurations,
+            InventoryConfigurations = existingMetadata.InventoryConfigurations,
+            IntelligentTieringConfigurations = existingMetadata.IntelligentTieringConfigurations,
+        };
+
+        await PersistBucketMetadataAsync(bucketPath, updatedMetadata, cancellationToken);
+
+        return StorageResult<BucketRequestPaymentConfiguration>.Success(new BucketRequestPaymentConfiguration
+        {
+            BucketName = request.BucketName,
+            Payer = request.Payer
+        });
+    }
+    // -------------------------------------------------------------------------
+    // Bucket Accelerate
+    // -------------------------------------------------------------------------
+
+    public async ValueTask<StorageResult<BucketAccelerateConfiguration>> GetBucketAccelerateAsync(string bucketName, CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+
+        var bucketPath = GetBucketPath(bucketName);
+        if (!Directory.Exists(bucketPath)) {
+            return StorageResult<BucketAccelerateConfiguration>.Failure(BucketNotFound(bucketName));
+        }
+
+        var metadata = await ReadBucketMetadataAsync(bucketPath, cancellationToken);
+        var status = metadata.AccelerateConfiguration is not null
+            ? Enum.Parse<BucketAccelerateStatus>(metadata.AccelerateConfiguration.Status, ignoreCase: true)
+            : BucketAccelerateStatus.Suspended;
+
+        return StorageResult<BucketAccelerateConfiguration>.Success(new BucketAccelerateConfiguration
+        {
+            BucketName = bucketName,
+            Status = status
+        });
+    }
+
+    public async ValueTask<StorageResult<BucketAccelerateConfiguration>> PutBucketAccelerateAsync(PutBucketAccelerateRequest request, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        cancellationToken.ThrowIfCancellationRequested();
+
+        var bucketPath = GetBucketPath(request.BucketName);
+        if (!Directory.Exists(bucketPath)) {
+            return StorageResult<BucketAccelerateConfiguration>.Failure(BucketNotFound(request.BucketName));
+        }
+
+        var diskConfig = new DiskBucketAccelerateConfiguration
+        {
+            Status = request.Status.ToString()
+        };
+
+        var existingMetadata = await ReadBucketMetadataAsync(bucketPath, cancellationToken);
+        var updatedMetadata = new DiskBucketMetadata
+        {
+            VersioningStatus = existingMetadata.VersioningStatus,
+            CorsConfiguration = existingMetadata.CorsConfiguration,
+            TaggingConfiguration = existingMetadata.TaggingConfiguration,
+            LoggingConfiguration = existingMetadata.LoggingConfiguration,
+            WebsiteConfiguration = existingMetadata.WebsiteConfiguration,
+            RequestPaymentConfiguration = existingMetadata.RequestPaymentConfiguration,
+            AccelerateConfiguration = diskConfig,
+            LifecycleConfiguration = existingMetadata.LifecycleConfiguration,
+            ReplicationConfiguration = existingMetadata.ReplicationConfiguration,
+            NotificationConfiguration = existingMetadata.NotificationConfiguration,
+            ObjectLockConfiguration = existingMetadata.ObjectLockConfiguration,
+            AnalyticsConfigurations = existingMetadata.AnalyticsConfigurations,
+            MetricsConfigurations = existingMetadata.MetricsConfigurations,
+            InventoryConfigurations = existingMetadata.InventoryConfigurations,
+            IntelligentTieringConfigurations = existingMetadata.IntelligentTieringConfigurations,
+        };
+
+        await PersistBucketMetadataAsync(bucketPath, updatedMetadata, cancellationToken);
+
+        return StorageResult<BucketAccelerateConfiguration>.Success(new BucketAccelerateConfiguration
+        {
+            BucketName = request.BucketName,
+            Status = request.Status
+        });
+    }
+    // -------------------------------------------------------------------------
+    // Bucket Lifecycle
+    // -------------------------------------------------------------------------
+
+    public async ValueTask<StorageResult<BucketLifecycleConfiguration>> GetBucketLifecycleAsync(string bucketName, CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+
+        var bucketPath = GetBucketPath(bucketName);
+        if (!Directory.Exists(bucketPath)) {
+            return StorageResult<BucketLifecycleConfiguration>.Failure(BucketNotFound(bucketName));
+        }
+
+        var metadata = await ReadBucketMetadataAsync(bucketPath, cancellationToken);
+        if (metadata.LifecycleConfiguration is null) {
+            return StorageResult<BucketLifecycleConfiguration>.Failure(ConfigurationNotFound(StorageErrorCode.LifecycleConfigurationNotFound, bucketName, "lifecycle"));
+        }
+
+        return StorageResult<BucketLifecycleConfiguration>.Success(ToDomainLifecycleConfiguration(bucketName, metadata.LifecycleConfiguration));
+    }
+
+    public async ValueTask<StorageResult<BucketLifecycleConfiguration>> PutBucketLifecycleAsync(PutBucketLifecycleRequest request, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        cancellationToken.ThrowIfCancellationRequested();
+
+        var bucketPath = GetBucketPath(request.BucketName);
+        if (!Directory.Exists(bucketPath)) {
+            return StorageResult<BucketLifecycleConfiguration>.Failure(BucketNotFound(request.BucketName));
+        }
+
+        var diskConfig = ToDiskLifecycleConfiguration(request);
+
+        var existingMetadata = await ReadBucketMetadataAsync(bucketPath, cancellationToken);
+        var updatedMetadata = new DiskBucketMetadata
+        {
+            VersioningStatus = existingMetadata.VersioningStatus,
+            CorsConfiguration = existingMetadata.CorsConfiguration,
+            TaggingConfiguration = existingMetadata.TaggingConfiguration,
+            LoggingConfiguration = existingMetadata.LoggingConfiguration,
+            WebsiteConfiguration = existingMetadata.WebsiteConfiguration,
+            RequestPaymentConfiguration = existingMetadata.RequestPaymentConfiguration,
+            AccelerateConfiguration = existingMetadata.AccelerateConfiguration,
+            LifecycleConfiguration = diskConfig,
+            ReplicationConfiguration = existingMetadata.ReplicationConfiguration,
+            NotificationConfiguration = existingMetadata.NotificationConfiguration,
+            ObjectLockConfiguration = existingMetadata.ObjectLockConfiguration,
+            AnalyticsConfigurations = existingMetadata.AnalyticsConfigurations,
+            MetricsConfigurations = existingMetadata.MetricsConfigurations,
+            InventoryConfigurations = existingMetadata.InventoryConfigurations,
+            IntelligentTieringConfigurations = existingMetadata.IntelligentTieringConfigurations,
+        };
+
+        await PersistBucketMetadataAsync(bucketPath, updatedMetadata, cancellationToken);
+
+        return StorageResult<BucketLifecycleConfiguration>.Success(ToDomainLifecycleConfiguration(request.BucketName, diskConfig));
+    }
+
+    public async ValueTask<StorageResult> DeleteBucketLifecycleAsync(DeleteBucketLifecycleRequest request, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        cancellationToken.ThrowIfCancellationRequested();
+
+        var bucketPath = GetBucketPath(request.BucketName);
+        if (!Directory.Exists(bucketPath)) {
+            return StorageResult.Failure(BucketNotFound(request.BucketName));
+        }
+
+        var existingMetadata = await ReadBucketMetadataAsync(bucketPath, cancellationToken);
+        var updatedMetadata = new DiskBucketMetadata
+        {
+            VersioningStatus = existingMetadata.VersioningStatus,
+            CorsConfiguration = existingMetadata.CorsConfiguration,
+            TaggingConfiguration = existingMetadata.TaggingConfiguration,
+            LoggingConfiguration = existingMetadata.LoggingConfiguration,
+            WebsiteConfiguration = existingMetadata.WebsiteConfiguration,
+            RequestPaymentConfiguration = existingMetadata.RequestPaymentConfiguration,
+            AccelerateConfiguration = existingMetadata.AccelerateConfiguration,
+            LifecycleConfiguration = null,
+            ReplicationConfiguration = existingMetadata.ReplicationConfiguration,
+            NotificationConfiguration = existingMetadata.NotificationConfiguration,
+            ObjectLockConfiguration = existingMetadata.ObjectLockConfiguration,
+            AnalyticsConfigurations = existingMetadata.AnalyticsConfigurations,
+            MetricsConfigurations = existingMetadata.MetricsConfigurations,
+            InventoryConfigurations = existingMetadata.InventoryConfigurations,
+            IntelligentTieringConfigurations = existingMetadata.IntelligentTieringConfigurations,
+        };
+
+        await PersistBucketMetadataAsync(bucketPath, updatedMetadata, cancellationToken);
+        return StorageResult.Success();
+    }
+    // -------------------------------------------------------------------------
+    // Bucket Replication
+    // -------------------------------------------------------------------------
+
+    public async ValueTask<StorageResult<BucketReplicationConfiguration>> GetBucketReplicationAsync(string bucketName, CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+
+        var bucketPath = GetBucketPath(bucketName);
+        if (!Directory.Exists(bucketPath)) {
+            return StorageResult<BucketReplicationConfiguration>.Failure(BucketNotFound(bucketName));
+        }
+
+        var metadata = await ReadBucketMetadataAsync(bucketPath, cancellationToken);
+        if (metadata.ReplicationConfiguration is null) {
+            return StorageResult<BucketReplicationConfiguration>.Failure(ConfigurationNotFound(StorageErrorCode.ReplicationConfigurationNotFound, bucketName, "replication"));
+        }
+
+        return StorageResult<BucketReplicationConfiguration>.Success(ToDomainReplicationConfiguration(bucketName, metadata.ReplicationConfiguration));
+    }
+
+    public async ValueTask<StorageResult<BucketReplicationConfiguration>> PutBucketReplicationAsync(PutBucketReplicationRequest request, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        cancellationToken.ThrowIfCancellationRequested();
+
+        var bucketPath = GetBucketPath(request.BucketName);
+        if (!Directory.Exists(bucketPath)) {
+            return StorageResult<BucketReplicationConfiguration>.Failure(BucketNotFound(request.BucketName));
+        }
+
+        var diskConfig = ToDiskReplicationConfiguration(request);
+
+        var existingMetadata = await ReadBucketMetadataAsync(bucketPath, cancellationToken);
+        var updatedMetadata = new DiskBucketMetadata
+        {
+            VersioningStatus = existingMetadata.VersioningStatus,
+            CorsConfiguration = existingMetadata.CorsConfiguration,
+            TaggingConfiguration = existingMetadata.TaggingConfiguration,
+            LoggingConfiguration = existingMetadata.LoggingConfiguration,
+            WebsiteConfiguration = existingMetadata.WebsiteConfiguration,
+            RequestPaymentConfiguration = existingMetadata.RequestPaymentConfiguration,
+            AccelerateConfiguration = existingMetadata.AccelerateConfiguration,
+            LifecycleConfiguration = existingMetadata.LifecycleConfiguration,
+            ReplicationConfiguration = diskConfig,
+            NotificationConfiguration = existingMetadata.NotificationConfiguration,
+            ObjectLockConfiguration = existingMetadata.ObjectLockConfiguration,
+            AnalyticsConfigurations = existingMetadata.AnalyticsConfigurations,
+            MetricsConfigurations = existingMetadata.MetricsConfigurations,
+            InventoryConfigurations = existingMetadata.InventoryConfigurations,
+            IntelligentTieringConfigurations = existingMetadata.IntelligentTieringConfigurations,
+        };
+
+        await PersistBucketMetadataAsync(bucketPath, updatedMetadata, cancellationToken);
+
+        return StorageResult<BucketReplicationConfiguration>.Success(ToDomainReplicationConfiguration(request.BucketName, diskConfig));
+    }
+
+    public async ValueTask<StorageResult> DeleteBucketReplicationAsync(DeleteBucketReplicationRequest request, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        cancellationToken.ThrowIfCancellationRequested();
+
+        var bucketPath = GetBucketPath(request.BucketName);
+        if (!Directory.Exists(bucketPath)) {
+            return StorageResult.Failure(BucketNotFound(request.BucketName));
+        }
+
+        var existingMetadata = await ReadBucketMetadataAsync(bucketPath, cancellationToken);
+        var updatedMetadata = new DiskBucketMetadata
+        {
+            VersioningStatus = existingMetadata.VersioningStatus,
+            CorsConfiguration = existingMetadata.CorsConfiguration,
+            TaggingConfiguration = existingMetadata.TaggingConfiguration,
+            LoggingConfiguration = existingMetadata.LoggingConfiguration,
+            WebsiteConfiguration = existingMetadata.WebsiteConfiguration,
+            RequestPaymentConfiguration = existingMetadata.RequestPaymentConfiguration,
+            AccelerateConfiguration = existingMetadata.AccelerateConfiguration,
+            LifecycleConfiguration = existingMetadata.LifecycleConfiguration,
+            ReplicationConfiguration = null,
+            NotificationConfiguration = existingMetadata.NotificationConfiguration,
+            ObjectLockConfiguration = existingMetadata.ObjectLockConfiguration,
+            AnalyticsConfigurations = existingMetadata.AnalyticsConfigurations,
+            MetricsConfigurations = existingMetadata.MetricsConfigurations,
+            InventoryConfigurations = existingMetadata.InventoryConfigurations,
+            IntelligentTieringConfigurations = existingMetadata.IntelligentTieringConfigurations,
+        };
+
+        await PersistBucketMetadataAsync(bucketPath, updatedMetadata, cancellationToken);
+        return StorageResult.Success();
+    }
+    // -------------------------------------------------------------------------
+    // Bucket Notification Configuration
+    // -------------------------------------------------------------------------
+
+    public async ValueTask<StorageResult<BucketNotificationConfiguration>> GetBucketNotificationConfigurationAsync(string bucketName, CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+
+        var bucketPath = GetBucketPath(bucketName);
+        if (!Directory.Exists(bucketPath)) {
+            return StorageResult<BucketNotificationConfiguration>.Failure(BucketNotFound(bucketName));
+        }
+
+        var metadata = await ReadBucketMetadataAsync(bucketPath, cancellationToken);
+        return StorageResult<BucketNotificationConfiguration>.Success(
+            metadata.NotificationConfiguration is not null
+                ? ToDomainNotificationConfiguration(bucketName, metadata.NotificationConfiguration)
+                : new BucketNotificationConfiguration { BucketName = bucketName });
+    }
+
+    public async ValueTask<StorageResult<BucketNotificationConfiguration>> PutBucketNotificationConfigurationAsync(PutBucketNotificationConfigurationRequest request, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        cancellationToken.ThrowIfCancellationRequested();
+
+        var bucketPath = GetBucketPath(request.BucketName);
+        if (!Directory.Exists(bucketPath)) {
+            return StorageResult<BucketNotificationConfiguration>.Failure(BucketNotFound(request.BucketName));
+        }
+
+        var diskConfig = ToDiskNotificationConfiguration(request);
+
+        var existingMetadata = await ReadBucketMetadataAsync(bucketPath, cancellationToken);
+        var updatedMetadata = new DiskBucketMetadata
+        {
+            VersioningStatus = existingMetadata.VersioningStatus,
+            CorsConfiguration = existingMetadata.CorsConfiguration,
+            TaggingConfiguration = existingMetadata.TaggingConfiguration,
+            LoggingConfiguration = existingMetadata.LoggingConfiguration,
+            WebsiteConfiguration = existingMetadata.WebsiteConfiguration,
+            RequestPaymentConfiguration = existingMetadata.RequestPaymentConfiguration,
+            AccelerateConfiguration = existingMetadata.AccelerateConfiguration,
+            LifecycleConfiguration = existingMetadata.LifecycleConfiguration,
+            ReplicationConfiguration = existingMetadata.ReplicationConfiguration,
+            NotificationConfiguration = diskConfig,
+            ObjectLockConfiguration = existingMetadata.ObjectLockConfiguration,
+            AnalyticsConfigurations = existingMetadata.AnalyticsConfigurations,
+            MetricsConfigurations = existingMetadata.MetricsConfigurations,
+            InventoryConfigurations = existingMetadata.InventoryConfigurations,
+            IntelligentTieringConfigurations = existingMetadata.IntelligentTieringConfigurations,
+        };
+
+        await PersistBucketMetadataAsync(bucketPath, updatedMetadata, cancellationToken);
+
+        return StorageResult<BucketNotificationConfiguration>.Success(ToDomainNotificationConfiguration(request.BucketName, diskConfig));
+    }
+    // -------------------------------------------------------------------------
+    // Object Lock Configuration (bucket-level)
+    // -------------------------------------------------------------------------
+
+    public async ValueTask<StorageResult<ObjectLockConfiguration>> GetObjectLockConfigurationAsync(string bucketName, CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+
+        var bucketPath = GetBucketPath(bucketName);
+        if (!Directory.Exists(bucketPath)) {
+            return StorageResult<ObjectLockConfiguration>.Failure(BucketNotFound(bucketName));
+        }
+
+        var metadata = await ReadBucketMetadataAsync(bucketPath, cancellationToken);
+        if (metadata.ObjectLockConfiguration is null) {
+            return StorageResult<ObjectLockConfiguration>.Failure(ConfigurationNotFound(StorageErrorCode.ObjectLockConfigurationNotFound, bucketName, "object lock"));
+        }
+
+        return StorageResult<ObjectLockConfiguration>.Success(ToDomainObjectLockConfiguration(bucketName, metadata.ObjectLockConfiguration));
+    }
+
+    public async ValueTask<StorageResult<ObjectLockConfiguration>> PutObjectLockConfigurationAsync(PutObjectLockConfigurationRequest request, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        cancellationToken.ThrowIfCancellationRequested();
+
+        var bucketPath = GetBucketPath(request.BucketName);
+        if (!Directory.Exists(bucketPath)) {
+            return StorageResult<ObjectLockConfiguration>.Failure(BucketNotFound(request.BucketName));
+        }
+
+        var diskConfig = ToDiskObjectLockConfiguration(request);
+
+        var existingMetadata = await ReadBucketMetadataAsync(bucketPath, cancellationToken);
+        var updatedMetadata = new DiskBucketMetadata
+        {
+            VersioningStatus = existingMetadata.VersioningStatus,
+            CorsConfiguration = existingMetadata.CorsConfiguration,
+            TaggingConfiguration = existingMetadata.TaggingConfiguration,
+            LoggingConfiguration = existingMetadata.LoggingConfiguration,
+            WebsiteConfiguration = existingMetadata.WebsiteConfiguration,
+            RequestPaymentConfiguration = existingMetadata.RequestPaymentConfiguration,
+            AccelerateConfiguration = existingMetadata.AccelerateConfiguration,
+            LifecycleConfiguration = existingMetadata.LifecycleConfiguration,
+            ReplicationConfiguration = existingMetadata.ReplicationConfiguration,
+            NotificationConfiguration = existingMetadata.NotificationConfiguration,
+            ObjectLockConfiguration = diskConfig,
+            AnalyticsConfigurations = existingMetadata.AnalyticsConfigurations,
+            MetricsConfigurations = existingMetadata.MetricsConfigurations,
+            InventoryConfigurations = existingMetadata.InventoryConfigurations,
+            IntelligentTieringConfigurations = existingMetadata.IntelligentTieringConfigurations,
+        };
+
+        await PersistBucketMetadataAsync(bucketPath, updatedMetadata, cancellationToken);
+
+        return StorageResult<ObjectLockConfiguration>.Success(ToDomainObjectLockConfiguration(request.BucketName, diskConfig));
+    }
+    // -------------------------------------------------------------------------
+    // Bucket BucketAnalytics
+    // -------------------------------------------------------------------------
+
+    public async ValueTask<StorageResult<BucketAnalyticsConfiguration>> GetBucketAnalyticsConfigurationAsync(string bucketName, string id, CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+
+        var bucketPath = GetBucketPath(bucketName);
+        if (!Directory.Exists(bucketPath)) {
+            return StorageResult<BucketAnalyticsConfiguration>.Failure(BucketNotFound(bucketName));
+        }
+
+        var metadata = await ReadBucketMetadataAsync(bucketPath, cancellationToken);
+        if (metadata.AnalyticsConfigurations is null || !metadata.AnalyticsConfigurations.TryGetValue(id, out var diskConfig)) {
+            return StorageResult<BucketAnalyticsConfiguration>.Failure(ConfigurationNotFound(StorageErrorCode.AnalyticsConfigurationNotFound, bucketName, "bucketanalytics"));
+        }
+
+        return StorageResult<BucketAnalyticsConfiguration>.Success(ToDomainAnalyticsConfiguration(bucketName, diskConfig));
+    }
+
+    public async ValueTask<StorageResult<BucketAnalyticsConfiguration>> PutBucketAnalyticsConfigurationAsync(PutBucketAnalyticsConfigurationRequest request, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        cancellationToken.ThrowIfCancellationRequested();
+
+        var bucketPath = GetBucketPath(request.BucketName);
+        if (!Directory.Exists(bucketPath)) {
+            return StorageResult<BucketAnalyticsConfiguration>.Failure(BucketNotFound(request.BucketName));
+        }
+
+        var diskConfig = ToDiskAnalyticsConfiguration(request);
+        var existingMetadata = await ReadBucketMetadataAsync(bucketPath, cancellationToken);
+        var updatedDict = existingMetadata.AnalyticsConfigurations is not null
+            ? new Dictionary<string, DiskBucketAnalyticsConfiguration>(existingMetadata.AnalyticsConfigurations, StringComparer.Ordinal)
+            : new Dictionary<string, DiskBucketAnalyticsConfiguration>(StringComparer.Ordinal);
+        updatedDict[request.Id] = diskConfig;
+
+        var updatedMetadata = new DiskBucketMetadata
+        {
+            VersioningStatus = existingMetadata.VersioningStatus,
+            CorsConfiguration = existingMetadata.CorsConfiguration,
+            TaggingConfiguration = existingMetadata.TaggingConfiguration,
+            LoggingConfiguration = existingMetadata.LoggingConfiguration,
+            WebsiteConfiguration = existingMetadata.WebsiteConfiguration,
+            RequestPaymentConfiguration = existingMetadata.RequestPaymentConfiguration,
+            AccelerateConfiguration = existingMetadata.AccelerateConfiguration,
+            LifecycleConfiguration = existingMetadata.LifecycleConfiguration,
+            ReplicationConfiguration = existingMetadata.ReplicationConfiguration,
+            NotificationConfiguration = existingMetadata.NotificationConfiguration,
+            ObjectLockConfiguration = existingMetadata.ObjectLockConfiguration,
+            AnalyticsConfigurations = updatedDict,
+            MetricsConfigurations = existingMetadata.MetricsConfigurations,
+            InventoryConfigurations = existingMetadata.InventoryConfigurations,
+            IntelligentTieringConfigurations = existingMetadata.IntelligentTieringConfigurations,
+        };
+
+        await PersistBucketMetadataAsync(bucketPath, updatedMetadata, cancellationToken);
+
+        return StorageResult<BucketAnalyticsConfiguration>.Success(ToDomainAnalyticsConfiguration(request.BucketName, diskConfig));
+    }
+
+    public async ValueTask<StorageResult> DeleteBucketAnalyticsConfigurationAsync(DeleteBucketAnalyticsConfigurationRequest request, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        cancellationToken.ThrowIfCancellationRequested();
+
+        var bucketPath = GetBucketPath(request.BucketName);
+        if (!Directory.Exists(bucketPath)) {
+            return StorageResult.Failure(BucketNotFound(request.BucketName));
+        }
+
+        var existingMetadata = await ReadBucketMetadataAsync(bucketPath, cancellationToken);
+        var updatedDict = existingMetadata.AnalyticsConfigurations is not null
+            ? new Dictionary<string, DiskBucketAnalyticsConfiguration>(existingMetadata.AnalyticsConfigurations, StringComparer.Ordinal)
+            : new Dictionary<string, DiskBucketAnalyticsConfiguration>(StringComparer.Ordinal);
+        updatedDict.Remove(request.Id);
+
+        var updatedMetadata = new DiskBucketMetadata
+        {
+            VersioningStatus = existingMetadata.VersioningStatus,
+            CorsConfiguration = existingMetadata.CorsConfiguration,
+            TaggingConfiguration = existingMetadata.TaggingConfiguration,
+            LoggingConfiguration = existingMetadata.LoggingConfiguration,
+            WebsiteConfiguration = existingMetadata.WebsiteConfiguration,
+            RequestPaymentConfiguration = existingMetadata.RequestPaymentConfiguration,
+            AccelerateConfiguration = existingMetadata.AccelerateConfiguration,
+            LifecycleConfiguration = existingMetadata.LifecycleConfiguration,
+            ReplicationConfiguration = existingMetadata.ReplicationConfiguration,
+            NotificationConfiguration = existingMetadata.NotificationConfiguration,
+            ObjectLockConfiguration = existingMetadata.ObjectLockConfiguration,
+            AnalyticsConfigurations = updatedDict.Count > 0 ? updatedDict : null,
+            MetricsConfigurations = existingMetadata.MetricsConfigurations,
+            InventoryConfigurations = existingMetadata.InventoryConfigurations,
+            IntelligentTieringConfigurations = existingMetadata.IntelligentTieringConfigurations,
+        };
+
+        await PersistBucketMetadataAsync(bucketPath, updatedMetadata, cancellationToken);
+        return StorageResult.Success();
+    }
+
+    public async ValueTask<StorageResult<IReadOnlyList<BucketAnalyticsConfiguration>>> ListBucketAnalyticsConfigurationsAsync(string bucketName, CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+
+        var bucketPath = GetBucketPath(bucketName);
+        if (!Directory.Exists(bucketPath)) {
+            return StorageResult<IReadOnlyList<BucketAnalyticsConfiguration>>.Failure(BucketNotFound(bucketName));
+        }
+
+        var metadata = await ReadBucketMetadataAsync(bucketPath, cancellationToken);
+        if (metadata.AnalyticsConfigurations is null || metadata.AnalyticsConfigurations.Count == 0) {
+            return StorageResult<IReadOnlyList<BucketAnalyticsConfiguration>>.Success(Array.Empty<BucketAnalyticsConfiguration>());
+        }
+
+        var configs = metadata.AnalyticsConfigurations.Values
+            .Select(c => ToDomainAnalyticsConfiguration(bucketName, c))
+            .ToList();
+        return StorageResult<IReadOnlyList<BucketAnalyticsConfiguration>>.Success(configs);
+    }
+
+    // -------------------------------------------------------------------------
+    // Bucket BucketMetrics
+    // -------------------------------------------------------------------------
+
+    public async ValueTask<StorageResult<BucketMetricsConfiguration>> GetBucketMetricsConfigurationAsync(string bucketName, string id, CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+
+        var bucketPath = GetBucketPath(bucketName);
+        if (!Directory.Exists(bucketPath)) {
+            return StorageResult<BucketMetricsConfiguration>.Failure(BucketNotFound(bucketName));
+        }
+
+        var metadata = await ReadBucketMetadataAsync(bucketPath, cancellationToken);
+        if (metadata.MetricsConfigurations is null || !metadata.MetricsConfigurations.TryGetValue(id, out var diskConfig)) {
+            return StorageResult<BucketMetricsConfiguration>.Failure(ConfigurationNotFound(StorageErrorCode.MetricsConfigurationNotFound, bucketName, "bucketmetrics"));
+        }
+
+        return StorageResult<BucketMetricsConfiguration>.Success(ToDomainMetricsConfiguration(bucketName, diskConfig));
+    }
+
+    public async ValueTask<StorageResult<BucketMetricsConfiguration>> PutBucketMetricsConfigurationAsync(PutBucketMetricsConfigurationRequest request, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        cancellationToken.ThrowIfCancellationRequested();
+
+        var bucketPath = GetBucketPath(request.BucketName);
+        if (!Directory.Exists(bucketPath)) {
+            return StorageResult<BucketMetricsConfiguration>.Failure(BucketNotFound(request.BucketName));
+        }
+
+        var diskConfig = ToDiskMetricsConfiguration(request);
+        var existingMetadata = await ReadBucketMetadataAsync(bucketPath, cancellationToken);
+        var updatedDict = existingMetadata.MetricsConfigurations is not null
+            ? new Dictionary<string, DiskBucketMetricsConfiguration>(existingMetadata.MetricsConfigurations, StringComparer.Ordinal)
+            : new Dictionary<string, DiskBucketMetricsConfiguration>(StringComparer.Ordinal);
+        updatedDict[request.Id] = diskConfig;
+
+        var updatedMetadata = new DiskBucketMetadata
+        {
+            VersioningStatus = existingMetadata.VersioningStatus,
+            CorsConfiguration = existingMetadata.CorsConfiguration,
+            TaggingConfiguration = existingMetadata.TaggingConfiguration,
+            LoggingConfiguration = existingMetadata.LoggingConfiguration,
+            WebsiteConfiguration = existingMetadata.WebsiteConfiguration,
+            RequestPaymentConfiguration = existingMetadata.RequestPaymentConfiguration,
+            AccelerateConfiguration = existingMetadata.AccelerateConfiguration,
+            LifecycleConfiguration = existingMetadata.LifecycleConfiguration,
+            ReplicationConfiguration = existingMetadata.ReplicationConfiguration,
+            NotificationConfiguration = existingMetadata.NotificationConfiguration,
+            ObjectLockConfiguration = existingMetadata.ObjectLockConfiguration,
+            AnalyticsConfigurations = existingMetadata.AnalyticsConfigurations,
+            MetricsConfigurations = updatedDict,
+            InventoryConfigurations = existingMetadata.InventoryConfigurations,
+            IntelligentTieringConfigurations = existingMetadata.IntelligentTieringConfigurations,
+        };
+
+        await PersistBucketMetadataAsync(bucketPath, updatedMetadata, cancellationToken);
+
+        return StorageResult<BucketMetricsConfiguration>.Success(ToDomainMetricsConfiguration(request.BucketName, diskConfig));
+    }
+
+    public async ValueTask<StorageResult> DeleteBucketMetricsConfigurationAsync(DeleteBucketMetricsConfigurationRequest request, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        cancellationToken.ThrowIfCancellationRequested();
+
+        var bucketPath = GetBucketPath(request.BucketName);
+        if (!Directory.Exists(bucketPath)) {
+            return StorageResult.Failure(BucketNotFound(request.BucketName));
+        }
+
+        var existingMetadata = await ReadBucketMetadataAsync(bucketPath, cancellationToken);
+        var updatedDict = existingMetadata.MetricsConfigurations is not null
+            ? new Dictionary<string, DiskBucketMetricsConfiguration>(existingMetadata.MetricsConfigurations, StringComparer.Ordinal)
+            : new Dictionary<string, DiskBucketMetricsConfiguration>(StringComparer.Ordinal);
+        updatedDict.Remove(request.Id);
+
+        var updatedMetadata = new DiskBucketMetadata
+        {
+            VersioningStatus = existingMetadata.VersioningStatus,
+            CorsConfiguration = existingMetadata.CorsConfiguration,
+            TaggingConfiguration = existingMetadata.TaggingConfiguration,
+            LoggingConfiguration = existingMetadata.LoggingConfiguration,
+            WebsiteConfiguration = existingMetadata.WebsiteConfiguration,
+            RequestPaymentConfiguration = existingMetadata.RequestPaymentConfiguration,
+            AccelerateConfiguration = existingMetadata.AccelerateConfiguration,
+            LifecycleConfiguration = existingMetadata.LifecycleConfiguration,
+            ReplicationConfiguration = existingMetadata.ReplicationConfiguration,
+            NotificationConfiguration = existingMetadata.NotificationConfiguration,
+            ObjectLockConfiguration = existingMetadata.ObjectLockConfiguration,
+            AnalyticsConfigurations = existingMetadata.AnalyticsConfigurations,
+            MetricsConfigurations = updatedDict.Count > 0 ? updatedDict : null,
+            InventoryConfigurations = existingMetadata.InventoryConfigurations,
+            IntelligentTieringConfigurations = existingMetadata.IntelligentTieringConfigurations,
+        };
+
+        await PersistBucketMetadataAsync(bucketPath, updatedMetadata, cancellationToken);
+        return StorageResult.Success();
+    }
+
+    public async ValueTask<StorageResult<IReadOnlyList<BucketMetricsConfiguration>>> ListBucketMetricsConfigurationsAsync(string bucketName, CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+
+        var bucketPath = GetBucketPath(bucketName);
+        if (!Directory.Exists(bucketPath)) {
+            return StorageResult<IReadOnlyList<BucketMetricsConfiguration>>.Failure(BucketNotFound(bucketName));
+        }
+
+        var metadata = await ReadBucketMetadataAsync(bucketPath, cancellationToken);
+        if (metadata.MetricsConfigurations is null || metadata.MetricsConfigurations.Count == 0) {
+            return StorageResult<IReadOnlyList<BucketMetricsConfiguration>>.Success(Array.Empty<BucketMetricsConfiguration>());
+        }
+
+        var configs = metadata.MetricsConfigurations.Values
+            .Select(c => ToDomainMetricsConfiguration(bucketName, c))
+            .ToList();
+        return StorageResult<IReadOnlyList<BucketMetricsConfiguration>>.Success(configs);
+    }
+
+    // -------------------------------------------------------------------------
+    // Bucket BucketInventory
+    // -------------------------------------------------------------------------
+
+    public async ValueTask<StorageResult<BucketInventoryConfiguration>> GetBucketInventoryConfigurationAsync(string bucketName, string id, CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+
+        var bucketPath = GetBucketPath(bucketName);
+        if (!Directory.Exists(bucketPath)) {
+            return StorageResult<BucketInventoryConfiguration>.Failure(BucketNotFound(bucketName));
+        }
+
+        var metadata = await ReadBucketMetadataAsync(bucketPath, cancellationToken);
+        if (metadata.InventoryConfigurations is null || !metadata.InventoryConfigurations.TryGetValue(id, out var diskConfig)) {
+            return StorageResult<BucketInventoryConfiguration>.Failure(ConfigurationNotFound(StorageErrorCode.InventoryConfigurationNotFound, bucketName, "bucketinventory"));
+        }
+
+        return StorageResult<BucketInventoryConfiguration>.Success(ToDomainInventoryConfiguration(bucketName, diskConfig));
+    }
+
+    public async ValueTask<StorageResult<BucketInventoryConfiguration>> PutBucketInventoryConfigurationAsync(PutBucketInventoryConfigurationRequest request, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        cancellationToken.ThrowIfCancellationRequested();
+
+        var bucketPath = GetBucketPath(request.BucketName);
+        if (!Directory.Exists(bucketPath)) {
+            return StorageResult<BucketInventoryConfiguration>.Failure(BucketNotFound(request.BucketName));
+        }
+
+        var diskConfig = ToDiskInventoryConfiguration(request);
+        var existingMetadata = await ReadBucketMetadataAsync(bucketPath, cancellationToken);
+        var updatedDict = existingMetadata.InventoryConfigurations is not null
+            ? new Dictionary<string, DiskBucketInventoryConfiguration>(existingMetadata.InventoryConfigurations, StringComparer.Ordinal)
+            : new Dictionary<string, DiskBucketInventoryConfiguration>(StringComparer.Ordinal);
+        updatedDict[request.Id] = diskConfig;
+
+        var updatedMetadata = new DiskBucketMetadata
+        {
+            VersioningStatus = existingMetadata.VersioningStatus,
+            CorsConfiguration = existingMetadata.CorsConfiguration,
+            TaggingConfiguration = existingMetadata.TaggingConfiguration,
+            LoggingConfiguration = existingMetadata.LoggingConfiguration,
+            WebsiteConfiguration = existingMetadata.WebsiteConfiguration,
+            RequestPaymentConfiguration = existingMetadata.RequestPaymentConfiguration,
+            AccelerateConfiguration = existingMetadata.AccelerateConfiguration,
+            LifecycleConfiguration = existingMetadata.LifecycleConfiguration,
+            ReplicationConfiguration = existingMetadata.ReplicationConfiguration,
+            NotificationConfiguration = existingMetadata.NotificationConfiguration,
+            ObjectLockConfiguration = existingMetadata.ObjectLockConfiguration,
+            AnalyticsConfigurations = existingMetadata.AnalyticsConfigurations,
+            MetricsConfigurations = existingMetadata.MetricsConfigurations,
+            InventoryConfigurations = updatedDict,
+            IntelligentTieringConfigurations = existingMetadata.IntelligentTieringConfigurations,
+        };
+
+        await PersistBucketMetadataAsync(bucketPath, updatedMetadata, cancellationToken);
+
+        return StorageResult<BucketInventoryConfiguration>.Success(ToDomainInventoryConfiguration(request.BucketName, diskConfig));
+    }
+
+    public async ValueTask<StorageResult> DeleteBucketInventoryConfigurationAsync(DeleteBucketInventoryConfigurationRequest request, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        cancellationToken.ThrowIfCancellationRequested();
+
+        var bucketPath = GetBucketPath(request.BucketName);
+        if (!Directory.Exists(bucketPath)) {
+            return StorageResult.Failure(BucketNotFound(request.BucketName));
+        }
+
+        var existingMetadata = await ReadBucketMetadataAsync(bucketPath, cancellationToken);
+        var updatedDict = existingMetadata.InventoryConfigurations is not null
+            ? new Dictionary<string, DiskBucketInventoryConfiguration>(existingMetadata.InventoryConfigurations, StringComparer.Ordinal)
+            : new Dictionary<string, DiskBucketInventoryConfiguration>(StringComparer.Ordinal);
+        updatedDict.Remove(request.Id);
+
+        var updatedMetadata = new DiskBucketMetadata
+        {
+            VersioningStatus = existingMetadata.VersioningStatus,
+            CorsConfiguration = existingMetadata.CorsConfiguration,
+            TaggingConfiguration = existingMetadata.TaggingConfiguration,
+            LoggingConfiguration = existingMetadata.LoggingConfiguration,
+            WebsiteConfiguration = existingMetadata.WebsiteConfiguration,
+            RequestPaymentConfiguration = existingMetadata.RequestPaymentConfiguration,
+            AccelerateConfiguration = existingMetadata.AccelerateConfiguration,
+            LifecycleConfiguration = existingMetadata.LifecycleConfiguration,
+            ReplicationConfiguration = existingMetadata.ReplicationConfiguration,
+            NotificationConfiguration = existingMetadata.NotificationConfiguration,
+            ObjectLockConfiguration = existingMetadata.ObjectLockConfiguration,
+            AnalyticsConfigurations = existingMetadata.AnalyticsConfigurations,
+            MetricsConfigurations = existingMetadata.MetricsConfigurations,
+            InventoryConfigurations = updatedDict.Count > 0 ? updatedDict : null,
+            IntelligentTieringConfigurations = existingMetadata.IntelligentTieringConfigurations,
+        };
+
+        await PersistBucketMetadataAsync(bucketPath, updatedMetadata, cancellationToken);
+        return StorageResult.Success();
+    }
+
+    public async ValueTask<StorageResult<IReadOnlyList<BucketInventoryConfiguration>>> ListBucketInventoryConfigurationsAsync(string bucketName, CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+
+        var bucketPath = GetBucketPath(bucketName);
+        if (!Directory.Exists(bucketPath)) {
+            return StorageResult<IReadOnlyList<BucketInventoryConfiguration>>.Failure(BucketNotFound(bucketName));
+        }
+
+        var metadata = await ReadBucketMetadataAsync(bucketPath, cancellationToken);
+        if (metadata.InventoryConfigurations is null || metadata.InventoryConfigurations.Count == 0) {
+            return StorageResult<IReadOnlyList<BucketInventoryConfiguration>>.Success(Array.Empty<BucketInventoryConfiguration>());
+        }
+
+        var configs = metadata.InventoryConfigurations.Values
+            .Select(c => ToDomainInventoryConfiguration(bucketName, c))
+            .ToList();
+        return StorageResult<IReadOnlyList<BucketInventoryConfiguration>>.Success(configs);
+    }
+
+    // -------------------------------------------------------------------------
+    // Bucket BucketIntelligentTiering
+    // -------------------------------------------------------------------------
+
+    public async ValueTask<StorageResult<BucketIntelligentTieringConfiguration>> GetBucketIntelligentTieringConfigurationAsync(string bucketName, string id, CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+
+        var bucketPath = GetBucketPath(bucketName);
+        if (!Directory.Exists(bucketPath)) {
+            return StorageResult<BucketIntelligentTieringConfiguration>.Failure(BucketNotFound(bucketName));
+        }
+
+        var metadata = await ReadBucketMetadataAsync(bucketPath, cancellationToken);
+        if (metadata.IntelligentTieringConfigurations is null || !metadata.IntelligentTieringConfigurations.TryGetValue(id, out var diskConfig)) {
+            return StorageResult<BucketIntelligentTieringConfiguration>.Failure(ConfigurationNotFound(StorageErrorCode.IntelligentTieringConfigurationNotFound, bucketName, "bucketintelligenttiering"));
+        }
+
+        return StorageResult<BucketIntelligentTieringConfiguration>.Success(ToDomainIntelligentTieringConfiguration(bucketName, diskConfig));
+    }
+
+    public async ValueTask<StorageResult<BucketIntelligentTieringConfiguration>> PutBucketIntelligentTieringConfigurationAsync(PutBucketIntelligentTieringConfigurationRequest request, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        cancellationToken.ThrowIfCancellationRequested();
+
+        var bucketPath = GetBucketPath(request.BucketName);
+        if (!Directory.Exists(bucketPath)) {
+            return StorageResult<BucketIntelligentTieringConfiguration>.Failure(BucketNotFound(request.BucketName));
+        }
+
+        var diskConfig = ToDiskIntelligentTieringConfiguration(request);
+        var existingMetadata = await ReadBucketMetadataAsync(bucketPath, cancellationToken);
+        var updatedDict = existingMetadata.IntelligentTieringConfigurations is not null
+            ? new Dictionary<string, DiskBucketIntelligentTieringConfiguration>(existingMetadata.IntelligentTieringConfigurations, StringComparer.Ordinal)
+            : new Dictionary<string, DiskBucketIntelligentTieringConfiguration>(StringComparer.Ordinal);
+        updatedDict[request.Id] = diskConfig;
+
+        var updatedMetadata = new DiskBucketMetadata
+        {
+            VersioningStatus = existingMetadata.VersioningStatus,
+            CorsConfiguration = existingMetadata.CorsConfiguration,
+            TaggingConfiguration = existingMetadata.TaggingConfiguration,
+            LoggingConfiguration = existingMetadata.LoggingConfiguration,
+            WebsiteConfiguration = existingMetadata.WebsiteConfiguration,
+            RequestPaymentConfiguration = existingMetadata.RequestPaymentConfiguration,
+            AccelerateConfiguration = existingMetadata.AccelerateConfiguration,
+            LifecycleConfiguration = existingMetadata.LifecycleConfiguration,
+            ReplicationConfiguration = existingMetadata.ReplicationConfiguration,
+            NotificationConfiguration = existingMetadata.NotificationConfiguration,
+            ObjectLockConfiguration = existingMetadata.ObjectLockConfiguration,
+            AnalyticsConfigurations = existingMetadata.AnalyticsConfigurations,
+            MetricsConfigurations = existingMetadata.MetricsConfigurations,
+            InventoryConfigurations = existingMetadata.InventoryConfigurations,
+            IntelligentTieringConfigurations = updatedDict,
+        };
+
+        await PersistBucketMetadataAsync(bucketPath, updatedMetadata, cancellationToken);
+
+        return StorageResult<BucketIntelligentTieringConfiguration>.Success(ToDomainIntelligentTieringConfiguration(request.BucketName, diskConfig));
+    }
+
+    public async ValueTask<StorageResult> DeleteBucketIntelligentTieringConfigurationAsync(DeleteBucketIntelligentTieringConfigurationRequest request, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        cancellationToken.ThrowIfCancellationRequested();
+
+        var bucketPath = GetBucketPath(request.BucketName);
+        if (!Directory.Exists(bucketPath)) {
+            return StorageResult.Failure(BucketNotFound(request.BucketName));
+        }
+
+        var existingMetadata = await ReadBucketMetadataAsync(bucketPath, cancellationToken);
+        var updatedDict = existingMetadata.IntelligentTieringConfigurations is not null
+            ? new Dictionary<string, DiskBucketIntelligentTieringConfiguration>(existingMetadata.IntelligentTieringConfigurations, StringComparer.Ordinal)
+            : new Dictionary<string, DiskBucketIntelligentTieringConfiguration>(StringComparer.Ordinal);
+        updatedDict.Remove(request.Id);
+
+        var updatedMetadata = new DiskBucketMetadata
+        {
+            VersioningStatus = existingMetadata.VersioningStatus,
+            CorsConfiguration = existingMetadata.CorsConfiguration,
+            TaggingConfiguration = existingMetadata.TaggingConfiguration,
+            LoggingConfiguration = existingMetadata.LoggingConfiguration,
+            WebsiteConfiguration = existingMetadata.WebsiteConfiguration,
+            RequestPaymentConfiguration = existingMetadata.RequestPaymentConfiguration,
+            AccelerateConfiguration = existingMetadata.AccelerateConfiguration,
+            LifecycleConfiguration = existingMetadata.LifecycleConfiguration,
+            ReplicationConfiguration = existingMetadata.ReplicationConfiguration,
+            NotificationConfiguration = existingMetadata.NotificationConfiguration,
+            ObjectLockConfiguration = existingMetadata.ObjectLockConfiguration,
+            AnalyticsConfigurations = existingMetadata.AnalyticsConfigurations,
+            MetricsConfigurations = existingMetadata.MetricsConfigurations,
+            InventoryConfigurations = existingMetadata.InventoryConfigurations,
+            IntelligentTieringConfigurations = updatedDict.Count > 0 ? updatedDict : null,
+        };
+
+        await PersistBucketMetadataAsync(bucketPath, updatedMetadata, cancellationToken);
+        return StorageResult.Success();
+    }
+
+    public async ValueTask<StorageResult<IReadOnlyList<BucketIntelligentTieringConfiguration>>> ListBucketIntelligentTieringConfigurationsAsync(string bucketName, CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+
+        var bucketPath = GetBucketPath(bucketName);
+        if (!Directory.Exists(bucketPath)) {
+            return StorageResult<IReadOnlyList<BucketIntelligentTieringConfiguration>>.Failure(BucketNotFound(bucketName));
+        }
+
+        var metadata = await ReadBucketMetadataAsync(bucketPath, cancellationToken);
+        if (metadata.IntelligentTieringConfigurations is null || metadata.IntelligentTieringConfigurations.Count == 0) {
+            return StorageResult<IReadOnlyList<BucketIntelligentTieringConfiguration>>.Success(Array.Empty<BucketIntelligentTieringConfiguration>());
+        }
+
+        var configs = metadata.IntelligentTieringConfigurations.Values
+            .Select(c => ToDomainIntelligentTieringConfiguration(bucketName, c))
+            .ToList();
+        return StorageResult<IReadOnlyList<BucketIntelligentTieringConfiguration>>.Success(configs);
     }
 
     public ValueTask<StorageResult<BucketDefaultEncryptionConfiguration>> GetBucketDefaultEncryptionAsync(string bucketName, CancellationToken cancellationToken = default)
@@ -354,7 +1569,7 @@ internal sealed class DiskStorageService(
             return ValueTask.FromResult(StorageResult.Failure(BucketNotFound(request.BucketName)));
         }
 
-        if (Directory.EnumerateFileSystemEntries(bucketPath).Any(static path => !IsBucketMetadataFile(path))) {
+        if (BucketHasContent(bucketPath)) {
             return ValueTask.FromResult(StorageResult.Failure(new StorageError
             {
                 Code = StorageErrorCode.BucketNotEmpty,
@@ -366,6 +1581,7 @@ internal sealed class DiskStorageService(
         }
 
         DeleteBucketMetadata(bucketPath);
+        CleanupEmptySystemDirectories(bucketPath);
         Directory.Delete(bucketPath, recursive: false);
         return ValueTask.FromResult(StorageResult.Success());
     }
@@ -888,16 +2104,12 @@ internal sealed class DiskStorageService(
         var objectDirectoryPath = Path.GetDirectoryName(objectPath)!;
         Directory.CreateDirectory(objectDirectoryPath);
 
-        if (!request.OverwriteIfExists && File.Exists(objectPath)) {
-            return StorageResult<ObjectInfo>.Failure(new StorageError
-            {
-                Code = StorageErrorCode.PreconditionFailed,
-                Message = $"Object '{request.Key}' already exists in bucket '{request.BucketName}'.",
-                BucketName = request.BucketName,
-                ObjectKey = request.Key,
-                ProviderName = options.ProviderName,
-                SuggestedHttpStatusCode = 412
-            });
+        var conditionalWriteError = await EvaluateWritePreconditionsAsync(
+            request.BucketName, request.Key, objectPath,
+            request.IfMatchETag, request.IfNoneMatchETag, request.OverwriteIfExists,
+            cancellationToken);
+        if (conditionalWriteError is not null) {
+            return StorageResult<ObjectInfo>.Failure(conditionalWriteError);
         }
 
         var tempFilePath = $"{objectPath}.{Guid.NewGuid():N}.tmp";
@@ -1082,7 +2294,8 @@ internal sealed class DiskStorageService(
             && !string.Equals(checksumAlgorithm, Sha256ChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)
             && !string.Equals(checksumAlgorithm, Sha1ChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)
             && !string.Equals(checksumAlgorithm, Crc32ChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)
-            && !string.Equals(checksumAlgorithm, Crc32cChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)) {
+            && !string.Equals(checksumAlgorithm, Crc32cChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)
+            && !string.Equals(checksumAlgorithm, Crc64NvmeChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)) {
             return ValueTask.FromResult(StorageResult<MultipartUploadInfo>.Failure(StorageError.Unsupported(
                 $"Checksum algorithm '{request.ChecksumAlgorithm}' is not currently supported for multipart uploads.",
                 request.BucketName,
@@ -1666,6 +2879,52 @@ internal sealed class DiskStorageService(
     private static bool IsBucketMetadataFile(string filePath)
     {
         return string.Equals(Path.GetFileName(filePath), BucketMetadataFileName, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool BucketHasContent(string bucketPath)
+    {
+        foreach (var entry in Directory.EnumerateFileSystemEntries(bucketPath)) {
+            if (IsBucketMetadataFile(entry)) {
+                continue;
+            }
+
+            var name = Path.GetFileName(entry);
+            if (string.Equals(name, VersionStoreDirectoryName, StringComparison.OrdinalIgnoreCase)
+                || string.Equals(name, MultipartUploadsDirectoryName, StringComparison.OrdinalIgnoreCase)) {
+                continue;
+            }
+
+            return true;
+        }
+
+        var versionStorePath = Path.Combine(bucketPath, VersionStoreDirectoryName);
+        if (Directory.Exists(versionStorePath)
+            && Directory.EnumerateFiles(versionStorePath, "*", SearchOption.AllDirectories).Any()) {
+            return true;
+        }
+
+        var multipartPath = Path.Combine(bucketPath, MultipartUploadsDirectoryName);
+        if (Directory.Exists(multipartPath)
+            && Directory.EnumerateFiles(multipartPath, "*", SearchOption.AllDirectories).Any()) {
+            return true;
+        }
+
+        return false;
+    }
+
+    private static void CleanupEmptySystemDirectories(string bucketPath)
+    {
+        var versionStorePath = Path.Combine(bucketPath, VersionStoreDirectoryName);
+        if (Directory.Exists(versionStorePath)) {
+            try { Directory.Delete(versionStorePath, recursive: true); }
+            catch (IOException) { /* best-effort cleanup */ }
+        }
+
+        var multipartPath = Path.Combine(bucketPath, MultipartUploadsDirectoryName);
+        if (Directory.Exists(multipartPath)) {
+            try { Directory.Delete(multipartPath, recursive: true); }
+            catch (IOException) { /* best-effort cleanup */ }
+        }
     }
 
     private static string NormalizeKey(string? key)
@@ -2724,7 +3983,21 @@ internal sealed class DiskStorageService(
 
     private static bool ShouldPersistBucketMetadata(DiskBucketMetadata metadata)
     {
-        return metadata.VersioningStatus != BucketVersioningStatus.Disabled || HasBucketCorsConfiguration(metadata);
+        return metadata.VersioningStatus != BucketVersioningStatus.Disabled
+            || HasBucketCorsConfiguration(metadata)
+            || metadata.TaggingConfiguration is not null
+            || metadata.LoggingConfiguration is not null
+            || metadata.WebsiteConfiguration is not null
+            || metadata.RequestPaymentConfiguration is not null
+            || metadata.AccelerateConfiguration is not null
+            || metadata.LifecycleConfiguration is not null
+            || metadata.ReplicationConfiguration is not null
+            || metadata.NotificationConfiguration is not null
+            || metadata.ObjectLockConfiguration is not null
+            || metadata.AnalyticsConfigurations is { Count: > 0 }
+            || metadata.MetricsConfigurations is { Count: > 0 }
+            || metadata.InventoryConfigurations is { Count: > 0 }
+            || metadata.IntelligentTieringConfigurations is { Count: > 0 };
     }
 
     private static BucketCorsConfiguration ToBucketCorsConfiguration(string bucketName, DiskBucketCorsConfiguration configuration)
@@ -2785,6 +4058,521 @@ internal sealed class DiskStorageService(
             BucketCorsMethod.Delete => "DELETE",
             BucketCorsMethod.Head => "HEAD",
             _ => throw new ArgumentOutOfRangeException(nameof(method), method, "Unsupported CORS method.")
+        };
+    }
+
+    private async ValueTask PersistBucketMetadataAsync(string bucketPath, DiskBucketMetadata metadata, CancellationToken cancellationToken)
+    {
+        if (!ShouldPersistBucketMetadata(metadata)) {
+            DeleteBucketMetadata(bucketPath);
+        }
+        else {
+            await WriteBucketMetadataAsync(bucketPath, metadata, cancellationToken);
+        }
+    }
+
+    private StorageError ConfigurationNotFound(StorageErrorCode code, string bucketName, string configName)
+    {
+        return new StorageError
+        {
+            Code = code,
+            Message = $"Bucket '{bucketName}' does not have a {configName} configuration.",
+            BucketName = bucketName,
+            ProviderName = Name,
+            SuggestedHttpStatusCode = 404
+        };
+    }
+
+    // --- Website mapping ---
+
+    private static BucketWebsiteConfiguration ToDomainWebsiteConfiguration(string bucketName, DiskBucketWebsiteConfiguration disk)
+    {
+        return new BucketWebsiteConfiguration
+        {
+            BucketName = bucketName,
+            IndexDocumentSuffix = disk.IndexDocumentSuffix,
+            ErrorDocumentKey = disk.ErrorDocumentKey,
+            RedirectAllRequestsTo = disk.RedirectAllRequestsTo is { } r
+                ? new BucketWebsiteRedirectAllRequestsTo { HostName = r.HostName, Protocol = r.Protocol }
+                : null,
+            RoutingRules = disk.RoutingRules.Select(static rule => new BucketWebsiteRoutingRule
+            {
+                Condition = rule.Condition is { } c
+                    ? new BucketWebsiteRoutingRuleCondition { KeyPrefixEquals = c.KeyPrefixEquals, HttpErrorCodeReturnedEquals = c.HttpErrorCodeReturnedEquals }
+                    : null,
+                Redirect = new BucketWebsiteRoutingRuleRedirect
+                {
+                    HostName = rule.Redirect.HostName,
+                    Protocol = rule.Redirect.Protocol,
+                    ReplaceKeyPrefixWith = rule.Redirect.ReplaceKeyPrefixWith,
+                    ReplaceKeyWith = rule.Redirect.ReplaceKeyWith,
+                    HttpRedirectCode = rule.Redirect.HttpRedirectCode
+                }
+            }).ToArray()
+        };
+    }
+
+    private static DiskBucketWebsiteConfiguration ToDiskWebsiteConfiguration(PutBucketWebsiteRequest request)
+    {
+        return new DiskBucketWebsiteConfiguration
+        {
+            IndexDocumentSuffix = request.IndexDocumentSuffix,
+            ErrorDocumentKey = request.ErrorDocumentKey,
+            RedirectAllRequestsTo = request.RedirectAllRequestsTo is { } r
+                ? new DiskBucketWebsiteRedirectAllRequestsTo { HostName = r.HostName, Protocol = r.Protocol }
+                : null,
+            RoutingRules = request.RoutingRules.Select(static rule => new DiskBucketWebsiteRoutingRule
+            {
+                Condition = rule.Condition is { } c
+                    ? new DiskBucketWebsiteRoutingRuleCondition { KeyPrefixEquals = c.KeyPrefixEquals, HttpErrorCodeReturnedEquals = c.HttpErrorCodeReturnedEquals }
+                    : null,
+                Redirect = new DiskBucketWebsiteRoutingRuleRedirect
+                {
+                    HostName = rule.Redirect.HostName,
+                    Protocol = rule.Redirect.Protocol,
+                    ReplaceKeyPrefixWith = rule.Redirect.ReplaceKeyPrefixWith,
+                    ReplaceKeyWith = rule.Redirect.ReplaceKeyWith,
+                    HttpRedirectCode = rule.Redirect.HttpRedirectCode
+                }
+            }).ToArray()
+        };
+    }
+
+    // --- Lifecycle mapping ---
+
+    private static BucketLifecycleConfiguration ToDomainLifecycleConfiguration(string bucketName, DiskBucketLifecycleConfiguration disk)
+    {
+        return new BucketLifecycleConfiguration
+        {
+            BucketName = bucketName,
+            Rules = disk.Rules.Select(static rule => new BucketLifecycleRule
+            {
+                Id = rule.Id,
+                FilterPrefix = rule.FilterPrefix,
+                FilterTags = rule.FilterTags is not null ? new Dictionary<string, string>(rule.FilterTags, StringComparer.Ordinal) : null,
+                Status = Enum.Parse<BucketLifecycleRuleStatus>(rule.Status, ignoreCase: true),
+                ExpirationDays = rule.ExpirationDays,
+                ExpirationDate = rule.ExpirationDate,
+                ExpiredObjectDeleteMarker = rule.ExpiredObjectDeleteMarker,
+                NoncurrentVersionExpirationDays = rule.NoncurrentVersionExpirationDays,
+                AbortIncompleteMultipartUploadDaysAfterInitiation = rule.AbortIncompleteMultipartUploadDaysAfterInitiation,
+                Transitions = rule.Transitions.Select(static t => new BucketLifecycleTransition
+                {
+                    Days = t.Days,
+                    Date = t.Date,
+                    StorageClass = t.StorageClass
+                }).ToArray(),
+                NoncurrentVersionTransitions = rule.NoncurrentVersionTransitions.Select(static t => new BucketLifecycleNoncurrentVersionTransition
+                {
+                    NoncurrentDays = t.NoncurrentDays,
+                    StorageClass = t.StorageClass
+                }).ToArray()
+            }).ToArray()
+        };
+    }
+
+    private static DiskBucketLifecycleConfiguration ToDiskLifecycleConfiguration(PutBucketLifecycleRequest request)
+    {
+        return new DiskBucketLifecycleConfiguration
+        {
+            Rules = request.Rules.Select(static rule => new DiskBucketLifecycleRule
+            {
+                Id = rule.Id,
+                FilterPrefix = rule.FilterPrefix,
+                FilterTags = rule.FilterTags is not null ? new Dictionary<string, string>(rule.FilterTags, StringComparer.Ordinal) : null,
+                Status = rule.Status.ToString(),
+                ExpirationDays = rule.ExpirationDays,
+                ExpirationDate = rule.ExpirationDate,
+                ExpiredObjectDeleteMarker = rule.ExpiredObjectDeleteMarker,
+                NoncurrentVersionExpirationDays = rule.NoncurrentVersionExpirationDays,
+                AbortIncompleteMultipartUploadDaysAfterInitiation = rule.AbortIncompleteMultipartUploadDaysAfterInitiation,
+                Transitions = rule.Transitions.Select(static t => new DiskBucketLifecycleTransition
+                {
+                    Days = t.Days,
+                    Date = t.Date,
+                    StorageClass = t.StorageClass
+                }).ToArray(),
+                NoncurrentVersionTransitions = rule.NoncurrentVersionTransitions.Select(static t => new DiskBucketLifecycleNoncurrentVersionTransition
+                {
+                    NoncurrentDays = t.NoncurrentDays,
+                    StorageClass = t.StorageClass
+                }).ToArray()
+            }).ToArray()
+        };
+    }
+
+    // --- Replication mapping ---
+
+    private static BucketReplicationConfiguration ToDomainReplicationConfiguration(string bucketName, DiskBucketReplicationConfiguration disk)
+    {
+        return new BucketReplicationConfiguration
+        {
+            BucketName = bucketName,
+            Role = disk.Role,
+            Rules = disk.Rules.Select(static rule => new BucketReplicationRule
+            {
+                Id = rule.Id,
+                Status = Enum.Parse<BucketReplicationRuleStatus>(rule.Status, ignoreCase: true),
+                FilterPrefix = rule.FilterPrefix,
+                Destination = new BucketReplicationDestination
+                {
+                    Bucket = rule.Destination.Bucket,
+                    StorageClass = rule.Destination.StorageClass,
+                    Account = rule.Destination.Account
+                },
+                Priority = rule.Priority,
+                DeleteMarkerReplication = rule.DeleteMarkerReplication
+            }).ToArray()
+        };
+    }
+
+    private static DiskBucketReplicationConfiguration ToDiskReplicationConfiguration(PutBucketReplicationRequest request)
+    {
+        return new DiskBucketReplicationConfiguration
+        {
+            Role = request.Role,
+            Rules = request.Rules.Select(static rule => new DiskBucketReplicationRule
+            {
+                Id = rule.Id,
+                Status = rule.Status.ToString(),
+                FilterPrefix = rule.FilterPrefix,
+                Destination = new DiskBucketReplicationDestination
+                {
+                    Bucket = rule.Destination.Bucket,
+                    StorageClass = rule.Destination.StorageClass,
+                    Account = rule.Destination.Account
+                },
+                Priority = rule.Priority,
+                DeleteMarkerReplication = rule.DeleteMarkerReplication
+            }).ToArray()
+        };
+    }
+
+    // --- Notification mapping ---
+
+    private static BucketNotificationConfiguration ToDomainNotificationConfiguration(string bucketName, DiskBucketNotificationConfiguration disk)
+    {
+        return new BucketNotificationConfiguration
+        {
+            BucketName = bucketName,
+            TopicConfigurations = disk.TopicConfigurations.Select(static t => new BucketNotificationTopicConfiguration
+            {
+                Id = t.Id,
+                TopicArn = t.TopicArn,
+                Events = t.Events.ToArray(),
+                Filter = ToDomainNotificationFilter(t.Filter)
+            }).ToArray(),
+            QueueConfigurations = disk.QueueConfigurations.Select(static q => new BucketNotificationQueueConfiguration
+            {
+                Id = q.Id,
+                QueueArn = q.QueueArn,
+                Events = q.Events.ToArray(),
+                Filter = ToDomainNotificationFilter(q.Filter)
+            }).ToArray(),
+            LambdaFunctionConfigurations = disk.LambdaFunctionConfigurations.Select(static l => new BucketNotificationLambdaConfiguration
+            {
+                Id = l.Id,
+                LambdaFunctionArn = l.LambdaFunctionArn,
+                Events = l.Events.ToArray(),
+                Filter = ToDomainNotificationFilter(l.Filter)
+            }).ToArray()
+        };
+    }
+
+    private static BucketNotificationFilter? ToDomainNotificationFilter(DiskBucketNotificationFilter? disk)
+    {
+        if (disk is null) return null;
+        return new BucketNotificationFilter
+        {
+            KeyFilterRules = disk.KeyFilterRules.Select(static r => new BucketNotificationFilterRule
+            {
+                Name = r.Name,
+                Value = r.Value
+            }).ToArray()
+        };
+    }
+
+    private static DiskBucketNotificationConfiguration ToDiskNotificationConfiguration(PutBucketNotificationConfigurationRequest request)
+    {
+        return new DiskBucketNotificationConfiguration
+        {
+            TopicConfigurations = request.TopicConfigurations.Select(static t => new DiskBucketNotificationTopicConfiguration
+            {
+                Id = t.Id,
+                TopicArn = t.TopicArn,
+                Events = t.Events.ToArray(),
+                Filter = ToDiskNotificationFilter(t.Filter)
+            }).ToArray(),
+            QueueConfigurations = request.QueueConfigurations.Select(static q => new DiskBucketNotificationQueueConfiguration
+            {
+                Id = q.Id,
+                QueueArn = q.QueueArn,
+                Events = q.Events.ToArray(),
+                Filter = ToDiskNotificationFilter(q.Filter)
+            }).ToArray(),
+            LambdaFunctionConfigurations = request.LambdaFunctionConfigurations.Select(static l => new DiskBucketNotificationLambdaConfiguration
+            {
+                Id = l.Id,
+                LambdaFunctionArn = l.LambdaFunctionArn,
+                Events = l.Events.ToArray(),
+                Filter = ToDiskNotificationFilter(l.Filter)
+            }).ToArray()
+        };
+    }
+
+    private static DiskBucketNotificationFilter? ToDiskNotificationFilter(BucketNotificationFilter? domain)
+    {
+        if (domain is null) return null;
+        return new DiskBucketNotificationFilter
+        {
+            KeyFilterRules = domain.KeyFilterRules.Select(static r => new DiskBucketNotificationFilterRule
+            {
+                Name = r.Name,
+                Value = r.Value
+            }).ToArray()
+        };
+    }
+
+    // --- Object Lock mapping ---
+
+    private static ObjectLockConfiguration ToDomainObjectLockConfiguration(string bucketName, DiskBucketObjectLockConfiguration disk)
+    {
+        return new ObjectLockConfiguration
+        {
+            BucketName = bucketName,
+            ObjectLockEnabled = disk.ObjectLockEnabled,
+            DefaultRetention = disk.DefaultRetention is { } dr
+                ? new ObjectLockDefaultRetention
+                {
+                    Mode = Enum.Parse<ObjectRetentionMode>(dr.Mode, ignoreCase: true),
+                    Days = dr.Days,
+                    Years = dr.Years
+                }
+                : null
+        };
+    }
+
+    private static DiskBucketObjectLockConfiguration ToDiskObjectLockConfiguration(PutObjectLockConfigurationRequest request)
+    {
+        return new DiskBucketObjectLockConfiguration
+        {
+            ObjectLockEnabled = request.ObjectLockEnabled,
+            DefaultRetention = request.DefaultRetention is { } dr
+                ? new DiskObjectLockDefaultRetention
+                {
+                    Mode = dr.Mode.ToString(),
+                    Days = dr.Days,
+                    Years = dr.Years
+                }
+                : null
+        };
+    }
+
+    // --- Analytics mapping ---
+
+    private static BucketAnalyticsConfiguration ToDomainAnalyticsConfiguration(string bucketName, DiskBucketAnalyticsConfiguration disk)
+    {
+        return new BucketAnalyticsConfiguration
+        {
+            BucketName = bucketName,
+            Id = disk.Id,
+            FilterPrefix = disk.FilterPrefix,
+            FilterTags = disk.FilterTags is not null ? new Dictionary<string, string>(disk.FilterTags, StringComparer.Ordinal) : null,
+            StorageClassAnalysis = disk.StorageClassAnalysis is { } sca
+                ? new BucketAnalyticsStorageClassAnalysis
+                {
+                    DataExport = sca.DataExport is { } de
+                        ? new BucketAnalyticsDataExport
+                        {
+                            OutputSchemaVersion = de.OutputSchemaVersion,
+                            Destination = de.Destination is { } dest
+                                ? new BucketAnalyticsS3BucketDestination
+                                {
+                                    Format = dest.Format,
+                                    BucketAccountId = dest.BucketAccountId,
+                                    Bucket = dest.Bucket,
+                                    Prefix = dest.Prefix
+                                }
+                                : null
+                        }
+                        : null
+                }
+                : null
+        };
+    }
+
+    private static DiskBucketAnalyticsConfiguration ToDiskAnalyticsConfiguration(PutBucketAnalyticsConfigurationRequest request)
+    {
+        return new DiskBucketAnalyticsConfiguration
+        {
+            Id = request.Id,
+            FilterPrefix = request.FilterPrefix,
+            FilterTags = request.FilterTags is not null ? new Dictionary<string, string>(request.FilterTags, StringComparer.Ordinal) : null,
+            StorageClassAnalysis = request.StorageClassAnalysis is { } sca
+                ? new DiskBucketAnalyticsStorageClassAnalysis
+                {
+                    DataExport = sca.DataExport is { } de
+                        ? new DiskBucketAnalyticsDataExport
+                        {
+                            OutputSchemaVersion = de.OutputSchemaVersion,
+                            Destination = de.Destination is { } dest
+                                ? new DiskBucketAnalyticsS3BucketDestination
+                                {
+                                    Format = dest.Format,
+                                    BucketAccountId = dest.BucketAccountId,
+                                    Bucket = dest.Bucket,
+                                    Prefix = dest.Prefix
+                                }
+                                : null
+                        }
+                        : null
+                }
+                : null
+        };
+    }
+
+    // --- Metrics mapping ---
+
+    private static BucketMetricsConfiguration ToDomainMetricsConfiguration(string bucketName, DiskBucketMetricsConfiguration disk)
+    {
+        return new BucketMetricsConfiguration
+        {
+            BucketName = bucketName,
+            Id = disk.Id,
+            Filter = disk.Filter is { } f
+                ? new BucketMetricsFilter
+                {
+                    Prefix = f.Prefix,
+                    AccessPointArn = f.AccessPointArn,
+                    Tags = new Dictionary<string, string>(f.Tags, StringComparer.Ordinal)
+                }
+                : null
+        };
+    }
+
+    private static DiskBucketMetricsConfiguration ToDiskMetricsConfiguration(PutBucketMetricsConfigurationRequest request)
+    {
+        return new DiskBucketMetricsConfiguration
+        {
+            Id = request.Id,
+            Filter = request.Filter is { } f
+                ? new DiskBucketMetricsFilter
+                {
+                    Prefix = f.Prefix,
+                    AccessPointArn = f.AccessPointArn,
+                    Tags = new Dictionary<string, string>(f.Tags, StringComparer.Ordinal)
+                }
+                : null
+        };
+    }
+
+    // --- Inventory mapping ---
+
+    private static BucketInventoryConfiguration ToDomainInventoryConfiguration(string bucketName, DiskBucketInventoryConfiguration disk)
+    {
+        return new BucketInventoryConfiguration
+        {
+            BucketName = bucketName,
+            Id = disk.Id,
+            IsEnabled = disk.IsEnabled,
+            Destination = disk.Destination is { } d
+                ? new BucketInventoryDestination
+                {
+                    S3BucketDestination = d.S3BucketDestination is { } s
+                        ? new BucketInventoryS3BucketDestination
+                        {
+                            Format = s.Format,
+                            AccountId = s.AccountId,
+                            Bucket = s.Bucket,
+                            Prefix = s.Prefix
+                        }
+                        : null
+                }
+                : null,
+            Schedule = disk.Schedule is { } sch
+                ? new BucketInventorySchedule { Frequency = sch.Frequency }
+                : null,
+            Filter = disk.Filter is { } fi
+                ? new BucketInventoryFilter { Prefix = fi.Prefix }
+                : null,
+            IncludedObjectVersions = disk.IncludedObjectVersions,
+            OptionalFields = disk.OptionalFields.ToArray()
+        };
+    }
+
+    private static DiskBucketInventoryConfiguration ToDiskInventoryConfiguration(PutBucketInventoryConfigurationRequest request)
+    {
+        return new DiskBucketInventoryConfiguration
+        {
+            Id = request.Id,
+            IsEnabled = request.IsEnabled,
+            Destination = request.Destination is { } d
+                ? new DiskBucketInventoryDestination
+                {
+                    S3BucketDestination = d.S3BucketDestination is { } s
+                        ? new DiskBucketInventoryS3BucketDestination
+                        {
+                            Format = s.Format,
+                            AccountId = s.AccountId,
+                            Bucket = s.Bucket,
+                            Prefix = s.Prefix
+                        }
+                        : null
+                }
+                : null,
+            Schedule = request.Schedule is { } sch
+                ? new DiskBucketInventorySchedule { Frequency = sch.Frequency }
+                : null,
+            Filter = request.Filter is { } fi
+                ? new DiskBucketInventoryFilter { Prefix = fi.Prefix }
+                : null,
+            IncludedObjectVersions = request.IncludedObjectVersions,
+            OptionalFields = request.OptionalFields.ToArray()
+        };
+    }
+
+    // --- Intelligent-Tiering mapping ---
+
+    private static BucketIntelligentTieringConfiguration ToDomainIntelligentTieringConfiguration(string bucketName, DiskBucketIntelligentTieringConfiguration disk)
+    {
+        return new BucketIntelligentTieringConfiguration
+        {
+            BucketName = bucketName,
+            Id = disk.Id,
+            Status = disk.Status,
+            Filter = disk.Filter is { } f
+                ? new BucketIntelligentTieringFilter
+                {
+                    Prefix = f.Prefix,
+                    Tags = new Dictionary<string, string>(f.Tags, StringComparer.Ordinal)
+                }
+                : null,
+            Tierings = disk.Tierings.Select(static t => new BucketIntelligentTiering
+            {
+                AccessTier = t.AccessTier,
+                Days = t.Days
+            }).ToArray()
+        };
+    }
+
+    private static DiskBucketIntelligentTieringConfiguration ToDiskIntelligentTieringConfiguration(PutBucketIntelligentTieringConfigurationRequest request)
+    {
+        return new DiskBucketIntelligentTieringConfiguration
+        {
+            Id = request.Id,
+            Status = request.Status,
+            Filter = request.Filter is { } f
+                ? new DiskBucketIntelligentTieringFilter
+                {
+                    Prefix = f.Prefix,
+                    Tags = new Dictionary<string, string>(f.Tags, StringComparer.Ordinal)
+                }
+                : null,
+            Tierings = request.Tierings.Select(static t => new DiskBucketIntelligentTiering
+            {
+                AccessTier = t.AccessTier,
+                Days = t.Days
+            }).ToArray()
         };
     }
 
@@ -3078,6 +4866,11 @@ internal sealed class DiskStorageService(
         }
 
         foreach (var requestedChecksum in requestedChecksums) {
+            // CRC64NVME is accepted as pass-through (cannot be server-validated)
+            if (string.Equals(requestedChecksum.Key, Crc64NvmeChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)) {
+                continue;
+            }
+
             if (!string.Equals(requestedChecksum.Key, Md5ChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)
                 && !string.Equals(requestedChecksum.Key, Sha256ChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)
                 && !string.Equals(requestedChecksum.Key, Sha1ChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)
@@ -3135,6 +4928,12 @@ internal sealed class DiskStorageService(
         if (string.Equals(value, Crc32cChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)
             || string.Equals(value, "CRC32C", StringComparison.OrdinalIgnoreCase)) {
             checksumAlgorithm = Crc32cChecksumAlgorithm;
+            return true;
+        }
+
+        if (string.Equals(value, Crc64NvmeChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(value, "CRC64NVME", StringComparison.OrdinalIgnoreCase)) {
+            checksumAlgorithm = Crc64NvmeChecksumAlgorithm;
             return true;
         }
 
@@ -3299,6 +5098,72 @@ internal sealed class DiskStorageService(
         }
 
         return $"{Convert.ToBase64String(checksum.GetHashBytes())}-{partChecksums.Count}";
+    }
+
+    private async ValueTask<StorageError?> EvaluateWritePreconditionsAsync(
+        string bucketName, string key, string objectPath,
+        string? ifMatchETag, string? ifNoneMatchETag, bool overwriteIfExists,
+        CancellationToken cancellationToken)
+    {
+        var objectExists = File.Exists(objectPath);
+
+        // If-None-Match: * prevents overwrite (S3 conditional writes)
+        if (!string.IsNullOrWhiteSpace(ifNoneMatchETag)
+            && ifNoneMatchETag.Trim() == "*"
+            && objectExists) {
+            return new StorageError
+            {
+                Code = StorageErrorCode.PreconditionFailed,
+                Message = $"Object '{key}' already exists in bucket '{bucketName}' (If-None-Match: *).",
+                BucketName = bucketName,
+                ObjectKey = key,
+                ProviderName = options.ProviderName,
+                SuggestedHttpStatusCode = 412
+            };
+        }
+
+        // Legacy OverwriteIfExists flag
+        if (!overwriteIfExists && objectExists) {
+            return new StorageError
+            {
+                Code = StorageErrorCode.PreconditionFailed,
+                Message = $"Object '{key}' already exists in bucket '{bucketName}'.",
+                BucketName = bucketName,
+                ObjectKey = key,
+                ProviderName = options.ProviderName,
+                SuggestedHttpStatusCode = 412
+            };
+        }
+
+        // If-Match: <etag> for optimistic concurrency
+        if (!string.IsNullOrWhiteSpace(ifMatchETag)) {
+            if (!objectExists) {
+                return new StorageError
+                {
+                    Code = StorageErrorCode.PreconditionFailed,
+                    Message = $"Object '{key}' does not exist in bucket '{bucketName}' (If-Match precondition).",
+                    BucketName = bucketName,
+                    ObjectKey = key,
+                    ProviderName = options.ProviderName,
+                    SuggestedHttpStatusCode = 412
+                };
+            }
+
+            var currentInfo = await CreateObjectInfoAsync(bucketName, objectPath, cancellationToken);
+            if (!MatchesIfMatch(ifMatchETag, currentInfo.ETag)) {
+                return new StorageError
+                {
+                    Code = StorageErrorCode.PreconditionFailed,
+                    Message = $"Object '{key}' ETag does not match the supplied If-Match precondition.",
+                    BucketName = bucketName,
+                    ObjectKey = key,
+                    ProviderName = options.ProviderName,
+                    SuggestedHttpStatusCode = 412
+                };
+            }
+        }
+
+        return null;
     }
 
     private static StorageError? EvaluatePreconditions(GetObjectRequest request, ObjectInfo objectInfo)
