@@ -74,6 +74,7 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
     private const string AwsTrailerHeaderName = "x-amz-trailer";
     private const string AwsTrailerSignatureHeaderName = "x-amz-trailer-signature";
     private const string StreamingAws4HmacSha256PayloadTrailer = "STREAMING-AWS4-HMAC-SHA256-PAYLOAD-TRAILER";
+    private const string StreamingAwsEcdsaSha256PayloadTrailer = "STREAMING-AWS4-ECDSA-P256-SHA256-PAYLOAD-TRAILER";
     private const string StreamingUnsignedPayloadTrailer = "STREAMING-UNSIGNED-PAYLOAD-TRAILER";
     private const string ChecksumTypeHeaderName = "x-amz-checksum-type";
     private const string DeleteMarkerHeaderName = "x-amz-delete-marker";
@@ -7528,7 +7529,7 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
                 request.HttpContext,
                 StatusCodes.Status400BadRequest,
                 "InvalidRequest",
-                $"The aws-chunked request body must include the '{AwsTrailerSignatureHeaderName}' trailer header when '{StreamingAws4HmacSha256PayloadTrailer}' is used.",
+                $"The aws-chunked request body must include the '{AwsTrailerSignatureHeaderName}' trailer header when a signed streaming payload hash is used.",
                 resource: null);
             return false;
         }
@@ -7595,7 +7596,7 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
                 request.HttpContext,
                 StatusCodes.Status400BadRequest,
                 "InvalidRequest",
-                $"The aws-chunked request body must include the '{AwsTrailerSignatureHeaderName}' trailer header when '{StreamingAws4HmacSha256PayloadTrailer}' is used.",
+                $"The aws-chunked request body must include the '{AwsTrailerSignatureHeaderName}' trailer header when a signed streaming payload hash is used.",
                 resource: null);
             return false;
         }
@@ -7618,15 +7619,33 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
 
         var trailerPayload = S3SigV4Signer.BuildCanonicalStreamingTrailerHeaders(
             preparedBody.TrailerHeaderEntries ?? Array.Empty<KeyValuePair<string, string>>());
-        var stringToSign = S3SigV4Signer.BuildStreamingTrailerStringToSign(
-            signingContext.SignedAtUtc,
-            signingContext.CredentialScope,
-            finalChunkSignature,
-            S3SigV4Signer.ComputeSha256Hex(trailerPayload));
-        var expectedSignature = S3SigV4Signer.ComputeSignature(signingContext.SecretAccessKey, signingContext.CredentialScope, stringToSign);
-        if (FixedTimeEqualsOrdinalIgnoreCase(expectedSignature, trailerSignature.Trim())) {
-            errorResult = null;
-            return true;
+
+        if (signingContext.IsSigV4a) {
+            var sigV4aCredentialScope = S3SigV4aSigner.BuildCredentialScopeString(
+                signingContext.CredentialScope.DateStamp,
+                signingContext.CredentialScope.Service);
+            var sigV4aStringToSign = S3SigV4aSigner.BuildStreamingTrailerStringToSign(
+                signingContext.SignedAtUtc,
+                sigV4aCredentialScope,
+                finalChunkSignature,
+                S3SigV4Signer.ComputeSha256Hex(trailerPayload));
+            using var ecdsaKey = S3SigV4aSigner.DeriveEcdsaKey(signingContext.SecretAccessKey, signingContext.AccessKeyId!);
+            if (S3SigV4aSigner.VerifySignature(ecdsaKey, sigV4aStringToSign, trailerSignature.Trim())) {
+                errorResult = null;
+                return true;
+            }
+        }
+        else {
+            var stringToSign = S3SigV4Signer.BuildStreamingTrailerStringToSign(
+                signingContext.SignedAtUtc,
+                signingContext.CredentialScope,
+                finalChunkSignature,
+                S3SigV4Signer.ComputeSha256Hex(trailerPayload));
+            var expectedSignature = S3SigV4Signer.ComputeSignature(signingContext.SecretAccessKey, signingContext.CredentialScope, stringToSign);
+            if (FixedTimeEqualsOrdinalIgnoreCase(expectedSignature, trailerSignature.Trim())) {
+                errorResult = null;
+                return true;
+            }
         }
 
         errorResult = ToErrorResult(
@@ -7749,12 +7768,14 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
     private static bool IsTrailerBackedStreamingPayloadHash(string? payloadHash)
     {
         return string.Equals(payloadHash?.Trim(), StreamingAws4HmacSha256PayloadTrailer, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(payloadHash?.Trim(), StreamingAwsEcdsaSha256PayloadTrailer, StringComparison.OrdinalIgnoreCase)
             || string.Equals(payloadHash?.Trim(), StreamingUnsignedPayloadTrailer, StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool IsSignedTrailerBackedStreamingPayloadHash(string? payloadHash)
     {
-        return string.Equals(payloadHash?.Trim(), StreamingAws4HmacSha256PayloadTrailer, StringComparison.OrdinalIgnoreCase);
+        return string.Equals(payloadHash?.Trim(), StreamingAws4HmacSha256PayloadTrailer, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(payloadHash?.Trim(), StreamingAwsEcdsaSha256PayloadTrailer, StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool IsChecksumHeaderName(string headerName)

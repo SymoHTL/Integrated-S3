@@ -11,6 +11,16 @@ internal sealed class AwsChunkedTrailerSigningContext
     public required DateTimeOffset SignedAtUtc { get; init; }
 
     public required string SecretAccessKey { get; init; }
+
+    /// <summary>
+    /// When true the trailer signature must be verified with ECDSA (SigV4a) instead of HMAC (SigV4).
+    /// </summary>
+    public bool IsSigV4a { get; init; }
+
+    /// <summary>
+    /// The access key ID, required for SigV4a ECDSA key derivation.
+    /// </summary>
+    public string? AccessKeyId { get; init; }
 }
 
 internal static class AwsChunkedTrailerSigningContextStore

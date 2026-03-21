@@ -19,6 +19,8 @@ namespace IntegratedS3.Tests;
 
 public sealed class IntegratedS3SigV4ConformanceTests : IClassFixture<WebUiApplicationFactory>
 {
+    private static readonly XNamespace S3Ns = "http://s3.amazonaws.com/doc/2006-03-01/";
+
     private const string StreamingAws4HmacSha256PayloadTrailer = "STREAMING-AWS4-HMAC-SHA256-PAYLOAD-TRAILER";
     private const string StreamingUnsignedPayloadTrailer = "STREAMING-UNSIGNED-PAYLOAD-TRAILER";
     private readonly WebUiApplicationFactory _factory;
@@ -859,7 +861,7 @@ public sealed class IntegratedS3SigV4ConformanceTests : IClassFixture<WebUiAppli
         var errorDocument = XDocument.Parse(await response.Content.ReadAsStringAsync());
         Assert.Equal("InvalidRequest", GetRequiredElementValue(errorDocument, "Code"));
         Assert.Equal(
-            "The aws-chunked request body must include the 'x-amz-trailer-signature' trailer header when 'STREAMING-AWS4-HMAC-SHA256-PAYLOAD-TRAILER' is used.",
+            "The aws-chunked request body must include the 'x-amz-trailer-signature' trailer header when a signed streaming payload hash is used.",
             GetRequiredElementValue(errorDocument, "Message"));
     }
 
@@ -1010,10 +1012,10 @@ public sealed class IntegratedS3SigV4ConformanceTests : IClassFixture<WebUiAppli
         Assert.Equal("SHA256", GetRequiredElementValue(listPartsDocument, "ChecksumAlgorithm"));
         Assert.Equal("COMPOSITE", GetRequiredElementValue(listPartsDocument, "ChecksumType"));
 
-        var listedPart = Assert.Single(listPartsDocument.Root!.Elements("Part"));
-        Assert.Equal("1", listedPart.Element("PartNumber")?.Value);
-        Assert.Equal(partETag, listedPart.Element("ETag")?.Value);
-        Assert.Equal(checksum, listedPart.Element("ChecksumSHA256")?.Value);
+        var listedPart = Assert.Single(listPartsDocument.Root!.Elements(S3Ns + "Part"));
+        Assert.Equal("1", listedPart.Element(S3Ns + "PartNumber")?.Value);
+        Assert.Equal(partETag, listedPart.Element(S3Ns + "ETag")?.Value);
+        Assert.Equal(checksum, listedPart.Element(S3Ns + "ChecksumSHA256")?.Value);
     }
 
     [Fact]
@@ -1232,10 +1234,10 @@ public sealed class IntegratedS3SigV4ConformanceTests : IClassFixture<WebUiAppli
         Assert.Equal("SHA1", GetRequiredElementValue(listPartsDocument, "ChecksumAlgorithm"));
         Assert.Equal("COMPOSITE", GetRequiredElementValue(listPartsDocument, "ChecksumType"));
 
-        var listedPart = Assert.Single(listPartsDocument.Root!.Elements("Part"));
-        Assert.Equal("1", listedPart.Element("PartNumber")?.Value);
-        Assert.Equal(partETag, listedPart.Element("ETag")?.Value);
-        Assert.Equal(checksum, listedPart.Element("ChecksumSHA1")?.Value);
+        var listedPart = Assert.Single(listPartsDocument.Root!.Elements(S3Ns + "Part"));
+        Assert.Equal("1", listedPart.Element(S3Ns + "PartNumber")?.Value);
+        Assert.Equal(partETag, listedPart.Element(S3Ns + "ETag")?.Value);
+        Assert.Equal(checksum, listedPart.Element(S3Ns + "ChecksumSHA1")?.Value);
     }
 
     [Fact]
@@ -1368,10 +1370,10 @@ public sealed class IntegratedS3SigV4ConformanceTests : IClassFixture<WebUiAppli
         Assert.Equal("CRC32C", GetRequiredElementValue(listPartsDocument, "ChecksumAlgorithm"));
         Assert.Equal("COMPOSITE", GetRequiredElementValue(listPartsDocument, "ChecksumType"));
 
-        var listedPart = Assert.Single(listPartsDocument.Root!.Elements("Part"));
-        Assert.Equal("1", listedPart.Element("PartNumber")?.Value);
-        Assert.Equal(partETag, listedPart.Element("ETag")?.Value);
-        Assert.Equal(checksum, listedPart.Element("ChecksumCRC32C")?.Value);
+        var listedPart = Assert.Single(listPartsDocument.Root!.Elements(S3Ns + "Part"));
+        Assert.Equal("1", listedPart.Element(S3Ns + "PartNumber")?.Value);
+        Assert.Equal(partETag, listedPart.Element(S3Ns + "ETag")?.Value);
+        Assert.Equal(checksum, listedPart.Element(S3Ns + "ChecksumCRC32C")?.Value);
     }
 
     [Fact]
@@ -1507,10 +1509,10 @@ public sealed class IntegratedS3SigV4ConformanceTests : IClassFixture<WebUiAppli
         Assert.Equal("CRC32", GetRequiredElementValue(listPartsDocument, "ChecksumAlgorithm"));
         Assert.Equal("COMPOSITE", GetRequiredElementValue(listPartsDocument, "ChecksumType"));
 
-        var listedPart = Assert.Single(listPartsDocument.Root!.Elements("Part"));
-        Assert.Equal("1", listedPart.Element("PartNumber")?.Value);
-        Assert.Equal(partETag, listedPart.Element("ETag")?.Value);
-        Assert.Equal(checksum, listedPart.Element("ChecksumCRC32")?.Value);
+        var listedPart = Assert.Single(listPartsDocument.Root!.Elements(S3Ns + "Part"));
+        Assert.Equal("1", listedPart.Element(S3Ns + "PartNumber")?.Value);
+        Assert.Equal(partETag, listedPart.Element(S3Ns + "ETag")?.Value);
+        Assert.Equal(checksum, listedPart.Element(S3Ns + "ChecksumCRC32")?.Value);
     }
 
     [Fact]
@@ -1695,6 +1697,55 @@ public sealed class IntegratedS3SigV4ConformanceTests : IClassFixture<WebUiAppli
     }
 
     [Fact]
+    public async Task SigV4HeaderAuthentication_SigV4aAuthorization_WithoutRegionSet_ReturnsXmlError()
+    {
+        const string accessKeyId = "sigv4a-header-access";
+        const string secretAccessKey = "sigv4a-header-secret";
+
+        await using var isolatedClient = await CreateAuthenticatedClientAsync(accessKeyId, secretAccessKey);
+        using var client = isolatedClient.Client;
+
+        using var request = new HttpRequestMessage(HttpMethod.Get, "/integrated-s3/");
+        request.Headers.Host = "localhost";
+        request.Headers.TryAddWithoutValidation("x-amz-date", "20260311T180000Z");
+        request.Headers.TryAddWithoutValidation("x-amz-content-sha256", "UNSIGNED-PAYLOAD");
+        request.Headers.TryAddWithoutValidation(
+            "Authorization",
+            "AWS4-ECDSA-P256-SHA256 Credential=sigv4a-header-access/20260311/s3/aws4_request, SignedHeaders=host;x-amz-content-sha256;x-amz-date, Signature=abcdef1234567890");
+
+        var response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal("application/xml", response.Content.Headers.ContentType?.MediaType);
+        var errorDocument = XDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal("AuthorizationHeaderMalformed", GetRequiredElementValue(errorDocument, "Code"));
+        Assert.Contains("region", GetRequiredElementValue(errorDocument, "Message"), StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task SigV4PresignedQueryAuthentication_SigV4aAlgorithm_ReturnsXmlError()
+    {
+        const string accessKeyId = "sigv4a-presign-access";
+        const string secretAccessKey = "sigv4a-presign-secret";
+
+        await using var isolatedClient = await CreateAuthenticatedClientAsync(accessKeyId, secretAccessKey);
+        using var client = isolatedClient.Client;
+
+        using var request = new HttpRequestMessage(
+            HttpMethod.Get,
+            "/integrated-s3/buckets/sigv4a-bucket/objects/docs/test.txt?X-Amz-Algorithm=AWS4-ECDSA-P256-SHA256&X-Amz-Credential=sigv4a-presign-access%2F20260311%2Fs3%2Faws4_request&X-Amz-Date=20260311T180000Z&X-Amz-Expires=300&X-Amz-SignedHeaders=host&X-Amz-Signature=abcdef1234567890");
+        request.Headers.Host = "localhost";
+
+        var response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal("application/xml", response.Content.Headers.ContentType?.MediaType);
+        var errorDocument = XDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal("AuthorizationQueryParametersError", GetRequiredElementValue(errorDocument, "Code"));
+        Assert.Contains("region", GetRequiredElementValue(errorDocument, "Message"), StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public async Task SigV4PresignedQueryAuthentication_ExpiryBeyondConfiguredMaximum_ReturnsXmlError()
     {
         const string accessKeyId = "sigv4-expiry-limit-access";
@@ -1833,10 +1884,10 @@ public sealed class IntegratedS3SigV4ConformanceTests : IClassFixture<WebUiAppli
 
         Assert.Equal(HttpStatusCode.OK, listVersionsResponse.StatusCode);
         var listVersionsDocument = XDocument.Parse(await listVersionsResponse.Content.ReadAsStringAsync());
-        var deleteMarker = Assert.Single(listVersionsDocument.Root!.Elements("DeleteMarker"));
-        Assert.Equal(deleteMarkerVersionId, deleteMarker.Element("VersionId")?.Value);
+        var deleteMarker = Assert.Single(listVersionsDocument.Root!.Elements(S3Ns + "DeleteMarker"));
+        Assert.Equal(deleteMarkerVersionId, deleteMarker.Element(S3Ns + "VersionId")?.Value);
         var expectedDeleteMarkerLastModified = DateTimeOffset.Parse(
-            deleteMarker.Element("LastModified")!.Value,
+            deleteMarker.Element(S3Ns + "LastModified")!.Value,
             CultureInfo.InvariantCulture).ToString("R", CultureInfo.InvariantCulture);
 
         using var explicitDeleteMarkerGetRequest = CreateSigV4HeaderSignedRequest(
@@ -2146,16 +2197,16 @@ public sealed class IntegratedS3SigV4ConformanceTests : IClassFixture<WebUiAppli
         var listDocument = XDocument.Parse(await listVersionsResponse.Content.ReadAsStringAsync());
         Assert.Equal("ListVersionsResult", listDocument.Root?.Name.LocalName);
 
-        var versions = listDocument.Root?.Elements("Version").ToList();
+        var versions = listDocument.Root?.Elements(S3Ns + "Version").ToList();
         Assert.NotNull(versions);
         Assert.NotEmpty(versions);
         // Should have at least 2 versions of file-a
-        var fileAVersions = versions.Where(v => v.Element("Key")?.Value == objectKey1).ToList();
+        var fileAVersions = versions.Where(v => v.Element(S3Ns + "Key")?.Value == objectKey1).ToList();
         Assert.True(fileAVersions.Count >= 2);
 
         // Verify version IDs are present
         foreach (var version in fileAVersions) {
-            Assert.NotNull(version.Element("VersionId")?.Value);
+            Assert.NotNull(version.Element(S3Ns + "VersionId")?.Value);
         }
     }
 
@@ -2232,10 +2283,10 @@ public sealed class IntegratedS3SigV4ConformanceTests : IClassFixture<WebUiAppli
         Assert.Equal("true", GetRequiredElementValue(firstPageDocument, "IsTruncated"));
         Assert.Equal(primaryKey, GetRequiredElementValue(firstPageDocument, "NextKeyMarker"));
         Assert.Equal(deleteMarkerVersionId, GetRequiredElementValue(firstPageDocument, "NextVersionIdMarker"));
-        Assert.Empty(firstPageDocument.Root!.Elements("Version"));
-        var firstPageDeleteMarker = Assert.Single(firstPageDocument.Root!.Elements("DeleteMarker"));
-        Assert.Equal(primaryKey, firstPageDeleteMarker.Element("Key")?.Value);
-        Assert.Equal(deleteMarkerVersionId, firstPageDeleteMarker.Element("VersionId")?.Value);
+        Assert.Empty(firstPageDocument.Root!.Elements(S3Ns + "Version"));
+        var firstPageDeleteMarker = Assert.Single(firstPageDocument.Root!.Elements(S3Ns + "DeleteMarker"));
+        Assert.Equal(primaryKey, firstPageDeleteMarker.Element(S3Ns + "Key")?.Value);
+        Assert.Equal(deleteMarkerVersionId, firstPageDeleteMarker.Element(S3Ns + "VersionId")?.Value);
 
         using var secondPageRequest = CreateSigV4PresignedRequest(
             HttpMethod.Get,
@@ -2251,25 +2302,25 @@ public sealed class IntegratedS3SigV4ConformanceTests : IClassFixture<WebUiAppli
         Assert.Equal(primaryKey, GetRequiredElementValue(secondPageDocument, "KeyMarker"));
         Assert.Equal(deleteMarkerVersionId, GetRequiredElementValue(secondPageDocument, "VersionIdMarker"));
         Assert.Equal("false", GetRequiredElementValue(secondPageDocument, "IsTruncated"));
-        Assert.Empty(secondPageDocument.Root!.Elements("DeleteMarker"));
+        Assert.Empty(secondPageDocument.Root!.Elements(S3Ns + "DeleteMarker"));
 
-        var secondPageVersions = secondPageDocument.Root!.Elements("Version").ToArray();
+        var secondPageVersions = secondPageDocument.Root!.Elements(S3Ns + "Version").ToArray();
         Assert.Collection(
             secondPageVersions,
             version => {
-                Assert.Equal(primaryKey, version.Element("Key")?.Value);
-                Assert.Equal(v2VersionId, version.Element("VersionId")?.Value);
-                Assert.Equal("false", version.Element("IsLatest")?.Value);
+                Assert.Equal(primaryKey, version.Element(S3Ns + "Key")?.Value);
+                Assert.Equal(v2VersionId, version.Element(S3Ns + "VersionId")?.Value);
+                Assert.Equal("false", version.Element(S3Ns + "IsLatest")?.Value);
             },
             version => {
-                Assert.Equal(primaryKey, version.Element("Key")?.Value);
-                Assert.Equal(v1VersionId, version.Element("VersionId")?.Value);
-                Assert.Equal("false", version.Element("IsLatest")?.Value);
+                Assert.Equal(primaryKey, version.Element(S3Ns + "Key")?.Value);
+                Assert.Equal(v1VersionId, version.Element(S3Ns + "VersionId")?.Value);
+                Assert.Equal("false", version.Element(S3Ns + "IsLatest")?.Value);
             },
             version => {
-                Assert.Equal(secondaryKey, version.Element("Key")?.Value);
-                Assert.Equal(secondaryVersionId, version.Element("VersionId")?.Value);
-                Assert.Equal("true", version.Element("IsLatest")?.Value);
+                Assert.Equal(secondaryKey, version.Element(S3Ns + "Key")?.Value);
+                Assert.Equal(secondaryVersionId, version.Element(S3Ns + "VersionId")?.Value);
+                Assert.Equal("true", version.Element(S3Ns + "IsLatest")?.Value);
             });
     }
 
@@ -2421,10 +2472,10 @@ public sealed class IntegratedS3SigV4ConformanceTests : IClassFixture<WebUiAppli
         Assert.Equal(sdkChecksumAlgorithm, GetRequiredElementValue(listPartsDocument, "ChecksumAlgorithm"));
         Assert.Equal("COMPOSITE", GetRequiredElementValue(listPartsDocument, "ChecksumType"));
 
-        var listedPart = Assert.Single(listPartsDocument.Root!.Elements("Part"));
-        Assert.Equal("1", listedPart.Element("PartNumber")?.Value);
-        Assert.Equal(partETag, listedPart.Element("ETag")?.Value);
-        Assert.Equal(checksum, listedPart.Element(multipartChecksumElementName)?.Value);
+        var listedPart = Assert.Single(listPartsDocument.Root!.Elements(S3Ns + "Part"));
+        Assert.Equal("1", listedPart.Element(S3Ns + "PartNumber")?.Value);
+        Assert.Equal(partETag, listedPart.Element(S3Ns + "ETag")?.Value);
+        Assert.Equal(checksum, listedPart.Element(S3Ns + multipartChecksumElementName)?.Value);
     }
 
     private async Task RunSignedAwsChunkedTrailerUploadPartBadDigestAsync(
@@ -2757,7 +2808,7 @@ public sealed class IntegratedS3SigV4ConformanceTests : IClassFixture<WebUiAppli
 
     private static string GetRequiredElementValue(XDocument document, string elementName)
     {
-        return document.Root?.Element(elementName)?.Value
+        return document.Root?.Element(S3Ns + elementName)?.Value
             ?? throw new Xunit.Sdk.XunitException($"Missing XML element '{elementName}'.");
     }
 

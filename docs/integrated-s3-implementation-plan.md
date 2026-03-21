@@ -48,11 +48,16 @@ A large implementation wave landed 13 bucket configuration subresource families,
 - ACL Expansion (`public-read-write`, `authenticated-read`, full XML grants)
 - Bucket Policy Expansion (`Deny`, conditions, CIDR matching, wildcards)
 - Multipart Replication support
+- `GetObjectAttributes` (`GET ?attributes`) — full stack: Abstractions request/response types, `StorageOperationType.GetObjectAttributes`, `IStorageBackend`/`IStorageService` contracts, Core orchestration + auth, Disk provider (delegates to HeadObject and filters by requested attributes), S3 provider (AWS SDK `GetObjectAttributesAsync`), Protocol XML writer (`GetObjectAttributesResponse`), HTTP endpoint with `x-amz-object-attributes` header parsing, S3ActionMapping + IsObjectLevelOperation, test fakes
 
 **Infrastructure:**
-- SigV4a Detection (explicit rejection with clear error message)
+- SigV4a Full Support (ECDSA P-256 header/presigned authentication, streaming trailer verification)
+- HeadBucket `x-amz-bucket-region` response header (best-effort from GetBucketLocation)
+- SSE `BucketKeyEnabled` fully supported on PutBucketDefaultEncryption (previously rejected with 501)
+- List*Configurations for ID-based configs: `ListBucketAnalyticsConfigurations`, `ListBucketMetricsConfigurations`, `ListBucketInventoryConfigurations`, `ListBucketIntelligentTieringConfigurations`
+- Bucket Policy `Deny` effect accepted at endpoint layer (full evaluation in authorization)
 
-**Remaining blocked:** Full SigV4a support — requires ECDSA P-256 signing/verification, region-set/MRAP semantics. Currently returns a clear error message when SigV4a auth is detected.
+**Remaining blocked:** None in the current scope. SigV4a is now fully supported for header-based, presigned-query, and streaming trailer verification flows.
 
 ### Implemented snapshot (refresh intentionally, not every feature PR)
 
@@ -625,7 +630,7 @@ The project now has enough implemented surface area that the capability slices c
 | SelectObjectContent | implemented (S3 only) | unsupported | implemented | yes | `POST ?select` S3 passthrough for SQL-based object content selection; disk returns explicit unsupported error |
 | RestoreObject | implemented (S3 only) | unsupported | implemented | yes | `POST ?restore` S3 passthrough for Glacier/archive restoration; disk returns explicit unsupported error |
 | multipart replication | implemented | n/a | implemented | yes | multipart operations now participate in write-through replication alongside bucket and object operations |
-| SigV4a detection | implemented | n/a | implemented | yes | `AWS4-ECDSA-P256-SHA256` requests now explicitly rejected with clear S3-style XML error instead of falling through as generic auth failures; full SigV4a support remains blocked on ECDSA P-256 signing/verification and region-set/MRAP semantics |
+| SigV4a authentication | implemented | n/a | implemented | yes | `AWS4-ECDSA-P256-SHA256` requests are now fully supported for header-based and presigned-query authentication with ECDSA P-256 signing/verification, region-set validation (wildcard and specific), and streaming `aws-chunked` trailer signature verification; credential scope uses the SigV4a 3-part format (`dateStamp/service/aws4_request`); `integrateds3:auth-type` claim is `sigv4a` for SigV4a-authenticated principals |
 
 This matrix should now be treated as the authoritative cross-track capability summary for the current vertical slice. Day-to-day backlog movement should live in `Remaining Implementation Work by Parallel Track` so contributors can update one matrix row and one owning subsection instead of editing repeated status prose across the document.
 
@@ -1390,7 +1395,7 @@ This section is the execution board for the remaining implementation backlog. As
 - focused AWS SDK compatibility coverage now proves the official AWS .NET SDK can exercise signed-trailer SHA1 `PutObject` / `UploadPart` requests against the current HTTP harness, and records the concrete broader signed-trailer limiter: algorithms beyond SHA1 (notably CRC32C) currently throw during trailer generation unless `AWSSDK.Extensions.CrtIntegration` is referenced; unsigned trailer mode still needs `DisablePayloadSigning=true`, which the SDK rejects against the current HTTP-only harness because it requires HTTPS, and multipart CRC32 initiate also still returns `501` there, so broader official SDK trailer coverage remains blocked until those prerequisites are addressed
 - continued versioning/tagging/delete-marker hardening now makes simple deletes idempotent for missing keys, creates current delete markers for missing keys in versioned buckets, emits `x-amz-tagging-count` on successful current and historical object reads, validates documented object-tag limits and S3-compatible character rules as `InvalidTag`, decodes `x-amz-tagging` with strict UTF-8 while preserving literal `+`, returns `NoSuchVersion` for explicit missing-version entries inside `POST ?delete`, now fully honors batch-delete `Quiet=true` while retaining `<Error>` entries, preserves delete-marker response fidelity so explicit delete-marker-version removals return both `VersionId` and `DeleteMarkerVersionId`, and also normalizes explicit missing single-object `versionId` reads (`GET` / `HEAD` / copy-source) to S3-compatible `NoSuchVersion` responses at the HTTP edge; the broader multi-surface versioning/delete-marker stack is now locked in across raw HTTP, SigV4 header authentication, and official AWS .NET SDK compatibility coverage, including bucket versioning enable/suspend reads, current delete-marker GET/HEAD behavior, explicit historical-version GET/HEAD by `versionId`, delete-marker response headers/version IDs, and focused list-versions prefix/pagination fidelity
 - non-empty bucket deletion now preserves S3-compatible `BucketNotEmpty` / `409 Conflict` semantics across the disk provider, native S3 translation path, and S3-compatible HTTP DeleteBucket surface, with focused regression coverage at each layer
-- unsupported SigV4a (`AWS4-ECDSA-P256-SHA256`) requests are now detected deliberately in the protocol parser and surfaced as explicit XML auth errors for both authorization-header and presigned-query flows, with focused protocol plus HTTP conformance coverage so these requests fail fast instead of degrading into generic signature errors
+- unsupported SigV4a (`AWS4-ECDSA-P256-SHA256`) requests are now fully authenticated: header-based and presigned-query ECDSA P-256 verification, region-set validation, and streaming `aws-chunked` trailer signature verification are all implemented and tested
 - Remaining scope:
   - next: use the now-landed native-S3-provider-backed AWS SDK loopback harness to expand only the remaining meaningful write-time encryption follow-ons (for example richer multipart/read-side SSE surfacing where the SDK exposes it), then shift broader effort back to Track H / Track B hardening while still deferring broader official SDK trailer-algorithm expansion until the CRT/HTTPS harness decision is made
   - revisit broader AWS SDK signed-trailer algorithm coverage only after deciding whether a scoped `AWSSDK.Extensions.CrtIntegration` dependency and any related harness work are acceptable for this repo
@@ -1399,7 +1404,7 @@ This section is the execution board for the remaining implementation backlog. As
   - continue tightening deeper multipart-listing/client-compat edge semantics beyond the now-supported `encoding-type=url`, ignored lone `upload-id-marker`, explicit `max-uploads` validation behavior, and the landed `ListParts` pagination/checksum surface
   - all S3 XML responses now include `xmlns="http://s3.amazonaws.com/doc/2006-03-01/"` on root elements for canonical namespace parity (#32); error responses now emit `x-amz-request-id` and `x-amz-id-2` headers; `S3XmlRequestReader` already uses `Name.LocalName` for namespace-tolerant parsing
   - `ListObjectVersions` (`?versions`) now supports `encoding-type=url`: key/prefix/delimiter/marker fields are URL-encoded consistently in the `ListVersionsResult` XML when requested, matching the existing behavior in `ListBucketResult`, `ListMultipartUploadsResult`, and `ListPartsResult`; duplicate `<EncodingType>` emission in multipart uploads listing is also fixed
-  - full SigV4a support remains blocked outside this isolated slice: multi-region access point compatibility needs explicit `x-amz-region-set` / credential-scope modeling, ECDSA P-256 signing and verification semantics, and host/routing expectations that reach beyond the current protocol-parser-only hardening work
+  - full SigV4a support is now implemented: ECDSA P-256 header/presigned authentication with region-set validation, streaming `aws-chunked` trailer verification, and `integrateds3:auth-type=sigv4a` claim propagation
 
 ### Track F — Multi-backend async replication, health, and reconciliation
 
@@ -1689,7 +1694,7 @@ Status note (July 2025): current Track H validation covers checklist items 5, 6,
 
 ## Recommended Next Execution Slices
 
-The recently completed implementation wave landed a massive amount of new surface area: 13 bucket configuration subresource families, object-level retention/legal-hold write paths, SelectObjectContent/RestoreObject S3 passthrough, PostObject browser form upload, storage class headers, conditional writes, multi-range requests, checksum-mode support, CRC64NVME recognition, SSE bucket-key-enabled, XML namespace parity, encoding-type=url consistency, BucketNotEmpty for versioned buckets, expanded ACL/policy support, bucket policy expansion (Deny/conditions/CIDR/wildcards), multipart replication, and SigV4a detection — all end-to-end across the full stack with 901 passing tests and 0 warnings. The primary remaining blocked item is **full SigV4a support**, which requires ECDSA P-256 signing/verification and region-set/MRAP semantics.
+The recently completed implementation wave landed a massive amount of new surface area: 13 bucket configuration subresource families, object-level retention/legal-hold write paths, SelectObjectContent/RestoreObject S3 passthrough, PostObject browser form upload, storage class headers, conditional writes, multi-range requests, checksum-mode support, CRC64NVME recognition, SSE bucket-key-enabled, XML namespace parity, encoding-type=url consistency, BucketNotEmpty for versioned buckets, expanded ACL/policy support, bucket policy expansion (Deny/conditions/CIDR/wildcards), multipart replication, and full SigV4a authentication (ECDSA P-256 header/presigned/streaming-trailer) — all end-to-end across the full stack with 936 passing tests and 0 warnings. SigV4a is no longer a blocked item.
 
 The next realistic move is to shift fully toward hardening, conformance, and real-endpoint validation now that the core surface area is comprehensive:
 
@@ -1698,11 +1703,11 @@ Why these should come next:
 - the implemented surface now covers the vast majority of S3-compatible bucket/object operations, so remaining work is hardening and edge-case coverage rather than new foundational feature work
 - they still touch different primary packages (`IntegratedS3.Provider.S3`, `IntegratedS3.AspNetCore`, `IntegratedS3.Protocol`, `IntegratedS3.Client`, `IntegratedS3.Tests`) so multiple contributors can move without colliding constantly
 - protocol-fidelity hardening and conformance work can proceed in parallel with provider hardening and will immediately validate the current surface area
-- the SigV4a blocker is well-isolated and can be tackled independently when ECDSA P-256 implementation decisions are made
+- the SigV4a blocker is now resolved — full ECDSA P-256 header/presigned/streaming-trailer authentication is implemented and tested
 
 Recommended dependency-aware order:
 
-1. **SigV4a full support** — the only major remaining feature blocker; requires ECDSA P-256 signing/verification, `x-amz-region-set` / credential-scope modeling, and multi-region access point semantics; currently returns a clear error message when detected
+1. ~~**SigV4a full support**~~ — **done**: ECDSA P-256 header-based and presigned-query authentication, region-set validation (wildcard and specific regions), streaming `aws-chunked` trailer signature verification, and 9 new conformance tests
 2. execute Track H to expand fault-injection coverage, broaden benchmarks beyond the current 19-scenario disk/loopback/AWS-SDK baseline, and keep publish/AOT verification at the zero-warning posture
 3. execute Track B in parallel to rerun and widen real-endpoint validation against MinIO/LocalStack-style endpoints, especially bucket configuration subresources, the newer object-level operations, and remaining checksum/SSE cases
 4. continue Track F in parallel to harden multipart replication edge cases and expand health/admin visibility now that multipart operations participate in replication
@@ -1714,7 +1719,7 @@ Recommended dependency-aware order:
 
 Given the current implementation state, the first parallel batch should be:
 
-1. **SigV4a investigation** — evaluate ECDSA P-256 implementation options (.NET built-in vs. third-party), scope the credential-scope/region-set modeling, and prototype the signing/verification path
+1. ~~**SigV4a investigation**~~ — **done**: full SigV4a authentication is implemented using .NET built-in `ECDsa`/`HMACSHA256` with NIST SP 800-108 KDF key derivation, 3-part credential scope, region-set validation, and streaming trailer verification
 2. Track H — extend fault-injection coverage, validate the newly landed 46 tests against broader edge cases, broaden benchmarks, and keep publish/AOT verification at zero-warning posture
 3. Track B — rerun and broaden local S3-compatible endpoint validation for the 13 new bucket configuration subresources, object-level retention/legal-hold, SelectObjectContent/RestoreObject, and PostObject against configured real endpoints
 4. Track E / Track G follow-on — harden remaining protocol fidelity gaps around the newly expanded bucket subresource surface, conditional-write edge cases, multi-range efficiency, and PostObject signature validation
