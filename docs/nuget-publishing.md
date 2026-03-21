@@ -1,5 +1,9 @@
 # NuGet Publishing Guide
 
+## Quick Checklist
+
+- Before any non-dry-run publish, confirm the repository secret `NUGET_API_KEY` exists in **Settings → Secrets and variables → Actions**.
+
 ## Prerequisites
 
 1. **NuGet API Key**: Add a repository secret named `NUGET_API_KEY` in **Settings → Secrets and variables → Actions**.
@@ -17,7 +21,7 @@
 4. Set **Dry run** to `false`
 5. Click **Run workflow**
 
-This publishes packages like `IntegratedS3.AspNetCore.0.1.0-preview.1.nupkg`.
+This publishes packages like `IntegratedS3.AspNetCore.10.0.0-preview.1.nupkg`.
 
 ### Stable Release
 
@@ -27,7 +31,7 @@ This publishes packages like `IntegratedS3.AspNetCore.0.1.0-preview.1.nupkg`.
 4. Set **Dry run** to `false`
 5. Click **Run workflow**
 
-This publishes packages like `IntegratedS3.AspNetCore.0.1.0.nupkg`.
+This publishes packages like `IntegratedS3.AspNetCore.10.0.0.nupkg`.
 
 ### Dry Run (Verification)
 
@@ -35,9 +39,13 @@ This publishes packages like `IntegratedS3.AspNetCore.0.1.0.nupkg`.
 2. Check the uploaded artifacts to verify packages look correct
 3. Re-run with dry run disabled to actually publish
 
+## Troubleshooting
+
+- **Workflow fails before pushing packages**: If `NUGET_API_KEY` is missing, a non-dry-run publish stops before any package is pushed to NuGet.org. Add the repository secret, then rerun the workflow.
+
 ## Versioning
 
-The base version (`0.1.0`) is set in `src/IntegratedS3/Directory.Build.props` as `<VersionPrefix>`.
+The base version (`10.0.0`) is set in `src/IntegratedS3/Directory.Build.props` as `<VersionPrefix>`.
 The workflow's **version-suffix** input appends a prerelease label.
 
 To bump the version for a new release, update `<VersionPrefix>` in `Directory.Build.props`.

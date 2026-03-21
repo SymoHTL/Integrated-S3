@@ -94,19 +94,33 @@ jobs:
           path: ./artifacts/packages
           retention-days: 90
 
+      - name: Validate NuGet API key
+        if: inputs.push-to-nuget == true && inputs.dry-run == false
+        env:
+          NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
+        run: |
+          if [ -z "${NUGET_API_KEY//[[:space:]]/}" ]; then
+            echo "::error title=Missing NUGET_API_KEY::Repository secret NUGET_API_KEY is required when push-to-nuget is true and dry-run is false. Add the repository secret in Settings > Secrets and variables > Actions, then rerun this workflow."
+            exit 1
+          fi
+
       - name: Push to NuGet.org
         if: inputs.push-to-nuget == true && inputs.dry-run == false
+        env:
+          NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
         run: |
           dotnet nuget push "./artifacts/packages/*.nupkg" \
-            --api-key ${{ secrets.NUGET_API_KEY }} \
+            --api-key "$NUGET_API_KEY" \
             --source https://api.nuget.org/v3/index.json \
             --skip-duplicate
 
       - name: Push symbols to NuGet.org
         if: inputs.push-to-nuget == true && inputs.dry-run == false
+        env:
+          NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
         run: |
           dotnet nuget push "./artifacts/packages/*.snupkg" \
-            --api-key ${{ secrets.NUGET_API_KEY }} \
+            --api-key "$NUGET_API_KEY" \
             --source https://api.nuget.org/v3/index.json \
             --skip-duplicate
         continue-on-error: true
