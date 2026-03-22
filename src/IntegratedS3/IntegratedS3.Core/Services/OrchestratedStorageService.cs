@@ -328,7 +328,12 @@ internal sealed class OrchestratedStorageService(
         return await ExecuteReadAsync(
             StorageOperationType.GetObject,
             (backend, ct) => backend.GetObjectAsync(request, ct),
-            onSuccess: null,
+            onSuccess: (_, result, _) => {
+                if (result.Value is not null) {
+                    IntegratedS3CoreTelemetry.RecordStorageOperationBytes("GetObject", result.Value.TotalContentLength);
+                }
+                return ValueTask.CompletedTask;
+            },
             cancellationToken);
     }
 
@@ -380,6 +385,7 @@ internal sealed class OrchestratedStorageService(
         ObserveResult(backend, result);
         if (result.IsSuccess && result.Value is not null) {
             await catalogStore.UpsertObjectAsync(backend.Name, result.Value, cancellationToken);
+            IntegratedS3CoreTelemetry.RecordStorageOperationBytes("CopyObject", result.Value.ContentLength);
 
             var wasCopiedToDestination = string.Equals(result.Value.BucketName, request.DestinationBucketName, StringComparison.Ordinal)
                 && string.Equals(result.Value.Key, request.DestinationKey, StringComparison.Ordinal);
@@ -427,6 +433,7 @@ internal sealed class OrchestratedStorageService(
                 }
 
                 await catalogStore.UpsertObjectAsync(backend.Name, result.Value, cancellationToken);
+                IntegratedS3CoreTelemetry.RecordStorageOperationBytes("PutObject", result.Value.ContentLength);
 
                 var replicationError = await ApplyReplicaWritePolicyAsync(
                     StorageOperationType.PutObject,
@@ -451,6 +458,7 @@ internal sealed class OrchestratedStorageService(
         ObserveResult(backend, result);
         if (result.IsSuccess && result.Value is not null) {
             await catalogStore.UpsertObjectAsync(backend.Name, result.Value, cancellationToken);
+            IntegratedS3CoreTelemetry.RecordStorageOperationBytes("PutObject", result.Value.ContentLength);
 
             var replicationError = await ApplyReplicaWritePolicyAsync(
                 StorageOperationType.PutObject,
@@ -562,6 +570,9 @@ internal sealed class OrchestratedStorageService(
 
         var result = await backend.UploadMultipartPartAsync(request, cancellationToken);
         ObserveResult(backend, result);
+        if (result.IsSuccess && result.Value is not null) {
+            IntegratedS3CoreTelemetry.RecordStorageOperationBytes("UploadPart", result.Value.ContentLength);
+        }
         return result;
     }
 
@@ -590,6 +601,7 @@ internal sealed class OrchestratedStorageService(
         ObserveResult(backend, result);
         if (result.IsSuccess && result.Value is not null) {
             await catalogStore.UpsertObjectAsync(backend.Name, result.Value, cancellationToken);
+            IntegratedS3CoreTelemetry.RecordStorageOperationBytes("CompleteMultipartUpload", result.Value.ContentLength);
         }
 
         return result;

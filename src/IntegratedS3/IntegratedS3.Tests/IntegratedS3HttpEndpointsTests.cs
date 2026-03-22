@@ -10439,6 +10439,25 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
     }
 
     [Fact]
+    public async Task PutObject_RecordsStorageOperationBytesMetric()
+    {
+        using var observability = new TestObservabilityCollector();
+        using var client = await _factory.CreateClientAsync();
+
+        await client.PutAsync("/integrated-s3/buckets/storage-bytes-bucket", content: null);
+
+        var content = new ByteArrayContent(new byte[512]);
+        content.Headers.ContentLength = 512;
+        await client.PutAsync("/integrated-s3/buckets/storage-bytes-bucket/objects/test-key", content);
+
+        Assert.Contains(observability.Measurements, measurement =>
+            string.Equals(measurement.InstrumentName, IntegratedS3Observability.Metrics.StorageOperationBytes, StringComparison.Ordinal)
+            && measurement.Value == 512
+            && measurement.Tags.TryGetValue(IntegratedS3Observability.Tags.Operation, out var op)
+            && string.Equals(op, "PutObject", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public async Task GetObject_RecordsBytesSentMetric()
     {
         using var observability = new TestObservabilityCollector();

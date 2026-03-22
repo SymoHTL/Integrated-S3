@@ -39,6 +39,7 @@ The shared `IntegratedS3` meter exposes the following metrics:
   - `integrateds3.storage.authorization.failures`
   - `integrateds3.storage.operation.count`
   - `integrateds3.storage.operation.duration`
+  - `integrateds3.storage.operation.bytes`
 - replication and backend health:
   - `integrateds3.replication.repair.duration`
   - `integrateds3.replication.backlog.size`

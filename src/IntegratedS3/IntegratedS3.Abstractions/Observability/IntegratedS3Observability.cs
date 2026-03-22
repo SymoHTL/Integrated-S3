@@ -50,6 +50,9 @@ public static class IntegratedS3Observability
         /// <summary>Histogram of storage operation durations.</summary>
         public const string StorageOperationDuration = "integrateds3.storage.operation.duration";
 
+        /// <summary>Counter of bytes processed by storage operations.</summary>
+        public const string StorageOperationBytes = "integrateds3.storage.operation.bytes";
+
         /// <summary>Histogram of replica repair operation durations.</summary>
         public const string ReplicaRepairDuration = "integrateds3.replication.repair.duration";
 

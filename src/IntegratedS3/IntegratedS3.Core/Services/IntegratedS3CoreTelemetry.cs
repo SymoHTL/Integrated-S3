@@ -26,6 +26,11 @@ internal static class IntegratedS3CoreTelemetry
         unit: "ms",
         description: "Duration of storage operations executed through IntegratedS3.");
 
+    private static readonly Counter<long> StorageOperationBytesCounter = IntegratedS3Observability.Meter.CreateCounter<long>(
+        IntegratedS3Observability.Metrics.StorageOperationBytes,
+        unit: "By",
+        description: "Bytes processed by storage operations through IntegratedS3.");
+
     private static readonly Counter<long> AuthorizationFailureCounter = IntegratedS3Observability.Meter.CreateCounter<long>(
         IntegratedS3Observability.Metrics.StorageAuthorizationFailures,
         unit: "{failure}",
@@ -98,6 +103,25 @@ internal static class IntegratedS3CoreTelemetry
 
         StorageOperationCounter.Add(1, tags);
         StorageOperationDuration.Record(duration.TotalMilliseconds, tags);
+    }
+
+    public static void RecordStorageOperationBytes(string operation, long bytes)
+    {
+        if (bytes <= 0) return;
+
+        var tags = new TagList
+        {
+            { IntegratedS3Observability.Tags.Operation, operation }
+        };
+
+        var activity = Activity.Current;
+        if (activity is not null) {
+            TryAddActivityTag(tags, IntegratedS3Observability.Tags.Provider, activity);
+            TryAddActivityTag(tags, IntegratedS3Observability.Tags.ProviderKind, activity);
+            TryAddActivityTag(tags, IntegratedS3Observability.Tags.PrimaryProvider, activity);
+        }
+
+        StorageOperationBytesCounter.Add(bytes, tags);
     }
 
     public static void RecordAuthorizationFailure(StorageAuthorizationRequest request, StorageError error)
