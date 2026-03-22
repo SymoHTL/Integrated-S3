@@ -3185,6 +3185,7 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
                         ETag = completedObject.ETag ?? string.Empty,
                         ChecksumCrc32 = GetChecksumValue(completedObject.Checksums, "crc32"),
                         ChecksumCrc32c = GetChecksumValue(completedObject.Checksums, "crc32c"),
+                        ChecksumCrc64Nvme = GetChecksumValue(completedObject.Checksums, "crc64nvme"),
                         ChecksumSha1 = GetChecksumValue(completedObject.Checksums, "sha1"),
                         ChecksumSha256 = GetChecksumValue(completedObject.Checksums, "sha256"),
                         ChecksumType = GetChecksumType(completedObject.Checksums)
@@ -4074,6 +4075,7 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
                 LastModifiedUtc = @object.LastModifiedUtc,
                 ChecksumCrc32 = GetChecksumValue(@object.Checksums, "crc32"),
                 ChecksumCrc32c = GetChecksumValue(@object.Checksums, "crc32c"),
+                ChecksumCrc64Nvme = GetChecksumValue(@object.Checksums, "crc64nvme"),
                 ChecksumSha1 = GetChecksumValue(@object.Checksums, "sha1"),
                 ChecksumSha256 = GetChecksumValue(@object.Checksums, "sha256"),
                 ChecksumType = GetChecksumType(@object.Checksums)
@@ -4097,6 +4099,7 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
                 LastModifiedUtc = part.LastModifiedUtc,
                 ChecksumCrc32 = GetChecksumValue(part.Checksums, "crc32"),
                 ChecksumCrc32c = GetChecksumValue(part.Checksums, "crc32c"),
+                ChecksumCrc64Nvme = GetChecksumValue(part.Checksums, "crc64nvme"),
                 ChecksumSha1 = GetChecksumValue(part.Checksums, "sha1"),
                 ChecksumSha256 = GetChecksumValue(part.Checksums, "sha256")
             }),

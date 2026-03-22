@@ -7,6 +7,46 @@ namespace IntegratedS3.Tests;
 public sealed class S3XmlResponseWriterTests
 {
     [Fact]
+    public void XmlResponses_EmitUtf8EncodingDeclaration()
+    {
+        const string expectedDeclaration = "<?xml version=\"1.0\" encoding=\"utf-8\"?>";
+
+        var responses = new (string Label, string Xml)[]
+        {
+            ("Error", S3XmlResponseWriter.WriteError(new S3ErrorResponse
+            {
+                Code = "NoSuchKey",
+                Message = "The specified key does not exist.",
+                Resource = "/bucket/key",
+                RequestId = "req-1"
+            })),
+            ("CompleteMultipartUploadResult", S3XmlResponseWriter.WriteCompleteMultipartUploadResult(new S3CompleteMultipartUploadResult
+            {
+                Location = "https://example.test/bucket/key",
+                Bucket = "bucket",
+                Key = "key",
+                ETag = "\"abc123\"",
+                ChecksumCrc64Nvme = "AQIDBA==",
+                ChecksumType = "FULL_OBJECT"
+            })),
+            ("ListBucketResult", S3XmlResponseWriter.WriteListBucketResult(new S3ListBucketResult
+            {
+                Name = "bucket",
+                MaxKeys = 1000,
+                Contents = [],
+                CommonPrefixes = []
+            }))
+        };
+
+        foreach (var (label, xml) in responses)
+        {
+            Assert.StartsWith(expectedDeclaration, xml);
+            // Verify the XML is well-formed (Go's strict XML parser rejects malformed documents).
+            XDocument.Parse(xml);
+        }
+    }
+
+    [Fact]
     public void XmlResponses_EmitCanonicalS3NamespaceOnAllElements()
     {
         var timestamp = new DateTimeOffset(2026, 03, 14, 09, 00, 00, TimeSpan.Zero);

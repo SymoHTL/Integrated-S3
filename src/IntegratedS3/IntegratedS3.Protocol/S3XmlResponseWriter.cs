@@ -18,7 +18,7 @@ public static class S3XmlResponseWriter
         ArgumentNullException.ThrowIfNull(response);
 
         var builder = new StringBuilder();
-        using var stringWriter = new StringWriter(builder, CultureInfo.InvariantCulture);
+        using var stringWriter = new Utf8StringWriter(builder, CultureInfo.InvariantCulture);
         using var xmlWriter = XmlWriter.Create(stringWriter, CreateSettings());
 
         xmlWriter.WriteStartDocument();
@@ -43,7 +43,7 @@ public static class S3XmlResponseWriter
         ArgumentNullException.ThrowIfNull(response);
 
         var builder = new StringBuilder();
-        using var stringWriter = new StringWriter(builder, CultureInfo.InvariantCulture);
+        using var stringWriter = new Utf8StringWriter(builder, CultureInfo.InvariantCulture);
         using var xmlWriter = XmlWriter.Create(stringWriter, CreateSettings());
 
         xmlWriter.WriteStartDocument();
@@ -68,7 +68,7 @@ public static class S3XmlResponseWriter
         ArgumentNullException.ThrowIfNull(response);
 
         var builder = new StringBuilder();
-        using var stringWriter = new StringWriter(builder, CultureInfo.InvariantCulture);
+        using var stringWriter = new Utf8StringWriter(builder, CultureInfo.InvariantCulture);
         using var xmlWriter = XmlWriter.Create(stringWriter, CreateSettings());
 
         xmlWriter.WriteStartDocument();
@@ -110,7 +110,7 @@ public static class S3XmlResponseWriter
         ArgumentNullException.ThrowIfNull(response);
 
         var builder = new StringBuilder();
-        using var stringWriter = new StringWriter(builder, CultureInfo.InvariantCulture);
+        using var stringWriter = new Utf8StringWriter(builder, CultureInfo.InvariantCulture);
         using var xmlWriter = XmlWriter.Create(stringWriter, CreateSettings());
 
         xmlWriter.WriteStartDocument();
@@ -161,7 +161,7 @@ public static class S3XmlResponseWriter
         ArgumentNullException.ThrowIfNull(response);
 
         var builder = new StringBuilder();
-        using var stringWriter = new StringWriter(builder, CultureInfo.InvariantCulture);
+        using var stringWriter = new Utf8StringWriter(builder, CultureInfo.InvariantCulture);
         using var xmlWriter = XmlWriter.Create(stringWriter, CreateSettings());
 
         xmlWriter.WriteStartDocument();
@@ -212,7 +212,7 @@ public static class S3XmlResponseWriter
         ArgumentNullException.ThrowIfNull(response);
 
         var builder = new StringBuilder();
-        using var stringWriter = new StringWriter(builder, CultureInfo.InvariantCulture);
+        using var stringWriter = new Utf8StringWriter(builder, CultureInfo.InvariantCulture);
         using var xmlWriter = XmlWriter.Create(stringWriter, CreateSettings());
 
         xmlWriter.WriteStartDocument();
@@ -226,6 +226,10 @@ public static class S3XmlResponseWriter
 
         if (!string.IsNullOrWhiteSpace(response.ChecksumCrc32c)) {
             xmlWriter.WriteElementString("ChecksumCRC32C", response.ChecksumCrc32c);
+        }
+
+        if (!string.IsNullOrWhiteSpace(response.ChecksumCrc64Nvme)) {
+            xmlWriter.WriteElementString("ChecksumCRC64NVME", response.ChecksumCrc64Nvme);
         }
 
         if (!string.IsNullOrWhiteSpace(response.ChecksumSha1)) {
@@ -255,7 +259,7 @@ public static class S3XmlResponseWriter
         ArgumentNullException.ThrowIfNull(response);
 
         var builder = new StringBuilder();
-        using var stringWriter = new StringWriter(builder, CultureInfo.InvariantCulture);
+        using var stringWriter = new Utf8StringWriter(builder, CultureInfo.InvariantCulture);
         using var xmlWriter = XmlWriter.Create(stringWriter, CreateSettings());
 
         xmlWriter.WriteStartDocument();
@@ -281,7 +285,7 @@ public static class S3XmlResponseWriter
         ArgumentNullException.ThrowIfNull(response);
 
         var builder = new StringBuilder();
-        using var stringWriter = new StringWriter(builder, CultureInfo.InvariantCulture);
+        using var stringWriter = new Utf8StringWriter(builder, CultureInfo.InvariantCulture);
         using var xmlWriter = XmlWriter.Create(stringWriter, CreateSettings());
 
         xmlWriter.WriteStartDocument();
@@ -301,6 +305,10 @@ public static class S3XmlResponseWriter
 
         if (!string.IsNullOrWhiteSpace(response.ChecksumCrc32c)) {
             xmlWriter.WriteElementString("ChecksumCRC32C", response.ChecksumCrc32c);
+        }
+
+        if (!string.IsNullOrWhiteSpace(response.ChecksumCrc64Nvme)) {
+            xmlWriter.WriteElementString("ChecksumCRC64NVME", response.ChecksumCrc64Nvme);
         }
 
         if (!string.IsNullOrWhiteSpace(response.ChecksumSha1)) {
@@ -330,7 +338,7 @@ public static class S3XmlResponseWriter
         ArgumentNullException.ThrowIfNull(response);
 
         var builder = new StringBuilder();
-        using var stringWriter = new StringWriter(builder, CultureInfo.InvariantCulture);
+        using var stringWriter = new Utf8StringWriter(builder, CultureInfo.InvariantCulture);
         using var xmlWriter = XmlWriter.Create(stringWriter, CreateSettings());
 
         xmlWriter.WriteStartDocument();
@@ -412,7 +420,7 @@ public static class S3XmlResponseWriter
         ArgumentNullException.ThrowIfNull(response);
 
         var builder = new StringBuilder();
-        using var stringWriter = new StringWriter(builder, CultureInfo.InvariantCulture);
+        using var stringWriter = new Utf8StringWriter(builder, CultureInfo.InvariantCulture);
         using var xmlWriter = XmlWriter.Create(stringWriter, CreateSettings());
 
         xmlWriter.WriteStartDocument();
@@ -484,7 +492,7 @@ public static class S3XmlResponseWriter
         ArgumentNullException.ThrowIfNull(response);
 
         var builder = new StringBuilder();
-        using var stringWriter = new StringWriter(builder, CultureInfo.InvariantCulture);
+        using var stringWriter = new Utf8StringWriter(builder, CultureInfo.InvariantCulture);
         using var xmlWriter = XmlWriter.Create(stringWriter, CreateSettings());
 
         xmlWriter.WriteStartDocument();
@@ -557,7 +565,7 @@ public static class S3XmlResponseWriter
         ArgumentNullException.ThrowIfNull(response);
 
         var builder = new StringBuilder();
-        using var stringWriter = new StringWriter(builder, CultureInfo.InvariantCulture);
+        using var stringWriter = new Utf8StringWriter(builder, CultureInfo.InvariantCulture);
         using var xmlWriter = XmlWriter.Create(stringWriter, CreateSettings());
 
         xmlWriter.WriteStartDocument();
@@ -644,7 +652,7 @@ public static class S3XmlResponseWriter
         ArgumentNullException.ThrowIfNull(response);
 
         var builder = new StringBuilder();
-        using var stringWriter = new StringWriter(builder, CultureInfo.InvariantCulture);
+        using var stringWriter = new Utf8StringWriter(builder, CultureInfo.InvariantCulture);
         using var xmlWriter = XmlWriter.Create(stringWriter, CreateSettings());
 
         xmlWriter.WriteStartDocument();
@@ -676,7 +684,7 @@ public static class S3XmlResponseWriter
         ArgumentNullException.ThrowIfNull(response);
 
         var builder = new StringBuilder();
-        using var stringWriter = new StringWriter(builder, CultureInfo.InvariantCulture);
+        using var stringWriter = new Utf8StringWriter(builder, CultureInfo.InvariantCulture);
         using var xmlWriter = XmlWriter.Create(stringWriter, CreateSettings());
 
         xmlWriter.WriteStartDocument();
@@ -729,7 +737,7 @@ public static class S3XmlResponseWriter
         ArgumentNullException.ThrowIfNull(response);
 
         var builder = new StringBuilder();
-        using var stringWriter = new StringWriter(builder, CultureInfo.InvariantCulture);
+        using var stringWriter = new Utf8StringWriter(builder, CultureInfo.InvariantCulture);
         using var xmlWriter = XmlWriter.Create(stringWriter, CreateSettings());
 
         xmlWriter.WriteStartDocument();
@@ -759,7 +767,7 @@ public static class S3XmlResponseWriter
         ArgumentNullException.ThrowIfNull(response);
 
         var builder = new StringBuilder();
-        using var stringWriter = new StringWriter(builder, CultureInfo.InvariantCulture);
+        using var stringWriter = new Utf8StringWriter(builder, CultureInfo.InvariantCulture);
         using var xmlWriter = XmlWriter.Create(stringWriter, CreateSettings());
 
         xmlWriter.WriteStartDocument();
@@ -788,7 +796,7 @@ public static class S3XmlResponseWriter
         ArgumentNullException.ThrowIfNull(response);
 
         var builder = new StringBuilder();
-        using var stringWriter = new StringWriter(builder, CultureInfo.InvariantCulture);
+        using var stringWriter = new Utf8StringWriter(builder, CultureInfo.InvariantCulture);
         using var xmlWriter = XmlWriter.Create(stringWriter, CreateSettings());
 
         xmlWriter.WriteStartDocument();
@@ -813,7 +821,7 @@ public static class S3XmlResponseWriter
         ArgumentNullException.ThrowIfNull(response);
 
         var builder = new StringBuilder();
-        using var stringWriter = new StringWriter(builder, CultureInfo.InvariantCulture);
+        using var stringWriter = new Utf8StringWriter(builder, CultureInfo.InvariantCulture);
         using var xmlWriter = XmlWriter.Create(stringWriter, CreateSettings());
 
         xmlWriter.WriteStartDocument();
@@ -906,7 +914,7 @@ public static class S3XmlResponseWriter
         ArgumentNullException.ThrowIfNull(response);
 
         var builder = new StringBuilder();
-        using var stringWriter = new StringWriter(builder, CultureInfo.InvariantCulture);
+        using var stringWriter = new Utf8StringWriter(builder, CultureInfo.InvariantCulture);
         using var xmlWriter = XmlWriter.Create(stringWriter, CreateSettings());
 
         xmlWriter.WriteStartDocument();
@@ -959,7 +967,7 @@ public static class S3XmlResponseWriter
         ArgumentNullException.ThrowIfNull(response);
 
         var builder = new StringBuilder();
-        using var stringWriter = new StringWriter(builder, CultureInfo.InvariantCulture);
+        using var stringWriter = new Utf8StringWriter(builder, CultureInfo.InvariantCulture);
         using var xmlWriter = XmlWriter.Create(stringWriter, CreateSettings());
 
         xmlWriter.WriteStartDocument();
@@ -989,7 +997,7 @@ public static class S3XmlResponseWriter
         ArgumentNullException.ThrowIfNull(response);
 
         var builder = new StringBuilder();
-        using var stringWriter = new StringWriter(builder, CultureInfo.InvariantCulture);
+        using var stringWriter = new Utf8StringWriter(builder, CultureInfo.InvariantCulture);
         using var xmlWriter = XmlWriter.Create(stringWriter, CreateSettings());
 
         xmlWriter.WriteStartDocument();
@@ -1017,7 +1025,7 @@ public static class S3XmlResponseWriter
         ArgumentNullException.ThrowIfNull(response);
 
         var builder = new StringBuilder();
-        using var stringWriter = new StringWriter(builder, CultureInfo.InvariantCulture);
+        using var stringWriter = new Utf8StringWriter(builder, CultureInfo.InvariantCulture);
         using var xmlWriter = XmlWriter.Create(stringWriter, CreateSettings());
 
         xmlWriter.WriteStartDocument();
@@ -1098,7 +1106,7 @@ public static class S3XmlResponseWriter
         ArgumentNullException.ThrowIfNull(response);
 
         var builder = new StringBuilder();
-        using var stringWriter = new StringWriter(builder, CultureInfo.InvariantCulture);
+        using var stringWriter = new Utf8StringWriter(builder, CultureInfo.InvariantCulture);
         using var xmlWriter = XmlWriter.Create(stringWriter, CreateSettings());
 
         xmlWriter.WriteStartDocument();
@@ -1119,7 +1127,7 @@ public static class S3XmlResponseWriter
         ArgumentNullException.ThrowIfNull(response);
 
         var builder = new StringBuilder();
-        using var stringWriter = new StringWriter(builder, CultureInfo.InvariantCulture);
+        using var stringWriter = new Utf8StringWriter(builder, CultureInfo.InvariantCulture);
         using var xmlWriter = XmlWriter.Create(stringWriter, CreateSettings());
 
         xmlWriter.WriteStartDocument();
@@ -1144,7 +1152,7 @@ public static class S3XmlResponseWriter
         ArgumentNullException.ThrowIfNull(response);
 
         var builder = new StringBuilder();
-        using var stringWriter = new StringWriter(builder, CultureInfo.InvariantCulture);
+        using var stringWriter = new Utf8StringWriter(builder, CultureInfo.InvariantCulture);
         using var xmlWriter = XmlWriter.Create(stringWriter, CreateSettings());
 
         xmlWriter.WriteStartDocument();
@@ -1257,7 +1265,7 @@ public static class S3XmlResponseWriter
         ArgumentNullException.ThrowIfNull(response);
 
         var builder = new StringBuilder();
-        using var stringWriter = new StringWriter(builder, CultureInfo.InvariantCulture);
+        using var stringWriter = new Utf8StringWriter(builder, CultureInfo.InvariantCulture);
         using var xmlWriter = XmlWriter.Create(stringWriter, CreateSettings());
 
         xmlWriter.WriteStartDocument();
@@ -1320,7 +1328,7 @@ public static class S3XmlResponseWriter
         ArgumentNullException.ThrowIfNull(response);
 
         var builder = new StringBuilder();
-        using var stringWriter = new StringWriter(builder, CultureInfo.InvariantCulture);
+        using var stringWriter = new Utf8StringWriter(builder, CultureInfo.InvariantCulture);
         using var xmlWriter = XmlWriter.Create(stringWriter, CreateSettings());
 
         xmlWriter.WriteStartDocument();
@@ -1380,7 +1388,7 @@ public static class S3XmlResponseWriter
         ArgumentNullException.ThrowIfNull(response);
 
         var builder = new StringBuilder();
-        using var stringWriter = new StringWriter(builder, CultureInfo.InvariantCulture);
+        using var stringWriter = new Utf8StringWriter(builder, CultureInfo.InvariantCulture);
         using var xmlWriter = XmlWriter.Create(stringWriter, CreateSettings());
 
         xmlWriter.WriteStartDocument();
@@ -1421,7 +1429,7 @@ public static class S3XmlResponseWriter
         ArgumentNullException.ThrowIfNull(response);
 
         var builder = new StringBuilder();
-        using var stringWriter = new StringWriter(builder, CultureInfo.InvariantCulture);
+        using var stringWriter = new Utf8StringWriter(builder, CultureInfo.InvariantCulture);
         using var xmlWriter = XmlWriter.Create(stringWriter, CreateSettings());
 
         xmlWriter.WriteStartDocument();
@@ -1496,7 +1504,7 @@ public static class S3XmlResponseWriter
         ArgumentNullException.ThrowIfNull(response);
 
         var builder = new StringBuilder();
-        using var stringWriter = new StringWriter(builder, CultureInfo.InvariantCulture);
+        using var stringWriter = new Utf8StringWriter(builder, CultureInfo.InvariantCulture);
         using var xmlWriter = XmlWriter.Create(stringWriter, CreateSettings());
 
         xmlWriter.WriteStartDocument();
@@ -1549,7 +1557,7 @@ public static class S3XmlResponseWriter
         ArgumentNullException.ThrowIfNull(response);
 
         var builder = new StringBuilder();
-        using var stringWriter = new StringWriter(builder, CultureInfo.InvariantCulture);
+        using var stringWriter = new Utf8StringWriter(builder, CultureInfo.InvariantCulture);
         using var xmlWriter = XmlWriter.Create(stringWriter, CreateSettings());
 
         xmlWriter.WriteStartDocument();
@@ -1612,7 +1620,7 @@ public static class S3XmlResponseWriter
         ArgumentNullException.ThrowIfNull(response);
 
         var builder = new StringBuilder();
-        using var stringWriter = new StringWriter(builder, CultureInfo.InvariantCulture);
+        using var stringWriter = new Utf8StringWriter(builder, CultureInfo.InvariantCulture);
         using var xmlWriter = XmlWriter.Create(stringWriter, CreateSettings());
 
         xmlWriter.WriteStartDocument();
@@ -1669,7 +1677,7 @@ public static class S3XmlResponseWriter
         ArgumentNullException.ThrowIfNull(response);
 
         var builder = new StringBuilder();
-        using var stringWriter = new StringWriter(builder, CultureInfo.InvariantCulture);
+        using var stringWriter = new Utf8StringWriter(builder, CultureInfo.InvariantCulture);
         using var xmlWriter = XmlWriter.Create(stringWriter, CreateSettings());
 
         xmlWriter.WriteStartDocument();
@@ -1701,7 +1709,7 @@ public static class S3XmlResponseWriter
         ArgumentNullException.ThrowIfNull(response);
 
         var builder = new StringBuilder();
-        using var stringWriter = new StringWriter(builder, CultureInfo.InvariantCulture);
+        using var stringWriter = new Utf8StringWriter(builder, CultureInfo.InvariantCulture);
         using var xmlWriter = XmlWriter.Create(stringWriter, CreateSettings());
 
         xmlWriter.WriteStartDocument();
@@ -1733,7 +1741,7 @@ public static class S3XmlResponseWriter
         ArgumentNullException.ThrowIfNull(response);
 
         var builder = new StringBuilder();
-        using var stringWriter = new StringWriter(builder, CultureInfo.InvariantCulture);
+        using var stringWriter = new Utf8StringWriter(builder, CultureInfo.InvariantCulture);
         using var xmlWriter = XmlWriter.Create(stringWriter, CreateSettings());
 
         xmlWriter.WriteStartDocument();
@@ -1765,7 +1773,7 @@ public static class S3XmlResponseWriter
         ArgumentNullException.ThrowIfNull(response);
 
         var builder = new StringBuilder();
-        using var stringWriter = new StringWriter(builder, CultureInfo.InvariantCulture);
+        using var stringWriter = new Utf8StringWriter(builder, CultureInfo.InvariantCulture);
         using var xmlWriter = XmlWriter.Create(stringWriter, CreateSettings());
 
         xmlWriter.WriteStartDocument();
@@ -1989,7 +1997,7 @@ public static class S3XmlResponseWriter
         ArgumentNullException.ThrowIfNull(response);
 
         var builder = new StringBuilder();
-        using var stringWriter = new StringWriter(builder, CultureInfo.InvariantCulture);
+        using var stringWriter = new Utf8StringWriter(builder, CultureInfo.InvariantCulture);
         using var xmlWriter = XmlWriter.Create(stringWriter, CreateSettings());
 
         xmlWriter.WriteStartDocument();
@@ -2102,7 +2110,7 @@ public static class S3XmlResponseWriter
     public static string WritePostObjectResult(string bucketName, string key, string? etag)
     {
         var builder = new StringBuilder();
-        using var stringWriter = new StringWriter(builder, CultureInfo.InvariantCulture);
+        using var stringWriter = new Utf8StringWriter(builder, CultureInfo.InvariantCulture);
         using var xmlWriter = XmlWriter.Create(stringWriter, CreateSettings());
 
         xmlWriter.WriteStartDocument();
@@ -2118,5 +2126,13 @@ public static class S3XmlResponseWriter
         xmlWriter.Flush();
 
         return builder.ToString();
+    }
+
+    /// <summary>StringWriter that reports UTF-8 encoding so XmlWriter emits the correct declaration.</summary>
+    private sealed class Utf8StringWriter(StringBuilder sb, IFormatProvider formatProvider)
+        : StringWriter(sb, formatProvider)
+    {
+        private static readonly UTF8Encoding Utf8NoBom = new(encoderShouldEmitUTF8Identifier: false);
+        public override Encoding Encoding => Utf8NoBom;
     }
 }

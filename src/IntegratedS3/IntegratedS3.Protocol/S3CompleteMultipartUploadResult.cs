@@ -23,6 +23,9 @@ public sealed class S3CompleteMultipartUploadResult
     /// <summary>The CRC-32C checksum of the object.</summary>
     public string? ChecksumCrc32c { get; init; }
 
+    /// <summary>The CRC-64/NVME checksum of the object.</summary>
+    public string? ChecksumCrc64Nvme { get; init; }
+
     /// <summary>The SHA-1 checksum of the object.</summary>
     public string? ChecksumSha1 { get; init; }
 
