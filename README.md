@@ -2,7 +2,7 @@
 
 **A modular ASP.NET Core library that exposes S3-compatible HTTP endpoints backed by pluggable storage providers.**
 
-[![CI](https://github.com/SymoHTL/Intergrated-S3/actions/workflows/ci.yml/badge.svg)](https://github.com/SymoHTL/Intergrated-S3/actions/workflows/ci.yml)
+[![CI](https://github.com/SymoHTL/Integrated-S3/actions/workflows/ci.yml/badge.svg)](https://github.com/SymoHTL/Integrated-S3/actions/workflows/ci.yml)
 [![License: BSD-3-Clause](https://img.shields.io/badge/License-BSD--3--Clause-blue.svg)](LICENSE)
 
 ---

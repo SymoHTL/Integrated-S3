@@ -1,7 +1,7 @@
 import json
 from collections import defaultdict
 
-log_file = r"D:\Tolle Projekte\Intergrated-S3\logs\Logs-2026-03-22 02_08_37.json"
+log_file = r"D:\Tolle Projekte\Integrated-S3\logs\Logs-2026-03-22 02_08_37.json"
 
 with open(log_file, 'r', encoding='utf-8') as f:
     logs = json.load(f)

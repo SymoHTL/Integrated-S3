@@ -15,7 +15,7 @@ public sealed class DocumentationGuidanceTests
         Assert.Contains("<GenerateDocumentationFile", content, StringComparison.Ordinal);
         Assert.Contains("<PackageReadmeFile", content, StringComparison.Ordinal);
         Assert.Contains("README.md", content, StringComparison.Ordinal);
-        Assert.Contains("https://github.com/SymoHTL/Intergrated-S3", content, StringComparison.Ordinal);
+        Assert.Contains("https://github.com/SymoHTL/Integrated-S3", content, StringComparison.Ordinal);
     }
 
     [Fact]
