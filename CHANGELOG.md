@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.1.0] - Unreleased
 
+### Fixed
+
+- **GetObject bytes metric accuracy** — `integrateds3.storage.operation.bytes` for GetObject now counts actual bytes streamed to the client via a metering stream wrapper, instead of recording the full `TotalContentLength` at response creation time. Previously, a client aborting mid-download would still report the entire object size.
+- **HTTP bytes-sent metric timing** — `integrateds3.http.bytes_sent` for GetObject is now recorded after the response stream is fully copied, not before streaming begins.
+
 ### Added
 
 - **S3-Compatible REST API** — Full S3 protocol coverage including bucket CRUD, object CRUD, multipart uploads, versioning, object lock, bucket configurations (lifecycle, replication, notification, analytics, metrics, inventory, intelligent tiering, website, logging, request payment, accelerate, tagging, CORS, policy, ACL, encryption), and GetObjectAttributes.

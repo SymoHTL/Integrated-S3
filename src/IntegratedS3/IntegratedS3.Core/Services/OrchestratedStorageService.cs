@@ -325,16 +325,28 @@ internal sealed class OrchestratedStorageService(
 
     public async ValueTask<StorageResult<GetObjectResponse>> GetObjectAsync(GetObjectRequest request, CancellationToken cancellationToken = default)
     {
-        return await ExecuteReadAsync(
+        var result = await ExecuteReadAsync(
             StorageOperationType.GetObject,
             (backend, ct) => backend.GetObjectAsync(request, ct),
-            onSuccess: (_, result, _) => {
-                if (result.Value is not null) {
-                    IntegratedS3CoreTelemetry.RecordStorageOperationBytes("GetObject", result.Value.TotalContentLength);
-                }
-                return ValueTask.CompletedTask;
-            },
+            onSuccess: null,
             cancellationToken);
+
+        if (result is { IsSuccess: true, Value: not null }) {
+            var original = result.Value;
+            var meteringStream = new Internal.MeteringStream(original.Content, bytesRead =>
+                IntegratedS3CoreTelemetry.RecordStorageOperationBytes("GetObject", bytesRead));
+
+            return StorageResult<GetObjectResponse>.Success(new GetObjectResponse
+            {
+                Object = original.Object,
+                Content = meteringStream,
+                TotalContentLength = original.TotalContentLength,
+                Range = original.Range,
+                IsNotModified = original.IsNotModified
+            });
+        }
+
+        return result;
     }
 
     public async ValueTask<StorageResult<ObjectRetentionInfo>> GetObjectRetentionAsync(GetObjectRetentionRequest request, CancellationToken cancellationToken = default)

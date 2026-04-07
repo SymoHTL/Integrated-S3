@@ -8957,8 +8957,8 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
                 httpContext.Response.StatusCode = StatusCodes.Status200OK;
             }
 
-            IntegratedS3AspNetCoreTelemetry.RecordHttpBytesSent("GetObject", response.Object.ContentLength);
             await response.Content.CopyToAsync(httpContext.Response.Body, httpContext.RequestAborted);
+            IntegratedS3AspNetCoreTelemetry.RecordHttpBytesSent("GetObject", response.Object.ContentLength);
         }
     }
 
