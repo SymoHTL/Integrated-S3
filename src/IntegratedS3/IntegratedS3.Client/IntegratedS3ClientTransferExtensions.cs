@@ -396,6 +396,122 @@ public static class IntegratedS3ClientTransferExtensions
             cancellationToken);
     }
 
+    /// <summary>
+    /// Obtains a presigned PUT URL for a single part of a multipart upload and uploads
+    /// <paramref name="content"/> as that part. The stream is forwarded without buffering
+    /// the full payload into memory.
+    /// </summary>
+    /// <param name="client">The <see cref="IIntegratedS3Client"/> used to obtain the presigned URL.</param>
+    /// <param name="transferClient">The <see cref="HttpClient"/> used to execute the upload transfer.</param>
+    /// <param name="bucketName">The target bucket name.</param>
+    /// <param name="key">The target object key.</param>
+    /// <param name="uploadId">The multipart upload identifier returned when the upload was initiated.</param>
+    /// <param name="partNumber">The one-based part number to upload (1-10000).</param>
+    /// <param name="content">The stream containing the part payload.</param>
+    /// <param name="expiresInSeconds">How long the presigned URL should remain valid, in seconds.</param>
+    /// <param name="cancellationToken">A token to cancel the operation.</param>
+    /// <returns>The ETag of the uploaded part, as required to complete the multipart upload.</returns>
+    public static async Task<string> UploadPartStreamAsync(
+        this IIntegratedS3Client client,
+        HttpClient transferClient,
+        string bucketName,
+        string key,
+        string uploadId,
+        int partNumber,
+        Stream content,
+        int expiresInSeconds,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(client);
+        ArgumentNullException.ThrowIfNull(transferClient);
+        ArgumentException.ThrowIfNullOrWhiteSpace(uploadId);
+        ArgumentNullException.ThrowIfNull(content);
+
+        var presigned = await client.PresignUploadPartAsync(
+            bucketName, key, uploadId, partNumber, expiresInSeconds, cancellationToken);
+
+        using var httpContent = new StreamContent(content);
+        using var request = presigned.CreateHttpRequestMessage(httpContent);
+        using var response = await transferClient.SendAsync(request, cancellationToken);
+        response.EnsureSuccessStatusCode();
+
+        return response.Headers.ETag?.Tag
+            ?? throw new InvalidOperationException("The part upload response did not include an ETag header.");
+    }
+
+    /// <summary>
+    /// Obtains a presigned DELETE URL and deletes the object from storage.
+    /// </summary>
+    /// <param name="client">The <see cref="IIntegratedS3Client"/> used to obtain the presigned URL.</param>
+    /// <param name="transferClient">The <see cref="HttpClient"/> used to execute the delete request.</param>
+    /// <param name="bucketName">The bucket containing the object.</param>
+    /// <param name="key">The object key to delete.</param>
+    /// <param name="expiresInSeconds">How long the presigned URL should remain valid, in seconds.</param>
+    /// <param name="versionId">Optional version identifier for versioned objects.</param>
+    /// <param name="cancellationToken">A token to cancel the operation.</param>
+    public static async Task DeleteObjectAsync(
+        this IIntegratedS3Client client,
+        HttpClient transferClient,
+        string bucketName,
+        string key,
+        int expiresInSeconds,
+        string? versionId = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(client);
+        ArgumentNullException.ThrowIfNull(transferClient);
+
+        var presigned = await client.PresignDeleteObjectAsync(
+            bucketName, key, expiresInSeconds, versionId, cancellationToken);
+
+        using var request = presigned.CreateHttpRequestMessage();
+        using var response = await transferClient.SendAsync(request, cancellationToken);
+        response.EnsureSuccessStatusCode();
+    }
+
+    /// <summary>
+    /// Obtains a presigned HEAD URL and retrieves the object's metadata without downloading its body.
+    /// </summary>
+    /// <remarks>
+    /// The returned <see cref="HttpResponseMessage"/> exposes the response status code and headers
+    /// (for example <c>ETag</c>, <c>Content-Length</c>, and <c>Content-Type</c>); dispose it when done.
+    /// A missing object surfaces as an <see cref="HttpRequestException"/> with status 404.
+    /// </remarks>
+    /// <param name="client">The <see cref="IIntegratedS3Client"/> used to obtain the presigned URL.</param>
+    /// <param name="transferClient">The <see cref="HttpClient"/> used to execute the metadata request.</param>
+    /// <param name="bucketName">The bucket containing the object.</param>
+    /// <param name="key">The object key to inspect.</param>
+    /// <param name="expiresInSeconds">How long the presigned URL should remain valid, in seconds.</param>
+    /// <param name="versionId">Optional version identifier for versioned objects.</param>
+    /// <param name="cancellationToken">A token to cancel the operation.</param>
+    /// <returns>The successful <see cref="HttpResponseMessage"/> carrying the object metadata headers.</returns>
+    public static async Task<HttpResponseMessage> HeadObjectAsync(
+        this IIntegratedS3Client client,
+        HttpClient transferClient,
+        string bucketName,
+        string key,
+        int expiresInSeconds,
+        string? versionId = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(client);
+        ArgumentNullException.ThrowIfNull(transferClient);
+
+        var presigned = await client.PresignHeadObjectAsync(
+            bucketName, key, expiresInSeconds, versionId, cancellationToken);
+
+        using var request = presigned.CreateHttpRequestMessage();
+        var response = await transferClient.SendAsync(request, cancellationToken);
+        try {
+            response.EnsureSuccessStatusCode();
+            return response;
+        }
+        catch {
+            response.Dispose();
+            throw;
+        }
+    }
+
     private static async Task UploadPresignedAsync(
         HttpClient transferClient,
         StoragePresignedRequest presigned,

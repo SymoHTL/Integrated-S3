@@ -570,7 +570,8 @@ public sealed class DiskStorageServiceTests
 
         Assert.True((await storageService.CreateBucketAsync(new CreateBucketRequest
         {
-            BucketName = bucketName
+            BucketName = bucketName,
+            EnableVersioning = true
         })).IsSuccess);
 
         var putTagging = await storageService.PutBucketTaggingAsync(new PutBucketTaggingRequest
@@ -1904,6 +1905,7 @@ public sealed class DiskStorageServiceTests
 
         Assert.True(copyResult.IsSuccess);
         Assert.Equal("text/plain", copyResult.Value!.ContentType);
+        Assert.NotNull(copyResult.Value.Metadata);
         Assert.Equal("1712345678", copyResult.Value.Metadata["mtime"]);
         Assert.Equal("rclone", copyResult.Value.Metadata["updated-by"]);
         Assert.False(copyResult.Value.Metadata.ContainsKey("source-only"));
@@ -1922,6 +1924,7 @@ public sealed class DiskStorageServiceTests
         using var reader = new StreamReader(response.Content, Encoding.UTF8);
         Assert.Equal("copy me", await reader.ReadToEndAsync());
         Assert.Equal("text/plain", response.Object.ContentType);
+        Assert.NotNull(response.Object.Metadata);
         Assert.Equal("1712345678", response.Object.Metadata["mtime"]);
         Assert.Equal("rclone", response.Object.Metadata["updated-by"]);
         Assert.False(response.Object.Metadata.ContainsKey("source-only"));
@@ -4289,6 +4292,516 @@ public sealed class DiskStorageServiceTests
 
         Assert.False(initiateResult.IsSuccess);
         AssertUnsupportedCustomerEncryption(initiateResult.Error, "ssec-multipart", "docs/multipart.bin");
+    }
+
+    [Fact]
+    public async Task DiskStorage_BackslashAndForwardSlashKeys_RemainDistinctObjects()
+    {
+        await using var fixture = new DiskStorageFixture();
+        var storageService = fixture.Services.GetRequiredService<IStorageBackend>();
+        const string bucketName = "key-encoding-backslash";
+
+        Assert.True((await storageService.CreateBucketAsync(new CreateBucketRequest
+        {
+            BucketName = bucketName
+        })).IsSuccess);
+
+        async Task PutAsync(string key, string payload)
+        {
+            await using var content = new MemoryStream(Encoding.UTF8.GetBytes(payload));
+            Assert.True((await storageService.PutObjectAsync(new PutObjectRequest
+            {
+                BucketName = bucketName,
+                Key = key,
+                Content = content,
+                ContentType = "text/plain"
+            })).IsSuccess);
+        }
+
+        async Task<string> GetAsync(string key)
+        {
+            var getResult = await storageService.GetObjectAsync(new GetObjectRequest
+            {
+                BucketName = bucketName,
+                Key = key
+            });
+
+            Assert.True(getResult.IsSuccess);
+            await using var response = getResult.Value!;
+            using var reader = new StreamReader(response.Content, Encoding.UTF8, leaveOpen: false);
+            return await reader.ReadToEndAsync();
+        }
+
+        await PutAsync(@"a\b", "backslash payload");
+        await PutAsync("a/b", "slash payload");
+
+        Assert.Equal("backslash payload", await GetAsync(@"a\b"));
+        Assert.Equal("slash payload", await GetAsync("a/b"));
+
+        var keys = await storageService.ListObjectsAsync(new ListObjectsRequest
+        {
+            BucketName = bucketName
+        }).Select(static objectInfo => objectInfo.Key).ToArrayAsync();
+
+        Assert.Equal(2, keys.Length);
+        Assert.Contains(@"a\b", keys);
+        Assert.Contains("a/b", keys);
+
+        Assert.True((await storageService.DeleteObjectAsync(new DeleteObjectRequest
+        {
+            BucketName = bucketName,
+            Key = @"a\b"
+        })).IsSuccess);
+
+        Assert.Equal("slash payload", await GetAsync("a/b"));
+        Assert.False((await storageService.HeadObjectAsync(new HeadObjectRequest
+        {
+            BucketName = bucketName,
+            Key = @"a\b"
+        })).IsSuccess);
+    }
+
+    [Theory]
+    [InlineData("CON")]
+    [InlineData("docs/aux.txt")]
+    [InlineData("logs/nul/data.bin")]
+    [InlineData("docs/report.")]
+    [InlineData("docs/trailing ")]
+    [InlineData("docs/100%/summary.txt")]
+    public async Task DiskStorage_ReservedAndTrailingCharacterKeys_RoundTrip(string key)
+    {
+        await using var fixture = new DiskStorageFixture();
+        var storageService = fixture.Services.GetRequiredService<IStorageBackend>();
+        const string bucketName = "key-encoding-reserved";
+
+        Assert.True((await storageService.CreateBucketAsync(new CreateBucketRequest
+        {
+            BucketName = bucketName
+        })).IsSuccess);
+
+        await using var content = new MemoryStream(Encoding.UTF8.GetBytes("reserved key payload"));
+        Assert.True((await storageService.PutObjectAsync(new PutObjectRequest
+        {
+            BucketName = bucketName,
+            Key = key,
+            Content = content,
+            ContentType = "text/plain"
+        })).IsSuccess);
+
+        var listedObject = Assert.Single(await storageService.ListObjectsAsync(new ListObjectsRequest
+        {
+            BucketName = bucketName
+        }).ToArrayAsync());
+        Assert.Equal(key, listedObject.Key);
+
+        var getResult = await storageService.GetObjectAsync(new GetObjectRequest
+        {
+            BucketName = bucketName,
+            Key = key
+        });
+
+        Assert.True(getResult.IsSuccess);
+        await using (var response = getResult.Value!) {
+            using var reader = new StreamReader(response.Content, Encoding.UTF8, leaveOpen: false);
+            Assert.Equal("reserved key payload", await reader.ReadToEndAsync());
+        }
+
+        Assert.True((await storageService.DeleteObjectAsync(new DeleteObjectRequest
+        {
+            BucketName = bucketName,
+            Key = key
+        })).IsSuccess);
+
+        Assert.Empty(await storageService.ListObjectsAsync(new ListObjectsRequest
+        {
+            BucketName = bucketName
+        }).ToArrayAsync());
+    }
+
+    [Fact]
+    public async Task DiskStorage_CaseOnlyDifferingKeys_NeverAlias()
+    {
+        await using var fixture = new DiskStorageFixture();
+        var storageService = fixture.Services.GetRequiredService<IStorageBackend>();
+        const string bucketName = "key-encoding-casing";
+
+        Assert.True((await storageService.CreateBucketAsync(new CreateBucketRequest
+        {
+            BucketName = bucketName
+        })).IsSuccess);
+
+        await using var upperContent = new MemoryStream(Encoding.UTF8.GetBytes("uppercase payload"));
+        Assert.True((await storageService.PutObjectAsync(new PutObjectRequest
+        {
+            BucketName = bucketName,
+            Key = "Docs/Value.txt",
+            Content = upperContent,
+            ContentType = "text/plain"
+        })).IsSuccess);
+
+        await using var lowerContent = new MemoryStream(Encoding.UTF8.GetBytes("lowercase payload"));
+        var lowerPut = await storageService.PutObjectAsync(new PutObjectRequest
+        {
+            BucketName = bucketName,
+            Key = "docs/value.txt",
+            Content = lowerContent,
+            ContentType = "text/plain"
+        });
+
+        // On a case-sensitive filesystem both keys coexist; on a case-insensitive one the
+        // second write must be rejected instead of silently overwriting the first object.
+        var upperGet = await storageService.GetObjectAsync(new GetObjectRequest
+        {
+            BucketName = bucketName,
+            Key = "Docs/Value.txt"
+        });
+
+        Assert.True(upperGet.IsSuccess);
+        await using (var response = upperGet.Value!) {
+            using var reader = new StreamReader(response.Content, Encoding.UTF8, leaveOpen: false);
+            Assert.Equal("uppercase payload", await reader.ReadToEndAsync());
+        }
+
+        if (lowerPut.IsSuccess) {
+            var lowerGet = await storageService.GetObjectAsync(new GetObjectRequest
+            {
+                BucketName = bucketName,
+                Key = "docs/value.txt"
+            });
+
+            Assert.True(lowerGet.IsSuccess);
+            await using var response = lowerGet.Value!;
+            using var reader = new StreamReader(response.Content, Encoding.UTF8, leaveOpen: false);
+            Assert.Equal("lowercase payload", await reader.ReadToEndAsync());
+        }
+        else {
+            Assert.Equal(StorageErrorCode.UnsupportedCapability, lowerPut.Error!.Code);
+            Assert.Contains("casing", lowerPut.Error.Message, StringComparison.OrdinalIgnoreCase);
+            Assert.False((await storageService.HeadObjectAsync(new HeadObjectRequest
+            {
+                BucketName = bucketName,
+                Key = "docs/value.txt"
+            })).IsSuccess);
+        }
+    }
+
+    [Fact]
+    public async Task DiskStorage_ConcurrentSameKeyPuts_PreserveEveryVersion()
+    {
+        await using var fixture = new DiskStorageFixture();
+        var storageService = fixture.Services.GetRequiredService<IStorageBackend>();
+        const string bucketName = "concurrent-put-versions";
+        const string key = "docs/contended.txt";
+        const int writerCount = 16;
+
+        Assert.True((await storageService.CreateBucketAsync(new CreateBucketRequest
+        {
+            BucketName = bucketName,
+            EnableVersioning = true
+        })).IsSuccess);
+
+        var versionIdsByPayload = new System.Collections.Concurrent.ConcurrentDictionary<string, string>(StringComparer.Ordinal);
+        await Parallel.ForAsync(0, writerCount, async (writerIndex, cancellationToken) => {
+            var payload = $"concurrent payload {writerIndex}";
+            await using var content = new MemoryStream(Encoding.UTF8.GetBytes(payload));
+            var putResult = await storageService.PutObjectAsync(new PutObjectRequest
+            {
+                BucketName = bucketName,
+                Key = key,
+                Content = content,
+                ContentType = "text/plain"
+            }, cancellationToken);
+
+            Assert.True(putResult.IsSuccess);
+            Assert.True(versionIdsByPayload.TryAdd(payload, putResult.Value!.VersionId!));
+        });
+
+        Assert.Equal(writerCount, versionIdsByPayload.Values.Distinct(StringComparer.Ordinal).Count());
+
+        var versions = await storageService.ListObjectVersionsAsync(new ListObjectVersionsRequest
+        {
+            BucketName = bucketName,
+            Prefix = key
+        }).ToArrayAsync();
+
+        Assert.Equal(writerCount, versions.Length);
+        Assert.Single(versions, static version => version.IsLatest);
+        Assert.All(versions, static version => Assert.False(version.IsDeleteMarker));
+
+        foreach (var (payload, versionId) in versionIdsByPayload) {
+            var getResult = await storageService.GetObjectAsync(new GetObjectRequest
+            {
+                BucketName = bucketName,
+                Key = key,
+                VersionId = versionId
+            });
+
+            Assert.True(getResult.IsSuccess);
+            await using var response = getResult.Value!;
+            using var reader = new StreamReader(response.Content, Encoding.UTF8, leaveOpen: false);
+            Assert.Equal(payload, await reader.ReadToEndAsync());
+        }
+
+        // Every archived content file must belong to a surviving version record; a lost
+        // update would leave an orphaned version directory (or drop a version) instead.
+        var versionsRootPath = Path.Combine(fixture.RootPath, bucketName, ".integrateds3-versions");
+        var archivedVersionDirectories = Directory.GetDirectories(versionsRootPath, "*", SearchOption.AllDirectories)
+            .Where(static directory => File.Exists(Path.Combine(directory, "content")))
+            .Select(static directory => Path.GetFileName(directory))
+            .ToArray();
+
+        Assert.Equal(writerCount - 1, archivedVersionDirectories.Length);
+        Assert.All(archivedVersionDirectories, versionDirectory =>
+            Assert.Contains(versionDirectory, versionIdsByPayload.Values));
+    }
+
+    [Fact]
+    public async Task DiskStorage_ConcurrentBucketConfigurationUpdates_DoNotLoseEachOther()
+    {
+        await using var fixture = new DiskStorageFixture();
+        var storageService = fixture.Services.GetRequiredService<IStorageBackend>();
+        const string bucketName = "concurrent-bucket-config";
+        const int updateRounds = 8;
+
+        Assert.True((await storageService.CreateBucketAsync(new CreateBucketRequest
+        {
+            BucketName = bucketName
+        })).IsSuccess);
+
+        var taggingUpdates = Task.Run(async () => {
+            for (var round = 0; round < updateRounds; round++) {
+                Assert.True((await storageService.PutBucketTaggingAsync(new PutBucketTaggingRequest
+                {
+                    BucketName = bucketName,
+                    Tags = new Dictionary<string, string>(StringComparer.Ordinal)
+                    {
+                        ["round"] = round.ToString()
+                    }
+                })).IsSuccess);
+            }
+        });
+
+        var loggingUpdates = Task.Run(async () => {
+            for (var round = 0; round < updateRounds; round++) {
+                Assert.True((await storageService.PutBucketLoggingAsync(new PutBucketLoggingRequest
+                {
+                    BucketName = bucketName,
+                    TargetBucket = "audit-bucket",
+                    TargetPrefix = $"round-{round}/"
+                })).IsSuccess);
+            }
+        });
+
+        var accelerateUpdates = Task.Run(async () => {
+            for (var round = 0; round < updateRounds; round++) {
+                Assert.True((await storageService.PutBucketAccelerateAsync(new PutBucketAccelerateRequest
+                {
+                    BucketName = bucketName,
+                    Status = BucketAccelerateStatus.Enabled
+                })).IsSuccess);
+            }
+        });
+
+        await Task.WhenAll(taggingUpdates, loggingUpdates, accelerateUpdates);
+
+        // Without serialized read-modify-write cycles one writer's final state could drop
+        // another configuration section entirely.
+        var tagging = await storageService.GetBucketTaggingAsync(bucketName);
+        Assert.True(tagging.IsSuccess);
+        Assert.Equal((updateRounds - 1).ToString(), tagging.Value!.Tags["round"]);
+
+        var logging = await storageService.GetBucketLoggingAsync(bucketName);
+        Assert.True(logging.IsSuccess);
+        Assert.Equal("audit-bucket", logging.Value!.TargetBucket);
+        Assert.Equal($"round-{updateRounds - 1}/", logging.Value.TargetPrefix);
+
+        var accelerate = await storageService.GetBucketAccelerateAsync(bucketName);
+        Assert.True(accelerate.IsSuccess);
+        Assert.Equal(BucketAccelerateStatus.Enabled, accelerate.Value!.Status);
+    }
+
+    [Fact]
+    public async Task DiskStorage_PutObjectLockConfiguration_RequiresVersioningEnabled()
+    {
+        await using var fixture = new DiskStorageFixture();
+        var storageService = fixture.Services.GetRequiredService<IStorageBackend>();
+        const string bucketName = "object-lock-needs-versioning";
+
+        Assert.True((await storageService.CreateBucketAsync(new CreateBucketRequest
+        {
+            BucketName = bucketName
+        })).IsSuccess);
+
+        var putObjectLock = await storageService.PutObjectLockConfigurationAsync(new PutObjectLockConfigurationRequest
+        {
+            BucketName = bucketName,
+            ObjectLockEnabled = true,
+            DefaultRetention = new ObjectLockDefaultRetention
+            {
+                Mode = ObjectRetentionMode.Compliance,
+                Days = 1
+            }
+        });
+
+        Assert.False(putObjectLock.IsSuccess);
+        Assert.Equal(StorageErrorCode.VersionConflict, putObjectLock.Error!.Code);
+        Assert.Equal(409, putObjectLock.Error.SuggestedHttpStatusCode);
+        Assert.Contains("versioning", putObjectLock.Error.Message, StringComparison.OrdinalIgnoreCase);
+
+        var getObjectLock = await storageService.GetObjectLockConfigurationAsync(bucketName);
+        Assert.False(getObjectLock.IsSuccess);
+        Assert.Equal(StorageErrorCode.ObjectLockConfigurationNotFound, getObjectLock.Error!.Code);
+    }
+
+    [Fact]
+    public async Task DiskStorage_DeleteObjectVersion_InsideDefaultRetentionWindow_IsRefused()
+    {
+        await using var fixture = new DiskStorageFixture();
+        var storageService = fixture.Services.GetRequiredService<IStorageBackend>();
+        const string bucketName = "object-lock-retention";
+        const string key = "docs/locked.txt";
+
+        Assert.True((await storageService.CreateBucketAsync(new CreateBucketRequest
+        {
+            BucketName = bucketName,
+            EnableVersioning = true
+        })).IsSuccess);
+
+        Assert.True((await storageService.PutObjectLockConfigurationAsync(new PutObjectLockConfigurationRequest
+        {
+            BucketName = bucketName,
+            ObjectLockEnabled = true,
+            DefaultRetention = new ObjectLockDefaultRetention
+            {
+                Mode = ObjectRetentionMode.Compliance,
+                Days = 1
+            }
+        })).IsSuccess);
+
+        string versionId;
+        await using (var content = new MemoryStream(Encoding.UTF8.GetBytes("protected payload"))) {
+            var putResult = await storageService.PutObjectAsync(new PutObjectRequest
+            {
+                BucketName = bucketName,
+                Key = key,
+                Content = content,
+                ContentType = "text/plain"
+            });
+
+            Assert.True(putResult.IsSuccess);
+            versionId = putResult.Value!.VersionId!;
+        }
+
+        var versionDelete = await storageService.DeleteObjectAsync(new DeleteObjectRequest
+        {
+            BucketName = bucketName,
+            Key = key,
+            VersionId = versionId
+        });
+
+        Assert.False(versionDelete.IsSuccess);
+        Assert.Equal(StorageErrorCode.ObjectLocked, versionDelete.Error!.Code);
+        Assert.Equal(403, versionDelete.Error.SuggestedHttpStatusCode);
+        Assert.Equal(versionId, versionDelete.Error.VersionId);
+
+        // A delete without a version id only writes a delete marker and never destroys
+        // content, so object lock must not block it.
+        var markerDelete = await storageService.DeleteObjectAsync(new DeleteObjectRequest
+        {
+            BucketName = bucketName,
+            Key = key
+        });
+
+        Assert.True(markerDelete.IsSuccess);
+        Assert.True(markerDelete.Value!.IsDeleteMarker);
+
+        var lockedGet = await storageService.GetObjectAsync(new GetObjectRequest
+        {
+            BucketName = bucketName,
+            Key = key,
+            VersionId = versionId
+        });
+
+        Assert.True(lockedGet.IsSuccess);
+        await using (var response = lockedGet.Value!) {
+            using var reader = new StreamReader(response.Content, Encoding.UTF8, leaveOpen: false);
+            Assert.Equal("protected payload", await reader.ReadToEndAsync());
+        }
+
+        var lockedVersionStillDenied = await storageService.DeleteObjectAsync(new DeleteObjectRequest
+        {
+            BucketName = bucketName,
+            Key = key,
+            VersionId = versionId
+        });
+
+        Assert.False(lockedVersionStillDenied.IsSuccess);
+        Assert.Equal(StorageErrorCode.ObjectLocked, lockedVersionStillDenied.Error!.Code);
+    }
+
+    [Fact]
+    public async Task DiskStorage_PermanentDeleteOfLockedObject_AfterVersioningSuspended_IsRefused()
+    {
+        await using var fixture = new DiskStorageFixture();
+        var storageService = fixture.Services.GetRequiredService<IStorageBackend>();
+        const string bucketName = "object-lock-suspended";
+        const string key = "docs/still-locked.txt";
+
+        Assert.True((await storageService.CreateBucketAsync(new CreateBucketRequest
+        {
+            BucketName = bucketName,
+            EnableVersioning = true
+        })).IsSuccess);
+
+        Assert.True((await storageService.PutObjectLockConfigurationAsync(new PutObjectLockConfigurationRequest
+        {
+            BucketName = bucketName,
+            ObjectLockEnabled = true,
+            DefaultRetention = new ObjectLockDefaultRetention
+            {
+                Mode = ObjectRetentionMode.Compliance,
+                Days = 1
+            }
+        })).IsSuccess);
+
+        await using (var content = new MemoryStream(Encoding.UTF8.GetBytes("suspended payload"))) {
+            Assert.True((await storageService.PutObjectAsync(new PutObjectRequest
+            {
+                BucketName = bucketName,
+                Key = key,
+                Content = content,
+                ContentType = "text/plain"
+            })).IsSuccess);
+        }
+
+        Assert.True((await storageService.PutBucketVersioningAsync(new PutBucketVersioningRequest
+        {
+            BucketName = bucketName,
+            Status = BucketVersioningStatus.Suspended
+        })).IsSuccess);
+
+        // With versioning suspended a delete without a version id becomes a permanent
+        // delete, so the retention window must still refuse it.
+        var permanentDelete = await storageService.DeleteObjectAsync(new DeleteObjectRequest
+        {
+            BucketName = bucketName,
+            Key = key
+        });
+
+        Assert.False(permanentDelete.IsSuccess);
+        Assert.Equal(StorageErrorCode.ObjectLocked, permanentDelete.Error!.Code);
+        Assert.Equal(403, permanentDelete.Error.SuggestedHttpStatusCode);
+
+        var stillReadable = await storageService.GetObjectAsync(new GetObjectRequest
+        {
+            BucketName = bucketName,
+            Key = key
+        });
+
+        Assert.True(stillReadable.IsSuccess);
+        await using var stillReadableResponse = stillReadable.Value!;
+        using var stillReadableReader = new StreamReader(stillReadableResponse.Content, Encoding.UTF8, leaveOpen: false);
+        Assert.Equal("suspended payload", await stillReadableReader.ReadToEndAsync());
     }
 
     private static void AssertUnsupportedServerSideEncryption(StorageError? error, string bucketName, string objectKey)

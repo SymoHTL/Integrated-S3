@@ -201,6 +201,9 @@ public static class S3XmlResponseWriter
         return WriteCopyResultCore("CopyObjectResult", response);
     }
 
+    /// <summary>Writes a CopyPartResult (UploadPartCopy response) as an XML response body.</summary>
+    /// <param name="response">The <see cref="S3CopyObjectResult"/> to serialize.</param>
+    /// <returns>The XML string.</returns>
     public static string WriteCopyPartResult(S3CopyObjectResult response)
     {
         ArgumentNullException.ThrowIfNull(response);

@@ -1,5 +1,6 @@
 namespace IntegratedS3.Core.Models;
 
+/// <summary>Describes how a presigned URL grants access to the underlying object.</summary>
 public enum StorageAccessMode
 {
     /// <summary>

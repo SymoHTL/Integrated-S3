@@ -69,6 +69,34 @@ public sealed class IntegratedS3StartupValidationTests
     }
 
     [Fact]
+    public void OptionsValidation_SucceedsWhenSigV4EnabledWithoutCredentialsButCustomCredentialResolverRegistered()
+    {
+        var services = new ServiceCollection();
+        services.AddIntegratedS3(options =>
+        {
+            options.EnableAwsSignatureV4Authentication = true;
+            options.AccessKeyCredentials = [];
+        });
+        services.AddSingleton<IIntegratedS3CredentialResolver, EmptyCredentialResolver>();
+
+        using var serviceProvider = services.BuildServiceProvider();
+
+        var options = serviceProvider.GetRequiredService<IOptions<IntegratedS3Options>>().Value;
+
+        Assert.True(options.EnableAwsSignatureV4Authentication);
+        Assert.Empty(options.AccessKeyCredentials);
+    }
+
+    private sealed class EmptyCredentialResolver : IIntegratedS3CredentialResolver
+    {
+        public ValueTask<IntegratedS3AccessKeyCredential?> ResolveAsync(string accessKeyId, CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return ValueTask.FromResult<IntegratedS3AccessKeyCredential?>(null);
+        }
+    }
+
+    [Fact]
     public void OptionsValidation_FailsWhenRoutePrefixMissesLeadingSlash()
     {
         var validator = new IntegratedS3OptionsValidator();
@@ -108,6 +136,33 @@ public sealed class IntegratedS3StartupValidationTests
 
         Assert.True(result.Failed);
         Assert.Contains("MaximumPresignedUrlExpirySeconds must be a positive integer", result.FailureMessage);
+    }
+
+    [Fact]
+    public void OptionsValidation_FailsWhenMaxObjectSizeBytesIsNotPositive()
+    {
+        var validator = new IntegratedS3OptionsValidator();
+
+        var result = validator.Validate(null, new IntegratedS3Options
+        {
+            MaxObjectSizeBytes = 0
+        });
+
+        Assert.True(result.Failed);
+        Assert.Contains("MaxObjectSizeBytes must be a positive number of bytes", result.FailureMessage);
+    }
+
+    [Fact]
+    public void OptionsValidation_SucceedsWhenMaxObjectSizeBytesIsPositive()
+    {
+        var validator = new IntegratedS3OptionsValidator();
+
+        var result = validator.Validate(null, new IntegratedS3Options
+        {
+            MaxObjectSizeBytes = 5L * 1024 * 1024 * 1024
+        });
+
+        Assert.True(result.Succeeded);
     }
 
     [Fact]

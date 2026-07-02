@@ -11,13 +11,13 @@
 
 - **S3-compatible REST API** — bucket and object operations over standard HTTP
 - **Pluggable backends** — ship with disk and native S3 providers, or bring your own
-- **SigV4 / SigV4a authentication** — optional AWS Signature V4 request signing and verification
+- **SigV4 / SigV4a authentication** — optional AWS Signature V4 request signing and verification, with pluggable credential resolution and restart-free key rotation
 - **Multi-backend orchestration** — replication policies across providers
-- **Presigned URLs** — time-limited, shareable download/upload links
+- **Presigned URLs** — time-limited, shareable links for downloads, uploads, deletes, metadata reads, and multipart part uploads
 - **Multipart uploads** — chunked uploads with server-managed assembly
-- **Versioning & object lock** — per-bucket version history and retention policies
-- **Bucket configuration** — tagging, lifecycle, CORS, and policy support
-- **Server-side encryption (SSE)** — encryption at the storage layer
+- **Versioning & object lock** — per-bucket version history; bucket default retention blocks in-window permanent deletes (per-object retention and legal hold require a provider with native support)
+- **Bucket configuration** — tagging, lifecycle, CORS, and policy support (the disk provider stores and serves lifecycle/replication/website/logging/notification configuration without executing it; the native S3 provider delegates to the backing service)
+- **Server-side encryption (SSE)** — SSE and SSE-C request handling with the native S3 provider (the disk provider rejects encryption requests with `NotImplemented`)
 - **Health checks** — liveness and readiness probes for each backend
 - **OpenTelemetry observability** — built-in traces, metrics, and structured logging
 - **AOT & trimming compatible** — targets .NET 10 with zero AOT warnings
@@ -131,6 +131,8 @@ builder.Services.AddIntegratedS3Backend<MyCustomBackend>();
 
 See [docs/provider-contract-testing.md](docs/provider-contract-testing.md) for the xUnit harness that validates your implementation against the full storage contract.
 
+Not every provider supports every operation — per-object retention, legal hold, `RestoreObject`, `SelectObjectContent`, bucket default encryption, and SSE are native-S3-provider features that the disk provider rejects with `NotImplemented`. See the [provider capability matrix](docs/protocol-compatibility.md#provider-capability-matrix) for the full per-provider breakdown.
+
 ---
 
 ## Health Checks
@@ -170,7 +172,7 @@ See [docs/observability.md](docs/observability.md) for the full list of instrume
 | Document | Description |
 |---|---|
 | [Getting Started](docs/getting-started.md) | First-time setup, installation, and basic usage guide |
-| [Protocol Compatibility](docs/protocol-compatibility.md) | S3 protocol coverage, supported operations, and compatibility notes |
+| [Protocol Compatibility](docs/protocol-compatibility.md) | S3 protocol coverage, per-provider capability matrix, and compatibility notes |
 | [Implementation Plan](docs/integrated-s3-implementation-plan.md) | Architecture overview, module breakdown, and roadmap |
 | [WebUi Reference Host](docs/webui-reference-host.md) | Full configuration and wiring reference for the sample host |
 | [Consumer Samples](docs/web-consumer-samples.md) | Minimal API, MVC/Razor, and Blazor WASM sample apps |
@@ -197,6 +199,14 @@ dotnet run --project src/IntegratedS3/WebUi/WebUi.csproj
 # Validate AOT/trimming
 dotnet publish -c Release --self-contained src/IntegratedS3/WebUi/WebUi.csproj
 ```
+
+---
+
+## Contributing & Security
+
+Contributions are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md) for the development workflow, build/test requirements, and pull request process. Release history lives in [CHANGELOG.md](CHANGELOG.md).
+
+To report a security vulnerability, please use the private channel described in [SECURITY.md](SECURITY.md) — do not open a public issue.
 
 ---
 

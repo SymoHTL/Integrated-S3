@@ -6,6 +6,11 @@
         <ImplicitUsings>enable</ImplicitUsings>
         <InvariantGlobalization>true</InvariantGlobalization>
         <PublishAot>true</PublishAot>
+        <!-- eng/Invoke-AotPublishValidation.ps1 tracks the IL2026/IL3050 warning baseline for this
+             reference host during publish; keep ILC/ILLink diagnostics as warnings so the baseline
+             stays observable instead of failing the publish under TreatWarningsAsErrors. -->
+        <IlcTreatWarningsAsErrors>false</IlcTreatWarningsAsErrors>
+        <ILLinkTreatWarningsAsErrors>false</ILLinkTreatWarningsAsErrors>
         <Description>Reference host for IntegratedS3 using the minimal ASP.NET integration surface with disk or S3-backed storage.</Description>
         <IsPackable>false</IsPackable>
         <NoWarn>$(NoWarn);CS1591</NoWarn>

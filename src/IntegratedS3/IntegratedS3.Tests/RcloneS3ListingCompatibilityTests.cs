@@ -45,7 +45,7 @@ public sealed class RcloneS3ListingCompatibilityTests : IClassFixture<WebUiAppli
         Assert.Equal("4", RequiredValue(doc, "KeyCount"));
         Assert.Equal(4, contents.Length);
 
-        var keys = contents.Select(c => c.Element(S3Ns + "Key")?.Value).OrderBy(k => k).ToArray();
+        var keys = contents.Select(c => c.Element(S3Ns + "Key")!.Value).OrderBy(k => k).ToArray();
         Assert.Equal(["another.bin", "flat.txt", "nested/deep/file.txt", "nested/shallow.txt"], keys);
 
         foreach (var content in contents) {

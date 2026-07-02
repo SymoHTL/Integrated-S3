@@ -483,5 +483,8 @@ FodyWeavers.xsd
 # JetBrains Rider
 *.sln.iml
 
+# Ignore JetBrains .idea project directories at any depth
+# (previously tracked .idea/.gitignore stubs were removed from the index).
+.idea/
 /.idea/
 /src/IntegratedS3/.idea/

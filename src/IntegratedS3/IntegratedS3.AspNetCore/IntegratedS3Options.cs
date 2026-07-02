@@ -58,6 +58,19 @@ public sealed class IntegratedS3Options
     public int MaximumPresignedUrlExpirySeconds { get; set; } = 60 * 60;
 
     /// <summary>
+    /// Maximum request-body size in bytes accepted by object upload endpoints
+    /// (<c>PutObject</c> and <c>UploadPart</c>). Defaults to <see langword="null"/>.
+    /// </summary>
+    /// <remarks>
+    /// The object upload endpoints override the host's per-request body-size limit
+    /// (for example Kestrel's default of ~28.6 MiB) with this value before the body is read.
+    /// <see langword="null"/> removes the limit for those endpoints so uploads up to the
+    /// S3 maximum of 5 GiB per request succeed; set an explicit value to cap upload sizes.
+    /// Other endpoints keep the host-configured limit.
+    /// </remarks>
+    public long? MaxObjectSizeBytes { get; set; }
+
+    /// <summary>
     /// List of access key / secret key pairs for SigV4 authentication.
     /// </summary>
     /// <remarks>

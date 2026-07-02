@@ -467,6 +467,119 @@ public sealed class IntegratedS3HttpPresignStrategyTests
     }
 
     // -------------------------------------------------------------------------
+    // DELETE / HEAD / UploadPart presigns — proxy issuance and direct grants
+    // -------------------------------------------------------------------------
+
+    [Theory]
+    [InlineData(StoragePresignOperation.DeleteObject, "DELETE")]
+    [InlineData(StoragePresignOperation.HeadObject, "HEAD")]
+    public async Task PresignObjectAsync_DeleteAndHeadObject_ReturnProxySignedUrlWithVersionQuery(
+        StoragePresignOperation operation, string expectedMethod)
+    {
+        var presignService = BuildPresignService(
+            new StubLocationResolver(resolvedLocation: null),
+            enableSigV4: true);
+
+        var request = new StoragePresignRequest
+        {
+            Operation = operation,
+            BucketName = "bucket",
+            Key = "key",
+            VersionId = "v-123",
+            ExpiresInSeconds = 300
+        };
+
+        var result = await presignService.PresignObjectAsync(AnyPrincipal, request);
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(StorageAccessMode.Proxy, result.Value?.AccessMode);
+        Assert.Equal(expectedMethod, result.Value?.Method);
+        Assert.Equal("v-123", result.Value?.VersionId);
+        Assert.Empty(result.Value!.Headers);
+
+        var queryParameters = S3SigV4QueryStringParser.Parse(result.Value.Url.Query).ToArray();
+        Assert.Contains(queryParameters, static pair => pair.Key == "versionId" && pair.Value == "v-123");
+        Assert.Contains(queryParameters, static pair => pair.Key == "X-Amz-Signature");
+    }
+
+    [Fact]
+    public async Task PresignObjectAsync_UploadPart_ReturnsProxySignedUrlWithUploadIdAndPartNumberQuery()
+    {
+        var presignService = BuildPresignService(
+            new StubLocationResolver(resolvedLocation: null),
+            enableSigV4: true);
+
+        var request = new StoragePresignRequest
+        {
+            Operation = StoragePresignOperation.UploadPart,
+            BucketName = "bucket",
+            Key = "key",
+            ExpiresInSeconds = 300,
+            UploadId = "upload-123",
+            PartNumber = 7
+        };
+
+        var result = await presignService.PresignObjectAsync(AnyPrincipal, request);
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(StorageAccessMode.Proxy, result.Value?.AccessMode);
+        Assert.Equal("PUT", result.Value?.Method);
+
+        var queryParameters = S3SigV4QueryStringParser.Parse(result.Value!.Url.Query).ToArray();
+        Assert.Contains(queryParameters, static pair => pair.Key == "uploadId" && pair.Value == "upload-123");
+        Assert.Contains(queryParameters, static pair => pair.Key == "partNumber" && pair.Value == "7");
+        Assert.Contains(queryParameters, static pair => pair.Key == "X-Amz-Signature");
+    }
+
+    [Theory]
+    [InlineData(StoragePresignOperation.DeleteObject, StorageDirectObjectAccessOperation.DeleteObject, "DELETE")]
+    [InlineData(StoragePresignOperation.HeadObject, StorageDirectObjectAccessOperation.HeadObject, "HEAD")]
+    [InlineData(StoragePresignOperation.UploadPart, StorageDirectObjectAccessOperation.UploadPart, "PUT")]
+    public async Task PresignObjectAsync_WhenDirectPreferred_ForwardsNewOperationsToPrimaryBackend(
+        StoragePresignOperation operation,
+        StorageDirectObjectAccessOperation expectedDirectOperation,
+        string expectedMethod)
+    {
+        var directUrl = new Uri("https://primary.example.com/bucket/key?sig=direct", UriKind.Absolute);
+        var backend = new DirectPresignStorageBackend(
+            "primary",
+            isPrimary: true,
+            StorageResult<StorageDirectObjectAccessGrant>.Success(new StorageDirectObjectAccessGrant
+            {
+                Url = directUrl,
+                ExpiresAtUtc = DateTimeOffset.UtcNow.AddMinutes(5)
+            }));
+
+        var presignService = BuildPresignService(
+            new StubLocationResolver(resolvedLocation: null),
+            enableSigV4: false,
+            backends: [backend]);
+
+        var request = new StoragePresignRequest
+        {
+            Operation = operation,
+            BucketName = "bucket",
+            Key = "key",
+            ExpiresInSeconds = 300,
+            UploadId = operation == StoragePresignOperation.UploadPart ? "upload-123" : null,
+            PartNumber = operation == StoragePresignOperation.UploadPart ? 3 : null,
+            PreferredAccessMode = StorageAccessMode.Direct
+        };
+
+        var result = await presignService.PresignObjectAsync(AnyPrincipal, request);
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(StorageAccessMode.Direct, result.Value?.AccessMode);
+        Assert.Equal(expectedMethod, result.Value?.Method);
+        Assert.Equal(directUrl, result.Value?.Url);
+        Assert.Equal(expectedDirectOperation, backend.LastRequest?.Operation);
+        if (operation == StoragePresignOperation.UploadPart) {
+            Assert.Equal("upload-123", backend.LastRequest?.UploadId);
+            Assert.Equal(3, backend.LastRequest?.PartNumber);
+        }
+    }
+
+    // -------------------------------------------------------------------------
     // Default behavior — no preferred mode bypasses resolver entirely
     // -------------------------------------------------------------------------
 

@@ -144,6 +144,104 @@ public sealed class S3StorageServiceTests
         Assert.Contains(result.Value.Headers, header => header.Key == "Content-Type" && header.Value == "text/plain");
     }
 
+    [Fact]
+    public async Task PresignObjectDirectAsync_DeleteObject_ReturnsNativeGrantAndForwardsVersion()
+    {
+        var fake = new FakeS3Client
+        {
+            PresignedDeleteObjectUrl = new Uri("https://s3.test/my-bucket/docs%2Fguide.txt?versionId=v-123&X-Amz-Signature=test-delete", UriKind.Absolute)
+        };
+        var svc = BuildService(fake);
+
+        var result = await svc.PresignObjectDirectAsync(new StorageDirectObjectAccessRequest
+        {
+            Operation = StorageDirectObjectAccessOperation.DeleteObject,
+            BucketName = "my-bucket",
+            Key = "docs/guide.txt",
+            VersionId = "v-123",
+            ExpiresInSeconds = 300
+        });
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(fake.PresignedDeleteObjectUrl, result.Value?.Url);
+        Assert.Equal(1, fake.PresignedDeleteObjectUrlCalls);
+        Assert.Equal("my-bucket", fake.LastPresignedBucketName);
+        Assert.Equal("docs/guide.txt", fake.LastPresignedKey);
+        Assert.Equal("v-123", fake.LastPresignedVersionId);
+        Assert.Empty(result.Value!.Headers);
+    }
+
+    [Fact]
+    public async Task PresignObjectDirectAsync_HeadObject_ReturnsNativeGrantAndForwardsVersion()
+    {
+        var fake = new FakeS3Client
+        {
+            PresignedHeadObjectUrl = new Uri("https://s3.test/my-bucket/docs%2Fguide.txt?versionId=v-456&X-Amz-Signature=test-head", UriKind.Absolute)
+        };
+        var svc = BuildService(fake);
+
+        var result = await svc.PresignObjectDirectAsync(new StorageDirectObjectAccessRequest
+        {
+            Operation = StorageDirectObjectAccessOperation.HeadObject,
+            BucketName = "my-bucket",
+            Key = "docs/guide.txt",
+            VersionId = "v-456",
+            ExpiresInSeconds = 300
+        });
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(fake.PresignedHeadObjectUrl, result.Value?.Url);
+        Assert.Equal(1, fake.PresignedHeadObjectUrlCalls);
+        Assert.Equal("my-bucket", fake.LastPresignedBucketName);
+        Assert.Equal("docs/guide.txt", fake.LastPresignedKey);
+        Assert.Equal("v-456", fake.LastPresignedVersionId);
+        Assert.Empty(result.Value!.Headers);
+    }
+
+    [Fact]
+    public async Task PresignObjectDirectAsync_UploadPart_ReturnsNativeGrantAndForwardsUploadIdAndPartNumber()
+    {
+        var fake = new FakeS3Client
+        {
+            PresignedUploadPartUrl = new Uri("https://s3.test/my-bucket/docs%2Fguide.txt?partNumber=2&uploadId=upload-1&X-Amz-Signature=test-part", UriKind.Absolute)
+        };
+        var svc = BuildService(fake);
+
+        var result = await svc.PresignObjectDirectAsync(new StorageDirectObjectAccessRequest
+        {
+            Operation = StorageDirectObjectAccessOperation.UploadPart,
+            BucketName = "my-bucket",
+            Key = "docs/guide.txt",
+            UploadId = "upload-1",
+            PartNumber = 2,
+            ExpiresInSeconds = 300
+        });
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(fake.PresignedUploadPartUrl, result.Value?.Url);
+        Assert.Equal(1, fake.PresignedUploadPartUrlCalls);
+        Assert.Equal("my-bucket", fake.LastPresignedBucketName);
+        Assert.Equal("docs/guide.txt", fake.LastPresignedKey);
+        Assert.Equal("upload-1", fake.LastPresignedUploadId);
+        Assert.Equal(2, fake.LastPresignedPartNumber);
+        Assert.Empty(result.Value!.Headers);
+    }
+
+    [Fact]
+    public async Task PresignObjectDirectAsync_UploadPart_WithoutUploadId_Throws()
+    {
+        var svc = BuildService(new FakeS3Client());
+
+        await Assert.ThrowsAsync<ArgumentException>(() => svc.PresignObjectDirectAsync(new StorageDirectObjectAccessRequest
+        {
+            Operation = StorageDirectObjectAccessOperation.UploadPart,
+            BucketName = "my-bucket",
+            Key = "docs/guide.txt",
+            PartNumber = 1,
+            ExpiresInSeconds = 300
+        }).AsTask());
+    }
+
     // --- ListBucketsAsync ---
 
     [Fact]
@@ -1627,10 +1725,12 @@ public sealed class S3StorageServiceTests
         Assert.True(result.IsSuccess);
         Assert.NotNull(fake.LastCopyRequest);
         Assert.Equal("text/plain", fake.LastCopyRequest!.ContentType);
+        Assert.NotNull(fake.LastCopyRequest.Metadata);
         Assert.Equal("1712345678", fake.LastCopyRequest.Metadata["mtime"]);
         Assert.Equal("rclone", fake.LastCopyRequest.Metadata["updated-by"]);
         Assert.False(fake.LastCopyRequest.Metadata.ContainsKey("source-only"));
         Assert.Equal("text/plain", result.Value!.ContentType);
+        Assert.NotNull(result.Value.Metadata);
         Assert.Equal("1712345678", result.Value.Metadata["mtime"]);
         Assert.Equal("rclone", result.Value.Metadata["updated-by"]);
         Assert.False(result.Value.Metadata.ContainsKey("source-only"));
@@ -2582,6 +2682,14 @@ internal sealed class FakeS3Client : IS3StorageClient
     public DateTimeOffset? LastPresignedExpiresAtUtc { get; private set; }
     public int PresignedGetObjectUrlCalls { get; private set; }
     public int PresignedPutObjectUrlCalls { get; private set; }
+    public Uri? PresignedDeleteObjectUrl { get; set; }
+    public Uri? PresignedHeadObjectUrl { get; set; }
+    public Uri? PresignedUploadPartUrl { get; set; }
+    public string? LastPresignedUploadId { get; private set; }
+    public int? LastPresignedPartNumber { get; private set; }
+    public int PresignedDeleteObjectUrlCalls { get; private set; }
+    public int PresignedHeadObjectUrlCalls { get; private set; }
+    public int PresignedUploadPartUrlCalls { get; private set; }
 
     // Get object
     public S3GetObjectResult? GetObjectResult { get; set; }
@@ -2852,6 +2960,62 @@ internal sealed class FakeS3Client : IS3StorageClient
         LastPresignedExpiresAtUtc = expiresAtUtc;
 
         return Task.FromResult(PresignedPutObjectUrl ?? new Uri($"https://s3.test/{bucketName}/{Uri.EscapeDataString(key)}?X-Amz-Signature=test-put", UriKind.Absolute));
+    }
+
+    public Task<Uri> CreatePresignedDeleteObjectUrlAsync(
+        string bucketName,
+        string key,
+        string? versionId,
+        DateTimeOffset expiresAtUtc,
+        CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+
+        PresignedDeleteObjectUrlCalls++;
+        LastPresignedBucketName = bucketName;
+        LastPresignedKey = key;
+        LastPresignedVersionId = versionId;
+        LastPresignedExpiresAtUtc = expiresAtUtc;
+
+        return Task.FromResult(PresignedDeleteObjectUrl ?? new Uri($"https://s3.test/{bucketName}/{Uri.EscapeDataString(key)}?X-Amz-Signature=test-delete", UriKind.Absolute));
+    }
+
+    public Task<Uri> CreatePresignedHeadObjectUrlAsync(
+        string bucketName,
+        string key,
+        string? versionId,
+        DateTimeOffset expiresAtUtc,
+        CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+
+        PresignedHeadObjectUrlCalls++;
+        LastPresignedBucketName = bucketName;
+        LastPresignedKey = key;
+        LastPresignedVersionId = versionId;
+        LastPresignedExpiresAtUtc = expiresAtUtc;
+
+        return Task.FromResult(PresignedHeadObjectUrl ?? new Uri($"https://s3.test/{bucketName}/{Uri.EscapeDataString(key)}?X-Amz-Signature=test-head", UriKind.Absolute));
+    }
+
+    public Task<Uri> CreatePresignedUploadPartUrlAsync(
+        string bucketName,
+        string key,
+        string uploadId,
+        int partNumber,
+        DateTimeOffset expiresAtUtc,
+        CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+
+        PresignedUploadPartUrlCalls++;
+        LastPresignedBucketName = bucketName;
+        LastPresignedKey = key;
+        LastPresignedUploadId = uploadId;
+        LastPresignedPartNumber = partNumber;
+        LastPresignedExpiresAtUtc = expiresAtUtc;
+
+        return Task.FromResult(PresignedUploadPartUrl ?? new Uri($"https://s3.test/{bucketName}/{Uri.EscapeDataString(key)}?partNumber={partNumber}&uploadId={Uri.EscapeDataString(uploadId)}&X-Amz-Signature=test-part", UriKind.Absolute));
     }
 
     public Task<S3GetObjectResult> GetObjectAsync(string bucketName, string key, string? versionId, ObjectRange? range, string? ifMatchETag, string? ifNoneMatchETag, DateTimeOffset? ifModifiedSinceUtc, DateTimeOffset? ifUnmodifiedSinceUtc, ObjectCustomerEncryptionSettings? customerEncryption, CancellationToken cancellationToken = default)

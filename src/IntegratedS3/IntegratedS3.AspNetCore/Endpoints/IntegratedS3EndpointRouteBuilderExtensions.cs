@@ -19,6 +19,7 @@ using IntegratedS3.AspNetCore.Services;
 using IntegratedS3.Protocol;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Http.Features;
 using Microsoft.AspNetCore.Http.HttpResults;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.AspNetCore.WebUtilities;
@@ -155,7 +156,6 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
     private const string AccessControlMaxAgeHeaderName = "Access-Control-Max-Age";
     private const string AllUsersGroupUri = "http://acs.amazonaws.com/groups/global/AllUsers";
     private const string AuthenticatedUsersGroupUri = "http://acs.amazonaws.com/groups/global/AuthenticatedUsers";
-    private const string ChecksumModeHeaderName = "x-amz-checksum-mode";
     private const string CanonicalUserGranteeType = "CanonicalUser";
     private const string GroupGranteeType = "Group";
     private const string OwnerId = "integrated-s3";
@@ -487,6 +487,22 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
             objectGroup.MapPut("/buckets/{bucketName}/objects/{**key}", async (string bucketName, string key, HttpContext httpContext, HttpRequest request, IIntegratedS3RequestContextAccessor requestContextAccessor, IStorageService storageService, CancellationToken cancellationToken) => {
                     var sw = Stopwatch.StartNew();
                     var logger = httpContext.RequestServices.GetService<ILoggerFactory>()?.CreateLogger("IntegratedS3.Endpoints");
+
+                    // Uploads carrying uploadId + partNumber query parameters target a multipart
+                    // part (for example first-party presigned UploadPart URLs) rather than a whole object.
+                    if (IsUploadPartRequest(request)) {
+                        if (!resolvedEndpointOptions.EnableMultipartEndpoints) {
+                            return CreateFeatureDisabledResult();
+                        }
+
+                        logger?.LogDebug("Native request: UploadPart {BucketName}/{ObjectKey}", bucketName, key);
+                        var uploadPartResult = WrapBucketCorsResult(bucketName, await UploadMultipartPartAsync(bucketName, key, httpContext, requestContextAccessor, storageService, cancellationToken));
+                        sw.Stop();
+                        IntegratedS3AspNetCoreTelemetry.RecordHttpRequest("PUT", "UploadPart", ResolveResultStatusCode(uploadPartResult), sw.Elapsed.TotalMilliseconds);
+                        IntegratedS3AspNetCoreTelemetry.RecordHttpBytesReceived("UploadPart", httpContext.Request.ContentLength ?? 0);
+                        return uploadPartResult;
+                    }
+
                     logger?.LogDebug("Native request: PutObject {BucketName}/{ObjectKey}", bucketName, key);
                     var result = WrapBucketCorsResult(bucketName, await PutObjectAsync(bucketName, key, httpContext, request, requestContextAccessor, storageService, cancellationToken));
                     sw.Stop();
@@ -1262,6 +1278,8 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
         IStorageService storageService,
         CancellationToken cancellationToken)
     {
+        ApplyObjectUploadBodySizeLimit(httpContext);
+
         if (!TryParseOptionalWriteObjectAcl(request, BuildObjectResource(bucketName, key), bucketName, key, out var objectAcl, out var aclErrorResult)) {
             return aclErrorResult!;
         }
@@ -1458,8 +1476,7 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
                         headers.IfModifiedSince,
                         headers.IfUnmodifiedSince,
                         customerEncryption,
-                        multipleRanges,
-                        IsChecksumModeEnabled(request));
+                        multipleRanges);
                 }
 
                 var result = await storageService.GetObjectAsync(new GetObjectRequest
@@ -2926,6 +2943,8 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
         IStorageService storageService,
         CancellationToken cancellationToken)
     {
+        ApplyObjectUploadBodySizeLimit(httpContext);
+
         if (!TryGetMultipartUploadId(httpContext.Request, out var uploadId, out var uploadIdError)) {
             return ToErrorResult(httpContext, StatusCodes.Status400BadRequest, "InvalidArgument", uploadIdError!, BuildObjectResource(bucketName, key), bucketName, key);
         }
@@ -4139,6 +4158,7 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
             StorageErrorCode.ProviderUnavailable => StatusCodes.Status503ServiceUnavailable,
             StorageErrorCode.UnsupportedCapability => StatusCodes.Status501NotImplemented,
             StorageErrorCode.QuotaExceeded => StatusCodes.Status413PayloadTooLarge,
+            StorageErrorCode.ObjectLocked => StatusCodes.Status403Forbidden,
             _ => StatusCodes.Status500InternalServerError
         };
     }
@@ -4165,6 +4185,7 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
             StorageErrorCode.ProviderUnavailable => "ServiceUnavailable",
             StorageErrorCode.UnsupportedCapability => "NotImplemented",
             StorageErrorCode.QuotaExceeded => "EntityTooLarge",
+            StorageErrorCode.ObjectLocked => "AccessDenied",
             _ => "InternalError"
         };
     }
@@ -6632,6 +6653,16 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
         return true;
     }
 
+    /// <summary>
+    /// Determines whether an object PUT request targets a multipart part upload, identified by
+    /// the presence of both the <c>uploadId</c> and <c>partNumber</c> query parameters.
+    /// </summary>
+    private static bool IsUploadPartRequest(HttpRequest request)
+    {
+        return request.Query.ContainsKey(UploadIdQueryParameterName)
+            && request.Query.ContainsKey(PartNumberQueryParameterName);
+    }
+
     private static string QuoteETag(string value)
     {
         return string.IsNullOrWhiteSpace(value)
@@ -6897,6 +6928,23 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
                 key);
             return false;
         }
+    }
+
+    /// <summary>
+    /// Replaces the host's per-request body-size limit (for example Kestrel's default of
+    /// ~28.6 MiB) with <see cref="IntegratedS3Options.MaxObjectSizeBytes"/> on object upload
+    /// requests. Must run before the request body is read; once reading starts the limit
+    /// becomes read-only and the override is skipped.
+    /// </summary>
+    private static void ApplyObjectUploadBodySizeLimit(HttpContext httpContext)
+    {
+        var bodySizeFeature = httpContext.Features.Get<IHttpMaxRequestBodySizeFeature>();
+        if (bodySizeFeature is null || bodySizeFeature.IsReadOnly) {
+            return;
+        }
+
+        var options = httpContext.RequestServices.GetRequiredService<IOptions<IntegratedS3Options>>().Value;
+        bodySizeFeature.MaxRequestBodySize = options.MaxObjectSizeBytes;
     }
 
     private static async Task<PreparedRequestBody> PrepareRequestBodyAsync(HttpRequest request, CancellationToken cancellationToken)
@@ -8607,14 +8655,6 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
         }
     }
 
-    private static bool IsChecksumModeEnabled(HttpRequest request)
-    {
-        return string.Equals(
-            request.Headers[ChecksumModeHeaderName].ToString().Trim(),
-            "ENABLED",
-            StringComparison.OrdinalIgnoreCase);
-    }
-
     private static void RemoveChecksumValueHeaders(HttpResponse httpResponse)
     {
         httpResponse.Headers.Remove(ChecksumCrc32HeaderName);
@@ -8972,8 +9012,7 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
         DateTimeOffset? ifModifiedSinceUtc,
         DateTimeOffset? ifUnmodifiedSinceUtc,
         ObjectCustomerEncryptionSettings? customerEncryption,
-        ObjectRange[] ranges,
-        bool checksumModeEnabled) : IResult
+        ObjectRange[] ranges) : IResult
     {
         public async Task ExecuteAsync(HttpContext httpContext)
         {

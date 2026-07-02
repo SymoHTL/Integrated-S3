@@ -100,6 +100,26 @@ internal sealed class AuthorizingStoragePresignService(
                 BucketName = request.BucketName,
                 Key = request.Key
             },
+            StoragePresignOperation.DeleteObject => new StorageAuthorizationRequest
+            {
+                Operation = StorageOperationType.PresignDeleteObject,
+                BucketName = request.BucketName,
+                Key = request.Key,
+                VersionId = request.VersionId
+            },
+            StoragePresignOperation.HeadObject => new StorageAuthorizationRequest
+            {
+                Operation = StorageOperationType.PresignHeadObject,
+                BucketName = request.BucketName,
+                Key = request.Key,
+                VersionId = request.VersionId
+            },
+            StoragePresignOperation.UploadPart => new StorageAuthorizationRequest
+            {
+                Operation = StorageOperationType.PresignUploadPart,
+                BucketName = request.BucketName,
+                Key = request.Key
+            },
             _ => throw new ArgumentOutOfRangeException(nameof(request), request.Operation, "The requested presign operation is not supported.")
         };
     }
@@ -113,14 +133,26 @@ internal sealed class AuthorizingStoragePresignService(
             throw new ArgumentOutOfRangeException(nameof(request.ExpiresInSeconds), request.ExpiresInSeconds, "The presign expiry must be a positive number of seconds.");
         }
 
-        if (request.Operation == StoragePresignOperation.PutObject
-            && !string.IsNullOrWhiteSpace(request.VersionId)) {
+        var isUploadOperation = request.Operation is StoragePresignOperation.PutObject or StoragePresignOperation.UploadPart;
+        if (isUploadOperation && !string.IsNullOrWhiteSpace(request.VersionId)) {
             throw new ArgumentException("Presigned uploads do not support version-specific targets.", nameof(request));
         }
 
-        if (request.Operation == StoragePresignOperation.GetObject
-            && !string.IsNullOrWhiteSpace(request.ContentType)) {
+        if (!isUploadOperation && !string.IsNullOrWhiteSpace(request.ContentType)) {
             throw new ArgumentException("ContentType is only supported for presigned uploads.", nameof(request));
+        }
+
+        if (request.Operation == StoragePresignOperation.UploadPart) {
+            if (string.IsNullOrWhiteSpace(request.UploadId)) {
+                throw new ArgumentException("UploadId is required for presigned part uploads.", nameof(request));
+            }
+
+            if (request.PartNumber is not (>= 1 and <= 10_000)) {
+                throw new ArgumentOutOfRangeException(nameof(request), request.PartNumber, "PartNumber must be between 1 and 10000 for presigned part uploads.");
+            }
+        }
+        else if (!string.IsNullOrWhiteSpace(request.UploadId) || request.PartNumber is not null) {
+            throw new ArgumentException("UploadId and PartNumber are only supported for presigned part uploads.", nameof(request));
         }
     }
 
