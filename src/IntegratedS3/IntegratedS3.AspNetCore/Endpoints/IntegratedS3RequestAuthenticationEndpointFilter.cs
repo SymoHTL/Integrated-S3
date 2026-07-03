@@ -1,14 +1,17 @@
 using IntegratedS3.Abstractions.Observability;
 using IntegratedS3.AspNetCore.Services;
 using IntegratedS3.Protocol;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using System.Diagnostics;
 
 namespace IntegratedS3.AspNetCore.Endpoints;
 
 internal sealed class IntegratedS3RequestAuthenticationEndpointFilter(
     IIntegratedS3RequestAuthenticator authenticator,
+    IOptionsMonitor<IntegratedS3Options> options,
     ILogger<IntegratedS3RequestAuthenticationEndpointFilter> logger) : IEndpointFilter
 {
     public async ValueTask<object?> InvokeAsync(EndpointFilterInvocationContext context, EndpointFilterDelegate next)
@@ -44,6 +47,24 @@ internal sealed class IntegratedS3RequestAuthenticationEndpointFilter(
                     activity?.SetTag(IntegratedS3Observability.Tags.Result, "success");
                     httpContext.User = authenticationResult.Principal!;
                 }
+                else if (IsAuthenticationRequired(httpContext)) {
+                    // Fail closed: authentication is required but the request presented no credentials
+                    // (no Authorization header and no presigned X-Amz-Signature). Reject as AccessDenied
+                    // instead of falling through to the endpoint as an anonymous principal.
+                    activity?.SetStatus(ActivityStatusCode.Error, "Anonymous request rejected.");
+                    activity?.SetTag(IntegratedS3Observability.Tags.Result, "failure");
+                    activity?.SetTag(IntegratedS3Observability.Tags.ErrorCode, "AccessDenied");
+
+                    return new XmlAuthenticationFailureResult(
+                        403,
+                        S3XmlResponseWriter.WriteError(new S3ErrorResponse
+                        {
+                            Code = "AccessDenied",
+                            Message = "Anonymous access is not permitted. Requests must be authenticated.",
+                            Resource = httpContext.Request.PathBase.Add(httpContext.Request.Path).Value,
+                            RequestId = httpContext.TraceIdentifier
+                        }));
+                }
             }
 
             return await next(context);
@@ -59,6 +80,27 @@ internal sealed class IntegratedS3RequestAuthenticationEndpointFilter(
             logger.LogError(exception, "IntegratedS3 request handling failed unexpectedly.");
             throw;
         }
+    }
+
+    /// <summary>
+    /// Determines whether an unauthenticated request should be rejected. Authentication is required when
+    /// either SigV4 authentication or <see cref="IntegratedS3Options.RequireAuthenticatedRequests"/> is enabled,
+    /// unless anonymous access has been explicitly allowed — globally via
+    /// <see cref="IntegratedS3Options.AllowAnonymousRequests"/> or per-route via an <see cref="IAllowAnonymous"/>
+    /// convention (for example <c>RouteGroupBuilder.AllowAnonymous()</c>).
+    /// </summary>
+    private bool IsAuthenticationRequired(HttpContext httpContext)
+    {
+        var settings = options.CurrentValue;
+        if (settings.AllowAnonymousRequests) {
+            return false;
+        }
+
+        if (!settings.EnableAwsSignatureV4Authentication && !settings.RequireAuthenticatedRequests) {
+            return false;
+        }
+
+        return httpContext.GetEndpoint()?.Metadata.GetMetadata<IAllowAnonymous>() is null;
     }
 
     private sealed class XmlAuthenticationFailureResult(int statusCode, string content) : IResult

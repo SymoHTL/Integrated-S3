@@ -24,6 +24,10 @@ public static class BlazorWasmApplication
             options.RoutePrefix = string.IsNullOrWhiteSpace(options.RoutePrefix)
                 ? "/integrated-s3"
                 : options.RoutePrefix;
+            // This browser sample calls the S3 endpoints directly from WebAssembly without signing requests,
+            // so it is intentionally a public, anonymous demo. Opt in explicitly now that the request filter
+            // fails closed by default when SigV4 authentication is enabled.
+            options.AllowAnonymousRequests = true;
         });
         builder.Services.AddDiskStorage(diskOptions);
         builder.Services.AddHostedService<BlazorWasmSampleDataSeeder>();

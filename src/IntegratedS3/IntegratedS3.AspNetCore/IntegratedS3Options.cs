@@ -38,6 +38,34 @@ public sealed class IntegratedS3Options
     public bool EnableAwsSignatureV4Authentication { get; set; }
 
     /// <summary>
+    /// Forces the request-authentication filter to fail closed even when
+    /// <see cref="EnableAwsSignatureV4Authentication"/> is <see langword="false"/>.
+    /// </summary>
+    /// <remarks>
+    /// Set this to <see langword="true"/> when a custom <see cref="Services.IIntegratedS3RequestAuthenticator"/>
+    /// (rather than the built-in SigV4 authenticator) supplies the principal but you still want unauthenticated
+    /// requests rejected with <c>403 AccessDenied</c>. When either this option or
+    /// <see cref="EnableAwsSignatureV4Authentication"/> is enabled, requests that carry no authentication attempt
+    /// are denied unless the route opts into anonymous access (see <see cref="AllowAnonymousRequests"/> or a
+    /// per-route <c>AllowAnonymous</c> convention).
+    /// </remarks>
+    public bool RequireAuthenticatedRequests { get; set; }
+
+    /// <summary>
+    /// Globally permits unauthenticated ("anonymous") requests to reach mapped endpoints even when
+    /// authentication is otherwise required. Defaults to <see langword="false"/> (secure by default).
+    /// </summary>
+    /// <remarks>
+    /// The request-authentication filter fails closed by default: when authentication is required
+    /// (<see cref="EnableAwsSignatureV4Authentication"/> or <see cref="RequireAuthenticatedRequests"/> is enabled)
+    /// a request that presents no credentials is rejected with <c>403 AccessDenied</c> instead of falling through
+    /// as an anonymous principal. Set this to <see langword="true"/> to intentionally expose a public service
+    /// (for example a read-only public bucket gateway). Prefer a per-route <c>AllowAnonymous</c> convention when
+    /// only specific routes should be public.
+    /// </remarks>
+    public bool AllowAnonymousRequests { get; set; }
+
+    /// <summary>
     /// Expected AWS region in the SigV4 credential scope. Defaults to <c>"us-east-1"</c>.
     /// </summary>
     public string SignatureAuthenticationRegion { get; set; } = "us-east-1";
