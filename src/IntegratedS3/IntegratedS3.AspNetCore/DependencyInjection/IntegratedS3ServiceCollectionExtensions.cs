@@ -398,6 +398,7 @@ public static class IntegratedS3ServiceCollectionExtensions
         services.TryAddSingleton<BucketCorsRuntimeService>();
         services.TryAddSingleton<IHttpContextAccessor, HttpContextAccessor>();
         services.TryAddSingleton<IIntegratedS3RequestAuthenticator, AwsSignatureV4RequestAuthenticator>();
+        services.TryAddSingleton<IIntegratedS3CredentialResolver, ConfiguredIntegratedS3CredentialResolver>();
         services.TryAddSingleton<IIntegratedS3PresignCredentialResolver, ConfiguredIntegratedS3PresignCredentialResolver>();
         services.TryAddSingleton<IStorageCapabilityProvider>(static serviceProvider => serviceProvider.GetRequiredService<ConfiguredStorageDescriptorProvider>());
         services.TryAddSingleton<IStorageServiceDescriptorProvider>(static serviceProvider => serviceProvider.GetRequiredService<ConfiguredStorageDescriptorProvider>());

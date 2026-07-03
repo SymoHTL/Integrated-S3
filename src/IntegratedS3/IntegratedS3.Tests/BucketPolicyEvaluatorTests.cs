@@ -404,8 +404,9 @@ public sealed class BucketPolicyEvaluatorTests
         Assert.True(BucketPolicyParser.TryParse(json, out var policy, out _));
         Assert.NotNull(policy);
         Assert.Equal(PolicyEffect.Deny, policy.Statements[0].Effect);
-        Assert.NotNull(policy.Statements[0].Conditions);
-        Assert.True(policy.Statements[0].Conditions.ContainsKey("Bool"));
+        var conditions = policy.Statements[0].Conditions;
+        Assert.NotNull(conditions);
+        Assert.True(conditions.ContainsKey("Bool"));
     }
 
     [Fact]

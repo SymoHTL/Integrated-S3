@@ -3,6 +3,7 @@ using System.Net.Http.Headers;
 using System.Security.Cryptography;
 using System.Security.Claims;
 using System.Text;
+using System.Xml.Linq;
 using IntegratedS3.Abstractions.Results;
 using IntegratedS3.AspNetCore;
 using IntegratedS3.Client;
@@ -165,6 +166,102 @@ public sealed class IntegratedS3ClientTransferTests(WebUiApplicationFactory fact
         await integratedClient.DownloadToStreamAsync(transferClient, bucketName, objectKey, downloadStream, expiresInSeconds: 300);
 
         Assert.Equal(payload, downloadStream.ToArray());
+    }
+
+    [Fact]
+    public async Task HeadObjectAsync_ThenDeleteObjectAsync_RoundTripsMetadataAndRemoval()
+    {
+        const string bucketName = "transfer-headdelete-bucket";
+        const string objectKey = "docs/transfer-headdelete.txt";
+        const string payload = "hello from presigned HEAD and DELETE helpers";
+
+        await using var isolatedClient = await _factory.CreateIsolatedClientAsync(ConfigurePresignHost("transfer-headdelete-access", "transfer-headdelete-secret"));
+
+        using var authClient = isolatedClient.Client;
+        authClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("TestHeader", "storage.read storage.write");
+
+        using var transferClient = isolatedClient.CreateAdditionalClient();
+
+        var integratedClient = new IntegratedS3Client(authClient);
+
+        Assert.Equal(HttpStatusCode.Created, (await authClient.PutAsync($"/integrated-s3/buckets/{bucketName}", content: null)).StatusCode);
+
+        await using (var uploadStream = new MemoryStream(Encoding.UTF8.GetBytes(payload))) {
+            await integratedClient.UploadStreamAsync(transferClient, bucketName, objectKey, uploadStream, expiresInSeconds: 300, contentType: "text/plain");
+        }
+
+        using (var headResponse = await integratedClient.HeadObjectAsync(transferClient, bucketName, objectKey, expiresInSeconds: 300)) {
+            Assert.Equal(HttpStatusCode.OK, headResponse.StatusCode);
+            Assert.Equal(Encoding.UTF8.GetByteCount(payload), headResponse.Content.Headers.ContentLength);
+        }
+
+        await integratedClient.DeleteObjectAsync(transferClient, bucketName, objectKey, expiresInSeconds: 300);
+
+        var missingException = await Assert.ThrowsAsync<HttpRequestException>(
+            () => integratedClient.HeadObjectAsync(transferClient, bucketName, objectKey, expiresInSeconds: 300));
+        Assert.Equal(HttpStatusCode.NotFound, missingException.StatusCode);
+    }
+
+    [Fact]
+    public async Task UploadPartStreamAsync_RoundTripsMultipartUploadThroughPresignedParts()
+    {
+        const string bucketName = "transfer-uploadpart-bucket";
+        const string objectKey = "docs/transfer-uploadpart.bin";
+        const string firstPartPayload = "first transfer part payload|";
+        const string secondPartPayload = "second transfer part payload";
+
+        await using var isolatedClient = await _factory.CreateIsolatedClientAsync(ConfigurePresignHost("transfer-uploadpart-access", "transfer-uploadpart-secret"));
+
+        using var authClient = isolatedClient.Client;
+        authClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("TestHeader", "storage.read storage.write");
+
+        using var transferClient = isolatedClient.CreateAdditionalClient();
+
+        var integratedClient = new IntegratedS3Client(authClient);
+
+        Assert.Equal(HttpStatusCode.Created, (await authClient.PutAsync($"/integrated-s3/buckets/{bucketName}", content: null)).StatusCode);
+
+        using var initiateRequest = new HttpRequestMessage(HttpMethod.Post, $"/integrated-s3/{bucketName}/{objectKey}?uploads");
+        var initiateResponse = await authClient.SendAsync(initiateRequest);
+        Assert.Equal(HttpStatusCode.OK, initiateResponse.StatusCode);
+        var uploadId = XDocument.Parse(await initiateResponse.Content.ReadAsStringAsync()).Root!
+            .Elements().First(static element => element.Name.LocalName == "UploadId").Value;
+
+        string firstPartETag;
+        await using (var firstPartStream = new MemoryStream(Encoding.UTF8.GetBytes(firstPartPayload))) {
+            firstPartETag = await integratedClient.UploadPartStreamAsync(
+                transferClient, bucketName, objectKey, uploadId, partNumber: 1, firstPartStream, expiresInSeconds: 300);
+        }
+
+        string secondPartETag;
+        await using (var secondPartStream = new MemoryStream(Encoding.UTF8.GetBytes(secondPartPayload))) {
+            secondPartETag = await integratedClient.UploadPartStreamAsync(
+                transferClient, bucketName, objectKey, uploadId, partNumber: 2, secondPartStream, expiresInSeconds: 300);
+        }
+
+        Assert.False(string.IsNullOrWhiteSpace(firstPartETag));
+        Assert.False(string.IsNullOrWhiteSpace(secondPartETag));
+
+        using var completeRequest = new HttpRequestMessage(HttpMethod.Post, $"/integrated-s3/{bucketName}/{objectKey}?uploadId={Uri.EscapeDataString(uploadId)}")
+        {
+            Content = new StringContent($"""
+<CompleteMultipartUpload>
+  <Part>
+    <PartNumber>1</PartNumber>
+    <ETag>{firstPartETag}</ETag>
+  </Part>
+  <Part>
+    <PartNumber>2</PartNumber>
+    <ETag>{secondPartETag}</ETag>
+  </Part>
+</CompleteMultipartUpload>
+""", Encoding.UTF8, "application/xml")
+        };
+        Assert.Equal(HttpStatusCode.OK, (await authClient.SendAsync(completeRequest)).StatusCode);
+
+        await using var downloadStream = new MemoryStream();
+        await integratedClient.DownloadToStreamAsync(transferClient, bucketName, objectKey, downloadStream, expiresInSeconds: 300);
+        Assert.Equal(firstPartPayload + secondPartPayload, Encoding.UTF8.GetString(downloadStream.ToArray()));
     }
 
     // -------------------------------------------------------------------------

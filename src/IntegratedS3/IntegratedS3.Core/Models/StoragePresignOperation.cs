@@ -9,5 +9,14 @@ public enum StoragePresignOperation
     GetObject,
 
     /// <summary>Generate a presigned URL for uploading (PUT) an object.</summary>
-    PutObject
+    PutObject,
+
+    /// <summary>Generate a presigned URL for deleting (DELETE) an object.</summary>
+    DeleteObject,
+
+    /// <summary>Generate a presigned URL for reading object metadata (HEAD) without the body.</summary>
+    HeadObject,
+
+    /// <summary>Generate a presigned URL for uploading (PUT) a single part of a multipart upload.</summary>
+    UploadPart
 }

@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Security.Claims;
 using IntegratedS3.Abstractions.Errors;
 using IntegratedS3.Abstractions.Models;
@@ -142,6 +143,8 @@ internal sealed class IntegratedS3HttpPresignStrategy(
                 Key = request.Key,
                 ExpiresInSeconds = request.ExpiresInSeconds,
                 VersionId = request.VersionId,
+                UploadId = request.UploadId,
+                PartNumber = request.PartNumber,
                 ContentType = request.ContentType,
                 ChecksumAlgorithm = request.ChecksumAlgorithm,
                 Checksums = request.Checksums
@@ -263,6 +266,9 @@ internal sealed class IntegratedS3HttpPresignStrategy(
         {
             StoragePresignOperation.GetObject => StorageDirectObjectAccessOperation.GetObject,
             StoragePresignOperation.PutObject => StorageDirectObjectAccessOperation.PutObject,
+            StoragePresignOperation.DeleteObject => StorageDirectObjectAccessOperation.DeleteObject,
+            StoragePresignOperation.HeadObject => StorageDirectObjectAccessOperation.HeadObject,
+            StoragePresignOperation.UploadPart => StorageDirectObjectAccessOperation.UploadPart,
             _ => throw new ArgumentOutOfRangeException(nameof(operation), operation, "The requested direct-presign operation is not supported.")
         };
     }
@@ -274,6 +280,11 @@ internal sealed class IntegratedS3HttpPresignStrategy(
         return new Uri(applicationBaseUri, escapedPath.TrimStart('/'));
     }
 
+    private static bool IsUploadOperation(StoragePresignOperation operation)
+    {
+        return operation is StoragePresignOperation.PutObject or StoragePresignOperation.UploadPart;
+    }
+
     private static IReadOnlyList<KeyValuePair<string, string?>> BuildSignedHeaders(Uri targetUri, StoragePresignRequest request)
     {
         var headers = new List<KeyValuePair<string, string?>>
@@ -281,18 +292,18 @@ internal sealed class IntegratedS3HttpPresignStrategy(
             new(HostHeaderName, targetUri.IsDefaultPort ? targetUri.Host : targetUri.Authority)
         };
 
-        if (request.Operation == StoragePresignOperation.PutObject
+        if (IsUploadOperation(request.Operation)
             && !string.IsNullOrWhiteSpace(request.ContentType)) {
             headers.Add(new KeyValuePair<string, string?>(ContentTypeHeaderName, request.ContentType));
         }
 
-        if (request.Operation == StoragePresignOperation.PutObject
+        if (IsUploadOperation(request.Operation)
             && !string.IsNullOrWhiteSpace(request.ChecksumAlgorithm)
             && ToS3ChecksumAlgorithmValue(request.ChecksumAlgorithm) is { } checksumAlgorithmValue) {
             headers.Add(new KeyValuePair<string, string?>(SdkChecksumAlgorithmHeaderName, checksumAlgorithmValue));
         }
 
-        if (request.Operation == StoragePresignOperation.PutObject
+        if (IsUploadOperation(request.Operation)
             && request.Checksums is not null) {
             foreach (var checksum in request.Checksums) {
                 if (string.IsNullOrWhiteSpace(checksum.Value)
@@ -309,7 +320,15 @@ internal sealed class IntegratedS3HttpPresignStrategy(
 
     private static IReadOnlyList<KeyValuePair<string, string?>> BuildQueryParameters(StoragePresignRequest request)
     {
-        if (request.Operation == StoragePresignOperation.GetObject
+        if (request.Operation == StoragePresignOperation.UploadPart) {
+            return
+            [
+                new KeyValuePair<string, string?>("partNumber", request.PartNumber?.ToString(CultureInfo.InvariantCulture)),
+                new KeyValuePair<string, string?>("uploadId", request.UploadId)
+            ];
+        }
+
+        if (request.Operation is StoragePresignOperation.GetObject or StoragePresignOperation.DeleteObject or StoragePresignOperation.HeadObject
             && !string.IsNullOrWhiteSpace(request.VersionId)) {
             return [new KeyValuePair<string, string?>("versionId", request.VersionId)];
         }
@@ -319,7 +338,7 @@ internal sealed class IntegratedS3HttpPresignStrategy(
 
     private static IReadOnlyList<StoragePresignedHeader> BuildResponseHeaders(StoragePresignRequest request)
     {
-        if (request.Operation == StoragePresignOperation.PutObject
+        if (IsUploadOperation(request.Operation)
             && (!string.IsNullOrWhiteSpace(request.ContentType)
                 || !string.IsNullOrWhiteSpace(request.ChecksumAlgorithm)
                 || request.Checksums is not null)) {
@@ -393,6 +412,9 @@ internal sealed class IntegratedS3HttpPresignStrategy(
         {
             StoragePresignOperation.GetObject => HttpMethods.Get,
             StoragePresignOperation.PutObject => HttpMethods.Put,
+            StoragePresignOperation.DeleteObject => HttpMethods.Delete,
+            StoragePresignOperation.HeadObject => HttpMethods.Head,
+            StoragePresignOperation.UploadPart => HttpMethods.Put,
             _ => throw new ArgumentOutOfRangeException(nameof(operation), operation, "The requested presign operation is not supported.")
         };
     }

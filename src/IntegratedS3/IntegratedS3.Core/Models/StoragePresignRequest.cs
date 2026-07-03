@@ -5,7 +5,7 @@ namespace IntegratedS3.Core.Models;
 /// </summary>
 public sealed class StoragePresignRequest
 {
-    /// <summary>The presign operation to perform (GET or PUT).</summary>
+    /// <summary>The presign operation to perform (GET, PUT, DELETE, HEAD, or UploadPart).</summary>
     public required StoragePresignOperation Operation { get; init; }
 
     /// <summary>The name of the target bucket.</summary>
@@ -19,6 +19,18 @@ public sealed class StoragePresignRequest
 
     /// <summary>The object version identifier, or <see langword="null"/> for the latest version.</summary>
     public string? VersionId { get; init; }
+
+    /// <summary>
+    /// The multipart upload identifier the presigned part upload belongs to.
+    /// Required for <see cref="StoragePresignOperation.UploadPart"/> and not supported for other operations.
+    /// </summary>
+    public string? UploadId { get; init; }
+
+    /// <summary>
+    /// The one-based part number the presigned part upload targets (1-10000).
+    /// Required for <see cref="StoragePresignOperation.UploadPart"/> and not supported for other operations.
+    /// </summary>
+    public int? PartNumber { get; init; }
 
     /// <summary>The MIME content type to associate with the object (relevant for PUT operations).</summary>
     public string? ContentType { get; init; }

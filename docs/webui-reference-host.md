@@ -274,7 +274,7 @@ dotnet publish -c Release --self-contained src\IntegratedS3\WebUi\WebUi.csproj
 powershell -ExecutionPolicy Bypass -File .\eng\Invoke-AotPublishValidation.ps1
 ```
 
-Treat the publish step as the trimming/AOT validation pass for the reference host, not just as an optional packaging command. The checked-in CI workflow at `.github\workflows\trackh-publish-aot-ci.yml` uses the PowerShell validation script so the warning baseline stays enforced in automation, not just during local smoke testing.
+Treat the publish step as the trimming/AOT validation pass for the reference host, not just as an optional packaging command. The checked-in CI workflow at `.github\workflows\ci.yml` uses the PowerShell validation script so the warning baseline stays enforced in automation, not just during local smoke testing.
 
 ## AOT warning posture
 

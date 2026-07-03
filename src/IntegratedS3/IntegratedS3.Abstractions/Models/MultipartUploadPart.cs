@@ -30,5 +30,9 @@ public sealed class MultipartUploadPart
     /// </summary>
     public IReadOnlyDictionary<string, string>? Checksums { get; init; }
 
+    /// <summary>
+    /// The version ID of the source object when the part was created via UploadPartCopy,
+    /// or <see langword="null"/> when the part was uploaded directly.
+    /// </summary>
     public string? CopySourceVersionId { get; init; }
 }

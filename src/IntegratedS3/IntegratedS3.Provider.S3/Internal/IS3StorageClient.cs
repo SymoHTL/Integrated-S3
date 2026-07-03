@@ -72,6 +72,28 @@ internal interface IS3StorageClient : IDisposable
         DateTimeOffset expiresAtUtc,
         CancellationToken cancellationToken = default);
 
+    Task<Uri> CreatePresignedDeleteObjectUrlAsync(
+        string bucketName,
+        string key,
+        string? versionId,
+        DateTimeOffset expiresAtUtc,
+        CancellationToken cancellationToken = default);
+
+    Task<Uri> CreatePresignedHeadObjectUrlAsync(
+        string bucketName,
+        string key,
+        string? versionId,
+        DateTimeOffset expiresAtUtc,
+        CancellationToken cancellationToken = default);
+
+    Task<Uri> CreatePresignedUploadPartUrlAsync(
+        string bucketName,
+        string key,
+        string uploadId,
+        int partNumber,
+        DateTimeOffset expiresAtUtc,
+        CancellationToken cancellationToken = default);
+
     Task<S3GetObjectResult> GetObjectAsync(
         string bucketName,
         string key,

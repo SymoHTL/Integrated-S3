@@ -127,6 +127,173 @@ public sealed class IntegratedS3PresignServiceTests
         Assert.Equal(mode, response.AccessMode);
     }
 
+    [Theory]
+    [InlineData(StoragePresignOperation.DeleteObject, StorageOperationType.PresignDeleteObject, "DELETE")]
+    [InlineData(StoragePresignOperation.HeadObject, StorageOperationType.PresignHeadObject, "HEAD")]
+    [InlineData(StoragePresignOperation.UploadPart, StorageOperationType.PresignUploadPart, "PUT")]
+    public async Task PresignObjectAsync_MapsNewOperationsToAuthorizationOperations(
+        StoragePresignOperation operation,
+        StorageOperationType expectedAuthorizationOperation,
+        string method)
+    {
+        var authorizationService = new RecordingAuthorizationService(StorageResult.Success());
+        var strategy = new RecordingPresignStrategy(StorageResult<StoragePresignedRequest>.Success(new StoragePresignedRequest
+        {
+            Operation = operation,
+            AccessMode = StorageAccessMode.Proxy,
+            Method = method,
+            Url = new Uri("https://example.test/integrated-s3/buckets/docs", UriKind.Absolute),
+            ExpiresAtUtc = DateTimeOffset.UtcNow.AddMinutes(5),
+            BucketName = "docs",
+            Key = "guide.txt"
+        }));
+
+        var services = new ServiceCollection();
+        services.AddIntegratedS3Core();
+        services.AddSingleton<IIntegratedS3AuthorizationService>(authorizationService);
+        services.AddSingleton<IStoragePresignStrategy>(strategy);
+        await using var serviceProvider = services.BuildServiceProvider();
+
+        var presignService = serviceProvider.GetRequiredService<IStoragePresignService>();
+        var principal = new ClaimsPrincipal(new ClaimsIdentity([new Claim("scope", "storage.write")], authenticationType: "Tests"));
+        var request = new StoragePresignRequest
+        {
+            Operation = operation,
+            BucketName = "docs",
+            Key = "guide.txt",
+            ExpiresInSeconds = 300,
+            UploadId = operation == StoragePresignOperation.UploadPart ? "upload-1" : null,
+            PartNumber = operation == StoragePresignOperation.UploadPart ? 1 : null
+        };
+
+        var result = await presignService.PresignObjectAsync(principal, request);
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(expectedAuthorizationOperation, authorizationService.LastRequest?.Operation);
+        Assert.Equal("docs", authorizationService.LastRequest?.BucketName);
+        Assert.Equal("guide.txt", authorizationService.LastRequest?.Key);
+        Assert.Equal(request, strategy.LastRequest);
+    }
+
+    [Fact]
+    public async Task PresignObjectAsync_UploadPartWithoutUploadId_Throws()
+    {
+        var presignService = BuildRecordingPresignService(out var strategy);
+        var principal = new ClaimsPrincipal(new ClaimsIdentity(authenticationType: "Tests"));
+
+        await Assert.ThrowsAsync<ArgumentException>(() => presignService.PresignObjectAsync(principal, new StoragePresignRequest
+        {
+            Operation = StoragePresignOperation.UploadPart,
+            BucketName = "docs",
+            Key = "guide.txt",
+            ExpiresInSeconds = 300,
+            PartNumber = 1
+        }).AsTask());
+        Assert.Equal(0, strategy.InvocationCount);
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData(0)]
+    [InlineData(10_001)]
+    public async Task PresignObjectAsync_UploadPartWithInvalidPartNumber_Throws(int? partNumber)
+    {
+        var presignService = BuildRecordingPresignService(out var strategy);
+        var principal = new ClaimsPrincipal(new ClaimsIdentity(authenticationType: "Tests"));
+
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() => presignService.PresignObjectAsync(principal, new StoragePresignRequest
+        {
+            Operation = StoragePresignOperation.UploadPart,
+            BucketName = "docs",
+            Key = "guide.txt",
+            ExpiresInSeconds = 300,
+            UploadId = "upload-1",
+            PartNumber = partNumber
+        }).AsTask());
+        Assert.Equal(0, strategy.InvocationCount);
+    }
+
+    [Fact]
+    public async Task PresignObjectAsync_UploadPartWithVersionId_Throws()
+    {
+        var presignService = BuildRecordingPresignService(out var strategy);
+        var principal = new ClaimsPrincipal(new ClaimsIdentity(authenticationType: "Tests"));
+
+        await Assert.ThrowsAsync<ArgumentException>(() => presignService.PresignObjectAsync(principal, new StoragePresignRequest
+        {
+            Operation = StoragePresignOperation.UploadPart,
+            BucketName = "docs",
+            Key = "guide.txt",
+            ExpiresInSeconds = 300,
+            UploadId = "upload-1",
+            PartNumber = 1,
+            VersionId = "v-123"
+        }).AsTask());
+        Assert.Equal(0, strategy.InvocationCount);
+    }
+
+    [Theory]
+    [InlineData(StoragePresignOperation.GetObject)]
+    [InlineData(StoragePresignOperation.DeleteObject)]
+    [InlineData(StoragePresignOperation.HeadObject)]
+    public async Task PresignObjectAsync_NonUploadOperationWithContentType_Throws(StoragePresignOperation operation)
+    {
+        var presignService = BuildRecordingPresignService(out var strategy);
+        var principal = new ClaimsPrincipal(new ClaimsIdentity(authenticationType: "Tests"));
+
+        await Assert.ThrowsAsync<ArgumentException>(() => presignService.PresignObjectAsync(principal, new StoragePresignRequest
+        {
+            Operation = operation,
+            BucketName = "docs",
+            Key = "guide.txt",
+            ExpiresInSeconds = 300,
+            ContentType = "text/plain"
+        }).AsTask());
+        Assert.Equal(0, strategy.InvocationCount);
+    }
+
+    [Theory]
+    [InlineData(StoragePresignOperation.GetObject)]
+    [InlineData(StoragePresignOperation.PutObject)]
+    [InlineData(StoragePresignOperation.DeleteObject)]
+    [InlineData(StoragePresignOperation.HeadObject)]
+    public async Task PresignObjectAsync_NonUploadPartOperationWithUploadId_Throws(StoragePresignOperation operation)
+    {
+        var presignService = BuildRecordingPresignService(out var strategy);
+        var principal = new ClaimsPrincipal(new ClaimsIdentity(authenticationType: "Tests"));
+
+        await Assert.ThrowsAsync<ArgumentException>(() => presignService.PresignObjectAsync(principal, new StoragePresignRequest
+        {
+            Operation = operation,
+            BucketName = "docs",
+            Key = "guide.txt",
+            ExpiresInSeconds = 300,
+            UploadId = "upload-1"
+        }).AsTask());
+        Assert.Equal(0, strategy.InvocationCount);
+    }
+
+    private static IStoragePresignService BuildRecordingPresignService(out RecordingPresignStrategy strategy)
+    {
+        strategy = new RecordingPresignStrategy(StorageResult<StoragePresignedRequest>.Success(new StoragePresignedRequest
+        {
+            Operation = StoragePresignOperation.GetObject,
+            AccessMode = StorageAccessMode.Proxy,
+            Method = "GET",
+            Url = new Uri("https://example.test/integrated-s3/buckets/docs", UriKind.Absolute),
+            ExpiresAtUtc = DateTimeOffset.UtcNow.AddMinutes(5),
+            BucketName = "docs",
+            Key = "guide.txt"
+        }));
+
+        var services = new ServiceCollection();
+        services.AddIntegratedS3Core();
+        services.AddSingleton<IIntegratedS3AuthorizationService>(new RecordingAuthorizationService(StorageResult.Success()));
+        services.AddSingleton<IStoragePresignStrategy>(strategy);
+        var serviceProvider = services.BuildServiceProvider();
+        return serviceProvider.GetRequiredService<IStoragePresignService>();
+    }
+
     [Fact]
     public async Task PresignObjectAsync_WhenAuthorizationFails_DoesNotInvokeStrategy()
     {

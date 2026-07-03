@@ -20,6 +20,18 @@ public sealed class StorageDirectObjectAccessRequest
     /// <summary>The version identifier of the object.</summary>
     public string? VersionId { get; init; }
 
+    /// <summary>
+    /// The multipart upload identifier the presigned part upload belongs to.
+    /// Only used for <see cref="StorageDirectObjectAccessOperation.UploadPart"/>.
+    /// </summary>
+    public string? UploadId { get; init; }
+
+    /// <summary>
+    /// The one-based part number the presigned part upload targets.
+    /// Only used for <see cref="StorageDirectObjectAccessOperation.UploadPart"/>.
+    /// </summary>
+    public int? PartNumber { get; init; }
+
     /// <summary>The MIME type constraint for the presigned URL.</summary>
     public string? ContentType { get; init; }
 

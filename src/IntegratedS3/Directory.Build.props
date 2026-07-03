@@ -19,6 +19,19 @@
     <PackageReadmeFile Condition="'$(IsPackable)' != 'false'">README.md</PackageReadmeFile>
 
     <!-- Build quality -->
+    <!-- All compiler, analyzer, and MSBuild warnings fail the build. NuGet audit findings
+         (NU1901-NU1904) are exempted because the flagged packages are transitive
+         (Microsoft.OpenApi via Microsoft.AspNetCore.OpenApi, SQLitePCLRaw via EF Core Sqlite,
+         OpenTelemetry.Api/Exporter via the pinned OpenTelemetry 1.11.x line); they stay visible
+         as warnings and are upgraded through Dependabot instead of failing every build. -->
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <WarningsAsErrors>$(WarningsAsErrors);nullable</WarningsAsErrors>
+    <WarningsNotAsErrors>$(WarningsNotAsErrors);NU1901;NU1902;NU1903;NU1904</WarningsNotAsErrors>
+    <AnalysisLevel>latest</AnalysisLevel>
+    <AnalysisMode>Default</AnalysisMode>
+    <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
+    <!-- Solution-level `dotnet pack` intentionally includes IsPackable=false sample hosts; skip the informational warning. -->
+    <WarnOnPackingNonPackableProject>false</WarnOnPackingNonPackableProject>
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
     <Deterministic>true</Deterministic>
     <ContinuousIntegrationBuild Condition="'$(CI)' == 'true'">true</ContinuousIntegrationBuild>

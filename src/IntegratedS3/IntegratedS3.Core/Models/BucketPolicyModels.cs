@@ -10,7 +10,10 @@ namespace IntegratedS3.Core.Models;
 /// </summary>
 public enum PolicyEffect
 {
+    /// <summary>The statement grants access to the matched principals, actions, and resources.</summary>
     Allow,
+
+    /// <summary>The statement denies access to the matched principals, actions, and resources.</summary>
     Deny
 }
 
@@ -19,10 +22,13 @@ public enum PolicyEffect
 /// </summary>
 public sealed class ParsedBucketPolicy
 {
+    /// <summary>The policy language version (e.g. "2012-10-17"), or <see langword="null"/> when omitted.</summary>
     public string? Version { get; init; }
 
+    /// <summary>The optional policy identifier, or <see langword="null"/> when omitted.</summary>
     public string? Id { get; init; }
 
+    /// <summary>The statements that make up the policy.</summary>
     public required IReadOnlyList<PolicyStatement> Statements { get; init; }
 }
 
@@ -31,8 +37,10 @@ public sealed class ParsedBucketPolicy
 /// </summary>
 public sealed class PolicyStatement
 {
+    /// <summary>The optional statement identifier, or <see langword="null"/> when omitted.</summary>
     public string? Sid { get; init; }
 
+    /// <summary>Whether the statement allows or denies the matched requests.</summary>
     public required PolicyEffect Effect { get; init; }
 
     /// <summary>
@@ -62,10 +70,13 @@ public sealed class PolicyStatement
 /// </summary>
 public sealed class PolicyEvaluationContext
 {
+    /// <summary>The caller's source IP address, or <see langword="null"/> when unknown.</summary>
     public string? SourceIp { get; init; }
 
+    /// <summary>Whether the request arrived over a secure (HTTPS) transport.</summary>
     public bool IsSecureTransport { get; init; }
 
+    /// <summary>The listing prefix supplied with the request, or <see langword="null"/> when not applicable.</summary>
     public string? Prefix { get; init; }
 }
 

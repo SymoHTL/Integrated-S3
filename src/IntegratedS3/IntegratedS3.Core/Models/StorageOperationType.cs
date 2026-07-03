@@ -304,4 +304,16 @@ public enum StorageOperationType
 
     /// <summary>Retrieve a subset of object attributes without downloading the full object.</summary>
     GetObjectAttributes,
+
+    // ── Presigned operations (continued) ────────────────────────────
+    // New members are appended so existing numeric values stay stable.
+
+    /// <summary>Generate a presigned URL for deleting an object.</summary>
+    PresignDeleteObject,
+
+    /// <summary>Generate a presigned URL for reading object metadata without the body.</summary>
+    PresignHeadObject,
+
+    /// <summary>Generate a presigned URL for uploading a single part of a multipart upload.</summary>
+    PresignUploadPart,
 }

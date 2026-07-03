@@ -5053,6 +5053,24 @@ public sealed class IntegratedS3AwsSdkCompatibilityTests : IClassFixture<WebUiAp
             return Task.FromResult(new Uri($"http://example.invalid/{bucketName}/{Uri.EscapeDataString(key)}", UriKind.Absolute));
         }
 
+        public Task<Uri> CreatePresignedDeleteObjectUrlAsync(string bucketName, string key, string? versionId, DateTimeOffset expiresAtUtc, CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.FromResult(new Uri($"http://example.invalid/{bucketName}/{Uri.EscapeDataString(key)}", UriKind.Absolute));
+        }
+
+        public Task<Uri> CreatePresignedHeadObjectUrlAsync(string bucketName, string key, string? versionId, DateTimeOffset expiresAtUtc, CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.FromResult(new Uri($"http://example.invalid/{bucketName}/{Uri.EscapeDataString(key)}", UriKind.Absolute));
+        }
+
+        public Task<Uri> CreatePresignedUploadPartUrlAsync(string bucketName, string key, string uploadId, int partNumber, DateTimeOffset expiresAtUtc, CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.FromResult(new Uri($"http://example.invalid/{bucketName}/{Uri.EscapeDataString(key)}?partNumber={partNumber}&uploadId={Uri.EscapeDataString(uploadId)}", UriKind.Absolute));
+        }
+
         public Task<S3GetObjectResult> GetObjectAsync(
             string bucketName,
             string key,

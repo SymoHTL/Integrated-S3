@@ -1,6 +1,8 @@
 using System.Diagnostics;
+using System.Globalization;
 using System.Security.Cryptography;
 using System.Runtime.CompilerServices;
+using System.Text;
 using System.Text.Json;
 using IntegratedS3.Abstractions.Capabilities;
 using IntegratedS3.Abstractions.Errors;
@@ -32,9 +34,12 @@ internal sealed class DiskStorageService(
     private const string Crc32cChecksumAlgorithm = "crc32c";
     private const string Crc64NvmeChecksumAlgorithm = "crc64nvme";
 
+    private const int MutationLockStripeCount = 256;
+
     private readonly string _rootPath = InitializeRootPath(options);
     private readonly IStorageObjectStateStore? _objectStateStore = objectStateStore;
     private readonly IStorageMultipartStateStore? _multipartStateStore = multipartStateStore;
+    private readonly SemaphoreSlim[] _mutationLocks = CreateMutationLocks();
 
     public string Name => options.ProviderName;
 
@@ -224,6 +229,7 @@ internal sealed class DiskStorageService(
             return StorageResult<BucketVersioningInfo>.Failure(BucketNotFound(request.BucketName));
         }
 
+        using var bucketMutationLock = await AcquireBucketMutationLockAsync(bucketPath, cancellationToken);
         var existingMetadata = await ReadBucketMetadataAsync(bucketPath, cancellationToken);
         var metadata = new DiskBucketMetadata
         {
@@ -285,6 +291,7 @@ internal sealed class DiskStorageService(
             return StorageResult<BucketCorsConfiguration>.Failure(BucketNotFound(request.BucketName));
         }
 
+        using var bucketMutationLock = await AcquireBucketMutationLockAsync(bucketPath, cancellationToken);
         var existingMetadata = await ReadBucketMetadataAsync(bucketPath, cancellationToken);
         var updatedMetadata = new DiskBucketMetadata
         {
@@ -328,6 +335,7 @@ internal sealed class DiskStorageService(
             return StorageResult.Failure(BucketNotFound(request.BucketName));
         }
 
+        using var bucketMutationLock = await AcquireBucketMutationLockAsync(bucketPath, cancellationToken);
         var existingMetadata = await ReadBucketMetadataAsync(bucketPath, cancellationToken);
         var updatedMetadata = new DiskBucketMetadata
         {
@@ -398,6 +406,7 @@ internal sealed class DiskStorageService(
             Tags = new Dictionary<string, string>(request.Tags, StringComparer.Ordinal)
         };
 
+        using var bucketMutationLock = await AcquireBucketMutationLockAsync(bucketPath, cancellationToken);
         var existingMetadata = await ReadBucketMetadataAsync(bucketPath, cancellationToken);
         var updatedMetadata = new DiskBucketMetadata
         {
@@ -437,6 +446,7 @@ internal sealed class DiskStorageService(
             return StorageResult.Failure(BucketNotFound(request.BucketName));
         }
 
+        using var bucketMutationLock = await AcquireBucketMutationLockAsync(bucketPath, cancellationToken);
         var existingMetadata = await ReadBucketMetadataAsync(bucketPath, cancellationToken);
         var updatedMetadata = new DiskBucketMetadata
         {
@@ -498,6 +508,7 @@ internal sealed class DiskStorageService(
             TargetPrefix = request.TargetPrefix
         };
 
+        using var bucketMutationLock = await AcquireBucketMutationLockAsync(bucketPath, cancellationToken);
         var existingMetadata = await ReadBucketMetadataAsync(bucketPath, cancellationToken);
         var updatedMetadata = new DiskBucketMetadata
         {
@@ -560,6 +571,7 @@ internal sealed class DiskStorageService(
 
         var diskConfig = ToDiskWebsiteConfiguration(request);
 
+        using var bucketMutationLock = await AcquireBucketMutationLockAsync(bucketPath, cancellationToken);
         var existingMetadata = await ReadBucketMetadataAsync(bucketPath, cancellationToken);
         var updatedMetadata = new DiskBucketMetadata
         {
@@ -595,6 +607,7 @@ internal sealed class DiskStorageService(
             return StorageResult.Failure(BucketNotFound(request.BucketName));
         }
 
+        using var bucketMutationLock = await AcquireBucketMutationLockAsync(bucketPath, cancellationToken);
         var existingMetadata = await ReadBucketMetadataAsync(bucketPath, cancellationToken);
         var updatedMetadata = new DiskBucketMetadata
         {
@@ -658,6 +671,7 @@ internal sealed class DiskStorageService(
             Payer = request.Payer.ToString()
         };
 
+        using var bucketMutationLock = await AcquireBucketMutationLockAsync(bucketPath, cancellationToken);
         var existingMetadata = await ReadBucketMetadataAsync(bucketPath, cancellationToken);
         var updatedMetadata = new DiskBucketMetadata
         {
@@ -726,6 +740,7 @@ internal sealed class DiskStorageService(
             Status = request.Status.ToString()
         };
 
+        using var bucketMutationLock = await AcquireBucketMutationLockAsync(bucketPath, cancellationToken);
         var existingMetadata = await ReadBucketMetadataAsync(bucketPath, cancellationToken);
         var updatedMetadata = new DiskBucketMetadata
         {
@@ -787,6 +802,7 @@ internal sealed class DiskStorageService(
 
         var diskConfig = ToDiskLifecycleConfiguration(request);
 
+        using var bucketMutationLock = await AcquireBucketMutationLockAsync(bucketPath, cancellationToken);
         var existingMetadata = await ReadBucketMetadataAsync(bucketPath, cancellationToken);
         var updatedMetadata = new DiskBucketMetadata
         {
@@ -822,6 +838,7 @@ internal sealed class DiskStorageService(
             return StorageResult.Failure(BucketNotFound(request.BucketName));
         }
 
+        using var bucketMutationLock = await AcquireBucketMutationLockAsync(bucketPath, cancellationToken);
         var existingMetadata = await ReadBucketMetadataAsync(bucketPath, cancellationToken);
         var updatedMetadata = new DiskBucketMetadata
         {
@@ -878,6 +895,7 @@ internal sealed class DiskStorageService(
 
         var diskConfig = ToDiskReplicationConfiguration(request);
 
+        using var bucketMutationLock = await AcquireBucketMutationLockAsync(bucketPath, cancellationToken);
         var existingMetadata = await ReadBucketMetadataAsync(bucketPath, cancellationToken);
         var updatedMetadata = new DiskBucketMetadata
         {
@@ -913,6 +931,7 @@ internal sealed class DiskStorageService(
             return StorageResult.Failure(BucketNotFound(request.BucketName));
         }
 
+        using var bucketMutationLock = await AcquireBucketMutationLockAsync(bucketPath, cancellationToken);
         var existingMetadata = await ReadBucketMetadataAsync(bucketPath, cancellationToken);
         var updatedMetadata = new DiskBucketMetadata
         {
@@ -968,6 +987,7 @@ internal sealed class DiskStorageService(
 
         var diskConfig = ToDiskNotificationConfiguration(request);
 
+        using var bucketMutationLock = await AcquireBucketMutationLockAsync(bucketPath, cancellationToken);
         var existingMetadata = await ReadBucketMetadataAsync(bucketPath, cancellationToken);
         var updatedMetadata = new DiskBucketMetadata
         {
@@ -1025,7 +1045,19 @@ internal sealed class DiskStorageService(
 
         var diskConfig = ToDiskObjectLockConfiguration(request);
 
+        using var bucketMutationLock = await AcquireBucketMutationLockAsync(bucketPath, cancellationToken);
         var existingMetadata = await ReadBucketMetadataAsync(bucketPath, cancellationToken);
+        if (existingMetadata.VersioningStatus != BucketVersioningStatus.Enabled) {
+            return StorageResult<ObjectLockConfiguration>.Failure(new StorageError
+            {
+                Code = StorageErrorCode.VersionConflict,
+                Message = $"Object Lock configuration requires versioning to be enabled on bucket '{request.BucketName}'.",
+                BucketName = request.BucketName,
+                ProviderName = options.ProviderName,
+                SuggestedHttpStatusCode = 409
+            });
+        }
+
         var updatedMetadata = new DiskBucketMetadata
         {
             VersioningStatus = existingMetadata.VersioningStatus,
@@ -1081,6 +1113,7 @@ internal sealed class DiskStorageService(
         }
 
         var diskConfig = ToDiskAnalyticsConfiguration(request);
+        using var bucketMutationLock = await AcquireBucketMutationLockAsync(bucketPath, cancellationToken);
         var existingMetadata = await ReadBucketMetadataAsync(bucketPath, cancellationToken);
         var updatedDict = existingMetadata.AnalyticsConfigurations is not null
             ? new Dictionary<string, DiskBucketAnalyticsConfiguration>(existingMetadata.AnalyticsConfigurations, StringComparer.Ordinal)
@@ -1121,6 +1154,7 @@ internal sealed class DiskStorageService(
             return StorageResult.Failure(BucketNotFound(request.BucketName));
         }
 
+        using var bucketMutationLock = await AcquireBucketMutationLockAsync(bucketPath, cancellationToken);
         var existingMetadata = await ReadBucketMetadataAsync(bucketPath, cancellationToken);
         var updatedDict = existingMetadata.AnalyticsConfigurations is not null
             ? new Dictionary<string, DiskBucketAnalyticsConfiguration>(existingMetadata.AnalyticsConfigurations, StringComparer.Ordinal)
@@ -1202,6 +1236,7 @@ internal sealed class DiskStorageService(
         }
 
         var diskConfig = ToDiskMetricsConfiguration(request);
+        using var bucketMutationLock = await AcquireBucketMutationLockAsync(bucketPath, cancellationToken);
         var existingMetadata = await ReadBucketMetadataAsync(bucketPath, cancellationToken);
         var updatedDict = existingMetadata.MetricsConfigurations is not null
             ? new Dictionary<string, DiskBucketMetricsConfiguration>(existingMetadata.MetricsConfigurations, StringComparer.Ordinal)
@@ -1242,6 +1277,7 @@ internal sealed class DiskStorageService(
             return StorageResult.Failure(BucketNotFound(request.BucketName));
         }
 
+        using var bucketMutationLock = await AcquireBucketMutationLockAsync(bucketPath, cancellationToken);
         var existingMetadata = await ReadBucketMetadataAsync(bucketPath, cancellationToken);
         var updatedDict = existingMetadata.MetricsConfigurations is not null
             ? new Dictionary<string, DiskBucketMetricsConfiguration>(existingMetadata.MetricsConfigurations, StringComparer.Ordinal)
@@ -1323,6 +1359,7 @@ internal sealed class DiskStorageService(
         }
 
         var diskConfig = ToDiskInventoryConfiguration(request);
+        using var bucketMutationLock = await AcquireBucketMutationLockAsync(bucketPath, cancellationToken);
         var existingMetadata = await ReadBucketMetadataAsync(bucketPath, cancellationToken);
         var updatedDict = existingMetadata.InventoryConfigurations is not null
             ? new Dictionary<string, DiskBucketInventoryConfiguration>(existingMetadata.InventoryConfigurations, StringComparer.Ordinal)
@@ -1363,6 +1400,7 @@ internal sealed class DiskStorageService(
             return StorageResult.Failure(BucketNotFound(request.BucketName));
         }
 
+        using var bucketMutationLock = await AcquireBucketMutationLockAsync(bucketPath, cancellationToken);
         var existingMetadata = await ReadBucketMetadataAsync(bucketPath, cancellationToken);
         var updatedDict = existingMetadata.InventoryConfigurations is not null
             ? new Dictionary<string, DiskBucketInventoryConfiguration>(existingMetadata.InventoryConfigurations, StringComparer.Ordinal)
@@ -1444,6 +1482,7 @@ internal sealed class DiskStorageService(
         }
 
         var diskConfig = ToDiskIntelligentTieringConfiguration(request);
+        using var bucketMutationLock = await AcquireBucketMutationLockAsync(bucketPath, cancellationToken);
         var existingMetadata = await ReadBucketMetadataAsync(bucketPath, cancellationToken);
         var updatedDict = existingMetadata.IntelligentTieringConfigurations is not null
             ? new Dictionary<string, DiskBucketIntelligentTieringConfiguration>(existingMetadata.IntelligentTieringConfigurations, StringComparer.Ordinal)
@@ -1484,6 +1523,7 @@ internal sealed class DiskStorageService(
             return StorageResult.Failure(BucketNotFound(request.BucketName));
         }
 
+        using var bucketMutationLock = await AcquireBucketMutationLockAsync(bucketPath, cancellationToken);
         var existingMetadata = await ReadBucketMetadataAsync(bucketPath, cancellationToken);
         var updatedDict = existingMetadata.IntelligentTieringConfigurations is not null
             ? new Dictionary<string, DiskBucketIntelligentTieringConfiguration>(existingMetadata.IntelligentTieringConfigurations, StringComparer.Ordinal)
@@ -2091,7 +2131,13 @@ internal sealed class DiskStorageService(
             return StorageResult<ObjectInfo>.Failure(preconditionFailure);
         }
 
+        using var objectMutationLock = await AcquireObjectMutationLockAsync(request.DestinationBucketName, request.DestinationKey, cancellationToken);
+
         var destinationPath = GetObjectPath(request.DestinationBucketName, request.DestinationKey);
+        if (!OnDiskPathMatchesRequestedCasing(destinationBucketPath, destinationPath)) {
+            return StorageResult<ObjectInfo>.Failure(KeyCasingConflict(request.DestinationBucketName, request.DestinationKey));
+        }
+
         var destinationDirectoryPath = Path.GetDirectoryName(destinationPath)!;
         Directory.CreateDirectory(destinationDirectoryPath);
 
@@ -2230,7 +2276,13 @@ internal sealed class DiskStorageService(
             return StorageResult<ObjectInfo>.Failure(BucketNotFound(request.BucketName));
         }
 
+        using var objectMutationLock = await AcquireObjectMutationLockAsync(request.BucketName, request.Key, cancellationToken);
+
         var objectPath = GetObjectPath(request.BucketName, request.Key);
+        if (!OnDiskPathMatchesRequestedCasing(bucketPath, objectPath)) {
+            return StorageResult<ObjectInfo>.Failure(KeyCasingConflict(request.BucketName, request.Key));
+        }
+
         var objectDirectoryPath = Path.GetDirectoryName(objectPath)!;
         Directory.CreateDirectory(objectDirectoryPath);
 
@@ -2316,6 +2368,8 @@ internal sealed class DiskStorageService(
         if (tagValidationError is not null) {
             return StorageResult<ObjectTagSet>.Failure(InvalidTag(tagValidationError, bucketName, key));
         }
+
+        using var objectMutationLock = await AcquireObjectMutationLockAsync(bucketName, key, cancellationToken);
 
         var storedObjectResult = await ResolveStoredObjectAsync(bucketName, key, versionId, cancellationToken);
         if (!storedObjectResult.IsSuccess) {
@@ -2823,7 +2877,13 @@ internal sealed class DiskStorageService(
                 request.Key));
         }
 
+        using var objectMutationLock = await AcquireObjectMutationLockAsync(request.BucketName, request.Key, cancellationToken);
+
         var objectPath = GetObjectPath(request.BucketName, request.Key);
+        if (!OnDiskPathMatchesRequestedCasing(GetBucketPath(request.BucketName), objectPath)) {
+            return StorageResult<ObjectInfo>.Failure(KeyCasingConflict(request.BucketName, request.Key));
+        }
+
         var objectDirectoryPath = Path.GetDirectoryName(objectPath)!;
         Directory.CreateDirectory(objectDirectoryPath);
 
@@ -3081,6 +3141,8 @@ internal sealed class DiskStorageService(
             return StorageResult<DeleteObjectResult>.Failure(BucketNotFound(request.BucketName));
         }
 
+        using var objectMutationLock = await AcquireObjectMutationLockAsync(request.BucketName, request.Key, cancellationToken);
+
         var filePath = GetObjectPath(request.BucketName, request.Key);
         var versioningEnabled = await IsVersioningEnabledAsync(request.BucketName, cancellationToken);
 
@@ -3091,6 +3153,11 @@ internal sealed class DiskStorageService(
             }
 
             var storedObject = storedObjectResult.Value!;
+            var objectLockDenial = await GetObjectLockDeleteDenialAsync(request.BucketName, request.Key, request.VersionId, storedObject, cancellationToken);
+            if (objectLockDenial is not null) {
+                return StorageResult<DeleteObjectResult>.Failure(objectLockDenial);
+            }
+
             if (!storedObject.IsDeleteMarker && !string.IsNullOrWhiteSpace(storedObject.ContentPath) && File.Exists(storedObject.ContentPath)) {
                 File.Delete(storedObject.ContentPath);
             }
@@ -3162,6 +3229,14 @@ internal sealed class DiskStorageService(
                 IsDeleteMarker = true,
                 CurrentObject = deleteMarker
             });
+        }
+
+        var currentObject = await TryResolveCurrentStoredObjectAsync(request.BucketName, request.Key, filePath, cancellationToken);
+        if (currentObject is not null) {
+            var currentObjectLockDenial = await GetObjectLockDeleteDenialAsync(request.BucketName, request.Key, currentObject.Metadata.VersionId, currentObject, cancellationToken);
+            if (currentObjectLockDenial is not null) {
+                return StorageResult<DeleteObjectResult>.Failure(currentObjectLockDenial);
+            }
         }
 
         if (File.Exists(filePath)) {
@@ -3259,7 +3334,169 @@ internal sealed class DiskStorageService(
     {
         return string.IsNullOrWhiteSpace(key)
             ? string.Empty
-            : key.Replace('\\', '/').TrimStart('/');
+            : key.TrimStart('/');
+    }
+
+    /// <summary>
+    /// Percent-encodes the characters of a key segment that would otherwise alias distinct
+    /// object keys on disk (<c>\</c> versus <c>/</c>), collide with the escape character itself
+    /// (<c>%</c>), or be unrepresentable in Windows file names (reserved characters, control
+    /// characters, reserved device names, and trailing dots or spaces). The mapping is applied
+    /// on every platform so on-disk layouts stay portable, and it is reversed by
+    /// <see cref="DecodeKeySegment"/> when paths are mapped back to object keys.
+    /// </summary>
+    private static string EncodeKeySegment(string segment)
+    {
+        var encodeFirstCharacter = IsWindowsReservedDeviceName(segment);
+        var leadingEncodeEndIndex = GetLeadingEncodeEndIndex(segment);
+        var trailingEncodeStartIndex = GetTrailingEncodeStartIndex(segment);
+        if (!encodeFirstCharacter
+            && leadingEncodeEndIndex == 0
+            && trailingEncodeStartIndex == segment.Length
+            && !segment.Any(IsUnsafeKeySegmentChar)) {
+            return segment;
+        }
+
+        var builder = new StringBuilder(segment.Length + 8);
+        for (var i = 0; i < segment.Length; i++) {
+            var character = segment[i];
+            if (IsUnsafeKeySegmentChar(character)
+                || (i == 0 && encodeFirstCharacter)
+                || i < leadingEncodeEndIndex
+                || i >= trailingEncodeStartIndex) {
+                builder.Append('%');
+                builder.Append(((int)character).ToString("X2", CultureInfo.InvariantCulture));
+            }
+            else {
+                builder.Append(character);
+            }
+        }
+
+        return builder.ToString();
+    }
+
+    private static string DecodeKeySegment(string segment)
+    {
+        if (!segment.Contains('%')) {
+            return segment;
+        }
+
+        var builder = new StringBuilder(segment.Length);
+        for (var i = 0; i < segment.Length; i++) {
+            if (segment[i] == '%'
+                && i + 2 < segment.Length
+                && Uri.IsHexDigit(segment[i + 1])
+                && Uri.IsHexDigit(segment[i + 2])) {
+                builder.Append((char)((Uri.FromHex(segment[i + 1]) << 4) | Uri.FromHex(segment[i + 2])));
+                i += 2;
+            }
+            else {
+                builder.Append(segment[i]);
+            }
+        }
+
+        return builder.ToString();
+    }
+
+    private static string DecodeKeyPath(string relativePath)
+    {
+        return relativePath.Contains('%')
+            ? string.Join('/', relativePath.Split('/').Select(DecodeKeySegment))
+            : relativePath;
+    }
+
+    private static bool IsUnsafeKeySegmentChar(char character)
+    {
+        return character switch
+        {
+            '\\' or '%' or '<' or '>' or ':' or '"' or '|' or '?' or '*' => true,
+            _ => character < 0x20 || character == 0x7F
+        };
+    }
+
+    private static int GetLeadingEncodeEndIndex(string segment)
+    {
+        var index = 0;
+        while (index < segment.Length && segment[index] == ' ') {
+            index++;
+        }
+
+        return index;
+    }
+
+    private static int GetTrailingEncodeStartIndex(string segment)
+    {
+        var index = segment.Length;
+        while (index > 0 && segment[index - 1] is '.' or ' ') {
+            index--;
+        }
+
+        return index;
+    }
+
+    private static bool IsWindowsReservedDeviceName(string segment)
+    {
+        var baseName = segment.AsSpan();
+        var dotIndex = baseName.IndexOf('.');
+        if (dotIndex >= 0) {
+            baseName = baseName[..dotIndex];
+        }
+
+        return baseName.Length switch
+        {
+            3 => baseName.Equals("CON", StringComparison.OrdinalIgnoreCase)
+                || baseName.Equals("PRN", StringComparison.OrdinalIgnoreCase)
+                || baseName.Equals("AUX", StringComparison.OrdinalIgnoreCase)
+                || baseName.Equals("NUL", StringComparison.OrdinalIgnoreCase),
+            4 => (baseName[..3].Equals("COM", StringComparison.OrdinalIgnoreCase)
+                    || baseName[..3].Equals("LPT", StringComparison.OrdinalIgnoreCase))
+                && baseName[3] is >= '1' and <= '9',
+            _ => false
+        };
+    }
+
+    /// <summary>
+    /// Verifies that every already-existing path segment between <paramref name="rootPath"/> and
+    /// <paramref name="fullPath"/> matches the requested casing exactly. On case-insensitive file
+    /// systems (NTFS, APFS) a key that differs from an existing entry only by character casing would
+    /// otherwise silently read or overwrite the other object. Segments that do not exist yet cannot
+    /// alias anything and are accepted.
+    /// </summary>
+    private static bool OnDiskPathMatchesRequestedCasing(string rootPath, string fullPath)
+    {
+        var relativePath = Path.GetRelativePath(rootPath, fullPath);
+        var currentPath = rootPath;
+        foreach (var segment in relativePath.Split(Path.DirectorySeparatorChar)) {
+            if (!Directory.Exists(currentPath)) {
+                return true;
+            }
+
+            string? actualEntryPath = null;
+            foreach (var entryPath in Directory.EnumerateFileSystemEntries(currentPath, segment)) {
+                actualEntryPath = entryPath;
+                break;
+            }
+
+            if (actualEntryPath is null) {
+                return true;
+            }
+
+            if (!string.Equals(Path.GetFileName(actualEntryPath), segment, StringComparison.Ordinal)) {
+                return false;
+            }
+
+            currentPath = Path.Combine(currentPath, segment);
+        }
+
+        return true;
+    }
+
+    private StorageError KeyCasingConflict(string bucketName, string key)
+    {
+        return StorageError.Unsupported(
+            $"Object key '{key}' differs only by character casing from an existing entry, which the disk provider cannot store distinctly on a case-insensitive filesystem.",
+            bucketName,
+            key);
     }
 
     private static string? NormalizeContinuationToken(string? continuationToken)
@@ -3289,12 +3526,7 @@ internal sealed class DiskStorageService(
         }
 
         var bucketPath = GetBucketPath(bucketName);
-        var normalizedKey = NormalizeKey(key);
-        var segments = normalizedKey.Split('/', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-
-        if (segments.Length == 0 || segments.Any(static segment => segment == "." || segment == "..")) {
-            throw new ArgumentException("Object key contains invalid path segments.", nameof(key));
-        }
+        var segments = SplitKeyIntoEncodedSegments(key);
 
         var pathParts = new string[segments.Length + 1];
         pathParts[0] = bucketPath;
@@ -3309,9 +3541,25 @@ internal sealed class DiskStorageService(
         return fullPath;
     }
 
+    private static string[] SplitKeyIntoEncodedSegments(string key)
+    {
+        var normalizedKey = NormalizeKey(key);
+        var segments = normalizedKey.Split('/', StringSplitOptions.RemoveEmptyEntries);
+
+        if (segments.Length == 0 || segments.Any(static segment => segment == "." || segment == "..")) {
+            throw new ArgumentException("Object key contains invalid path segments.", nameof(key));
+        }
+
+        for (var i = 0; i < segments.Length; i++) {
+            segments[i] = EncodeKeySegment(segments[i]);
+        }
+
+        return segments;
+    }
+
     private static string GetObjectKey(string bucketPath, string filePath)
     {
-        return Path.GetRelativePath(bucketPath, filePath).Replace('\\', '/');
+        return DecodeKeyPath(Path.GetRelativePath(bucketPath, filePath).Replace('\\', '/'));
     }
 
     private static string GetMetadataPath(string objectPath)
@@ -3332,12 +3580,7 @@ internal sealed class DiskStorageService(
     private string GetObjectVersionsDirectoryPath(string bucketName, string key)
     {
         var versionsRootPath = GetVersionsRootPath(bucketName);
-        var normalizedKey = NormalizeKey(key);
-        var segments = normalizedKey.Split('/', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-
-        if (segments.Length == 0 || segments.Any(static segment => segment == "." || segment == "..")) {
-            throw new ArgumentException("Object key contains invalid path segments.", nameof(key));
-        }
+        var segments = SplitKeyIntoEncodedSegments(key);
 
         var pathParts = new string[segments.Length + 1];
         pathParts[0] = versionsRootPath;
@@ -3507,7 +3750,7 @@ internal sealed class DiskStorageService(
         }
 
         var metadataPath = GetMetadataPath(objectPath);
-        if (!File.Exists(metadataPath)) {
+        if (!File.Exists(metadataPath) || !OnDiskPathMatchesRequestedCasing(GetBucketPath(bucketName), metadataPath)) {
             return null;
         }
 
@@ -3844,7 +4087,7 @@ internal sealed class DiskStorageService(
         }
 
         var versionId = segments[^2];
-        var objectKey = string.Join('/', segments[..^2]);
+        var objectKey = string.Join('/', segments[..^2].Select(DecodeKeySegment));
         return string.IsNullOrWhiteSpace(objectKey)
             ? null
             : new ArchivedVersionEntry(objectKey, versionId, GetArchivedVersionContentPath(bucketName, objectKey, versionId));
@@ -3852,7 +4095,7 @@ internal sealed class DiskStorageService(
 
     private async Task<ResolvedStoredObject?> TryResolveCurrentStoredObjectAsync(string bucketName, string key, string currentPath, CancellationToken cancellationToken)
     {
-        if (File.Exists(currentPath)) {
+        if (File.Exists(currentPath) && OnDiskPathMatchesRequestedCasing(GetBucketPath(bucketName), currentPath)) {
             var currentMetadata = await ReadStoredObjectMetadataAsync(bucketName, key, currentPath, versionId: null, cancellationToken);
             return new ResolvedStoredObject(currentPath, currentMetadata, true, false);
         }
@@ -5900,6 +6143,64 @@ internal sealed class DiskStorageService(
         };
     }
 
+    /// <summary>
+    /// Returns a denial error when the supplied stored object is still inside the retention
+    /// window implied by the bucket's Object Lock default-retention configuration, or
+    /// <see langword="null"/> when the delete may proceed. Delete markers carry no content and
+    /// are never protected.
+    /// </summary>
+    private async Task<StorageError?> GetObjectLockDeleteDenialAsync(
+        string bucketName,
+        string key,
+        string? versionId,
+        ResolvedStoredObject storedObject,
+        CancellationToken cancellationToken)
+    {
+        if (storedObject.IsDeleteMarker) {
+            return null;
+        }
+
+        var metadata = await ReadBucketMetadataAsync(GetBucketPath(bucketName), cancellationToken);
+        if (metadata.ObjectLockConfiguration is not { ObjectLockEnabled: true, DefaultRetention: { } defaultRetention }) {
+            return null;
+        }
+
+        var lastModifiedUtc = storedObject.Metadata.LastModifiedUtc
+            ?? (!string.IsNullOrWhiteSpace(storedObject.ContentPath) && File.Exists(storedObject.ContentPath)
+                ? File.GetLastWriteTimeUtc(storedObject.ContentPath)
+                : DateTimeOffset.UtcNow);
+        var retainUntilUtc = GetRetainUntilUtc(lastModifiedUtc, defaultRetention);
+        if (DateTimeOffset.UtcNow >= retainUntilUtc) {
+            return null;
+        }
+
+        return new StorageError
+        {
+            Code = StorageErrorCode.ObjectLocked,
+            Message = $"Object '{key}' is protected by the bucket default retention policy ({defaultRetention.Mode}) until {retainUntilUtc:O} and cannot be permanently deleted.",
+            BucketName = bucketName,
+            ObjectKey = key,
+            VersionId = versionId ?? storedObject.Metadata.VersionId,
+            LastModifiedUtc = lastModifiedUtc,
+            ProviderName = options.ProviderName,
+            SuggestedHttpStatusCode = 403
+        };
+    }
+
+    private static DateTimeOffset GetRetainUntilUtc(DateTimeOffset lastModifiedUtc, DiskObjectLockDefaultRetention defaultRetention)
+    {
+        var retainUntilUtc = lastModifiedUtc;
+        if (defaultRetention.Days is { } days) {
+            retainUntilUtc = retainUntilUtc.AddDays(days);
+        }
+
+        if (defaultRetention.Years is { } years) {
+            retainUntilUtc = retainUntilUtc.AddYears(years);
+        }
+
+        return retainUntilUtc;
+    }
+
     private StorageError GetDeleteMarkerAccessError(string bucketName, string objectKey, string? requestedVersionId, DiskObjectMetadata deleteMarkerMetadata)
     {
         return string.IsNullOrWhiteSpace(requestedVersionId)
@@ -5936,6 +6237,56 @@ internal sealed class DiskStorageService(
             ProviderName = options.ProviderName,
             SuggestedHttpStatusCode = 405
         };
+    }
+
+    private static SemaphoreSlim[] CreateMutationLocks()
+    {
+        var mutationLocks = new SemaphoreSlim[MutationLockStripeCount];
+        for (var i = 0; i < mutationLocks.Length; i++) {
+            mutationLocks[i] = new SemaphoreSlim(1, 1);
+        }
+
+        return mutationLocks;
+    }
+
+    /// <summary>
+    /// Serializes multi-step bucket-metadata mutations (read-modify-write of the whole
+    /// <see cref="DiskBucketMetadata"/> document) so concurrent configuration updates
+    /// cannot silently drop each other's changes.
+    /// </summary>
+    private ValueTask<MutationLockReleaser> AcquireBucketMutationLockAsync(string bucketPath, CancellationToken cancellationToken)
+    {
+        return AcquireMutationLockAsync(bucketPath, key: null, cancellationToken);
+    }
+
+    /// <summary>
+    /// Serializes multi-step object mutations for a single bucket/key pair (for example the
+    /// archive-current-then-swap sequence of versioned writes) so concurrent writers cannot
+    /// lose version records or orphan content files. Locks are striped, so unrelated keys may
+    /// occasionally share a stripe, which only adds contention and never changes correctness.
+    /// </summary>
+    private ValueTask<MutationLockReleaser> AcquireObjectMutationLockAsync(string bucketName, string key, CancellationToken cancellationToken)
+    {
+        return AcquireMutationLockAsync(GetBucketPath(bucketName), NormalizeKey(key), cancellationToken);
+    }
+
+    private async ValueTask<MutationLockReleaser> AcquireMutationLockAsync(string bucketPath, string? key, CancellationToken cancellationToken)
+    {
+        var hashCode = new HashCode();
+        hashCode.Add(bucketPath, StringComparer.Ordinal);
+        hashCode.Add(key, StringComparer.Ordinal);
+
+        var mutationLock = _mutationLocks[(int)((uint)hashCode.ToHashCode() % MutationLockStripeCount)];
+        await mutationLock.WaitAsync(cancellationToken);
+        return new MutationLockReleaser(mutationLock);
+    }
+
+    private readonly struct MutationLockReleaser(SemaphoreSlim mutationLock) : IDisposable
+    {
+        public void Dispose()
+        {
+            mutationLock.Release();
+        }
     }
 
     private sealed record MultipartUploadStateContext(string UploadDirectoryPath, MultipartUploadState State);

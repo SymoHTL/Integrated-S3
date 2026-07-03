@@ -1,0 +1,70 @@
+name: Bug report
+description: Report a defect in an IntegratedS3 package or the S3-compatible HTTP surface.
+title: "[bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a bug!
+        **Security vulnerabilities must not be reported here** — use [private vulnerability reporting](https://github.com/SymoHTL/Integrated-S3/security/advisories/new) instead.
+  - type: input
+    id: package-version
+    attributes:
+      label: Package and version
+      description: Which IntegratedS3 package(s) and version(s) are affected?
+      placeholder: e.g. IntegratedS3.AspNetCore 10.0.4, IntegratedS3.Provider.Disk 10.0.4
+    validations:
+      required: true
+  - type: dropdown
+    id: provider
+    attributes:
+      label: Storage provider
+      description: Which provider were you using when the bug occurred?
+      options:
+        - Disk (IntegratedS3.Provider.Disk)
+        - S3 (IntegratedS3.Provider.S3)
+        - Custom IStorageBackend
+        - Multiple / orchestrated backends
+        - Not provider-related
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: A clear description of the bug, including the S3 operation involved (e.g. PutObject, CompleteMultipartUpload) and any S3 error code returned.
+      placeholder: What did you do, what did you expect, and what actually happened?
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Reproduction steps
+      description: Minimal steps, code, or HTTP requests that reproduce the issue.
+      placeholder: |
+        1. Register services with ...
+        2. Send `PUT /integrated-s3/my-bucket/my-key` with ...
+        3. Observe ...
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: .NET SDK/runtime version, OS, deployment style (regular / AOT / trimmed), SigV4 enabled or not.
+      placeholder: |
+        - .NET: 10.0.x
+        - OS: Ubuntu 24.04 / Windows 11
+        - AOT/trimmed: no
+        - SigV4 authentication: enabled
+    validations:
+      required: false
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs or error responses
+      description: Console logs, stack traces, or S3 XML error responses. This is automatically formatted as code.
+      render: text
+    validations:
+      required: false

@@ -1,0 +1,48 @@
+name: Feature request
+description: Propose a new capability or an improvement to an existing one.
+title: "[feature] "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Before filing, check the [provider capability matrix](https://github.com/SymoHTL/Integrated-S3/blob/main/docs/protocol-compatibility.md#provider-capability-matrix) — the operation you need may already be supported by a different provider, or intentionally unimplemented on one.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem / motivation
+      description: What are you trying to do that IntegratedS3 doesn't support today?
+      placeholder: I need to ... but currently ...
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: What would you like to happen? For S3-surface features, name the S3 operation/subresource (e.g. `?retention`, SelectObjectContent) and which provider(s) should support it.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Workarounds you've tried or other designs you considered.
+    validations:
+      required: false
+  - type: dropdown
+    id: area
+    attributes:
+      label: Affected area
+      options:
+        - S3-compatible HTTP surface
+        - Disk provider
+        - S3 provider
+        - Core orchestration / replication
+        - Authentication / authorization / presign
+        - Client (IntegratedS3.Client)
+        - Observability
+        - Packaging / CI
+        - Documentation
+        - Other
+    validations:
+      required: true

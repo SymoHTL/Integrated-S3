@@ -21,11 +21,10 @@ public sealed record StorageReplicaRepairEntry
     /// <summary>The storage operation that needs to be replayed on the replica.</summary>
     public required StorageOperationType Operation { get; init; }
 
-    /// <summary>The name of the primary backend that holds the authoritative data.</summary>
-
     /// <summary>The kind(s) of divergence detected between primary and replica.</summary>
     public StorageReplicaRepairDivergenceKind DivergenceKinds { get; init; }
 
+    /// <summary>The name of the primary backend that holds the authoritative data.</summary>
     public required string PrimaryBackendName { get; init; }
 
     /// <summary>The name of the replica backend that needs repair.</summary>
@@ -55,6 +54,9 @@ public sealed record StorageReplicaRepairEntry
     /// <summary>A human-readable message from the most recent failed attempt, or <see langword="null"/>.</summary>
     public string? LastErrorMessage { get; init; }
 
+    /// <summary>Gets the default divergence kinds recorded for a repair entry created for the given operation.</summary>
+    /// <param name="operation">The storage operation whose replica application failed.</param>
+    /// <returns>The <see cref="StorageReplicaRepairDivergenceKind"/> flags implied by <paramref name="operation"/>.</returns>
     public static StorageReplicaRepairDivergenceKind GetDefaultDivergenceKinds(StorageOperationType operation)
     {
         return operation switch

@@ -112,6 +112,118 @@ public sealed class IntegratedS3ClientPresignExtensionsTests
         Assert.Equal("application/octet-stream", client.LastRequest?.ContentType);
     }
 
+    [Fact]
+    public async Task PresignDeleteObjectAsync_WithoutPreferredAccessMode_LeavesPreferenceNullAndForwardsVersion()
+    {
+        var client = new CapturingIntegratedS3Client();
+
+        await client.PresignDeleteObjectAsync(
+            "docs",
+            "guide.txt",
+            expiresInSeconds: 300,
+            versionId: "v-123");
+
+        Assert.Equal(StoragePresignOperation.DeleteObject, client.LastRequest?.Operation);
+        Assert.Null(client.LastRequest?.PreferredAccessMode);
+        Assert.Equal("v-123", client.LastRequest?.VersionId);
+    }
+
+    [Fact]
+    public async Task PresignDeleteObjectAsync_WithPreferredAccessMode_ForwardsPreference()
+    {
+        var client = new CapturingIntegratedS3Client();
+
+        await client.PresignDeleteObjectAsync(
+            "docs",
+            "guide.txt",
+            expiresInSeconds: 300,
+            preferredAccessMode: StorageAccessMode.Direct);
+
+        Assert.Equal(StoragePresignOperation.DeleteObject, client.LastRequest?.Operation);
+        Assert.Equal(StorageAccessMode.Direct, client.LastRequest?.PreferredAccessMode);
+    }
+
+    [Fact]
+    public async Task PresignHeadObjectAsync_WithoutPreferredAccessMode_LeavesPreferenceNullAndForwardsVersion()
+    {
+        var client = new CapturingIntegratedS3Client();
+
+        await client.PresignHeadObjectAsync(
+            "docs",
+            "guide.txt",
+            expiresInSeconds: 300,
+            versionId: "v-456");
+
+        Assert.Equal(StoragePresignOperation.HeadObject, client.LastRequest?.Operation);
+        Assert.Null(client.LastRequest?.PreferredAccessMode);
+        Assert.Equal("v-456", client.LastRequest?.VersionId);
+    }
+
+    [Fact]
+    public async Task PresignHeadObjectAsync_WithPreferredAccessMode_ForwardsPreference()
+    {
+        var client = new CapturingIntegratedS3Client();
+
+        await client.PresignHeadObjectAsync(
+            "docs",
+            "guide.txt",
+            expiresInSeconds: 300,
+            preferredAccessMode: StorageAccessMode.Delegated);
+
+        Assert.Equal(StoragePresignOperation.HeadObject, client.LastRequest?.Operation);
+        Assert.Equal(StorageAccessMode.Delegated, client.LastRequest?.PreferredAccessMode);
+    }
+
+    [Fact]
+    public async Task PresignUploadPartAsync_ForwardsUploadIdAndPartNumber()
+    {
+        var client = new CapturingIntegratedS3Client();
+
+        await client.PresignUploadPartAsync(
+            "docs",
+            "guide.txt",
+            uploadId: "upload-123",
+            partNumber: 4,
+            expiresInSeconds: 300);
+
+        Assert.Equal(StoragePresignOperation.UploadPart, client.LastRequest?.Operation);
+        Assert.Null(client.LastRequest?.PreferredAccessMode);
+        Assert.Equal("upload-123", client.LastRequest?.UploadId);
+        Assert.Equal(4, client.LastRequest?.PartNumber);
+    }
+
+    [Fact]
+    public async Task PresignUploadPartAsync_WithPreferredAccessMode_ForwardsEverything()
+    {
+        var client = new CapturingIntegratedS3Client();
+
+        await client.PresignUploadPartAsync(
+            "docs",
+            "guide.txt",
+            uploadId: "upload-123",
+            partNumber: 5,
+            expiresInSeconds: 300,
+            preferredAccessMode: StorageAccessMode.Direct);
+
+        Assert.Equal(StoragePresignOperation.UploadPart, client.LastRequest?.Operation);
+        Assert.Equal(StorageAccessMode.Direct, client.LastRequest?.PreferredAccessMode);
+        Assert.Equal("upload-123", client.LastRequest?.UploadId);
+        Assert.Equal(5, client.LastRequest?.PartNumber);
+    }
+
+    [Fact]
+    public async Task PresignUploadPartAsync_WithBlankUploadId_Throws()
+    {
+        var client = new CapturingIntegratedS3Client();
+
+        await Assert.ThrowsAsync<ArgumentException>(() => client.PresignUploadPartAsync(
+            "docs",
+            "guide.txt",
+            uploadId: " ",
+            partNumber: 1,
+            expiresInSeconds: 300).AsTask());
+    }
+
     private sealed class CapturingIntegratedS3Client : IIntegratedS3Client
     {
         public StoragePresignRequest? LastRequest { get; private set; }

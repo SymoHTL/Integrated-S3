@@ -7,7 +7,6 @@ using Amazon.S3.Model;
 using System.Globalization;
 using IntegratedS3.Abstractions.Models;
 using Microsoft.Extensions.Logging;
-using System.Globalization;
 using PutBucketDefaultEncryptionStorageRequest = IntegratedS3.Abstractions.Requests.PutBucketDefaultEncryptionRequest;
 using UploadPartCopyStorageRequest = IntegratedS3.Abstractions.Requests.UploadPartCopyRequest;
 using PutBucketTaggingStorageRequest = IntegratedS3.Abstractions.Requests.PutBucketTaggingRequest;
@@ -591,6 +590,74 @@ internal sealed class AwsS3StorageClient : IS3StorageClient
 
         var presignedUrl = _s3.GetPreSignedURL(request);
         return Task.FromResult(new Uri(presignedUrl, UriKind.Absolute));
+    }
+
+    public Task<Uri> CreatePresignedDeleteObjectUrlAsync(
+        string bucketName,
+        string key,
+        string? versionId,
+        DateTimeOffset expiresAtUtc,
+        CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+
+        var request = new GetPreSignedUrlRequest
+        {
+            BucketName = bucketName,
+            Key = key,
+            VersionId = versionId,
+            Expires = expiresAtUtc.UtcDateTime,
+            Verb = HttpVerb.DELETE
+        };
+
+        var presignedUrl = _s3.GetPreSignedURL(request);
+        return Task.FromResult(AlignPresignedUrlWithServiceUrl(new Uri(presignedUrl, UriKind.Absolute)));
+    }
+
+    public Task<Uri> CreatePresignedHeadObjectUrlAsync(
+        string bucketName,
+        string key,
+        string? versionId,
+        DateTimeOffset expiresAtUtc,
+        CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+
+        var request = new GetPreSignedUrlRequest
+        {
+            BucketName = bucketName,
+            Key = key,
+            VersionId = versionId,
+            Expires = expiresAtUtc.UtcDateTime,
+            Verb = HttpVerb.HEAD
+        };
+
+        var presignedUrl = _s3.GetPreSignedURL(request);
+        return Task.FromResult(AlignPresignedUrlWithServiceUrl(new Uri(presignedUrl, UriKind.Absolute)));
+    }
+
+    public Task<Uri> CreatePresignedUploadPartUrlAsync(
+        string bucketName,
+        string key,
+        string uploadId,
+        int partNumber,
+        DateTimeOffset expiresAtUtc,
+        CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+
+        var request = new GetPreSignedUrlRequest
+        {
+            BucketName = bucketName,
+            Key = key,
+            UploadId = uploadId,
+            PartNumber = partNumber,
+            Expires = expiresAtUtc.UtcDateTime,
+            Verb = HttpVerb.PUT
+        };
+
+        var presignedUrl = _s3.GetPreSignedURL(request);
+        return Task.FromResult(AlignPresignedUrlWithServiceUrl(new Uri(presignedUrl, UriKind.Absolute)));
     }
 
     public async Task<S3GetObjectResult> GetObjectAsync(

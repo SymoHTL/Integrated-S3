@@ -84,6 +84,25 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
                     request.ContentType,
                     expiresAtUtc,
                     cancellationToken).ConfigureAwait(false),
+                StorageDirectObjectAccessOperation.DeleteObject => await _client.CreatePresignedDeleteObjectUrlAsync(
+                    request.BucketName,
+                    request.Key,
+                    request.VersionId,
+                    expiresAtUtc,
+                    cancellationToken).ConfigureAwait(false),
+                StorageDirectObjectAccessOperation.HeadObject => await _client.CreatePresignedHeadObjectUrlAsync(
+                    request.BucketName,
+                    request.Key,
+                    request.VersionId,
+                    expiresAtUtc,
+                    cancellationToken).ConfigureAwait(false),
+                StorageDirectObjectAccessOperation.UploadPart => await _client.CreatePresignedUploadPartUrlAsync(
+                    request.BucketName,
+                    request.Key,
+                    request.UploadId ?? throw new ArgumentException("UploadId is required for presigned part uploads.", nameof(request)),
+                    request.PartNumber ?? throw new ArgumentException("PartNumber is required for presigned part uploads.", nameof(request)),
+                    expiresAtUtc,
+                    cancellationToken).ConfigureAwait(false),
                 _ => throw new ArgumentOutOfRangeException(nameof(request), request.Operation, "The requested direct-presign operation is not supported.")
             };
 
@@ -1599,6 +1618,8 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
 
                 return StorageResult<MultipartUploadPart>.Success(copyPart);
             }
+
+            ArgumentNullException.ThrowIfNull(request.Content);
 
             var part = await _client.UploadMultipartPartAsync(
                 request.BucketName,

@@ -12,7 +12,8 @@ using Microsoft.Extensions.Options;
 namespace IntegratedS3.AspNetCore.Services;
 
 internal sealed class AwsSignatureV4RequestAuthenticator(
-    IOptions<IntegratedS3Options> options,
+    IOptionsMonitor<IntegratedS3Options> options,
+    IIntegratedS3CredentialResolver credentialResolver,
     ILogger<AwsSignatureV4RequestAuthenticator> logger) : IIntegratedS3RequestAuthenticator
 {
     private const string Algorithm = "AWS4-HMAC-SHA256";
@@ -29,14 +30,14 @@ internal sealed class AwsSignatureV4RequestAuthenticator(
     private const string StreamingSigV4aPayloadTrailer = "STREAMING-AWS4-ECDSA-P256-SHA256-PAYLOAD-TRAILER";
     private const string StreamingUnsignedPayloadTrailer = "STREAMING-UNSIGNED-PAYLOAD-TRAILER";
 
-    public ValueTask<IntegratedS3RequestAuthenticationResult> AuthenticateAsync(HttpContext httpContext, CancellationToken cancellationToken = default)
+    public async ValueTask<IntegratedS3RequestAuthenticationResult> AuthenticateAsync(HttpContext httpContext, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(httpContext);
         cancellationToken.ThrowIfCancellationRequested();
 
-        var settings = options.Value;
+        var settings = options.CurrentValue;
         if (!settings.EnableAwsSignatureV4Authentication) {
-            return ValueTask.FromResult(IntegratedS3RequestAuthenticationResult.NoResult());
+            return IntegratedS3RequestAuthenticationResult.NoResult();
         }
 
         var correlationId = IntegratedS3AspNetCoreTelemetry.GetOrCreateCorrelationId(httpContext);
@@ -44,20 +45,20 @@ internal sealed class AwsSignatureV4RequestAuthenticator(
         if (S3SigV4RequestParser.TryParseAuthorizationHeader(authorizationHeader, EnumerateHeaders(httpContext.Request), out var headerAuthorization, out var headerError)) {
             var headerAuthType = string.Equals(headerAuthorization?.Algorithm, SigV4aAlgorithm, StringComparison.Ordinal) ? "sigv4a-header" : "sigv4-header";
             using var activity = StartAuthenticationActivity(httpContext, correlationId, headerAuthType, headerAuthorization?.CredentialScope.AccessKeyId);
-            var result = ValidateHeaderAuthorization(httpContext, settings, headerAuthorization, headerError);
+            var result = await ValidateHeaderAuthorizationAsync(httpContext, settings, headerAuthorization, headerError, cancellationToken);
             ObserveAuthenticationResult(httpContext, activity, headerAuthType, headerAuthorization?.CredentialScope.AccessKeyId, result);
-            return ValueTask.FromResult(result);
+            return result;
         }
 
         if (S3SigV4RequestParser.TryParsePresignedRequest(EnumerateQueryParameters(httpContext.Request), out var presignedRequest, out var queryError)) {
             var presignedAuthType = string.Equals(presignedRequest?.Algorithm, SigV4aAlgorithm, StringComparison.Ordinal) ? "sigv4a-presigned" : "sigv4-presigned";
             using var activity = StartAuthenticationActivity(httpContext, correlationId, presignedAuthType, presignedRequest?.CredentialScope.AccessKeyId);
-            var result = ValidatePresignedRequest(httpContext, settings, presignedRequest, queryError);
+            var result = await ValidatePresignedRequestAsync(httpContext, settings, presignedRequest, queryError, cancellationToken);
             ObserveAuthenticationResult(httpContext, activity, presignedAuthType, presignedRequest?.CredentialScope.AccessKeyId, result);
-            return ValueTask.FromResult(result);
+            return result;
         }
 
-        return ValueTask.FromResult(IntegratedS3RequestAuthenticationResult.NoResult());
+        return IntegratedS3RequestAuthenticationResult.NoResult();
     }
 
     private Activity? StartAuthenticationActivity(HttpContext httpContext, string correlationId, string authType, string? accessKeyId)
@@ -106,18 +107,19 @@ internal sealed class AwsSignatureV4RequestAuthenticator(
             httpContext.Request.Path);
     }
 
-    private static IntegratedS3RequestAuthenticationResult ValidateHeaderAuthorization(
+    private async ValueTask<IntegratedS3RequestAuthenticationResult> ValidateHeaderAuthorizationAsync(
         HttpContext httpContext,
         IntegratedS3Options settings,
         S3SigV4AuthorizationHeader? authorization,
-        string? parseError)
+        string? parseError,
+        CancellationToken cancellationToken)
     {
         if (authorization is null) {
             return IntegratedS3RequestAuthenticationResult.Failure("AuthorizationHeaderMalformed", parseError ?? "The Authorization header is malformed.", statusCode: 400);
         }
 
         if (string.Equals(authorization.Algorithm, SigV4aAlgorithm, StringComparison.Ordinal)) {
-            return ValidateSigV4aHeaderAuthorization(httpContext, settings, authorization);
+            return await ValidateSigV4aHeaderAuthorizationAsync(httpContext, settings, authorization, cancellationToken);
         }
 
         if (!string.Equals(authorization.Algorithm, Algorithm, StringComparison.Ordinal)) {
@@ -128,7 +130,8 @@ internal sealed class AwsSignatureV4RequestAuthenticator(
             return IntegratedS3RequestAuthenticationResult.Failure("AuthorizationHeaderMalformed", scopeError!, statusCode);
         }
 
-        if (!TryResolveCredential(settings, authorization.CredentialScope.AccessKeyId, out var credential)) {
+        var credential = await credentialResolver.ResolveAsync(authorization.CredentialScope.AccessKeyId, cancellationToken);
+        if (credential is null) {
             return IntegratedS3RequestAuthenticationResult.Failure("InvalidAccessKeyId", $"The AWS access key id '{authorization.CredentialScope.AccessKeyId}' does not exist in this service.");
         }
 
@@ -170,18 +173,19 @@ internal sealed class AwsSignatureV4RequestAuthenticator(
         return IntegratedS3RequestAuthenticationResult.Success(CreatePrincipal(credential));
     }
 
-    private static IntegratedS3RequestAuthenticationResult ValidatePresignedRequest(
+    private async ValueTask<IntegratedS3RequestAuthenticationResult> ValidatePresignedRequestAsync(
         HttpContext httpContext,
         IntegratedS3Options settings,
         S3SigV4PresignedRequest? presignedRequest,
-        string? parseError)
+        string? parseError,
+        CancellationToken cancellationToken)
     {
         if (presignedRequest is null) {
             return IntegratedS3RequestAuthenticationResult.Failure("AuthorizationQueryParametersError", parseError ?? "The query-string authorization parameters are malformed.", statusCode: 400);
         }
 
         if (string.Equals(presignedRequest.Algorithm, SigV4aAlgorithm, StringComparison.Ordinal)) {
-            return ValidateSigV4aPresignedRequest(httpContext, settings, presignedRequest);
+            return await ValidateSigV4aPresignedRequestAsync(httpContext, settings, presignedRequest, cancellationToken);
         }
 
         if (!TryValidateCredentialScope(presignedRequest.CredentialScope, settings, out var scopeError, out var statusCode)) {
@@ -201,7 +205,8 @@ internal sealed class AwsSignatureV4RequestAuthenticator(
             return IntegratedS3RequestAuthenticationResult.Failure("AccessDenied", "The presigned request has expired.");
         }
 
-        if (!TryResolveCredential(settings, presignedRequest.CredentialScope.AccessKeyId, out var credential)) {
+        var credential = await credentialResolver.ResolveAsync(presignedRequest.CredentialScope.AccessKeyId, cancellationToken);
+        if (credential is null) {
             return IntegratedS3RequestAuthenticationResult.Failure("InvalidAccessKeyId", $"The AWS access key id '{presignedRequest.CredentialScope.AccessKeyId}' does not exist in this service.");
         }
 
@@ -357,10 +362,11 @@ internal sealed class AwsSignatureV4RequestAuthenticator(
 
     // ── SigV4a (ECDSA P-256) ──────────────────────────────────────────────
 
-    private static IntegratedS3RequestAuthenticationResult ValidateSigV4aHeaderAuthorization(
+    private async ValueTask<IntegratedS3RequestAuthenticationResult> ValidateSigV4aHeaderAuthorizationAsync(
         HttpContext httpContext,
         IntegratedS3Options settings,
-        S3SigV4AuthorizationHeader authorization)
+        S3SigV4AuthorizationHeader authorization,
+        CancellationToken cancellationToken)
     {
         if (!TryValidateSigV4aCredentialScope(authorization.CredentialScope, settings, out var scopeError, out var statusCode)) {
             return IntegratedS3RequestAuthenticationResult.Failure("AuthorizationHeaderMalformed", scopeError!, statusCode);
@@ -370,7 +376,8 @@ internal sealed class AwsSignatureV4RequestAuthenticator(
             return IntegratedS3RequestAuthenticationResult.Failure("AuthorizationHeaderMalformed", regionError!, statusCode);
         }
 
-        if (!TryResolveCredential(settings, authorization.CredentialScope.AccessKeyId, out var credential)) {
+        var credential = await credentialResolver.ResolveAsync(authorization.CredentialScope.AccessKeyId, cancellationToken);
+        if (credential is null) {
             return IntegratedS3RequestAuthenticationResult.Failure("InvalidAccessKeyId", $"The AWS access key id '{authorization.CredentialScope.AccessKeyId}' does not exist in this service.");
         }
 
@@ -416,10 +423,11 @@ internal sealed class AwsSignatureV4RequestAuthenticator(
         return IntegratedS3RequestAuthenticationResult.Success(CreateSigV4aPrincipal(credential));
     }
 
-    private static IntegratedS3RequestAuthenticationResult ValidateSigV4aPresignedRequest(
+    private async ValueTask<IntegratedS3RequestAuthenticationResult> ValidateSigV4aPresignedRequestAsync(
         HttpContext httpContext,
         IntegratedS3Options settings,
-        S3SigV4PresignedRequest presignedRequest)
+        S3SigV4PresignedRequest presignedRequest,
+        CancellationToken cancellationToken)
     {
         if (!TryValidateSigV4aCredentialScope(presignedRequest.CredentialScope, settings, out var scopeError, out var statusCode)) {
             return IntegratedS3RequestAuthenticationResult.Failure("AuthorizationQueryParametersError", scopeError!, statusCode);
@@ -442,7 +450,8 @@ internal sealed class AwsSignatureV4RequestAuthenticator(
             return IntegratedS3RequestAuthenticationResult.Failure("AccessDenied", "The presigned request has expired.");
         }
 
-        if (!TryResolveCredential(settings, presignedRequest.CredentialScope.AccessKeyId, out var credential)) {
+        var credential = await credentialResolver.ResolveAsync(presignedRequest.CredentialScope.AccessKeyId, cancellationToken);
+        if (credential is null) {
             return IntegratedS3RequestAuthenticationResult.Failure("InvalidAccessKeyId", $"The AWS access key id '{presignedRequest.CredentialScope.AccessKeyId}' does not exist in this service.");
         }
 
@@ -560,12 +569,6 @@ internal sealed class AwsSignatureV4RequestAuthenticator(
     }
 
     // ── End SigV4a ─────────────────────────────────────────────────────────
-
-    private static bool TryResolveCredential(IntegratedS3Options settings, string accessKeyId, out IntegratedS3AccessKeyCredential? credential)
-    {
-        credential = settings.AccessKeyCredentials.FirstOrDefault(candidate => string.Equals(candidate.AccessKeyId, accessKeyId, StringComparison.Ordinal));
-        return credential is not null;
-    }
 
     private static bool FixedTimeEqualsOrdinal(string expected, string actual)
     {

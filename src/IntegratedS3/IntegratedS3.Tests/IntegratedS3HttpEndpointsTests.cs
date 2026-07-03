@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
@@ -1310,7 +1311,7 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
         var operations = new[]
         {
             new { Method = HttpMethod.Get, Url = $"/integrated-s3/{bucketName}?tagging", Body = (string?)null },
-            new { Method = HttpMethod.Put, Url = $"/integrated-s3/{bucketName}?tagging", Body = """
+            new { Method = HttpMethod.Put, Url = $"/integrated-s3/{bucketName}?tagging", Body = (string?)"""
 <Tagging>
   <TagSet>
     <Tag><Key>owner</Key><Value>copilot</Value></Tag>
@@ -1319,7 +1320,7 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
 """ },
             new { Method = HttpMethod.Delete, Url = $"/integrated-s3/{bucketName}?tagging", Body = (string?)null },
             new { Method = HttpMethod.Get, Url = $"/integrated-s3/{bucketName}?logging", Body = (string?)null },
-            new { Method = HttpMethod.Put, Url = $"/integrated-s3/{bucketName}?logging", Body = """
+            new { Method = HttpMethod.Put, Url = $"/integrated-s3/{bucketName}?logging", Body = (string?)"""
 <BucketLoggingStatus>
   <LoggingEnabled>
     <TargetBucket>logs-bucket</TargetBucket>
@@ -1328,7 +1329,7 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
 </BucketLoggingStatus>
 """ },
             new { Method = HttpMethod.Get, Url = $"/integrated-s3/{bucketName}?website", Body = (string?)null },
-            new { Method = HttpMethod.Put, Url = $"/integrated-s3/{bucketName}?website", Body = """
+            new { Method = HttpMethod.Put, Url = $"/integrated-s3/{bucketName}?website", Body = (string?)"""
 <WebsiteConfiguration>
   <IndexDocument>
     <Suffix>index.html</Suffix>
@@ -1340,19 +1341,19 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
 """ },
             new { Method = HttpMethod.Delete, Url = $"/integrated-s3/{bucketName}?website", Body = (string?)null },
             new { Method = HttpMethod.Get, Url = $"/integrated-s3/{bucketName}?requestPayment", Body = (string?)null },
-            new { Method = HttpMethod.Put, Url = $"/integrated-s3/{bucketName}?requestPayment", Body = """
+            new { Method = HttpMethod.Put, Url = $"/integrated-s3/{bucketName}?requestPayment", Body = (string?)"""
 <RequestPaymentConfiguration>
   <Payer>Requester</Payer>
 </RequestPaymentConfiguration>
 """ },
             new { Method = HttpMethod.Get, Url = $"/integrated-s3/{bucketName}?accelerate", Body = (string?)null },
-            new { Method = HttpMethod.Put, Url = $"/integrated-s3/{bucketName}?accelerate", Body = """
+            new { Method = HttpMethod.Put, Url = $"/integrated-s3/{bucketName}?accelerate", Body = (string?)"""
 <AccelerateConfiguration>
   <Status>Enabled</Status>
 </AccelerateConfiguration>
 """ },
             new { Method = HttpMethod.Get, Url = $"/integrated-s3/{bucketName}?lifecycle", Body = (string?)null },
-            new { Method = HttpMethod.Put, Url = $"/integrated-s3/{bucketName}?lifecycle", Body = """
+            new { Method = HttpMethod.Put, Url = $"/integrated-s3/{bucketName}?lifecycle", Body = (string?)"""
 <LifecycleConfiguration>
   <Rule>
     <ID>expire-old-objects</ID>
@@ -1368,7 +1369,7 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
 """ },
             new { Method = HttpMethod.Delete, Url = $"/integrated-s3/{bucketName}?lifecycle", Body = (string?)null },
             new { Method = HttpMethod.Get, Url = $"/integrated-s3/{bucketName}?replication", Body = (string?)null },
-            new { Method = HttpMethod.Put, Url = $"/integrated-s3/{bucketName}?replication", Body = """
+            new { Method = HttpMethod.Put, Url = $"/integrated-s3/{bucketName}?replication", Body = (string?)"""
 <ReplicationConfiguration>
   <Role>arn:aws:iam::123456789012:role/replication</Role>
   <Rule>
@@ -1384,7 +1385,7 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
 """ },
             new { Method = HttpMethod.Delete, Url = $"/integrated-s3/{bucketName}?replication", Body = (string?)null },
             new { Method = HttpMethod.Get, Url = $"/integrated-s3/{bucketName}?notification", Body = (string?)null },
-            new { Method = HttpMethod.Put, Url = $"/integrated-s3/{bucketName}?notification", Body = """
+            new { Method = HttpMethod.Put, Url = $"/integrated-s3/{bucketName}?notification", Body = (string?)"""
 <NotificationConfiguration>
   <TopicConfiguration>
     <Id>topic-1</Id>
@@ -1394,7 +1395,7 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
 </NotificationConfiguration>
 """ },
             new { Method = HttpMethod.Get, Url = $"/integrated-s3/{bucketName}?object-lock", Body = (string?)null },
-            new { Method = HttpMethod.Put, Url = $"/integrated-s3/{bucketName}?object-lock", Body = """
+            new { Method = HttpMethod.Put, Url = $"/integrated-s3/{bucketName}?object-lock", Body = (string?)"""
 <ObjectLockConfiguration>
   <ObjectLockEnabled>Enabled</ObjectLockEnabled>
   <Rule>
@@ -1431,7 +1432,7 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
         var operations = new[]
         {
             new { Method = HttpMethod.Get, Url = $"/integrated-s3/{bucketName}?analytics&id=analytics-1", Body = (string?)null },
-            new { Method = HttpMethod.Put, Url = $"/integrated-s3/{bucketName}?analytics&id=analytics-1", Body = """
+            new { Method = HttpMethod.Put, Url = $"/integrated-s3/{bucketName}?analytics&id=analytics-1", Body = (string?)"""
 <AnalyticsConfiguration>
   <Id>analytics-1</Id>
   <Filter>
@@ -1441,7 +1442,7 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
 """ },
             new { Method = HttpMethod.Delete, Url = $"/integrated-s3/{bucketName}?analytics&id=analytics-1", Body = (string?)null },
             new { Method = HttpMethod.Get, Url = $"/integrated-s3/{bucketName}?metrics&id=metrics-1", Body = (string?)null },
-            new { Method = HttpMethod.Put, Url = $"/integrated-s3/{bucketName}?metrics&id=metrics-1", Body = """
+            new { Method = HttpMethod.Put, Url = $"/integrated-s3/{bucketName}?metrics&id=metrics-1", Body = (string?)"""
 <MetricsConfiguration>
   <Id>metrics-1</Id>
   <Filter>
@@ -1451,7 +1452,7 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
 """ },
             new { Method = HttpMethod.Delete, Url = $"/integrated-s3/{bucketName}?metrics&id=metrics-1", Body = (string?)null },
             new { Method = HttpMethod.Get, Url = $"/integrated-s3/{bucketName}?inventory&id=inventory-1", Body = (string?)null },
-            new { Method = HttpMethod.Put, Url = $"/integrated-s3/{bucketName}?inventory&id=inventory-1", Body = """
+            new { Method = HttpMethod.Put, Url = $"/integrated-s3/{bucketName}?inventory&id=inventory-1", Body = (string?)"""
 <InventoryConfiguration>
   <Id>inventory-1</Id>
   <IsEnabled>true</IsEnabled>
@@ -3981,6 +3982,67 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
     }
 
     [Fact]
+    public async Task SigV4Authentication_ResolvesCredentialsThroughCustomResolver_AndReflectsRotationWithoutRestart()
+    {
+        const string initialAccessKeyId = "rotating-access-initial";
+        const string initialSecretAccessKey = "rotating-secret-initial";
+        const string rotatedAccessKeyId = "rotating-access-rotated";
+        const string rotatedSecretAccessKey = "rotating-secret-rotated";
+
+        var credentialStore = new MutableCredentialStoreResolver();
+        credentialStore.SetCredential(initialAccessKeyId, initialSecretAccessKey);
+
+        // No AccessKeyCredentials are configured: credentials come exclusively from the custom resolver.
+        await using var isolatedClient = await _factory.CreateIsolatedClientAsync(builder => {
+            builder.Services.Configure<IntegratedS3Options>(static options => {
+                options.EnableAwsSignatureV4Authentication = true;
+                options.AccessKeyCredentials = [];
+            });
+            builder.Services.AddSingleton<IIntegratedS3CredentialResolver>(credentialStore);
+        });
+        using var client = isolatedClient.Client;
+
+        using (var createRequest = CreateSigV4HeaderSignedRequest(HttpMethod.Put, "/integrated-s3/buckets/rotating-credentials-bucket", initialAccessKeyId, initialSecretAccessKey)) {
+            Assert.Equal(HttpStatusCode.Created, (await client.SendAsync(createRequest)).StatusCode);
+        }
+
+        // Revoking the key takes effect on the next request; no restart involved.
+        credentialStore.RemoveCredential(initialAccessKeyId);
+        using (var revokedRequest = CreateSigV4HeaderSignedRequest(HttpMethod.Put, "/integrated-s3/buckets/rotating-credentials-revoked-bucket", initialAccessKeyId, initialSecretAccessKey)) {
+            var revokedResponse = await client.SendAsync(revokedRequest);
+            Assert.Equal(HttpStatusCode.Forbidden, revokedResponse.StatusCode);
+        }
+
+        // Rotating in a new key also takes effect immediately.
+        credentialStore.SetCredential(rotatedAccessKeyId, rotatedSecretAccessKey);
+        using (var rotatedRequest = CreateSigV4HeaderSignedRequest(HttpMethod.Put, "/integrated-s3/buckets/rotating-credentials-rotated-bucket", rotatedAccessKeyId, rotatedSecretAccessKey)) {
+            Assert.Equal(HttpStatusCode.Created, (await client.SendAsync(rotatedRequest)).StatusCode);
+        }
+    }
+
+    private sealed class MutableCredentialStoreResolver : IIntegratedS3CredentialResolver
+    {
+        private readonly ConcurrentDictionary<string, IntegratedS3AccessKeyCredential> _credentials = new(StringComparer.Ordinal);
+
+        public void SetCredential(string accessKeyId, string secretAccessKey)
+        {
+            _credentials[accessKeyId] = new IntegratedS3AccessKeyCredential
+            {
+                AccessKeyId = accessKeyId,
+                SecretAccessKey = secretAccessKey
+            };
+        }
+
+        public void RemoveCredential(string accessKeyId) => _credentials.TryRemove(accessKeyId, out _);
+
+        public ValueTask<IntegratedS3AccessKeyCredential?> ResolveAsync(string accessKeyId, CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return ValueTask.FromResult(_credentials.TryGetValue(accessKeyId, out var credential) ? credential : null);
+        }
+    }
+
+    [Fact]
     public async Task FirstPartyPresignClient_CreatesUploadAndDownloadRequests()
     {
         const string accessKeyId = "first-party-presign-access";
@@ -4040,6 +4102,168 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
         var downloadResponse = await client.SendAsync(downloadRequest);
         Assert.Equal(HttpStatusCode.OK, downloadResponse.StatusCode);
         Assert.Equal(payload, await downloadResponse.Content.ReadAsStringAsync());
+    }
+
+    [Fact]
+    public async Task FirstPartyPresignClient_CreatesHeadAndDeleteRequests()
+    {
+        const string accessKeyId = "first-party-presign-headdelete-access";
+        const string secretAccessKey = "first-party-presign-headdelete-secret";
+        const string bucketName = "first-party-presign-headdelete-bucket";
+        const string objectKey = "docs/client-presigned-headdelete.txt";
+        const string payload = "hello from presigned HEAD and DELETE";
+
+        await using var isolatedClient = await _factory.CreateIsolatedClientAsync(builder => {
+            builder.Services.Configure<IntegratedS3Options>(options => {
+                options.EnableAwsSignatureV4Authentication = true;
+                options.PresignAccessKeyId = accessKeyId;
+                options.AccessKeyCredentials =
+                [
+                    new IntegratedS3AccessKeyCredential
+                    {
+                        AccessKeyId = accessKeyId,
+                        SecretAccessKey = secretAccessKey,
+                        DisplayName = "first-party-presign-headdelete-user",
+                        Scopes = ["storage.read", "storage.write"]
+                    }
+                ];
+            });
+            builder.Services.AddAuthentication("TestHeader")
+                .AddScheme<AuthenticationSchemeOptions, TestHeaderAuthenticationHandler>("TestHeader", static _ => { });
+            builder.Services.AddSingleton<IIntegratedS3AuthorizationService, ScopeBasedIntegratedS3AuthorizationService>();
+        });
+
+        using var client = isolatedClient.Client;
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("TestHeader", "storage.read storage.write");
+
+        var integratedClient = new IntegratedS3Client(client);
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync($"/integrated-s3/buckets/{bucketName}", content: null)).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await client.PutAsync($"/integrated-s3/buckets/{bucketName}/objects/{objectKey}", new StringContent(payload, Encoding.UTF8, "text/plain"))).StatusCode);
+
+        var headPresign = await integratedClient.PresignHeadObjectAsync(bucketName, objectKey, expiresInSeconds: 300);
+        Assert.Equal(StorageAccessMode.Proxy, headPresign.AccessMode);
+        Assert.Equal("HEAD", headPresign.Method);
+
+        var deletePresign = await integratedClient.PresignDeleteObjectAsync(bucketName, objectKey, expiresInSeconds: 300);
+        Assert.Equal(StorageAccessMode.Proxy, deletePresign.AccessMode);
+        Assert.Equal("DELETE", deletePresign.Method);
+
+        client.DefaultRequestHeaders.Authorization = null;
+
+        using (var headRequest = headPresign.CreateHttpRequestMessage()) {
+            var headResponse = await client.SendAsync(headRequest);
+            Assert.Equal(HttpStatusCode.OK, headResponse.StatusCode);
+            Assert.Equal(Encoding.UTF8.GetByteCount(payload), headResponse.Content.Headers.ContentLength);
+        }
+
+        using (var deleteRequest = deletePresign.CreateHttpRequestMessage()) {
+            var deleteResponse = await client.SendAsync(deleteRequest);
+            Assert.Equal(HttpStatusCode.NoContent, deleteResponse.StatusCode);
+        }
+
+        // The presigned HEAD URL still authenticates after deletion but now reports 404.
+        using (var missingHeadRequest = headPresign.CreateHttpRequestMessage()) {
+            var missingHeadResponse = await client.SendAsync(missingHeadRequest);
+            Assert.Equal(HttpStatusCode.NotFound, missingHeadResponse.StatusCode);
+        }
+    }
+
+    [Fact]
+    public async Task FirstPartyPresignClient_CreatesUploadPartRequests()
+    {
+        const string accessKeyId = "first-party-presign-part-access";
+        const string secretAccessKey = "first-party-presign-part-secret";
+        const string bucketName = "first-party-presign-part-bucket";
+        const string objectKey = "docs/client-presigned-multipart.bin";
+        const string firstPartPayload = "first presigned part payload|";
+        const string secondPartPayload = "second presigned part payload";
+
+        await using var isolatedClient = await _factory.CreateIsolatedClientAsync(builder => {
+            builder.Services.Configure<IntegratedS3Options>(options => {
+                options.EnableAwsSignatureV4Authentication = true;
+                options.PresignAccessKeyId = accessKeyId;
+                options.AccessKeyCredentials =
+                [
+                    new IntegratedS3AccessKeyCredential
+                    {
+                        AccessKeyId = accessKeyId,
+                        SecretAccessKey = secretAccessKey,
+                        DisplayName = "first-party-presign-part-user",
+                        Scopes = ["storage.read", "storage.write"]
+                    }
+                ];
+            });
+            builder.Services.AddAuthentication("TestHeader")
+                .AddScheme<AuthenticationSchemeOptions, TestHeaderAuthenticationHandler>("TestHeader", static _ => { });
+            builder.Services.AddSingleton<IIntegratedS3AuthorizationService, ScopeBasedIntegratedS3AuthorizationService>();
+        });
+
+        using var client = isolatedClient.Client;
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("TestHeader", "storage.read storage.write");
+
+        var integratedClient = new IntegratedS3Client(client);
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync($"/integrated-s3/buckets/{bucketName}", content: null)).StatusCode);
+
+        using var initiateRequest = new HttpRequestMessage(HttpMethod.Post, $"/integrated-s3/{bucketName}/{objectKey}?uploads")
+        {
+            Content = new ByteArrayContent([])
+        };
+        var initiateResponse = await client.SendAsync(initiateRequest);
+        Assert.Equal(HttpStatusCode.OK, initiateResponse.StatusCode);
+        var uploadId = XDocument.Parse(await initiateResponse.Content.ReadAsStringAsync()).Root!.S3Element("UploadId")!.Value;
+
+        var firstPartPresign = await integratedClient.PresignUploadPartAsync(bucketName, objectKey, uploadId, partNumber: 1, expiresInSeconds: 300);
+        Assert.Equal(StorageAccessMode.Proxy, firstPartPresign.AccessMode);
+        Assert.Equal("PUT", firstPartPresign.Method);
+        Assert.Equal("1", QueryHelpers.ParseQuery(firstPartPresign.Url.Query)["partNumber"].ToString());
+        Assert.Equal(uploadId, QueryHelpers.ParseQuery(firstPartPresign.Url.Query)["uploadId"].ToString());
+
+        var secondPartPresign = await integratedClient.PresignUploadPartAsync(bucketName, objectKey, uploadId, partNumber: 2, expiresInSeconds: 300);
+
+        client.DefaultRequestHeaders.Authorization = null;
+
+        string firstPartETag;
+        using (var firstPartRequest = firstPartPresign.CreateHttpRequestMessage(new StringContent(firstPartPayload, Encoding.UTF8))) {
+            var firstPartResponse = await client.SendAsync(firstPartRequest);
+            Assert.Equal(HttpStatusCode.OK, firstPartResponse.StatusCode);
+            firstPartETag = firstPartResponse.Headers.ETag?.Tag ?? throw new Xunit.Sdk.XunitException("Expected first part ETag header.");
+        }
+
+        string secondPartETag;
+        using (var secondPartRequest = secondPartPresign.CreateHttpRequestMessage(new StringContent(secondPartPayload, Encoding.UTF8))) {
+            var secondPartResponse = await client.SendAsync(secondPartRequest);
+            Assert.Equal(HttpStatusCode.OK, secondPartResponse.StatusCode);
+            secondPartETag = secondPartResponse.Headers.ETag?.Tag ?? throw new Xunit.Sdk.XunitException("Expected second part ETag header.");
+        }
+
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("TestHeader", "storage.read storage.write");
+
+        using var completeRequest = new HttpRequestMessage(HttpMethod.Post, $"/integrated-s3/{bucketName}/{objectKey}?uploadId={Uri.EscapeDataString(uploadId)}")
+        {
+            Content = new StringContent($"""
+<CompleteMultipartUpload>
+  <Part>
+    <PartNumber>1</PartNumber>
+    <ETag>{firstPartETag}</ETag>
+  </Part>
+  <Part>
+    <PartNumber>2</PartNumber>
+    <ETag>{secondPartETag}</ETag>
+  </Part>
+</CompleteMultipartUpload>
+""", Encoding.UTF8, "application/xml")
+        };
+        Assert.Equal(HttpStatusCode.OK, (await client.SendAsync(completeRequest)).StatusCode);
+
+        var downloadPresign = await integratedClient.PresignGetObjectAsync(bucketName, objectKey, expiresInSeconds: 300);
+        client.DefaultRequestHeaders.Authorization = null;
+
+        using var downloadRequest = downloadPresign.CreateHttpRequestMessage();
+        var downloadResponse = await client.SendAsync(downloadRequest);
+        Assert.Equal(HttpStatusCode.OK, downloadResponse.StatusCode);
+        Assert.Equal(firstPartPayload + secondPartPayload, await downloadResponse.Content.ReadAsStringAsync());
     }
 
     [Fact]
@@ -4540,6 +4764,168 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
             var response = await client.SendAsync(request);
             await AssertNotImplementedResponseAsync(response);
         }
+    }
+
+    [Fact]
+    public async Task S3CompatiblePutObjectLockConfiguration_WithoutVersioning_ReturnsConflict()
+    {
+        using var client = await _factory.CreateClientAsync();
+        const string bucketName = "object-lock-unversioned-bucket";
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync($"/integrated-s3/buckets/{bucketName}", content: null)).StatusCode);
+
+        using var putObjectLockRequest = new HttpRequestMessage(HttpMethod.Put, $"/integrated-s3/{bucketName}?object-lock")
+        {
+            Content = new StringContent("""
+<ObjectLockConfiguration>
+  <ObjectLockEnabled>Enabled</ObjectLockEnabled>
+  <Rule>
+    <DefaultRetention>
+      <Mode>COMPLIANCE</Mode>
+      <Days>1</Days>
+    </DefaultRetention>
+  </Rule>
+</ObjectLockConfiguration>
+""", Encoding.UTF8, "application/xml")
+        };
+
+        await AssertErrorResponseAsync(await client.SendAsync(putObjectLockRequest), HttpStatusCode.Conflict, "OperationAborted");
+    }
+
+    [Fact]
+    public async Task S3CompatibleDeleteObjectVersion_ProtectedByObjectLockRetention_ReturnsAccessDenied()
+    {
+        using var client = await _factory.CreateClientAsync();
+        const string bucketName = "object-lock-retention-http-bucket";
+        const string objectKey = "docs/locked.txt";
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync($"/integrated-s3/buckets/{bucketName}", content: null)).StatusCode);
+        await EnableBucketVersioningAsync(client, bucketName);
+
+        using var putObjectLockRequest = new HttpRequestMessage(HttpMethod.Put, $"/integrated-s3/{bucketName}?object-lock")
+        {
+            Content = new StringContent("""
+<ObjectLockConfiguration>
+  <ObjectLockEnabled>Enabled</ObjectLockEnabled>
+  <Rule>
+    <DefaultRetention>
+      <Mode>COMPLIANCE</Mode>
+      <Days>1</Days>
+    </DefaultRetention>
+  </Rule>
+</ObjectLockConfiguration>
+""", Encoding.UTF8, "application/xml")
+        };
+        Assert.Equal(HttpStatusCode.OK, (await client.SendAsync(putObjectLockRequest)).StatusCode);
+
+        var putResponse = await client.PutAsync(
+            $"/integrated-s3/{bucketName}/{objectKey}",
+            new StringContent("protected payload", Encoding.UTF8, "text/plain"));
+        Assert.Equal(HttpStatusCode.OK, putResponse.StatusCode);
+        var versionId = Assert.Single(putResponse.Headers.GetValues("x-amz-version-id"));
+
+        var versionDeleteResponse = await client.DeleteAsync($"/integrated-s3/{bucketName}/{objectKey}?versionId={Uri.EscapeDataString(versionId)}");
+        await AssertErrorResponseAsync(versionDeleteResponse, HttpStatusCode.Forbidden, "AccessDenied");
+
+        // A delete without a version id only writes a delete marker, which object lock allows.
+        var markerDeleteResponse = await client.DeleteAsync($"/integrated-s3/{bucketName}/{objectKey}");
+        Assert.Equal(HttpStatusCode.NoContent, markerDeleteResponse.StatusCode);
+        Assert.Equal("true", Assert.Single(markerDeleteResponse.Headers.GetValues("x-amz-delete-marker")));
+
+        var lockedVersionGet = await client.GetAsync($"/integrated-s3/{bucketName}/{objectKey}?versionId={Uri.EscapeDataString(versionId)}");
+        Assert.Equal(HttpStatusCode.OK, lockedVersionGet.StatusCode);
+        Assert.Equal("protected payload", await lockedVersionGet.Content.ReadAsStringAsync());
+    }
+
+    [Fact]
+    public async Task KestrelHostedPutObjectAndUploadPart_LargerThanDefaultBodyLimit_Succeed()
+    {
+        // Kestrel's default MaxRequestBodySize (30,000,000 bytes) rejected these uploads with 413
+        // before the endpoints lifted the per-request limit; TestServer enforces no limit, so this
+        // regression test must run against a real Kestrel host.
+        await using var isolatedClient = await _factory.CreateLoopbackIsolatedClientAsync();
+        var client = isolatedClient.Client;
+
+        const string bucketName = "kestrel-large-upload-bucket";
+        const int payloadSize = 32 * 1024 * 1024;
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync($"/integrated-s3/buckets/{bucketName}", content: null)).StatusCode);
+
+        var payload = new byte[payloadSize];
+        Random.Shared.NextBytes(payload);
+
+        using (var putRequest = new HttpRequestMessage(HttpMethod.Put, $"/integrated-s3/{bucketName}/docs/large.bin")
+        {
+            Content = new ByteArrayContent(payload)
+        }) {
+            putRequest.Content.Headers.ContentType = new MediaTypeHeaderValue("application/octet-stream");
+            Assert.Equal(HttpStatusCode.OK, (await client.SendAsync(putRequest)).StatusCode);
+        }
+
+        using (var headRequest = new HttpRequestMessage(HttpMethod.Head, $"/integrated-s3/{bucketName}/docs/large.bin")) {
+            var headResponse = await client.SendAsync(headRequest);
+            Assert.Equal(HttpStatusCode.OK, headResponse.StatusCode);
+            Assert.Equal(payloadSize, headResponse.Content.Headers.ContentLength);
+        }
+
+        using var initiateRequest = new HttpRequestMessage(HttpMethod.Post, $"/integrated-s3/{bucketName}/docs/large-multipart.bin?uploads")
+        {
+            Content = new ByteArrayContent([])
+        };
+        initiateRequest.Content.Headers.ContentType = new MediaTypeHeaderValue("application/octet-stream");
+        var initiateResponse = await client.SendAsync(initiateRequest);
+        Assert.Equal(HttpStatusCode.OK, initiateResponse.StatusCode);
+        var uploadId = GetRequiredElementValue(XDocument.Parse(await initiateResponse.Content.ReadAsStringAsync()), "UploadId");
+
+        string partETag;
+        using (var partRequest = new HttpRequestMessage(HttpMethod.Put, $"/integrated-s3/{bucketName}/docs/large-multipart.bin?partNumber=1&uploadId={Uri.EscapeDataString(uploadId)}")
+        {
+            Content = new ByteArrayContent(payload)
+        }) {
+            var partResponse = await client.SendAsync(partRequest);
+            Assert.Equal(HttpStatusCode.OK, partResponse.StatusCode);
+            partETag = partResponse.Headers.ETag?.Tag ?? throw new Xunit.Sdk.XunitException("Expected multipart part ETag header.");
+        }
+
+        using var completeRequest = new HttpRequestMessage(HttpMethod.Post, $"/integrated-s3/{bucketName}/docs/large-multipart.bin?uploadId={Uri.EscapeDataString(uploadId)}")
+        {
+            Content = new StringContent($"""
+<CompleteMultipartUpload>
+  <Part>
+    <PartNumber>1</PartNumber>
+    <ETag>{partETag}</ETag>
+  </Part>
+</CompleteMultipartUpload>
+""", Encoding.UTF8, "application/xml")
+        };
+        Assert.Equal(HttpStatusCode.OK, (await client.SendAsync(completeRequest)).StatusCode);
+
+        using var completedHeadRequest = new HttpRequestMessage(HttpMethod.Head, $"/integrated-s3/{bucketName}/docs/large-multipart.bin");
+        var completedHeadResponse = await client.SendAsync(completedHeadRequest);
+        Assert.Equal(HttpStatusCode.OK, completedHeadResponse.StatusCode);
+        Assert.Equal(payloadSize, completedHeadResponse.Content.Headers.ContentLength);
+    }
+
+    [Fact]
+    public async Task KestrelHostedPutObject_ExceedingConfiguredMaxObjectSizeBytes_ReturnsPayloadTooLarge()
+    {
+        await using var isolatedClient = await _factory.CreateLoopbackIsolatedClientAsync(
+            builder => builder.Services.Configure<IntegratedS3Options>(static options => options.MaxObjectSizeBytes = 1024));
+        var client = isolatedClient.Client;
+
+        const string bucketName = "kestrel-capped-upload-bucket";
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync($"/integrated-s3/buckets/{bucketName}", content: null)).StatusCode);
+
+        var tooLargeResponse = await client.PutAsync(
+            $"/integrated-s3/{bucketName}/docs/too-large.bin",
+            new ByteArrayContent(new byte[4096]));
+        Assert.Equal(HttpStatusCode.RequestEntityTooLarge, tooLargeResponse.StatusCode);
+
+        var withinLimitResponse = await client.PutAsync(
+            $"/integrated-s3/{bucketName}/docs/small.bin",
+            new ByteArrayContent(new byte[512]));
+        Assert.Equal(HttpStatusCode.OK, withinLimitResponse.StatusCode);
     }
 
     [Fact]
