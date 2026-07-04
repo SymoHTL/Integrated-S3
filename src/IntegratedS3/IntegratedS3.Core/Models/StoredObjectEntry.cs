@@ -73,6 +73,9 @@ public sealed class StoredObjectEntry
     /// <summary>Server-side encryption information for the object, or <see langword="null"/> if unencrypted.</summary>
     public ObjectServerSideEncryptionInfo? ServerSideEncryption { get; init; }
 
+    /// <summary>The S3 storage class of the object, or <see langword="null"/> when unset (treated as <c>STANDARD</c>).</summary>
+    public string? StorageClass { get; init; }
+
     /// <summary>The UTC date/time when this catalog entry was last synchronized from the provider.</summary>
     public DateTimeOffset LastSyncedAtUtc { get; init; }
 }

@@ -79,6 +79,9 @@ public sealed class ObjectCatalogRecord
     /// <summary>Gets or sets the server-side encryption key identifier, if applicable.</summary>
     public string? ServerSideEncryptionKeyId { get; set; }
 
+    /// <summary>Gets or sets the S3 storage class of the object, or <see langword="null"/> when unset.</summary>
+    public string? StorageClass { get; set; }
+
     /// <summary>Gets or sets the UTC timestamp of the last catalog synchronization for this object.</summary>
     public DateTimeOffset LastSyncedAtUtc { get; set; }
 

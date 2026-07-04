@@ -48,6 +48,7 @@ public static class IntegratedS3CatalogModelBuilderExtensions
             entity.Property(static @object => @object.TagsJson).HasMaxLength(32_768);
             entity.Property(static @object => @object.ChecksumsJson).HasMaxLength(4096);
             entity.Property(static @object => @object.ServerSideEncryptionKeyId).HasMaxLength(512);
+            entity.Property(static @object => @object.StorageClass).HasMaxLength(32);
             entity.Property(static @object => @object.Version).IsConcurrencyToken();
             entity.HasIndex(static @object => new { @object.ProviderName, @object.BucketName, @object.Key, @object.VersionId }).IsUnique();
             // Enforce the "at most one latest version per key" invariant as a hard database constraint so that
@@ -77,6 +78,7 @@ public static class IntegratedS3CatalogModelBuilderExtensions
             entity.Property(static upload => upload.MetadataJson).HasMaxLength(32_768);
             entity.Property(static upload => upload.TagsJson).HasMaxLength(32_768);
             entity.Property(static upload => upload.ChecksumAlgorithm).HasMaxLength(32);
+            entity.Property(static upload => upload.StorageClass).HasMaxLength(32);
             entity.HasIndex(static upload => new { upload.ProviderName, upload.BucketName, upload.Key, upload.UploadId }).IsUnique();
         });
 

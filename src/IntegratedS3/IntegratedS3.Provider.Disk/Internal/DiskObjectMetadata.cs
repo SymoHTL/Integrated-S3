@@ -43,4 +43,10 @@ internal sealed class DiskObjectMetadata
     public Dictionary<string, string>? Tags { get; init; }
 
     public Dictionary<string, string>? Checksums { get; init; }
+
+    /// <summary>
+    /// The S3 storage class persisted at write time. Null for delete markers and for legacy metadata
+    /// written before this field existed (read paths treat null as <c>STANDARD</c>).
+    /// </summary>
+    public string? StorageClass { get; init; }
 }
