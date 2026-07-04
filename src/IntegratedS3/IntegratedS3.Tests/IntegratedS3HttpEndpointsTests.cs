@@ -159,6 +159,228 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
     }
 
     [Fact]
+    public async Task PutObject_WithoutContentType_DefaultsToBinaryOctetStreamOnGetAndHead()
+    {
+        using var client = await _factory.CreateClientAsync();
+        const string bucketName = "default-content-type-bucket";
+        const string objectKey = "docs/no-type.bin";
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync($"/integrated-s3/buckets/{bucketName}", content: null)).StatusCode);
+
+        // PUT with no Content-Type header at all.
+        using (var putRequest = new HttpRequestMessage(HttpMethod.Put, $"/integrated-s3/{bucketName}/{objectKey}")
+        {
+            Content = new ByteArrayContent(Encoding.UTF8.GetBytes("untyped payload"))
+        }) {
+            Assert.Equal(HttpStatusCode.OK, (await client.SendAsync(putRequest)).StatusCode);
+        }
+
+        // AWS S3 serves objects stored without a Content-Type as "binary/octet-stream" (not
+        // "application/octet-stream").
+        var getResponse = await client.GetAsync($"/integrated-s3/{bucketName}/{objectKey}");
+        Assert.Equal(HttpStatusCode.OK, getResponse.StatusCode);
+        Assert.Equal("binary/octet-stream", getResponse.Content.Headers.ContentType?.MediaType);
+
+        using var headRequest = new HttpRequestMessage(HttpMethod.Head, $"/integrated-s3/{bucketName}/{objectKey}");
+        var headResponse = await client.SendAsync(headRequest);
+        Assert.Equal(HttpStatusCode.OK, headResponse.StatusCode);
+        Assert.Equal("binary/octet-stream", headResponse.Content.Headers.ContentType?.MediaType);
+    }
+
+    [Fact]
+    public async Task PutObject_WithNonDateExpires_RoundTripsOpaqueValueVerbatim()
+    {
+        using var client = await _factory.CreateClientAsync();
+        const string bucketName = "opaque-expires-bucket";
+        const string objectKey = "docs/opaque-expires.txt";
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync($"/integrated-s3/buckets/{bucketName}", content: null)).StatusCode);
+
+        // AWS treats Expires as an opaque string: an unparseable value must not fail the PUT, and it
+        // must be echoed back verbatim on GET/HEAD (not reformatted).
+        const string opaqueExpires = "not-a-date-just-opaque";
+        using (var putRequest = new HttpRequestMessage(HttpMethod.Put, $"/integrated-s3/{bucketName}/{objectKey}")
+        {
+            Content = new StringContent("opaque expires payload", Encoding.UTF8, "text/plain")
+        }) {
+            // Expires is an entity header; set it on the content so HttpClient transmits it.
+            putRequest.Content.Headers.TryAddWithoutValidation("Expires", opaqueExpires);
+            Assert.Equal(HttpStatusCode.OK, (await client.SendAsync(putRequest)).StatusCode);
+        }
+
+        var getResponse = await client.GetAsync($"/integrated-s3/{bucketName}/{objectKey}");
+        Assert.Equal(HttpStatusCode.OK, getResponse.StatusCode);
+        Assert.Equal(opaqueExpires, GetExpiresHeaderValue(getResponse));
+
+        using var headRequest = new HttpRequestMessage(HttpMethod.Head, $"/integrated-s3/{bucketName}/{objectKey}");
+        var headResponse = await client.SendAsync(headRequest);
+        Assert.Equal(HttpStatusCode.OK, headResponse.StatusCode);
+        Assert.Equal(opaqueExpires, GetExpiresHeaderValue(headResponse));
+    }
+
+    [Fact]
+    public async Task PutObject_WithNonRfc1123Expires_RoundTripsVerbatimWithoutReformatting()
+    {
+        using var client = await _factory.CreateClientAsync();
+        const string bucketName = "verbatim-expires-bucket";
+        const string objectKey = "docs/iso-expires.txt";
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync($"/integrated-s3/buckets/{bucketName}", content: null)).StatusCode);
+
+        // An ISO-8601 value parses as a date but is NOT RFC1123; AWS returns it exactly as supplied
+        // rather than reformatting to RFC1123 ("Fri, 01 Jan 2027 ...").
+        const string isoExpires = "2027-01-01T00:00:00Z";
+        using (var putRequest = new HttpRequestMessage(HttpMethod.Put, $"/integrated-s3/{bucketName}/{objectKey}")
+        {
+            Content = new StringContent("verbatim expires payload", Encoding.UTF8, "text/plain")
+        }) {
+            // Expires is an entity header; set it on the content so HttpClient transmits it.
+            putRequest.Content.Headers.TryAddWithoutValidation("Expires", isoExpires);
+            Assert.Equal(HttpStatusCode.OK, (await client.SendAsync(putRequest)).StatusCode);
+        }
+
+        var getResponse = await client.GetAsync($"/integrated-s3/{bucketName}/{objectKey}");
+        Assert.Equal(HttpStatusCode.OK, getResponse.StatusCode);
+        Assert.Equal(isoExpires, GetExpiresHeaderValue(getResponse));
+    }
+
+    // The Expires response header may surface on either the content or the message header collection
+    // depending on how HttpClient classifies a non-RFC1123 value; read it from whichever holds it.
+    private static string GetExpiresHeaderValue(HttpResponseMessage response)
+    {
+        if (response.Content.Headers.TryGetValues("Expires", out var contentValues)) {
+            return Assert.Single(contentValues);
+        }
+
+        Assert.True(response.Headers.TryGetValues("Expires", out var messageValues), "Expected an Expires header on the response.");
+        return Assert.Single(messageValues!);
+    }
+
+    [Fact]
+    public async Task GetAndHeadObject_TaggingCountHeaderEmittedOnGetOnly()
+    {
+        using var client = await _factory.CreateClientAsync();
+        const string bucketName = "tagging-count-head-bucket";
+        const string objectKey = "docs/tagged.txt";
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync($"/integrated-s3/buckets/{bucketName}", content: null)).StatusCode);
+
+        using (var putRequest = new HttpRequestMessage(HttpMethod.Put, $"/integrated-s3/{bucketName}/{objectKey}")
+        {
+            Content = new StringContent("tagged payload", Encoding.UTF8, "text/plain")
+        }) {
+            putRequest.Headers.TryAddWithoutValidation("x-amz-tagging", "owner=copilot&team=storage");
+            Assert.Equal(HttpStatusCode.OK, (await client.SendAsync(putRequest)).StatusCode);
+        }
+
+        // AWS emits x-amz-tagging-count on GET responses...
+        var getResponse = await client.GetAsync($"/integrated-s3/{bucketName}/{objectKey}");
+        Assert.Equal(HttpStatusCode.OK, getResponse.StatusCode);
+        Assert.Equal("2", Assert.Single(getResponse.Headers.GetValues("x-amz-tagging-count")));
+
+        // ...but never on HEAD.
+        using var headRequest = new HttpRequestMessage(HttpMethod.Head, $"/integrated-s3/{bucketName}/{objectKey}");
+        var headResponse = await client.SendAsync(headRequest);
+        Assert.Equal(HttpStatusCode.OK, headResponse.StatusCode);
+        Assert.False(headResponse.Headers.Contains("x-amz-tagging-count"));
+    }
+
+    [Fact]
+    public async Task GetObjectAttributes_ForMultipartObject_ReportsObjectPartsTotalCount()
+    {
+        using var client = await _factory.CreateClientAsync();
+        const string bucketName = "attributes-object-parts-bucket";
+        const string objectKey = "docs/multipart.bin";
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync($"/integrated-s3/buckets/{bucketName}", content: null)).StatusCode);
+
+        // Two parts of >= 5 MiB (all but the last must meet the minimum) so completion yields a
+        // composite ETag "<md5>-2".
+        var firstPart = new byte[5 * 1024 * 1024];
+        var secondPart = new byte[1024];
+        Random.Shared.NextBytes(firstPart);
+        Random.Shared.NextBytes(secondPart);
+
+        using var initiateRequest = new HttpRequestMessage(HttpMethod.Post, $"/integrated-s3/{bucketName}/{objectKey}?uploads")
+        {
+            Content = new ByteArrayContent([])
+        };
+        initiateRequest.Content.Headers.ContentType = new MediaTypeHeaderValue("application/octet-stream");
+        var initiateResponse = await client.SendAsync(initiateRequest);
+        Assert.Equal(HttpStatusCode.OK, initiateResponse.StatusCode);
+        var uploadId = GetRequiredElementValue(XDocument.Parse(await initiateResponse.Content.ReadAsStringAsync()), "UploadId");
+
+        var partETags = new string[2];
+        var partBodies = new[] { firstPart, secondPart };
+        for (var partNumber = 1; partNumber <= 2; partNumber++) {
+            using var partRequest = new HttpRequestMessage(HttpMethod.Put, $"/integrated-s3/{bucketName}/{objectKey}?partNumber={partNumber}&uploadId={Uri.EscapeDataString(uploadId)}")
+            {
+                Content = new ByteArrayContent(partBodies[partNumber - 1])
+            };
+            var partResponse = await client.SendAsync(partRequest);
+            Assert.Equal(HttpStatusCode.OK, partResponse.StatusCode);
+            partETags[partNumber - 1] = partResponse.Headers.ETag?.Tag ?? throw new Xunit.Sdk.XunitException("Expected multipart part ETag header.");
+        }
+
+        using var completeRequest = new HttpRequestMessage(HttpMethod.Post, $"/integrated-s3/{bucketName}/{objectKey}?uploadId={Uri.EscapeDataString(uploadId)}")
+        {
+            Content = new StringContent($"""
+<CompleteMultipartUpload>
+  <Part>
+    <PartNumber>1</PartNumber>
+    <ETag>{partETags[0]}</ETag>
+  </Part>
+  <Part>
+    <PartNumber>2</PartNumber>
+    <ETag>{partETags[1]}</ETag>
+  </Part>
+</CompleteMultipartUpload>
+""", Encoding.UTF8, "application/xml")
+        };
+        Assert.Equal(HttpStatusCode.OK, (await client.SendAsync(completeRequest)).StatusCode);
+
+        // GetObjectAttributes(ObjectParts) must report the multipart part count for the completed
+        // object rather than an empty result.
+        using var attributesRequest = new HttpRequestMessage(HttpMethod.Get, $"/integrated-s3/{bucketName}/{objectKey}?attributes");
+        attributesRequest.Headers.TryAddWithoutValidation("x-amz-object-attributes", "ObjectParts,ObjectSize");
+        var attributesResponse = await client.SendAsync(attributesRequest);
+        Assert.Equal(HttpStatusCode.OK, attributesResponse.StatusCode);
+
+        var attributesDocument = XDocument.Parse(await attributesResponse.Content.ReadAsStringAsync());
+        var objectPartsElement = attributesDocument.Root!.S3Element("ObjectParts");
+        Assert.NotNull(objectPartsElement);
+        Assert.Equal("2", objectPartsElement!.S3Element("TotalPartsCount")?.Value);
+        Assert.Equal("false", objectPartsElement.S3Element("IsTruncated")?.Value);
+    }
+
+    [Fact]
+    public async Task GetObjectAttributes_ForSinglePartObject_OmitsObjectParts()
+    {
+        using var client = await _factory.CreateClientAsync();
+        const string bucketName = "attributes-single-part-bucket";
+        const string objectKey = "docs/single.txt";
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync($"/integrated-s3/buckets/{bucketName}", content: null)).StatusCode);
+
+        using (var putRequest = new HttpRequestMessage(HttpMethod.Put, $"/integrated-s3/{bucketName}/{objectKey}")
+        {
+            Content = new StringContent("single part payload", Encoding.UTF8, "text/plain")
+        }) {
+            Assert.Equal(HttpStatusCode.OK, (await client.SendAsync(putRequest)).StatusCode);
+        }
+
+        // A non-multipart object carries a plain hex-MD5 ETag with no "-<count>" suffix, so AWS does
+        // not return an ObjectParts element even when it is requested.
+        using var attributesRequest = new HttpRequestMessage(HttpMethod.Get, $"/integrated-s3/{bucketName}/{objectKey}?attributes");
+        attributesRequest.Headers.TryAddWithoutValidation("x-amz-object-attributes", "ObjectParts,ObjectSize");
+        var attributesResponse = await client.SendAsync(attributesRequest);
+        Assert.Equal(HttpStatusCode.OK, attributesResponse.StatusCode);
+
+        var attributesDocument = XDocument.Parse(await attributesResponse.Content.ReadAsStringAsync());
+        Assert.Null(attributesDocument.Root!.S3Element("ObjectParts"));
+    }
+
+    [Fact]
     public async Task GetObject_WithResponseHeaderOverrideQueryParams_OverridesResponseHeaders()
     {
         using var client = await _factory.CreateClientAsync();
@@ -314,7 +536,8 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
         var headVersionedObjectResponse = await client.SendAsync(headVersionedObjectRequest);
         Assert.Equal(HttpStatusCode.OK, headVersionedObjectResponse.StatusCode);
         Assert.Equal(checksum, Assert.Single(headVersionedObjectResponse.Headers.GetValues("x-amz-checksum-sha256")));
-        Assert.Equal("1", Assert.Single(headVersionedObjectResponse.Headers.GetValues("x-amz-tagging-count")));
+        // AWS emits x-amz-tagging-count on GET only, never on HEAD.
+        Assert.False(headVersionedObjectResponse.Headers.Contains("x-amz-tagging-count"));
         Assert.Equal(versionId, Assert.Single(headVersionedObjectResponse.Headers.GetValues("x-amz-version-id")));
 
         var getTaggingResponse = await client.GetAsync($"/integrated-s3/versioned-bucket/docs/versioned.txt?tagging&versionId={Uri.EscapeDataString(versionId)}");
@@ -4288,7 +4511,8 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
 
         var headObjectResponse = await client.SendAsync(new HttpRequestMessage(HttpMethod.Head, "/integrated-s3/buckets/tagging-bucket/objects/docs/tagged.txt"));
         Assert.Equal(HttpStatusCode.OK, headObjectResponse.StatusCode);
-        Assert.Equal("2", Assert.Single(headObjectResponse.Headers.GetValues("x-amz-tagging-count")));
+        // AWS emits x-amz-tagging-count on GET only, never on HEAD.
+        Assert.False(headObjectResponse.Headers.Contains("x-amz-tagging-count"));
     }
 
     [Fact]

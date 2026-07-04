@@ -36,6 +36,12 @@ internal sealed class DiskStorageService(
     /// </summary>
     private const long MinimumMultipartPartSizeBytes = 5L * 1024 * 1024;
 
+    /// <summary>
+    /// The default object <c>Content-Type</c> AWS S3 assigns when a caller stores an object without
+    /// supplying one. AWS uses <c>binary/octet-stream</c> (not <c>application/octet-stream</c>).
+    /// </summary>
+    private const string DefaultObjectContentType = "binary/octet-stream";
+
     private const string Md5ChecksumAlgorithm = "md5";
     private const string Sha256ChecksumAlgorithm = "sha256";
     private const string Sha1ChecksumAlgorithm = "sha1";
@@ -2228,7 +2234,7 @@ internal sealed class DiskStorageService(
                 destinationPath,
                 versionId,
                 useReplacementMetadata
-                    ? string.IsNullOrWhiteSpace(request.ContentType) ? "application/octet-stream" : request.ContentType
+                    ? string.IsNullOrWhiteSpace(request.ContentType) ? DefaultObjectContentType : request.ContentType
                     : sourceMetadata.ContentType,
                 useReplacementMetadata
                     ? request.Metadata
@@ -2243,7 +2249,8 @@ internal sealed class DiskStorageService(
                 contentDisposition: useReplacementMetadata ? request.ContentDisposition : sourceMetadata.ContentDisposition,
                 contentEncoding: useReplacementMetadata ? request.ContentEncoding : sourceMetadata.ContentEncoding,
                 contentLanguage: useReplacementMetadata ? request.ContentLanguage : sourceMetadata.ContentLanguage,
-                expiresUtc: useReplacementMetadata ? request.ExpiresUtc : sourceMetadata.ExpiresUtc);
+                expiresUtc: useReplacementMetadata ? request.ExpiresUtc : sourceMetadata.ExpiresUtc,
+                expires: useReplacementMetadata ? request.Expires : sourceMetadata.Expires);
         }
         finally {
             if (File.Exists(tempDestinationPath)) {
@@ -2357,7 +2364,7 @@ internal sealed class DiskStorageService(
                 request.Key,
                 objectPath,
                 versionId,
-                string.IsNullOrWhiteSpace(request.ContentType) ? "application/octet-stream" : request.ContentType,
+                string.IsNullOrWhiteSpace(request.ContentType) ? DefaultObjectContentType : request.ContentType,
                 request.Metadata,
                 NormalizeTags(request.Tags),
                 persistedChecksums,
@@ -2369,7 +2376,8 @@ internal sealed class DiskStorageService(
                 contentDisposition: request.ContentDisposition,
                 contentEncoding: request.ContentEncoding,
                 contentLanguage: request.ContentLanguage,
-                expiresUtc: request.ExpiresUtc);
+                expiresUtc: request.ExpiresUtc,
+                expires: request.Expires);
         }
         finally {
             if (File.Exists(tempFilePath)) {
@@ -3073,7 +3081,7 @@ internal sealed class DiskStorageService(
                 request.Key,
                 objectPath,
                 versionId,
-                string.IsNullOrWhiteSpace(uploadState.State.ContentType) ? "application/octet-stream" : uploadState.State.ContentType,
+                string.IsNullOrWhiteSpace(uploadState.State.ContentType) ? DefaultObjectContentType : uploadState.State.ContentType,
                 uploadState.State.Metadata,
                 uploadState.State.Tags,
                 checksums,
@@ -3086,6 +3094,7 @@ internal sealed class DiskStorageService(
                 contentEncoding: uploadState.State.ContentEncoding,
                 contentLanguage: uploadState.State.ContentLanguage,
                 expiresUtc: uploadState.State.ExpiresUtc,
+                expires: uploadState.State.Expires,
                 etag: multipartETag);
 
             await DeleteStoredMultipartStateAsync(request.BucketName, request.Key, request.UploadId, uploadState.UploadDirectoryPath, cancellationToken);
@@ -3144,6 +3153,22 @@ internal sealed class DiskStorageService(
         var obj = headResult.Value!;
         var attrs = request.ObjectAttributes;
 
+        // AWS returns the ObjectParts element only when the caller requests the "ObjectParts"
+        // attribute AND the object was produced by a multipart upload. A completed multipart object
+        // carries the composite ETag "<hex(MD5)>-<partCount>"; that suffix is the authoritative part
+        // count. AWS omits the individual <Part> list unless MaxParts pagination is requested (which
+        // this endpoint does not accept), so we surface TotalPartsCount with an empty, non-truncated
+        // listing — matching a default GetObjectAttributes(ObjectParts) response.
+        ObjectPartsInfo? objectParts = null;
+        if (attrs.Any(a => string.Equals(a, "ObjectParts", StringComparison.OrdinalIgnoreCase))
+            && TryGetMultipartPartCount(obj.ETag, out var totalPartsCount)) {
+            objectParts = new ObjectPartsInfo
+            {
+                TotalPartsCount = totalPartsCount,
+                IsTruncated = false,
+            };
+        }
+
         var response = new GetObjectAttributesResponse
         {
             VersionId = obj.VersionId,
@@ -3153,6 +3178,7 @@ internal sealed class DiskStorageService(
             ObjectSize = attrs.Any(a => string.Equals(a, "ObjectSize", StringComparison.OrdinalIgnoreCase)) ? obj.ContentLength : null,
             StorageClass = attrs.Any(a => string.Equals(a, "StorageClass", StringComparison.OrdinalIgnoreCase)) ? "STANDARD" : null,
             Checksums = attrs.Any(a => string.Equals(a, "Checksum", StringComparison.OrdinalIgnoreCase)) ? obj.Checksums : null,
+            ObjectParts = objectParts,
         };
 
         return StorageResult<GetObjectAttributesResponse>.Success(response);
@@ -3813,12 +3839,13 @@ internal sealed class DiskStorageService(
             IsLatest = isLatest,
             IsDeleteMarker = metadata.IsDeleteMarker,
             ContentLength = metadata.IsDeleteMarker ? 0 : fileInfo?.Length ?? 0,
-            ContentType = metadata.IsDeleteMarker ? null : metadata.ContentType ?? "application/octet-stream",
+            ContentType = metadata.IsDeleteMarker ? null : metadata.ContentType ?? DefaultObjectContentType,
             CacheControl = metadata.IsDeleteMarker ? null : metadata.CacheControl,
             ContentDisposition = metadata.IsDeleteMarker ? null : metadata.ContentDisposition,
             ContentEncoding = metadata.IsDeleteMarker ? null : metadata.ContentEncoding,
             ContentLanguage = metadata.IsDeleteMarker ? null : metadata.ContentLanguage,
             ExpiresUtc = metadata.IsDeleteMarker ? null : metadata.ExpiresUtc,
+            Expires = metadata.IsDeleteMarker ? null : metadata.Expires,
             ETag = ResolveObjectETag(metadata, fileInfo),
             LastModifiedUtc = lastModifiedUtc,
             Metadata = metadata.Metadata,
@@ -3976,6 +4003,7 @@ internal sealed class DiskStorageService(
         string? contentEncoding = null,
         string? contentLanguage = null,
         DateTimeOffset? expiresUtc = null,
+        string? expires = null,
         string? etag = null)
     {
         // Persist the S3 content ETag so it never depends on filesystem mtime. Multipart callers
@@ -4000,6 +4028,7 @@ internal sealed class DiskStorageService(
                 ContentEncoding = isDeleteMarker ? null : contentEncoding,
                 ContentLanguage = isDeleteMarker ? null : contentLanguage,
                 ExpiresUtc = isDeleteMarker ? null : expiresUtc,
+                Expires = isDeleteMarker ? null : expires,
                 Metadata = metadata is null ? null : new Dictionary<string, string>(metadata, StringComparer.Ordinal),
                 Tags = tags is null ? null : new Dictionary<string, string>(tags, StringComparer.Ordinal),
                 Checksums = checksums is null ? null : new Dictionary<string, string>(checksums, StringComparer.OrdinalIgnoreCase)
@@ -4026,6 +4055,7 @@ internal sealed class DiskStorageService(
             ContentEncoding = isDeleteMarker ? null : contentEncoding,
             ContentLanguage = isDeleteMarker ? null : contentLanguage,
             ExpiresUtc = isDeleteMarker ? null : expiresUtc,
+            Expires = isDeleteMarker ? null : expires,
             ETag = resolvedETag,
             LastModifiedUtc = lastModifiedUtc ?? fileInfo?.LastWriteTimeUtc ?? DateTimeOffset.UtcNow,
             Metadata = metadata is null ? null : new Dictionary<string, string>(metadata, StringComparer.Ordinal),
@@ -4050,7 +4080,8 @@ internal sealed class DiskStorageService(
         string? contentDisposition = null,
         string? contentEncoding = null,
         string? contentLanguage = null,
-        DateTimeOffset? expiresUtc = null)
+        DateTimeOffset? expiresUtc = null,
+        string? expires = null)
     {
         return WriteStoredObjectStateAsync(
             bucketName,
@@ -4069,7 +4100,8 @@ internal sealed class DiskStorageService(
             contentDisposition: contentDisposition,
             contentEncoding: contentEncoding,
             contentLanguage: contentLanguage,
-            expiresUtc: expiresUtc);
+            expiresUtc: expiresUtc,
+            expires: expires);
     }
 
     private async Task DeleteStoredObjectStateAsync(string bucketName, string key, string objectPath, string? versionId, CancellationToken cancellationToken)
@@ -4630,6 +4662,7 @@ internal sealed class DiskStorageService(
             ContentEncoding = diskState.ContentEncoding,
             ContentLanguage = diskState.ContentLanguage,
             ExpiresUtc = diskState.ExpiresUtc,
+            Expires = diskState.Expires,
             Metadata = diskState.Metadata,
             Tags = NormalizeTags(diskState.Tags),
             ChecksumAlgorithm = diskState.ChecksumAlgorithm
@@ -4650,6 +4683,7 @@ internal sealed class DiskStorageService(
             ContentEncoding = state.ContentEncoding,
             ContentLanguage = state.ContentLanguage,
             ExpiresUtc = state.ExpiresUtc,
+            Expires = state.Expires,
             Metadata = state.Metadata is null ? null : new Dictionary<string, string>(state.Metadata, StringComparer.Ordinal),
             Tags = NormalizeTags(state.Tags) is { } tags ? new Dictionary<string, string>(tags, StringComparer.Ordinal) : null,
             ChecksumAlgorithm = state.ChecksumAlgorithm
@@ -4696,6 +4730,7 @@ internal sealed class DiskStorageService(
                 ContentEncoding = objectInfo.ContentEncoding,
                 ContentLanguage = objectInfo.ContentLanguage,
                 ExpiresUtc = objectInfo.ExpiresUtc,
+                Expires = objectInfo.Expires,
                 Metadata = objectInfo.Metadata is null ? null : new Dictionary<string, string>(objectInfo.Metadata, StringComparer.Ordinal),
                 Tags = objectInfo.Tags is null ? null : new Dictionary<string, string>(objectInfo.Tags, StringComparer.Ordinal),
                 Checksums = objectInfo.Checksums is null ? null : new Dictionary<string, string>(objectInfo.Checksums, StringComparer.OrdinalIgnoreCase)
@@ -5408,6 +5443,7 @@ internal sealed class DiskStorageService(
             ContentEncoding = request.ContentEncoding,
             ContentLanguage = request.ContentLanguage,
             ExpiresUtc = request.ExpiresUtc,
+            Expires = request.Expires,
             Metadata = request.Metadata is null ? null : new Dictionary<string, string>(request.Metadata),
             Tags = NormalizeTags(request.Tags),
             ChecksumAlgorithm = uploadInfo.ChecksumAlgorithm
@@ -5609,6 +5645,31 @@ internal sealed class DiskStorageService(
         }
 
         return $"{Convert.ToHexStringLower(md5.GetHashAndReset())}-{partMd5Base64.Count}";
+    }
+
+    /// <summary>
+    /// Determines whether <paramref name="etag"/> is a multipart composite ETag of the form
+    /// <c>&lt;hex(MD5)&gt;-&lt;partCount&gt;</c> and, if so, extracts the trailing part count. Single-part
+    /// objects (plain hex MD5, no suffix) and delete markers return <see langword="false"/>.
+    /// </summary>
+    private static bool TryGetMultipartPartCount(string? etag, out int partCount)
+    {
+        partCount = 0;
+        if (string.IsNullOrEmpty(etag)) {
+            return false;
+        }
+
+        var separatorIndex = etag.LastIndexOf('-');
+        if (separatorIndex <= 0 || separatorIndex == etag.Length - 1) {
+            return false;
+        }
+
+        return int.TryParse(
+            etag.AsSpan(separatorIndex + 1),
+            NumberStyles.None,
+            CultureInfo.InvariantCulture,
+            out partCount)
+            && partCount > 0;
     }
 
     /// <summary>

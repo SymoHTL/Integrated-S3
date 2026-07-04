@@ -31,6 +31,13 @@ internal sealed class DiskObjectMetadata
 
     public DateTimeOffset? ExpiresUtc { get; init; }
 
+    /// <summary>
+    /// The verbatim <c>Expires</c> header value as supplied at write time. AWS treats <c>Expires</c>
+    /// as an opaque string that round-trips unchanged; this preserves it so GET/HEAD echo it back
+    /// exactly. Null for legacy metadata written before this field existed.
+    /// </summary>
+    public string? Expires { get; init; }
+
     public Dictionary<string, string>? Metadata { get; init; }
 
     public Dictionary<string, string>? Tags { get; init; }
