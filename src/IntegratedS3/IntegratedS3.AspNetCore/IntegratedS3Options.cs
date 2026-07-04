@@ -48,9 +48,10 @@ public sealed class IntegratedS3Options
     public string SignatureAuthenticationService { get; set; } = "s3";
 
     /// <summary>
-    /// Maximum clock skew tolerance in minutes for SigV4 authentication. Defaults to <c>5</c>.
+    /// Maximum clock skew tolerance in minutes for SigV4 authentication. Defaults to <c>15</c>,
+    /// matching the AWS S3 <c>RequestTimeTooSkewed</c> tolerance of ±15 minutes.
     /// </summary>
-    public int AllowedSignatureClockSkewMinutes { get; set; } = 5;
+    public int AllowedSignatureClockSkewMinutes { get; set; } = 15;
 
     /// <summary>
     /// Maximum allowed expiry for presigned URLs in seconds. Defaults to <c>3600</c> (1 hour).
