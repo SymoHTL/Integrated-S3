@@ -62,4 +62,33 @@ public static class IntegratedS3CoreServiceCollectionExtensions
 
         return services;
     }
+
+    /// <summary>
+    /// Replaces the default allow-all authorization service with
+    /// <see cref="ScopeBasedIntegratedS3AuthorizationService"/>, which enforces the <c>scope</c> claims carried by
+    /// authenticated principals. This is opt-in: the default registered by <see cref="AddIntegratedS3Core(IServiceCollection)"/>
+    /// is <see cref="AllowAllIntegratedS3AuthorizationService"/> (grants everything) for backward compatibility.
+    /// </summary>
+    /// <param name="services">The service collection to configure.</param>
+    /// <param name="configure">An optional delegate to configure <see cref="ScopeBasedIntegratedS3AuthorizationOptions"/> (e.g. the scope grammar and unscoped-principal behavior).</param>
+    /// <returns>The same <see cref="IServiceCollection"/> for chaining.</returns>
+    /// <remarks>
+    /// Call this alongside <see cref="AddIntegratedS3Core(IServiceCollection)"/> (either order works). See
+    /// <see cref="ScopeBasedIntegratedS3AuthorizationOptions"/> for the supported scope grammar
+    /// (<c>admin</c>, <c>read</c>, <c>write</c>, <c>bucket:NAME[:read|write]</c>).
+    /// </remarks>
+    public static IServiceCollection AddIntegratedS3ScopeBasedAuthorization(
+        this IServiceCollection services,
+        Action<ScopeBasedIntegratedS3AuthorizationOptions>? configure = null)
+    {
+        ArgumentNullException.ThrowIfNull(services);
+
+        var optionsBuilder = services.AddOptions<ScopeBasedIntegratedS3AuthorizationOptions>();
+        if (configure is not null) {
+            optionsBuilder.Configure(configure);
+        }
+
+        services.Replace(ServiceDescriptor.Singleton<IIntegratedS3AuthorizationService, ScopeBasedIntegratedS3AuthorizationService>());
+        return services;
+    }
 }

@@ -364,6 +364,47 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
         return MapIntegratedS3EndpointsCore(endpoints, endpointOptions.Clone());
     }
 
+    /// <summary>
+    /// Logs a prominent warning when endpoints are mapped without any authentication or authorization:
+    /// SigV4 is disabled, <see cref="IntegratedS3Options.RequireAuthenticatedRequests"/> is not set, no route
+    /// group configures authorization, and anonymous access has not been explicitly acknowledged via
+    /// <see cref="IntegratedS3Options.AllowAnonymousRequests"/>. This surfaces accidental fully-open deployments.
+    /// </summary>
+    private static void WarnIfEndpointsAreUnauthenticated(
+        IServiceProvider serviceProvider,
+        IntegratedS3Options options,
+        IntegratedS3EndpointOptions endpointOptions)
+    {
+        if (options.EnableAwsSignatureV4Authentication
+            || options.RequireAuthenticatedRequests
+            || options.AllowAnonymousRequests) {
+            return;
+        }
+
+        var hasRouteAuthorization =
+            (endpointOptions.RouteAuthorization?.HasConventions ?? false)
+            || (endpointOptions.RootRouteAuthorization?.HasConventions ?? false)
+            || (endpointOptions.CompatibilityRouteAuthorization?.HasConventions ?? false)
+            || (endpointOptions.ServiceRouteAuthorization?.HasConventions ?? false)
+            || (endpointOptions.BucketRouteAuthorization?.HasConventions ?? false)
+            || (endpointOptions.ObjectRouteAuthorization?.HasConventions ?? false)
+            || (endpointOptions.MultipartRouteAuthorization?.HasConventions ?? false)
+            || (endpointOptions.AdminRouteAuthorization?.HasConventions ?? false);
+
+        if (hasRouteAuthorization) {
+            return;
+        }
+
+        var logger = serviceProvider.GetService<ILoggerFactory>()
+            ?.CreateLogger("IntegratedS3.AspNetCore.Endpoints.MapIntegratedS3Endpoints");
+        logger?.LogWarning(
+            "IntegratedS3 endpoints are mapped without authentication: EnableAwsSignatureV4Authentication is " +
+            "false, RequireAuthenticatedRequests is false, and no route-group authorization is configured. All " +
+            "endpoints (including PUT/DELETE) are reachable anonymously. Enable SigV4 authentication, configure " +
+            "route-group authorization, or set IntegratedS3Options.AllowAnonymousRequests=true to acknowledge a " +
+            "public deployment and silence this warning.");
+    }
+
     private static RouteGroupBuilder MapIntegratedS3EndpointsCore(
         IEndpointRouteBuilder endpoints,
         IntegratedS3EndpointOptions resolvedEndpointOptions)
@@ -374,6 +415,7 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
         ValidateRequiredServices(endpoints.ServiceProvider);
 
         var options = endpoints.ServiceProvider.GetRequiredService<IOptions<IntegratedS3Options>>().Value;
+        WarnIfEndpointsAreUnauthenticated(endpoints.ServiceProvider, options, resolvedEndpointOptions);
         var group = endpoints.MapGroup(options.RoutePrefix);
         group.AddEndpointFilter<IntegratedS3RequestAuthenticationEndpointFilter>();
         var routeConfiguration = CreateRouteGroupConfiguration(
