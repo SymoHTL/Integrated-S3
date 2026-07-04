@@ -51,6 +51,13 @@ public sealed class StorageError
     public int? SuggestedHttpStatusCode { get; init; }
 
     /// <summary>
+    /// Gets the total size, in bytes, of the resource involved in the error, if known. Used to emit
+    /// the AWS-required <c>Content-Range: bytes */&lt;size&gt;</c> header on an unsatisfiable range
+    /// (<see cref="StorageErrorCode.InvalidRange"/>) response.
+    /// </summary>
+    public long? ResourceSize { get; init; }
+
+    /// <summary>
     /// Creates a <see cref="StorageError"/> with <see cref="StorageErrorCode.UnsupportedCapability"/>
     /// and an HTTP 501 suggested status code.
     /// </summary>
