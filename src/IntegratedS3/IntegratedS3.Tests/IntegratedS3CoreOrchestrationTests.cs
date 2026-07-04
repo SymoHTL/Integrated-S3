@@ -3350,6 +3350,126 @@ public sealed class IntegratedS3CoreOrchestrationTests
     }
 
     [Fact]
+    public async Task OrchestratedStorageService_WriteThroughAll_PutObject_DoesNotOrphanBufferedTempFile_WhenBodyCopyFails()
+    {
+        var primaryBackend = new InMemoryStorageBackend("primary-memory", isPrimary: true);
+        var replicaBackend = new InMemoryStorageBackend("replica-memory");
+
+        await using var fixture = new CoreStorageFixture(overrideCatalogStore: true, addDefaultDiskStorage: false, configureServices: services => {
+            services.Configure<IntegratedS3CoreOptions>(options => {
+                options.ConsistencyMode = StorageConsistencyMode.WriteThroughAll;
+            });
+            services.AddSingleton<IStorageBackend>(primaryBackend);
+            services.AddSingleton<IStorageBackend>(replicaBackend);
+        });
+
+        var storageService = fixture.Services.GetRequiredService<IStorageService>();
+        Assert.True((await storageService.CreateBucketAsync(new CreateBucketRequest
+        {
+            BucketName = "leak-bucket"
+        })).IsSuccess);
+
+        var tempFilesBefore = SnapshotOrchestrationTempFiles();
+
+        // The write-through PutObject path buffers request.Content into a temp file before fanning it
+        // out to the replica. If that copy throws, the temp file must not be left behind.
+        await using var throwingContent = new ThrowOnReadStream(new IOException("simulated request-body reset"));
+        await Assert.ThrowsAsync<IOException>(async () => await storageService.PutObjectAsync(new PutObjectRequest
+        {
+            BucketName = "leak-bucket",
+            Key = "docs/leak.txt",
+            Content = throwingContent,
+            ContentType = "text/plain"
+        }));
+
+        Assert.Empty(NewOrchestrationTempFiles(tempFilesBefore));
+    }
+
+    [Fact]
+    public async Task OrchestratedStorageService_WriteThroughAll_PutObject_DoesNotOrphanBufferedTempFile_WhenBodyCopyIsCancelled()
+    {
+        var primaryBackend = new InMemoryStorageBackend("primary-memory", isPrimary: true);
+        var replicaBackend = new InMemoryStorageBackend("replica-memory");
+
+        await using var fixture = new CoreStorageFixture(overrideCatalogStore: true, addDefaultDiskStorage: false, configureServices: services => {
+            services.Configure<IntegratedS3CoreOptions>(options => {
+                options.ConsistencyMode = StorageConsistencyMode.WriteThroughAll;
+            });
+            services.AddSingleton<IStorageBackend>(primaryBackend);
+            services.AddSingleton<IStorageBackend>(replicaBackend);
+        });
+
+        var storageService = fixture.Services.GetRequiredService<IStorageService>();
+        Assert.True((await storageService.CreateBucketAsync(new CreateBucketRequest
+        {
+            BucketName = "cancel-bucket"
+        })).IsSuccess);
+
+        var tempFilesBefore = SnapshotOrchestrationTempFiles();
+
+        using var cancellation = new CancellationTokenSource();
+        await using var cancellingContent = new ThrowOnReadStream(new OperationCanceledException(cancellation.Token), cancellation);
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => await storageService.PutObjectAsync(new PutObjectRequest
+        {
+            BucketName = "cancel-bucket",
+            Key = "docs/cancel.txt",
+            Content = cancellingContent,
+            ContentType = "text/plain"
+        }, cancellation.Token));
+
+        Assert.Empty(NewOrchestrationTempFiles(tempFilesBefore));
+    }
+
+    private static HashSet<string> SnapshotOrchestrationTempFiles()
+    {
+        return new HashSet<string>(
+            Directory.EnumerateFiles(Path.GetTempPath(), "integrateds3-orchestration-*.tmp"),
+            StringComparer.OrdinalIgnoreCase);
+    }
+
+    private static string[] NewOrchestrationTempFiles(HashSet<string> before)
+    {
+        return Directory.EnumerateFiles(Path.GetTempPath(), "integrateds3-orchestration-*.tmp")
+            .Where(path => !before.Contains(path))
+            .ToArray();
+    }
+
+    // A stream that throws on the first read attempt, simulating a client aborting the upload
+    // (cancellation) or the request body being reset mid-copy (IOException) while the write-through
+    // PutObject path is buffering request.Content into its temp file.
+    private sealed class ThrowOnReadStream(Exception failure, CancellationTokenSource? cancelBeforeThrow = null) : Stream
+    {
+        public override bool CanRead => true;
+        public override bool CanSeek => false;
+        public override bool CanWrite => false;
+        public override long Length => throw new NotSupportedException();
+        public override long Position { get => 0; set => throw new NotSupportedException(); }
+
+        public override int Read(byte[] buffer, int offset, int count)
+        {
+            cancelBeforeThrow?.Cancel();
+            throw failure;
+        }
+
+        public override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
+        {
+            cancelBeforeThrow?.Cancel();
+            return ValueTask.FromException<int>(failure);
+        }
+
+        public override Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
+        {
+            cancelBeforeThrow?.Cancel();
+            return Task.FromException<int>(failure);
+        }
+
+        public override void Flush() { }
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+        public override void SetLength(long value) => throw new NotSupportedException();
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+    }
+
+    [Fact]
     public async Task StorageOperations_EmitActivitiesAndMetricsWithProviderAndCorrelationTags()
     {
         using var observability = new TestObservabilityCollector();

@@ -3482,10 +3482,20 @@ internal sealed class OrchestratedStorageService(
         ArgumentNullException.ThrowIfNull(content);
 
         var tempFilePath = Path.Combine(Path.GetTempPath(), $"integrateds3-orchestration-{Guid.NewGuid():N}.tmp");
-        await using var tempFileStream = new FileStream(tempFilePath, FileMode.CreateNew, FileAccess.Write, FileShare.None, 81920, FileOptions.Asynchronous | FileOptions.SequentialScan);
-        await content.CopyToAsync(tempFileStream, cancellationToken);
-        await tempFileStream.FlushAsync(cancellationToken);
-        return tempFilePath;
+        try {
+            await using var tempFileStream = new FileStream(tempFilePath, FileMode.CreateNew, FileAccess.Write, FileShare.None, 81920, FileOptions.Asynchronous | FileOptions.SequentialScan);
+            await content.CopyToAsync(tempFileStream, cancellationToken);
+            await tempFileStream.FlushAsync(cancellationToken);
+            return tempFilePath;
+        }
+        catch {
+            // The file is created eagerly by the FileStream constructor. If creation, copy, or flush
+            // throws (client cancellation, request-body reset, replica read error), the callers never
+            // received the path and their try/finally cleanup never runs — delete it here so the
+            // buffered temp file is not orphaned on disk on any failure path.
+            DeleteTempFileIfPresent(tempFilePath);
+            throw;
+        }
     }
 
     private static Stream OpenBufferedReadStream(string tempFilePath)
@@ -3570,8 +3580,14 @@ internal sealed class OrchestratedStorageService(
 
     private static void DeleteTempFileIfPresent(string tempFilePath)
     {
-        if (File.Exists(tempFilePath)) {
+        try {
             File.Delete(tempFilePath);
+        }
+        catch (DirectoryNotFoundException) {
+            // Already gone — treat as success (idempotent).
+        }
+        catch (FileNotFoundException) {
+            // Already gone — treat as success (idempotent).
         }
     }
 
