@@ -1156,6 +1156,66 @@ public sealed class IntegratedS3ClientTransferTests(WebUiApplicationFactory fact
         }
     }
 
+    // Regression for #141: when the SHA checksum validation is created but seeding the
+    // existing on-disk bytes throws (here the partial file is exclusively locked so the
+    // seed's read-open fails), the seed failure must surface without the copy/validation
+    // path ever running, and the pre-existing partial file must be left untouched. The fix
+    // disposes the ResponseChecksumValidation (which owns IncrementalHash native handles) on
+    // this throw path. The dispose itself is not observable through the public API — the
+    // validation type is internal — so this test locks in the throw-during-seed path the fix
+    // guards and confirms no side effects leak past it.
+    [Fact]
+    public async Task DownloadToFileWithResumeAsync_PartialContentSeedFails_SurfacesSeedFailureAndPreservesPartialFile()
+    {
+        var tempDir = CreateTransferTempDirectory();
+        Directory.CreateDirectory(tempDir);
+        try {
+            var destPath = Path.Combine(tempDir, "resume-seed-failure.txt");
+            const string existingPayload = "hello ";
+            const string appendedPayload = "world";
+            await File.WriteAllTextAsync(destPath, existingPayload);
+
+            var capturingClient = new CapturingIntegratedS3Client();
+            var existingLength = new FileInfo(destPath).Length;
+            var responseProduced = false;
+            using var transferClient = new HttpClient(new DelegateHttpMessageHandler((request, cancellationToken) => {
+                var response = new HttpResponseMessage(HttpStatusCode.PartialContent)
+                {
+                    Content = new ByteArrayContent(Encoding.UTF8.GetBytes(appendedPayload))
+                };
+                response.Content.Headers.ContentRange = new ContentRangeHeaderValue(
+                    existingLength,
+                    existingLength + appendedPayload.Length - 1,
+                    existingLength + appendedPayload.Length);
+                // SHA256 header makes CreateDownloadValidation return a non-null validation that
+                // owns IncrementalHash native handles, so the seed step below actually runs.
+                response.Headers.TryAddWithoutValidation(
+                    "x-amz-checksum-sha256",
+                    ComputeSha256Base64(existingPayload + appendedPayload));
+                responseProduced = true;
+                return Task.FromResult(response);
+            }));
+
+            // Hold an exclusive lock so SeedExistingBytesAsync's FileShare.Read open throws.
+            using (new FileStream(destPath, FileMode.Open, FileAccess.ReadWrite, FileShare.None)) {
+                await Assert.ThrowsAsync<IOException>(() =>
+                    capturingClient.DownloadToFileWithResumeAsync(
+                        transferClient,
+                        "bucket",
+                        "key",
+                        destPath,
+                        expiresInSeconds: 60));
+            }
+
+            Assert.True(responseProduced, "The resume request should have produced a checksummed partial response.");
+            Assert.True(File.Exists(destPath), "The pre-existing partial file must be preserved when seeding fails.");
+            Assert.Equal(existingPayload, await File.ReadAllTextAsync(destPath));
+        }
+        finally {
+            Directory.Delete(tempDir, recursive: true);
+        }
+    }
+
     [Fact]
     public async Task DownloadToFileWithResumeAsync_RangeIgnored_RewritesFromStartAndForwardsAccessMode()
     {
