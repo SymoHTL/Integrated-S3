@@ -1,16 +1,28 @@
 using System.Diagnostics;
 using System.Diagnostics.Metrics;
+using System.Text.RegularExpressions;
 using IntegratedS3.Abstractions.Observability;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Logging;
 
 namespace IntegratedS3.AspNetCore.Services;
 
-internal static class IntegratedS3AspNetCoreTelemetry
+internal static partial class IntegratedS3AspNetCoreTelemetry
 {
     private const string RequestPathTagName = "url.path";
     private const string HttpMethodTagName = "http.request.method";
     private const string RequestScopeItemKey = "IntegratedS3.Observability.CorrelationId";
+
+    /// <summary>
+    /// Maximum accepted length for a client-supplied correlation id. Longer values are rejected in
+    /// favour of a server-generated id to bound log/trace amplification.
+    /// </summary>
+    internal const int MaxCorrelationIdLength = 128;
+
+    // Restrict inbound correlation ids to a safe, printable subset so an attacker cannot inject
+    // control characters (e.g. CR/LF for log forging) into the log scope or activity tags.
+    [GeneratedRegex("^[A-Za-z0-9._:-]{1,128}$", RegexOptions.CultureInvariant)]
+    private static partial Regex CorrelationIdPattern();
 
     private static readonly Counter<long> AuthenticationFailureCounter = IntegratedS3Observability.Meter.CreateCounter<long>(
         IntegratedS3Observability.Metrics.HttpAuthenticationFailures,
@@ -49,13 +61,37 @@ internal static class IntegratedS3AspNetCoreTelemetry
         }
 
         var inboundCorrelationId = httpContext.Request.Headers[IntegratedS3Observability.CorrelationIdHeaderName].ToString();
-        var correlationId = !string.IsNullOrWhiteSpace(inboundCorrelationId)
-            ? inboundCorrelationId.Trim()
+        var correlationId = TryAcceptInboundCorrelationId(inboundCorrelationId, out var validated)
+            ? validated
             : Activity.Current?.TraceId.ToString() ?? httpContext.TraceIdentifier;
 
         httpContext.Items[RequestScopeItemKey] = correlationId;
         httpContext.Response.Headers[IntegratedS3Observability.CorrelationIdHeaderName] = correlationId;
         return correlationId;
+    }
+
+    /// <summary>
+    /// Validates a client-supplied correlation id. The value is accepted only when, after trimming
+    /// surrounding whitespace, it is at most <see cref="MaxCorrelationIdLength"/> characters long and
+    /// consists solely of the safe character set <c>[A-Za-z0-9._:-]</c>. This prevents log-injection /
+    /// header-splitting via embedded control characters (e.g. CR/LF) and unbounded-length abuse. Any
+    /// invalid value is discarded so the caller can fall back to a server-generated id.
+    /// </summary>
+    internal static bool TryAcceptInboundCorrelationId(string? inboundCorrelationId, out string correlationId)
+    {
+        correlationId = string.Empty;
+
+        if (string.IsNullOrWhiteSpace(inboundCorrelationId)) {
+            return false;
+        }
+
+        var trimmed = inboundCorrelationId.Trim();
+        if (trimmed.Length > MaxCorrelationIdLength || !CorrelationIdPattern().IsMatch(trimmed)) {
+            return false;
+        }
+
+        correlationId = trimmed;
+        return true;
     }
 
     public static IDisposable? BeginRequestScope(ILogger logger, HttpContext httpContext, string correlationId)
