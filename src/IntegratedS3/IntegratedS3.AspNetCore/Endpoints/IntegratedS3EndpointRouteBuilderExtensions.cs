@@ -7144,10 +7144,15 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
         var tempFilePath = Path.Combine(Path.GetTempPath(), $"integrateds3-aws-chunked-{Guid.NewGuid():N}.tmp");
         var trailerHeaders = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         var trailerHeaderEntries = new List<KeyValuePair<string, string>>();
+        // For signed streaming payload hashes (STREAMING-AWS4-HMAC-SHA256-PAYLOAD-TRAILER and the
+        // SigV4a ECDSA variant) the per-chunk signature chain is what binds the body bytes to the
+        // authenticated request. Build a verifier from the signing context established by the
+        // authenticator so CopyAwsChunkedContentToAsync can recompute and check each chunk signature.
+        var chunkSignatureVerifier = TryCreateChunkSignatureVerifier(request);
         string? finalChunkSignature = null;
         try {
             await using (var tempWriteStream = new FileStream(tempFilePath, FileMode.CreateNew, FileAccess.Write, FileShare.None, 81920, FileOptions.Asynchronous | FileOptions.SequentialScan)) {
-                finalChunkSignature = await CopyAwsChunkedContentToAsync(request.Body, tempWriteStream, trailerHeaders, trailerHeaderEntries, cancellationToken);
+                finalChunkSignature = await CopyAwsChunkedContentToAsync(request.Body, tempWriteStream, trailerHeaders, trailerHeaderEntries, chunkSignatureVerifier, cancellationToken);
                 await tempWriteStream.FlushAsync(cancellationToken);
             }
 
@@ -7258,6 +7263,7 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
         Stream destination,
         Dictionary<string, string> trailerHeaders,
         List<KeyValuePair<string, string>> trailerHeaderEntries,
+        AwsChunkedChunkSignatureVerifier? chunkSignatureVerifier,
         CancellationToken cancellationToken)
     {
         while (true) {
@@ -7270,13 +7276,55 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
             }
 
             if (chunkLength == 0) {
+                // The zero-length terminating chunk carries the final chunk signature, which anchors
+                // the trailer signature. When verifying, recompute it over the empty chunk (chained
+                // from the last data chunk) so the returned value is the server-verified signature
+                // rather than the client-supplied one; this closes the trailer-signature gap too.
+                if (chunkSignatureVerifier is not null) {
+                    var verifiedFinalSignature = chunkSignatureVerifier.VerifyChunk(
+                        chunkHeader,
+                        S3SigV4Signer.ComputeSha256Hex(ReadOnlySpan<byte>.Empty));
+                    await ConsumeChunkTrailersAsync(source, trailerHeaders, trailerHeaderEntries, cancellationToken);
+                    return verifiedFinalSignature;
+                }
+
                 await ConsumeChunkTrailersAsync(source, trailerHeaders, trailerHeaderEntries, cancellationToken);
                 return TryGetAwsChunkSignature(chunkHeader);
             }
 
-            await CopyExactBytesAsync(source, destination, chunkLength, cancellationToken);
+            if (chunkSignatureVerifier is null) {
+                await CopyExactBytesAsync(source, destination, chunkLength, hasher: null, cancellationToken);
+                await ExpectCrLfAsync(source, cancellationToken);
+                continue;
+            }
+
+            using var chunkHasher = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+            await CopyExactBytesAsync(source, destination, chunkLength, chunkHasher, cancellationToken);
             await ExpectCrLfAsync(source, cancellationToken);
+            var chunkContentHashHex = Convert.ToHexStringLower(chunkHasher.GetCurrentHash());
+            chunkSignatureVerifier.VerifyChunk(chunkHeader, chunkContentHashHex);
         }
+    }
+
+    /// <summary>
+    /// Builds a per-chunk signature verifier for signed <c>aws-chunked</c> streaming uploads, or
+    /// <see langword="null"/> when the request does not use a signed streaming payload hash (in which
+    /// case the intermediate chunk signatures are advisory and not verified). Requires the signing
+    /// context established by the SigV4/SigV4a authenticator; if the request declares a signed
+    /// streaming payload hash but carries no signing context, the trailer-signature validation path
+    /// already rejects it (fail-closed), so returning <see langword="null"/> here is safe.
+    /// </summary>
+    private static AwsChunkedChunkSignatureVerifier? TryCreateChunkSignatureVerifier(HttpRequest request)
+    {
+        if (!IsSignedTrailerBackedStreamingPayloadHash(request.Headers[AwsContentSha256HeaderName].ToString())) {
+            return null;
+        }
+
+        if (!AwsChunkedTrailerSigningContextStore.TryGet(request.HttpContext, out var signingContext)) {
+            return null;
+        }
+
+        return new AwsChunkedChunkSignatureVerifier(signingContext);
     }
 
     private static async Task<string?> ReadLineAsync(Stream source, CancellationToken cancellationToken)
@@ -7373,7 +7421,7 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
         return null;
     }
 
-    private static async Task CopyExactBytesAsync(Stream source, Stream destination, long byteCount, CancellationToken cancellationToken)
+    private static async Task CopyExactBytesAsync(Stream source, Stream destination, long byteCount, IncrementalHash? hasher, CancellationToken cancellationToken)
     {
         var remaining = byteCount;
         var buffer = new byte[81920];
@@ -7384,6 +7432,7 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
                 throw new FormatException("The aws-chunked request body ended unexpectedly while reading a chunk.");
             }
 
+            hasher?.AppendData(buffer.AsSpan(0, read));
             await destination.WriteAsync(buffer.AsMemory(0, read), cancellationToken);
             remaining -= read;
         }
@@ -9544,6 +9593,79 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
     private static bool FixedTimeEqualsOrdinalIgnoreCase(string expected, string actual)
     {
         return FixedTimeEqualsOrdinal(expected.ToUpperInvariant(), actual.ToUpperInvariant());
+    }
+
+    /// <summary>
+    /// Verifies the per-chunk SigV4/SigV4a signature chain of a signed <c>aws-chunked</c> streaming
+    /// upload as chunks are decoded, binding the body bytes to the authenticated request signature.
+    /// <para>
+    /// Each data chunk's <c>chunk-signature</c> extension is recomputed by the server from the rolling
+    /// previous signature (seeded with the request's own signature) and the SHA-256 of the chunk bytes;
+    /// a mismatch throws <see cref="ChunkSignatureMismatchException"/> (→ 403 SignatureDoesNotMatch).
+    /// The zero-length terminating chunk is verified the same way, and its recomputed/verified signature
+    /// is returned so it — not a client-supplied value — anchors the trailer-signature validation.
+    /// </para>
+    /// </summary>
+    private sealed class AwsChunkedChunkSignatureVerifier
+    {
+        private readonly AwsChunkedTrailerSigningContext _context;
+        private string _previousSignature;
+
+        public AwsChunkedChunkSignatureVerifier(AwsChunkedTrailerSigningContext context)
+        {
+            _context = context;
+            _previousSignature = context.SeedSignature;
+        }
+
+        /// <summary>
+        /// Verifies a single chunk's <c>chunk-signature</c> against the recomputed signature and
+        /// advances the rolling previous signature. Returns the now-verified chunk signature.
+        /// </summary>
+        public string VerifyChunk(string chunkHeader, string chunkContentHashHex)
+        {
+            var providedSignature = TryGetAwsChunkSignature(chunkHeader);
+            if (string.IsNullOrWhiteSpace(providedSignature)) {
+                // A signed streaming upload must attach a chunk-signature to every chunk (including
+                // the zero-length terminator). Absence means the chain cannot be verified: reject.
+                throw new ChunkSignatureMismatchException();
+            }
+
+            if (_context.IsSigV4a) {
+                var credentialScopeString = S3SigV4aSigner.BuildCredentialScopeString(
+                    _context.CredentialScope.DateStamp,
+                    _context.CredentialScope.Service);
+                var stringToSign = S3SigV4aSigner.BuildStreamingPayloadStringToSign(
+                    _context.SignedAtUtc,
+                    credentialScopeString,
+                    _previousSignature,
+                    chunkContentHashHex);
+                using var ecdsaKey = S3SigV4aSigner.DeriveEcdsaKey(_context.SecretAccessKey, _context.AccessKeyId!);
+                if (!S3SigV4aSigner.VerifySignature(ecdsaKey, stringToSign, providedSignature)) {
+                    throw new ChunkSignatureMismatchException();
+                }
+
+                // SigV4a signatures are non-deterministic, so the chain advances using the client's
+                // (now cryptographically verified) signature text — the same value the client chained.
+                _previousSignature = providedSignature;
+                return providedSignature;
+            }
+
+            var hmacStringToSign = S3SigV4Signer.BuildStreamingPayloadStringToSign(
+                _context.SignedAtUtc,
+                _context.CredentialScope,
+                _previousSignature,
+                chunkContentHashHex);
+            var expectedSignature = S3SigV4Signer.ComputeSignature(
+                _context.SecretAccessKey,
+                _context.CredentialScope,
+                hmacStringToSign);
+            if (!FixedTimeEqualsOrdinalIgnoreCase(expectedSignature, providedSignature)) {
+                throw new ChunkSignatureMismatchException();
+            }
+
+            _previousSignature = expectedSignature;
+            return expectedSignature;
+        }
     }
 
     private sealed class PreparedRequestBody(

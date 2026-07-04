@@ -98,6 +98,13 @@ internal sealed class IntegratedS3RequestAuthenticationEndpointFilter(
                 "The provided 'x-amz-content-sha256' header does not match what was computed.");
         }
 
+        if (exception is ChunkSignatureMismatchException) {
+            return (
+                StatusCodes.Status403Forbidden,
+                "SignatureDoesNotMatch",
+                "The request signature we calculated does not match the signature you provided.");
+        }
+
         if (exception is BadHttpRequestException badRequest) {
             return badRequest.StatusCode switch
             {
