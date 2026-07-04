@@ -2315,14 +2315,13 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
 
         var requestedStatus = requestBody.Status switch
         {
-            null or "" => BucketVersioningStatus.Disabled,
             "Enabled" => BucketVersioningStatus.Enabled,
             "Suspended" => BucketVersioningStatus.Suspended,
             _ => (BucketVersioningStatus?)null
         };
 
         if (requestedStatus is null) {
-            return ToErrorResult(httpContext, StatusCodes.Status400BadRequest, "InvalidArgument", "Bucket versioning status must be 'Enabled' or 'Suspended'.", BuildObjectResource(bucketName, null), bucketName);
+            return ToErrorResult(httpContext, StatusCodes.Status400BadRequest, "IllegalVersioningConfigurationException", "The versioning configuration specified in the request is invalid. The Status element must be either 'Enabled' or 'Suspended'.", BuildObjectResource(bucketName, null), bucketName);
         }
 
         try {

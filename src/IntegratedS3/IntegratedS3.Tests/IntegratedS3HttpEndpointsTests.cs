@@ -10140,6 +10140,71 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
     }
 
     [Fact]
+    public async Task PutBucketVersioning_WithAbsentStatus_ReturnsIllegalVersioningConfiguration()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync("/integrated-s3/buckets/absent-status-versioning-bucket", content: null)).StatusCode);
+
+        using var request = new HttpRequestMessage(HttpMethod.Put, "/integrated-s3/absent-status-versioning-bucket?versioning")
+        {
+            Content = new StringContent("""
+<VersioningConfiguration>
+</VersioningConfiguration>
+""", Encoding.UTF8, "application/xml")
+        };
+        var response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        var errorDocument = XDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal("IllegalVersioningConfigurationException", GetRequiredElementValue(errorDocument, "Code"));
+    }
+
+    [Fact]
+    public async Task PutBucketVersioning_WithEmptyStatus_ReturnsIllegalVersioningConfiguration()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync("/integrated-s3/buckets/empty-status-versioning-bucket", content: null)).StatusCode);
+
+        using var request = new HttpRequestMessage(HttpMethod.Put, "/integrated-s3/empty-status-versioning-bucket?versioning")
+        {
+            Content = new StringContent("""
+<VersioningConfiguration>
+  <Status></Status>
+</VersioningConfiguration>
+""", Encoding.UTF8, "application/xml")
+        };
+        var response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        var errorDocument = XDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal("IllegalVersioningConfigurationException", GetRequiredElementValue(errorDocument, "Code"));
+    }
+
+    [Fact]
+    public async Task PutBucketVersioning_WithInvalidStatus_ReturnsIllegalVersioningConfiguration()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync("/integrated-s3/buckets/invalid-status-versioning-bucket", content: null)).StatusCode);
+
+        using var request = new HttpRequestMessage(HttpMethod.Put, "/integrated-s3/invalid-status-versioning-bucket?versioning")
+        {
+            Content = new StringContent("""
+<VersioningConfiguration>
+  <Status>Disabled</Status>
+</VersioningConfiguration>
+""", Encoding.UTF8, "application/xml")
+        };
+        var response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        var errorDocument = XDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal("IllegalVersioningConfigurationException", GetRequiredElementValue(errorDocument, "Code"));
+    }
+
+    [Fact]
     public async Task GetBucketVersioning_ReturnsCurrentStatus()
     {
         using var client = await _factory.CreateClientAsync();
