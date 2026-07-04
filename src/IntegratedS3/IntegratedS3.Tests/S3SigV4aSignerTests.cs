@@ -15,6 +15,28 @@ public sealed class S3SigV4aSignerTests
         Assert.Equal(32, ecParams.Q.Y!.Length);
     }
 
+    // Known-answer vector from awslabs/aws-c-auth tests/key_derivation_tests.c
+    // (s_sigv4a_key_derivation_test). Locks cross-implementation interop: the derived
+    // scalar/public key must byte-for-byte equal what a genuine aws-crt SigV4a client
+    // derives for the same secret + access-key. Fails if the mandatory +1 offset,
+    // the c<=N-2 acceptance bound, or the fixed-input layout regresses.
+    [Fact]
+    public void DeriveEcdsaKey_MatchesAwsCrtKnownAnswerVector()
+    {
+        const string secretAccessKey = "q+jcrXGc+0zWN6uzclKVhvMmUsIfRPa4rlRandom";
+        const string accessKeyId = "AKISORANDOMAASORANDOM";
+        const string expectedD = "7fd3bd010c0d9c292141c2b77bfbde1042c92e6836fff749d1269ec890fca1bd";
+        const string expectedX = "15d242ceebf8d8169fd6a8b5a746c41140414c3b07579038da06af89190fffcb";
+        const string expectedY = "0515242cedd82e94799482e4c0514b505afccf2c0c98d6a553bf539f424c5ec0";
+
+        using var key = S3SigV4aSigner.DeriveEcdsaKey(secretAccessKey, accessKeyId);
+        var ecParams = key.ExportParameters(includePrivateParameters: true);
+
+        Assert.Equal(expectedD, Convert.ToHexStringLower(ecParams.D!));
+        Assert.Equal(expectedX, Convert.ToHexStringLower(ecParams.Q.X!));
+        Assert.Equal(expectedY, Convert.ToHexStringLower(ecParams.Q.Y!));
+    }
+
     [Fact]
     public void DeriveEcdsaKey_IsDeterministic()
     {

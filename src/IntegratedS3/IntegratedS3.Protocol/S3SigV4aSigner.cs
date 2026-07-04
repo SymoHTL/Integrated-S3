@@ -41,26 +41,34 @@ public static class S3SigV4aSigner
         var label = Encoding.UTF8.GetBytes(Algorithm);
         var context = Encoding.UTF8.GetBytes(accessKeyId);
 
-        // NIST SP 800-108 fixed input: counter(4) || label || 0x00 || context || L(4)
-        // L = 256 bits = key length
-        var fixedInput = new byte[4 + label.Length + 1 + context.Length + 4];
+        // aws-c-auth fixed input (SP 800-108 counter-mode, per iteration):
+        //   0x00000001 || label || 0x00 || accessKeyId || counter(1 byte) || 0x00000100
+        // where 0x00000001 is the fixed "i" prefix and 0x00000100 encodes L = 256 bits.
+        // The counter is a single byte that varies each iteration (1..254).
+        var counterIndex = 4 + label.Length + 1 + context.Length;
+        var fixedInput = new byte[counterIndex + 1 + 4];
+        // i = 1 (big-endian 4 bytes)
+        fixedInput[0] = 0x00;
+        fixedInput[1] = 0x00;
+        fixedInput[2] = 0x00;
+        fixedInput[3] = 0x01;
         Buffer.BlockCopy(label, 0, fixedInput, 4, label.Length);
         fixedInput[4 + label.Length] = 0x00;
         Buffer.BlockCopy(context, 0, fixedInput, 4 + label.Length + 1, context.Length);
-        // L = 256 in big-endian
-        fixedInput[fixedInput.Length - 4] = 0;
-        fixedInput[fixedInput.Length - 3] = 0;
-        fixedInput[fixedInput.Length - 2] = 1;
-        fixedInput[fixedInput.Length - 1] = 0;
+        // L = 256 bits in big-endian (0x00000100)
+        fixedInput[fixedInput.Length - 4] = 0x00;
+        fixedInput[fixedInput.Length - 3] = 0x00;
+        fixedInput[fixedInput.Length - 2] = 0x01;
+        fixedInput[fixedInput.Length - 1] = 0x00;
 
         var curveOrder = new BigInteger(CurveOrderBytes, isUnsigned: true, isBigEndian: true);
+        // Accept the candidate when c <= N-2 (reject when c > N-2), matching aws-c-auth.
+        var maxCandidate = curveOrder - 2;
 
-        for (var counter = 1; counter <= 255; counter++)
+        // Counter runs 1..254; 255 is treated as exhaustion, mirroring aws-c-auth.
+        for (var counter = 1; counter <= 254; counter++)
         {
-            fixedInput[0] = (byte)(counter >> 24);
-            fixedInput[1] = (byte)(counter >> 16);
-            fixedInput[2] = (byte)(counter >> 8);
-            fixedInput[3] = (byte)counter;
+            fixedInput[counterIndex] = (byte)counter;
 
             byte[] candidateBytes;
             using (var hmac = new HMACSHA256(fixedInputKey))
@@ -69,12 +77,22 @@ public static class S3SigV4aSigner
             }
 
             var candidate = new BigInteger(candidateBytes, isUnsigned: true, isBigEndian: true);
-            if (candidate >= 1 && candidate < curveOrder)
+            if (candidate <= maxCandidate)
             {
+                // Private scalar d = c + 1 so that d is in [1, N-1] (FIPS 186-4 B.4.1).
+                var privateScalar = candidate + BigInteger.One;
+                var d = privateScalar.ToByteArray(isUnsigned: true, isBigEndian: true);
+                if (d.Length < 32)
+                {
+                    var padded = new byte[32];
+                    Buffer.BlockCopy(d, 0, padded, 32 - d.Length, d.Length);
+                    d = padded;
+                }
+
                 var ecParams = new ECParameters
                 {
                     Curve = ECCurve.NamedCurves.nistP256,
-                    D = candidateBytes
+                    D = d
                 };
                 return ECDsa.Create(ecParams);
             }

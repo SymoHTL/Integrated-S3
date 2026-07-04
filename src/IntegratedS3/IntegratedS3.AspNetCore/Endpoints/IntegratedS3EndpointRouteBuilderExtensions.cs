@@ -103,6 +103,7 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
     private const string MarkerQueryParameterName = "marker";
     private const string StartAfterQueryParameterName = "start-after";
     private const string MaxKeysQueryParameterName = "max-keys";
+    private const int MaxKeysLimit = 1000;
     private const string MaxUploadsQueryParameterName = "max-uploads";
     private const string MaxPartsQueryParameterName = "max-parts";
     private const string ContinuationTokenQueryParameterName = "continuation-token";
@@ -3434,11 +3435,11 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
                     return ToErrorResult(httpContext, bucketResult.Error, resourceOverride: BuildObjectResource(bucketName, null));
                 }
 
-                if (maxKeys is <= 0) {
-                    return ToErrorResult(httpContext, StatusCodes.Status400BadRequest, "InvalidArgument", "max-keys must be greater than zero.", BuildObjectResource(bucketName, null), bucketName);
+                if (maxKeys is < 0) {
+                    return ToErrorResult(httpContext, StatusCodes.Status400BadRequest, "InvalidArgument", "max-keys must not be negative.", BuildObjectResource(bucketName, null), bucketName);
                 }
 
-                var requestedPageSize = maxKeys ?? 1000;
+                var requestedPageSize = Math.Min(maxKeys ?? MaxKeysLimit, MaxKeysLimit);
 
                 try {
                     var objects = await storageService.ListObjectsAsync(new ListObjectsRequest
@@ -3497,11 +3498,11 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
                     return ToErrorResult(httpContext, bucketResult.Error, resourceOverride: BuildObjectResource(bucketName, null));
                 }
 
-                if (maxKeys is <= 0) {
-                    return ToErrorResult(httpContext, StatusCodes.Status400BadRequest, "InvalidArgument", "max-keys must be greater than zero.", BuildObjectResource(bucketName, null), bucketName);
+                if (maxKeys is < 0) {
+                    return ToErrorResult(httpContext, StatusCodes.Status400BadRequest, "InvalidArgument", "max-keys must not be negative.", BuildObjectResource(bucketName, null), bucketName);
                 }
 
-                var requestedPageSize = maxKeys ?? 1000;
+                var requestedPageSize = Math.Min(maxKeys ?? MaxKeysLimit, MaxKeysLimit);
 
                 try {
                     var objects = await storageService.ListObjectsAsync(new ListObjectsRequest
@@ -3559,11 +3560,11 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
                     return ToErrorResult(httpContext, bucketResult.Error, resourceOverride: BuildObjectResource(bucketName, null));
                 }
 
-                if (maxKeys is <= 0) {
-                    return ToErrorResult(httpContext, StatusCodes.Status400BadRequest, "InvalidArgument", "max-keys must be greater than zero.", BuildObjectResource(bucketName, null), bucketName);
+                if (maxKeys is < 0) {
+                    return ToErrorResult(httpContext, StatusCodes.Status400BadRequest, "InvalidArgument", "max-keys must not be negative.", BuildObjectResource(bucketName, null), bucketName);
                 }
 
-                var requestedPageSize = maxKeys ?? 1000;
+                var requestedPageSize = Math.Min(maxKeys ?? MaxKeysLimit, MaxKeysLimit);
 
                 try {
                     var versions = await storageService.ListObjectVersionsAsync(new ListObjectVersionsRequest
@@ -4505,8 +4506,8 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
             Marker = isV2 ? null : marker,
             StartAfter = isV2 ? startAfter : null,
             ContinuationToken = isV2 ? continuationToken : null,
-            NextMarker = !isV2 && isTruncated && normalizedDelimiter is not null ? page[^1].ContinuationToken : null,
-            NextContinuationToken = isV2 && isTruncated ? page[^1].ContinuationToken : null,
+            NextMarker = !isV2 && isTruncated && normalizedDelimiter is not null && page.Length > 0 ? page[^1].ContinuationToken : null,
+            NextContinuationToken = isV2 && isTruncated && page.Length > 0 ? page[^1].ContinuationToken : null,
             EncodingType = encodingType,
             KeyCount = isV2 ? page.Length : 0,
             MaxKeys = maxKeys,
@@ -4593,8 +4594,8 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
             Delimiter = normalizedDelimiter,
             KeyMarker = keyMarker,
             VersionIdMarker = versionIdMarker,
-            NextKeyMarker = isTruncated ? page[^1].NextKeyMarker : null,
-            NextVersionIdMarker = isTruncated ? page[^1].NextVersionIdMarker : null,
+            NextKeyMarker = isTruncated && page.Length > 0 ? page[^1].NextKeyMarker : null,
+            NextVersionIdMarker = isTruncated && page.Length > 0 ? page[^1].NextVersionIdMarker : null,
             EncodingType = encodingType,
             MaxKeys = maxKeys,
             IsTruncated = isTruncated,
