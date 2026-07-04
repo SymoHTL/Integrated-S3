@@ -5,6 +5,7 @@ using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json;
 using IntegratedS3.Abstractions.Capabilities;
+using IntegratedS3.Abstractions.Comparers;
 using IntegratedS3.Abstractions.Errors;
 using IntegratedS3.Abstractions.Models;
 using IntegratedS3.Abstractions.Requests;
@@ -2003,7 +2004,7 @@ internal sealed class DiskStorageService(
                 ObjectKey = GetObjectKey(bucketPath, filePath)
             })
             .Where(entry => string.IsNullOrEmpty(prefix) || entry.ObjectKey.StartsWith(prefix, StringComparison.Ordinal))
-            .OrderBy(entry => entry.ObjectKey, StringComparer.Ordinal);
+            .OrderBy(entry => entry.ObjectKey, Utf8OrdinalComparer.Instance);
 
         var yielded = 0;
 
@@ -2011,7 +2012,7 @@ internal sealed class DiskStorageService(
             cancellationToken.ThrowIfCancellationRequested();
 
             if (!string.IsNullOrEmpty(continuationToken)
-                && StringComparer.Ordinal.Compare(entry.ObjectKey, continuationToken) <= 0) {
+                && Utf8OrdinalComparer.Instance.Compare(entry.ObjectKey, continuationToken) <= 0) {
                 continue;
             }
 
@@ -4727,7 +4728,7 @@ internal sealed class DiskStorageService(
         }
 
         return versions
-            .OrderBy(version => version.Key, StringComparer.Ordinal)
+            .OrderBy(version => version.Key, Utf8OrdinalComparer.Instance)
             .ThenByDescending(version => version.IsLatest)
             .ThenByDescending(version => version.VersionId, StringComparer.Ordinal)
             .ToArray();
@@ -4742,7 +4743,7 @@ internal sealed class DiskStorageService(
             }
 
             return uploadsFromStateStore
-                .OrderBy(static upload => upload.Key, StringComparer.Ordinal)
+                .OrderBy(static upload => upload.Key, Utf8OrdinalComparer.Instance)
                 .ThenBy(upload => upload.InitiatedAtUtc)
                 .ThenBy(static upload => upload.UploadId, StringComparer.Ordinal)
                 .ToArray();
@@ -4779,7 +4780,7 @@ internal sealed class DiskStorageService(
         }
 
         return uploads
-            .OrderBy(static upload => upload.Key, StringComparer.Ordinal)
+            .OrderBy(static upload => upload.Key, Utf8OrdinalComparer.Instance)
             .ThenBy(upload => upload.InitiatedAtUtc)
             .ThenBy(static upload => upload.UploadId, StringComparer.Ordinal)
             .ToArray();
@@ -4988,7 +4989,7 @@ internal sealed class DiskStorageService(
     /// </summary>
     private static int FindVersionMarkerIndex(IReadOnlyList<ObjectInfo> versions, string? keyMarker, string? versionIdMarker)
     {
-        if (string.IsNullOrWhiteSpace(keyMarker)) {
+        if (string.IsNullOrEmpty(keyMarker)) {
             return -1;
         }
 
@@ -5003,9 +5004,9 @@ internal sealed class DiskStorageService(
         // Marker not found — fall back to comparison-based skip so pages
         // degrade gracefully when a version is removed between requests.
         for (var i = versions.Count - 1; i >= 0; i--) {
-            var keyComparison = StringComparer.Ordinal.Compare(versions[i].Key, normalizedKey);
+            var keyComparison = Utf8OrdinalComparer.Instance.Compare(versions[i].Key, normalizedKey);
             if (keyComparison < 0 || (keyComparison == 0
-                && !string.IsNullOrWhiteSpace(versionIdMarker)
+                && !string.IsNullOrEmpty(versionIdMarker)
                 && StringComparer.Ordinal.Compare(versions[i].VersionId, versionIdMarker) >= 0)) {
                 return i;
             }
@@ -5016,11 +5017,11 @@ internal sealed class DiskStorageService(
 
     private static bool IsMultipartUploadAfterMarker(MultipartUploadInfo upload, string? keyMarker, string? uploadIdMarker)
     {
-        if (string.IsNullOrWhiteSpace(keyMarker)) {
+        if (string.IsNullOrEmpty(keyMarker)) {
             return true;
         }
 
-        var keyComparison = StringComparer.Ordinal.Compare(upload.Key, NormalizeKey(keyMarker));
+        var keyComparison = Utf8OrdinalComparer.Instance.Compare(upload.Key, NormalizeKey(keyMarker));
         if (keyComparison > 0) {
             return true;
         }
@@ -5029,7 +5030,7 @@ internal sealed class DiskStorageService(
             return false;
         }
 
-        return !string.IsNullOrWhiteSpace(uploadIdMarker)
+        return !string.IsNullOrEmpty(uploadIdMarker)
                && StringComparer.Ordinal.Compare(upload.UploadId, uploadIdMarker) > 0;
     }
 
