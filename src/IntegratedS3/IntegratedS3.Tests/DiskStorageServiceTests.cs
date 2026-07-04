@@ -42,7 +42,9 @@ public sealed class DiskStorageServiceTests
         });
 
         Assert.True(putResult.IsSuccess);
-        Assert.False(string.IsNullOrWhiteSpace(putResult.Value!.VersionId));
+        // Unversioned bucket: the object uses the AWS "null" version, so no version id is minted
+        // and no x-amz-version-id header is emitted (see issue #151).
+        Assert.Null(putResult.Value!.VersionId);
         Assert.Equal("text/plain", putResult.Value!.ContentType);
         Assert.Equal("copilot", putResult.Value.Metadata!["author"]);
         Assert.Equal(ComputeSha256Base64("hello integrated s3"), putResult.Value.Checksums!["sha256"]);
@@ -458,7 +460,8 @@ public sealed class DiskStorageServiceTests
 
         Assert.True((await storageService.CreateBucketAsync(new CreateBucketRequest
         {
-            BucketName = "versions"
+            BucketName = "versions",
+            EnableVersioning = true
         })).IsSuccess);
 
         await using var uploadStream = new MemoryStream(Encoding.UTF8.GetBytes("versioned payload"));
@@ -2018,7 +2021,10 @@ public sealed class DiskStorageServiceTests
         Assert.False(copyResult.Value.Metadata.ContainsKey("source-only"));
         Assert.Equal(ComputeSha256Base64("copy me"), copyResult.Value.Checksums!["sha256"]);
         Assert.Equal(ComputeCrc32cBase64("copy me"), copyResult.Value.Checksums["crc32c"]);
-        Assert.NotEqual(putResult.Value!.VersionId, copyResult.Value.VersionId);
+        // Unversioned bucket: both the source PUT and the self-copy use the AWS "null" version, so
+        // neither carries a minted version id (see issue #151).
+        Assert.Null(putResult.Value!.VersionId);
+        Assert.Null(copyResult.Value.VersionId);
 
         var downloaded = await storageService.GetObjectAsync(new GetObjectRequest
         {
@@ -5180,7 +5186,7 @@ public sealed class DiskStorageServiceTests
     }
 
     [Fact]
-    public async Task DiskStorage_PermanentDeleteOfLockedObject_AfterVersioningSuspended_IsRefused()
+    public async Task DiskStorage_DeleteAfterVersioningSuspended_InsertsNullDeleteMarkerAndRetainsLockedVersion()
     {
         await using var fixture = new DiskStorageFixture();
         var storageService = fixture.Services.GetRequiredService<IStorageBackend>();
@@ -5204,14 +5210,17 @@ public sealed class DiskStorageServiceTests
             }
         })).IsSuccess);
 
+        string lockedVersionId;
         await using (var content = new MemoryStream(Encoding.UTF8.GetBytes("suspended payload"))) {
-            Assert.True((await storageService.PutObjectAsync(new PutObjectRequest
+            var lockedPut = await storageService.PutObjectAsync(new PutObjectRequest
             {
                 BucketName = bucketName,
                 Key = key,
                 Content = content,
                 ContentType = "text/plain"
-            })).IsSuccess);
+            });
+            Assert.True(lockedPut.IsSuccess);
+            lockedVersionId = Assert.IsType<string>(lockedPut.Value!.VersionId);
         }
 
         Assert.True((await storageService.PutBucketVersioningAsync(new PutBucketVersioningRequest
@@ -5220,28 +5229,222 @@ public sealed class DiskStorageServiceTests
             Status = BucketVersioningStatus.Suspended
         })).IsSuccess);
 
-        // With versioning suspended a delete without a version id becomes a permanent
-        // delete, so the retention window must still refuse it.
-        var permanentDelete = await storageService.DeleteObjectAsync(new DeleteObjectRequest
+        // AWS semantics (issue #151): on a versioning-suspended bucket a delete without a version id
+        // inserts a "null"-version delete marker rather than permanently deleting the current object.
+        // The pre-existing locked version is retained, so Object Lock is not violated and the delete
+        // succeeds with the null version (no minted version id).
+        var suspendedDelete = await storageService.DeleteObjectAsync(new DeleteObjectRequest
         {
             BucketName = bucketName,
             Key = key
         });
 
-        Assert.False(permanentDelete.IsSuccess);
-        Assert.Equal(StorageErrorCode.ObjectLocked, permanentDelete.Error!.Code);
-        Assert.Equal(403, permanentDelete.Error.SuggestedHttpStatusCode);
+        Assert.True(suspendedDelete.IsSuccess);
+        Assert.True(suspendedDelete.Value!.IsDeleteMarker);
+        Assert.Null(suspendedDelete.Value.VersionId);
 
-        var stillReadable = await storageService.GetObjectAsync(new GetObjectRequest
+        // The current object now resolves to a delete marker.
+        var currentGet = await storageService.GetObjectAsync(new GetObjectRequest
         {
             BucketName = bucketName,
             Key = key
         });
+        Assert.False(currentGet.IsSuccess);
+        Assert.Equal(StorageErrorCode.ObjectNotFound, currentGet.Error!.Code);
 
-        Assert.True(stillReadable.IsSuccess);
-        await using var stillReadableResponse = stillReadable.Value!;
-        using var stillReadableReader = new StreamReader(stillReadableResponse.Content, Encoding.UTF8, leaveOpen: false);
-        Assert.Equal("suspended payload", await stillReadableReader.ReadToEndAsync());
+        // The locked version is preserved and still readable by its version id.
+        var lockedVersionGet = await storageService.GetObjectAsync(new GetObjectRequest
+        {
+            BucketName = bucketName,
+            Key = key,
+            VersionId = lockedVersionId
+        });
+        Assert.True(lockedVersionGet.IsSuccess);
+        await using (var lockedResponse = lockedVersionGet.Value!) {
+            using var lockedReader = new StreamReader(lockedResponse.Content, Encoding.UTF8, leaveOpen: false);
+            Assert.Equal("suspended payload", await lockedReader.ReadToEndAsync());
+        }
+
+        // The retention window still refuses a permanent delete of the locked version by id.
+        var lockedVersionDelete = await storageService.DeleteObjectAsync(new DeleteObjectRequest
+        {
+            BucketName = bucketName,
+            Key = key,
+            VersionId = lockedVersionId
+        });
+        Assert.False(lockedVersionDelete.IsSuccess);
+        Assert.Equal(StorageErrorCode.ObjectLocked, lockedVersionDelete.Error!.Code);
+        Assert.Equal(403, lockedVersionDelete.Error.SuggestedHttpStatusCode);
+    }
+
+    // Regression tests for issue #151: unversioned / suspended buckets must not stamp a minted
+    // x-amz-version-id, and suspended deletes must use the "null"-version delete-marker semantics.
+    [Fact]
+    public async Task DiskStorage_UnversionedBucket_PutAndDelete_UseNullVersionAndEmitNoVersionId()
+    {
+        await using var fixture = new DiskStorageFixture();
+        var storageService = fixture.Services.GetRequiredService<IStorageBackend>();
+        const string bucketName = "unversioned-null-version";
+        const string key = "docs/plain.txt";
+
+        Assert.True((await storageService.CreateBucketAsync(new CreateBucketRequest
+        {
+            BucketName = bucketName
+        })).IsSuccess);
+
+        await using (var v1 = new MemoryStream(Encoding.UTF8.GetBytes("first"))) {
+            var put1 = await storageService.PutObjectAsync(new PutObjectRequest
+            {
+                BucketName = bucketName,
+                Key = key,
+                Content = v1,
+                ContentType = "text/plain"
+            });
+            Assert.True(put1.IsSuccess);
+            // AWS returns no version id (the null version) for a bucket that never enabled versioning.
+            Assert.Null(put1.Value!.VersionId);
+        }
+
+        // Overwriting the object stays on the single null version; it never accumulates versions.
+        await using (var v2 = new MemoryStream(Encoding.UTF8.GetBytes("second"))) {
+            var put2 = await storageService.PutObjectAsync(new PutObjectRequest
+            {
+                BucketName = bucketName,
+                Key = key,
+                Content = v2,
+                ContentType = "text/plain"
+            });
+            Assert.True(put2.IsSuccess);
+            Assert.Null(put2.Value!.VersionId);
+        }
+
+        var head = await storageService.HeadObjectAsync(new HeadObjectRequest
+        {
+            BucketName = bucketName,
+            Key = key
+        });
+        Assert.True(head.IsSuccess);
+        Assert.Null(head.Value!.VersionId);
+
+        var versionsBeforeDelete = await storageService.ListObjectVersionsAsync(new ListObjectVersionsRequest
+        {
+            BucketName = bucketName
+        }).ToArrayAsync();
+        var onlyVersion = Assert.Single(versionsBeforeDelete);
+        Assert.Null(onlyVersion.VersionId);
+        Assert.False(onlyVersion.IsDeleteMarker);
+
+        // A delete with no version id on an unversioned bucket permanently removes the object; it
+        // must not create a delete marker and must not report a version id.
+        var delete = await storageService.DeleteObjectAsync(new DeleteObjectRequest
+        {
+            BucketName = bucketName,
+            Key = key
+        });
+        Assert.True(delete.IsSuccess);
+        Assert.False(delete.Value!.IsDeleteMarker);
+        Assert.Null(delete.Value.VersionId);
+
+        var afterDelete = await storageService.HeadObjectAsync(new HeadObjectRequest
+        {
+            BucketName = bucketName,
+            Key = key
+        });
+        Assert.False(afterDelete.IsSuccess);
+        Assert.Equal(StorageErrorCode.ObjectNotFound, afterDelete.Error!.Code);
+
+        var versionsAfterDelete = await storageService.ListObjectVersionsAsync(new ListObjectVersionsRequest
+        {
+            BucketName = bucketName
+        }).ToArrayAsync();
+        Assert.Empty(versionsAfterDelete);
+    }
+
+    [Fact]
+    public async Task DiskStorage_SuspendedBucket_DeleteMarker_UsesNullVersionAndOverwritesPriorNullDeleteMarker()
+    {
+        await using var fixture = new DiskStorageFixture();
+        var storageService = fixture.Services.GetRequiredService<IStorageBackend>();
+        const string bucketName = "suspended-null-delete-marker";
+        const string key = "docs/history.txt";
+
+        Assert.True((await storageService.CreateBucketAsync(new CreateBucketRequest
+        {
+            BucketName = bucketName,
+            EnableVersioning = true
+        })).IsSuccess);
+
+        // A real version minted while versioning is enabled must survive suspension.
+        string enabledVersionId;
+        await using (var enabled = new MemoryStream(Encoding.UTF8.GetBytes("enabled version"))) {
+            var enabledPut = await storageService.PutObjectAsync(new PutObjectRequest
+            {
+                BucketName = bucketName,
+                Key = key,
+                Content = enabled,
+                ContentType = "text/plain"
+            });
+            Assert.True(enabledPut.IsSuccess);
+            enabledVersionId = Assert.IsType<string>(enabledPut.Value!.VersionId);
+        }
+
+        Assert.True((await storageService.PutBucketVersioningAsync(new PutBucketVersioningRequest
+        {
+            BucketName = bucketName,
+            Status = BucketVersioningStatus.Suspended
+        })).IsSuccess);
+
+        // First suspended delete: inserts a null-version delete marker, preserving the real version.
+        var firstDelete = await storageService.DeleteObjectAsync(new DeleteObjectRequest
+        {
+            BucketName = bucketName,
+            Key = key
+        });
+        Assert.True(firstDelete.IsSuccess);
+        Assert.True(firstDelete.Value!.IsDeleteMarker);
+        Assert.Null(firstDelete.Value.VersionId);
+
+        var afterFirstDelete = await storageService.ListObjectVersionsAsync(new ListObjectVersionsRequest
+        {
+            BucketName = bucketName
+        }).ToArrayAsync();
+        // Exactly two entries: the retained real version + the single null-version delete marker.
+        Assert.Equal(2, afterFirstDelete.Length);
+        Assert.Single(afterFirstDelete, v => v.IsDeleteMarker && v.VersionId is null && v.IsLatest);
+        Assert.Single(afterFirstDelete, v => !v.IsDeleteMarker && v.VersionId == enabledVersionId);
+
+        // Re-write the null version, then delete again: the null-version delete marker is replaced in
+        // place (still exactly one null delete marker), never accumulating multiple null markers.
+        await using (var suspendedPut = new MemoryStream(Encoding.UTF8.GetBytes("suspended overwrite"))) {
+            var putBack = await storageService.PutObjectAsync(new PutObjectRequest
+            {
+                BucketName = bucketName,
+                Key = key,
+                Content = suspendedPut,
+                ContentType = "text/plain"
+            });
+            Assert.True(putBack.IsSuccess);
+            Assert.Null(putBack.Value!.VersionId);
+        }
+
+        var secondDelete = await storageService.DeleteObjectAsync(new DeleteObjectRequest
+        {
+            BucketName = bucketName,
+            Key = key
+        });
+        Assert.True(secondDelete.IsSuccess);
+        Assert.True(secondDelete.Value!.IsDeleteMarker);
+        Assert.Null(secondDelete.Value.VersionId);
+
+        var afterSecondDelete = await storageService.ListObjectVersionsAsync(new ListObjectVersionsRequest
+        {
+            BucketName = bucketName
+        }).ToArrayAsync();
+        // Still exactly one null-version delete marker (the prior one was overwritten), plus the
+        // retained enabled-era real version.
+        Assert.Equal(2, afterSecondDelete.Length);
+        Assert.Single(afterSecondDelete, v => v.IsDeleteMarker && v.VersionId is null && v.IsLatest);
+        Assert.Single(afterSecondDelete, v => !v.IsDeleteMarker && v.VersionId == enabledVersionId);
     }
 
     private static void AssertUnsupportedServerSideEncryption(StorageError? error, string bucketName, string objectKey)

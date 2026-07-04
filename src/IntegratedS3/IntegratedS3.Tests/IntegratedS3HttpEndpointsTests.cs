@@ -494,6 +494,19 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
 
         Assert.Equal(HttpStatusCode.Created, (await client.PutAsync("/integrated-s3/buckets/versioned-bucket", content: null)).StatusCode);
 
+        // Versioning must be enabled for the object PUT to emit a minted x-amz-version-id header
+        // (issue #151: unversioned buckets use the null version and emit no version-id header).
+        using (var enableVersioningRequest = new HttpRequestMessage(HttpMethod.Put, "/integrated-s3/versioned-bucket?versioning")
+        {
+            Content = new StringContent("""
+<VersioningConfiguration>
+  <Status>Enabled</Status>
+</VersioningConfiguration>
+""", Encoding.UTF8, "application/xml")
+        }) {
+            Assert.Equal(HttpStatusCode.OK, (await client.SendAsync(enableVersioningRequest)).StatusCode);
+        }
+
         const string payload = "hello versioned checksum";
         var checksum = Convert.ToBase64String(SHA256.HashData(Encoding.UTF8.GetBytes(payload)));
 
@@ -10237,13 +10250,25 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
         var suspendResponse = await client.SendAsync(suspendRequest);
         Assert.Equal(HttpStatusCode.OK, suspendResponse.StatusCode);
 
+        // Issue #151: a PUT on a versioning-suspended bucket stores the "null" version, so no
+        // x-amz-version-id header is emitted and it overwrites any prior null version. The
+        // previously-enabled version (v1) is retained as a non-current version.
         var v2 = await client.PutAsync(
             "/integrated-s3/suspend-versioning-bucket/file.txt",
             new StringContent("v2", Encoding.UTF8, "text/plain"));
         Assert.Equal(HttpStatusCode.OK, v2.StatusCode);
-        var v2VersionId = Assert.Single(v2.Headers.GetValues("x-amz-version-id"));
+        Assert.False(v2.Headers.TryGetValues("x-amz-version-id", out _));
 
-        Assert.NotEqual(v1VersionId, v2VersionId);
+        // The current object is now the null-version "v2" payload.
+        var currentGet = await client.GetAsync("/integrated-s3/suspend-versioning-bucket/file.txt");
+        Assert.Equal(HttpStatusCode.OK, currentGet.StatusCode);
+        Assert.False(currentGet.Headers.TryGetValues("x-amz-version-id", out _));
+        Assert.Equal("v2", await currentGet.Content.ReadAsStringAsync());
+
+        // The enabled-era version v1 is preserved and still addressable by its version id.
+        var v1Get = await client.GetAsync($"/integrated-s3/suspend-versioning-bucket/file.txt?versionId={Uri.EscapeDataString(v1VersionId)}");
+        Assert.Equal(HttpStatusCode.OK, v1Get.StatusCode);
+        Assert.Equal("v1", await v1Get.Content.ReadAsStringAsync());
     }
 
     [Fact]
