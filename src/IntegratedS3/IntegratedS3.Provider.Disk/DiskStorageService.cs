@@ -28,6 +28,14 @@ internal sealed class DiskStorageService(
     private const string MultipartUploadsDirectoryName = ".integrateds3-multipart";
     private const string MultipartStateFileName = "upload.json";
     private const int MaxMultipartPartNumber = 10000;
+
+    /// <summary>
+    /// The minimum size, in bytes, that every multipart part except the last must meet.
+    /// AWS S3 rejects a CompleteMultipartUpload with <c>EntityTooSmall</c> when any non-final
+    /// part is smaller than 5 MiB (5 * 1024 * 1024 = 5,242,880 bytes).
+    /// </summary>
+    private const long MinimumMultipartPartSizeBytes = 5L * 1024 * 1024;
+
     private const string Md5ChecksumAlgorithm = "md5";
     private const string Sha256ChecksumAlgorithm = "sha256";
     private const string Sha1ChecksumAlgorithm = "sha1";
@@ -2927,14 +2935,31 @@ internal sealed class DiskStorageService(
         }
 
         try {
+            // The last element of request.Parts is the highest-numbered part because the list has
+            // already been validated to be in strictly ascending part-number order above.
+            var lastPartIndex = request.Parts.Count - 1;
             await using (var destinationStream = new FileStream(tempObjectPath, FileMode.CreateNew, FileAccess.Write, FileShare.None, 81920, FileOptions.Asynchronous | FileOptions.SequentialScan)) {
-                foreach (var requestedPart in request.Parts) {
+                for (var partIndex = 0; partIndex < request.Parts.Count; partIndex++) {
+                    var requestedPart = request.Parts[partIndex];
                     var partPath = GetMultipartPartPath(uploadState.UploadDirectoryPath, requestedPart.PartNumber);
                     if (!File.Exists(partPath)) {
                         return StorageResult<ObjectInfo>.Failure(InvalidPart(
                             $"One or more of the specified parts could not be found. Part '{requestedPart.PartNumber}' was not uploaded for upload '{request.UploadId}'.",
                             request.BucketName,
                             request.Key));
+                    }
+
+                    // Enforce the S3 minimum part size: every part except the last must be at least
+                    // 5 MiB. AWS rejects such completions with EntityTooSmall (HTTP 400). Mirror the
+                    // S3 backend, which surfaces the upstream EntityTooSmall as MultipartConflict.
+                    if (partIndex != lastPartIndex) {
+                        var partSizeBytes = new FileInfo(partPath).Length;
+                        if (partSizeBytes < MinimumMultipartPartSizeBytes) {
+                            return StorageResult<ObjectInfo>.Failure(MultipartInvalidRequest(
+                                $"Your proposed upload is smaller than the minimum allowed size. Part '{requestedPart.PartNumber}' is {partSizeBytes} bytes, but every part except the last must be at least {MinimumMultipartPartSizeBytes} bytes.",
+                                request.BucketName,
+                                request.Key));
+                        }
                     }
 
                     var actualETag = BuildETag(new FileInfo(partPath));

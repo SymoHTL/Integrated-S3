@@ -1940,9 +1940,10 @@ public sealed class DiskStorageServiceTests
 
         const string sourceKey = "docs/source.txt";
         const string destinationKey = "docs/copied.txt";
-        const string part1Payload = "hello ";
+        // The first (non-final) part must be at least the S3 minimum of 5 MiB.
+        var part1Payload = new string('a', 5 * 1024 * 1024);
         const string part2Payload = "world";
-        const string fullPayload = part1Payload + part2Payload;
+        var fullPayload = part1Payload + part2Payload;
 
         var initiateResult = await storageService.InitiateMultipartUploadAsync(new InitiateMultipartUploadRequest
         {
@@ -2783,7 +2784,9 @@ public sealed class DiskStorageServiceTests
 
         Assert.True(initiateResult.IsSuccess);
 
-        await using var part1Stream = new MemoryStream(Encoding.UTF8.GetBytes("hello "));
+        // The first (non-final) part must be at least the S3 minimum of 5 MiB.
+        var part1Payload = new string('a', 5 * 1024 * 1024);
+        await using var part1Stream = new MemoryStream(Encoding.UTF8.GetBytes(part1Payload));
         var part1 = await storageService.UploadMultipartPartAsync(new UploadMultipartPartRequest
         {
             BucketName = "multipart",
@@ -2830,10 +2833,137 @@ public sealed class DiskStorageServiceTests
         Assert.True(getResult.IsSuccess);
         await using var response = getResult.Value!;
         using var reader = new StreamReader(response.Content, Encoding.UTF8);
-        Assert.Equal("hello world", await reader.ReadToEndAsync());
+        Assert.Equal(part1Payload + "world", await reader.ReadToEndAsync());
         Assert.Equal("multipart", response.Object.Metadata!["source"]);
         Assert.Equal("multipart", response.Object.Tags!["upload"]);
         Assert.Equal(multipartChecksum, response.Object.Checksums!["sha256"]);
+    }
+
+    [Fact]
+    public async Task DiskStorage_MultipartUpload_RejectsUndersizedNonFinalPartWithEntityTooSmall()
+    {
+        await using var fixture = new DiskStorageFixture();
+        var storageService = fixture.Services.GetRequiredService<IStorageBackend>();
+        await storageService.CreateBucketAsync(new CreateBucketRequest { BucketName = "multipart-small" });
+
+        var initiateResult = await storageService.InitiateMultipartUploadAsync(new InitiateMultipartUploadRequest
+        {
+            BucketName = "multipart-small",
+            Key = "docs/tiny.bin",
+            ContentType = "application/octet-stream"
+        });
+
+        Assert.True(initiateResult.IsSuccess);
+
+        // Part 1 is a non-final part smaller than the S3 minimum of 5 MiB.
+        await using var part1Stream = new MemoryStream(new byte[1024]);
+        var part1 = await storageService.UploadMultipartPartAsync(new UploadMultipartPartRequest
+        {
+            BucketName = "multipart-small",
+            Key = "docs/tiny.bin",
+            UploadId = initiateResult.Value!.UploadId,
+            PartNumber = 1,
+            Content = part1Stream
+        });
+
+        await using var part2Stream = new MemoryStream(new byte[1024]);
+        var part2 = await storageService.UploadMultipartPartAsync(new UploadMultipartPartRequest
+        {
+            BucketName = "multipart-small",
+            Key = "docs/tiny.bin",
+            UploadId = initiateResult.Value!.UploadId,
+            PartNumber = 2,
+            Content = part2Stream
+        });
+
+        Assert.True(part1.IsSuccess);
+        Assert.True(part2.IsSuccess);
+
+        var completeResult = await storageService.CompleteMultipartUploadAsync(new CompleteMultipartUploadRequest
+        {
+            BucketName = "multipart-small",
+            Key = "docs/tiny.bin",
+            UploadId = initiateResult.Value!.UploadId,
+            Parts = [part1.Value!, part2.Value!]
+        });
+
+        Assert.False(completeResult.IsSuccess);
+        Assert.Equal(StorageErrorCode.MultipartConflict, completeResult.Error!.Code);
+        Assert.Equal(400, completeResult.Error.SuggestedHttpStatusCode);
+        Assert.Contains("minimum", completeResult.Error.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("'1'", completeResult.Error.Message, StringComparison.Ordinal);
+
+        // The object must not have been created.
+        var headResult = await storageService.HeadObjectAsync(new HeadObjectRequest
+        {
+            BucketName = "multipart-small",
+            Key = "docs/tiny.bin"
+        });
+
+        Assert.False(headResult.IsSuccess);
+        Assert.Equal(StorageErrorCode.ObjectNotFound, headResult.Error!.Code);
+    }
+
+    [Fact]
+    public async Task DiskStorage_MultipartUpload_AllowsSmallFinalPartWhenEarlierPartsMeetMinimum()
+    {
+        await using var fixture = new DiskStorageFixture();
+        var storageService = fixture.Services.GetRequiredService<IStorageBackend>();
+        await storageService.CreateBucketAsync(new CreateBucketRequest { BucketName = "multipart-lastsmall" });
+
+        var initiateResult = await storageService.InitiateMultipartUploadAsync(new InitiateMultipartUploadRequest
+        {
+            BucketName = "multipart-lastsmall",
+            Key = "docs/assembled.bin",
+            ContentType = "application/octet-stream"
+        });
+
+        Assert.True(initiateResult.IsSuccess);
+
+        // Part 1 exactly meets the 5 MiB minimum; part 2 (the last part) is deliberately tiny.
+        var firstPartBytes = new byte[5 * 1024 * 1024];
+        await using var part1Stream = new MemoryStream(firstPartBytes);
+        var part1 = await storageService.UploadMultipartPartAsync(new UploadMultipartPartRequest
+        {
+            BucketName = "multipart-lastsmall",
+            Key = "docs/assembled.bin",
+            UploadId = initiateResult.Value!.UploadId,
+            PartNumber = 1,
+            Content = part1Stream
+        });
+
+        await using var part2Stream = new MemoryStream(new byte[16]);
+        var part2 = await storageService.UploadMultipartPartAsync(new UploadMultipartPartRequest
+        {
+            BucketName = "multipart-lastsmall",
+            Key = "docs/assembled.bin",
+            UploadId = initiateResult.Value!.UploadId,
+            PartNumber = 2,
+            Content = part2Stream
+        });
+
+        Assert.True(part1.IsSuccess);
+        Assert.True(part2.IsSuccess);
+
+        var completeResult = await storageService.CompleteMultipartUploadAsync(new CompleteMultipartUploadRequest
+        {
+            BucketName = "multipart-lastsmall",
+            Key = "docs/assembled.bin",
+            UploadId = initiateResult.Value!.UploadId,
+            Parts = [part1.Value!, part2.Value!]
+        });
+
+        Assert.True(completeResult.IsSuccess);
+
+        var getResult = await storageService.GetObjectAsync(new GetObjectRequest
+        {
+            BucketName = "multipart-lastsmall",
+            Key = "docs/assembled.bin"
+        });
+
+        Assert.True(getResult.IsSuccess);
+        await using var response = getResult.Value!;
+        Assert.Equal((5 * 1024 * 1024) + 16, response.Object.ContentLength);
     }
 
     [Fact]
@@ -2853,7 +2983,8 @@ public sealed class DiskStorageServiceTests
 
         Assert.True(initiateResult.IsSuccess);
 
-        const string part1Payload = "hello ";
+        // The first (non-final) part must be at least the S3 minimum of 5 MiB.
+        var part1Payload = new string('a', 5 * 1024 * 1024);
         var part1Checksum = ComputeCrc32cBase64(part1Payload);
         await using var part1Stream = new MemoryStream(Encoding.UTF8.GetBytes(part1Payload));
         var part1 = await storageService.UploadMultipartPartAsync(new UploadMultipartPartRequest
@@ -2913,7 +3044,7 @@ public sealed class DiskStorageServiceTests
         Assert.True(getResult.IsSuccess);
         await using var response = getResult.Value!;
         using var reader = new StreamReader(response.Content, Encoding.UTF8);
-        Assert.Equal("hello world", await reader.ReadToEndAsync());
+        Assert.Equal(part1Payload + "world", await reader.ReadToEndAsync());
         Assert.Equal(compositeChecksum, response.Object.Checksums!["crc32c"]);
     }
 
@@ -4042,7 +4173,9 @@ public sealed class DiskStorageServiceTests
         Assert.Equal(uploadId, listedUpload.UploadId);
         Assert.Equal("docs/assembled.txt", listedUpload.Key);
 
-        await using var part1Stream = new MemoryStream(Encoding.UTF8.GetBytes("hello "));
+        // The first (non-final) part must be at least the S3 minimum of 5 MiB.
+        var part1Payload = new string('a', 5 * 1024 * 1024);
+        await using var part1Stream = new MemoryStream(Encoding.UTF8.GetBytes(part1Payload));
         var part1 = await storageService.UploadMultipartPartAsync(new UploadMultipartPartRequest
         {
             BucketName = "multipart-external",
@@ -4884,7 +5017,9 @@ public sealed class DiskStorageServiceTests
         });
         Assert.True(initiate.IsSuccess);
 
-        await using var part1Stream = new MemoryStream(Encoding.UTF8.GetBytes("hello "));
+        // The first (non-final) part must be at least the S3 minimum of 5 MiB so that
+        // completion reaches the caller's intended validation (missing part, ETag mismatch, ...).
+        await using var part1Stream = new MemoryStream(Encoding.UTF8.GetBytes(new string('a', 5 * 1024 * 1024)));
         var part1 = await storageService.UploadMultipartPartAsync(new UploadMultipartPartRequest
         {
             BucketName = bucketName,

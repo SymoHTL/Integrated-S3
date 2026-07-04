@@ -207,7 +207,8 @@ public sealed class IntegratedS3ClientTransferTests(WebUiApplicationFactory fact
     {
         const string bucketName = "transfer-uploadpart-bucket";
         const string objectKey = "docs/transfer-uploadpart.bin";
-        const string firstPartPayload = "first transfer part payload|";
+        // The first (non-final) part must be at least the S3 minimum of 5 MiB.
+        var firstPartPayload = new string('a', 5 * 1024 * 1024);
         const string secondPartPayload = "second transfer part payload";
 
         await using var isolatedClient = await _factory.CreateIsolatedClientAsync(ConfigurePresignHost("transfer-uploadpart-access", "transfer-uploadpart-secret"));

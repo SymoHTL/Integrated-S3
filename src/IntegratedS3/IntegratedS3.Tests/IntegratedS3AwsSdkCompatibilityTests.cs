@@ -2095,7 +2095,9 @@ public sealed class IntegratedS3AwsSdkCompatibilityTests : IClassFixture<WebUiAp
     {
         const string accessKeyId = "aws-sdk-multipart-access";
         const string secretAccessKey = "aws-sdk-multipart-secret";
-        const string completedPayload = "hello world";
+        // The first (non-final) part must be at least the S3 minimum of 5 MiB.
+        var firstPartPayload = new string('a', 5 * 1024 * 1024);
+        var completedPayload = firstPartPayload + "world";
 
         await using var isolatedClient = await CreateAuthenticatedLoopbackClientAsync(accessKeyId, secretAccessKey);
         using var s3Client = CreateS3Client(isolatedClient.BaseAddress!, accessKeyId, secretAccessKey);
@@ -2117,7 +2119,7 @@ public sealed class IntegratedS3AwsSdkCompatibilityTests : IClassFixture<WebUiAp
         });
         Assert.Equal(HttpStatusCode.OK, initiateResponse.HttpStatusCode);
 
-        await using var part1Stream = new MemoryStream(Encoding.UTF8.GetBytes("hello "));
+        await using var part1Stream = new MemoryStream(Encoding.UTF8.GetBytes(firstPartPayload));
         var part1Response = await s3Client.UploadPartAsync(new UploadPartRequest
         {
             BucketName = bucketName,
@@ -2660,7 +2662,8 @@ public sealed class IntegratedS3AwsSdkCompatibilityTests : IClassFixture<WebUiAp
         const string bucketName = "aws-sdk-multipart-checksum-bucket";
         const string objectKey = "docs/multipart-checksum.txt";
         const string copiedObjectKey = "docs/multipart-checksum-copy.txt";
-        const string part1Payload = "hello ";
+        // The first (non-final) part must be at least the S3 minimum of 5 MiB.
+        var part1Payload = new string('a', 5 * 1024 * 1024);
         const string part2Payload = "world";
 
         Assert.Equal(HttpStatusCode.OK, (await s3Client.PutBucketAsync(new PutBucketRequest
@@ -2889,7 +2892,8 @@ public sealed class IntegratedS3AwsSdkCompatibilityTests : IClassFixture<WebUiAp
         const string bucketName = "aws-sdk-multipart-sha1-bucket";
         const string objectKey = "docs/multipart-sha1.txt";
         const string copiedObjectKey = "docs/multipart-sha1-copy.txt";
-        const string part1Payload = "hello ";
+        // The first (non-final) part must be at least the S3 minimum of 5 MiB.
+        var part1Payload = new string('a', 5 * 1024 * 1024);
         const string part2Payload = "world";
 
         Assert.Equal(HttpStatusCode.OK, (await s3Client.PutBucketAsync(new PutBucketRequest
@@ -3014,7 +3018,8 @@ public sealed class IntegratedS3AwsSdkCompatibilityTests : IClassFixture<WebUiAp
         const string bucketName = "aws-sdk-multipart-crc32c-bucket";
         const string objectKey = "docs/multipart-crc32c.txt";
         const string copiedObjectKey = "docs/multipart-crc32c-copy.txt";
-        const string part1Payload = "hello ";
+        // The first (non-final) part must be at least the S3 minimum of 5 MiB.
+        var part1Payload = new string('a', 5 * 1024 * 1024);
         const string part2Payload = "world";
 
         Assert.Equal(HttpStatusCode.OK, (await s3Client.PutBucketAsync(new PutBucketRequest
