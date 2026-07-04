@@ -3520,11 +3520,19 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
                 var requestedPageSize = Math.Min(maxKeys ?? MaxKeysLimit, MaxKeysLimit);
 
                 try {
-                    var objects = await storageService.ListObjectsAsync(new ListObjectsRequest
-                    {
-                        BucketName = bucketName,
-                        Prefix = prefix
-                    }, innerCancellationToken).ToArrayAsync(innerCancellationToken);
+                    var normalizedPrefix = prefix ?? string.Empty;
+                    var normalizedDelimiter = string.IsNullOrEmpty(delimiter) ? null : delimiter;
+                    var cursorKey = string.IsNullOrWhiteSpace(marker) ? null : marker;
+
+                    var entries = await CollectListBucketEntriesAsync(
+                        storageService.ListObjectsAsync(
+                            BuildListObjectsPageRequest(bucketName, prefix, cursorKey, requestedPageSize, normalizedDelimiter),
+                            innerCancellationToken),
+                        normalizedPrefix,
+                        normalizedDelimiter,
+                        markerValue: cursorKey,
+                        requestedPageSize,
+                        innerCancellationToken);
 
                     var response = BuildListBucketResult(
                         bucketName,
@@ -3534,7 +3542,7 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
                         startAfter: null,
                         continuationToken: null,
                         requestedPageSize,
-                        objects,
+                        entries,
                         isV2: false,
                         includeOwner: true,
                         encodingType,
@@ -3584,11 +3592,21 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
                 var requestedPageSize = Math.Min(maxKeys ?? MaxKeysLimit, MaxKeysLimit);
 
                 try {
-                    var objects = await storageService.ListObjectsAsync(new ListObjectsRequest
-                    {
-                        BucketName = bucketName,
-                        Prefix = prefix
-                    }, innerCancellationToken).ToArrayAsync(innerCancellationToken);
+                    var normalizedPrefix = prefix ?? string.Empty;
+                    var normalizedDelimiter = string.IsNullOrEmpty(delimiter) ? null : delimiter;
+                    var cursorKey = !string.IsNullOrWhiteSpace(continuationToken)
+                        ? continuationToken
+                        : string.IsNullOrWhiteSpace(startAfter) ? null : startAfter;
+
+                    var entries = await CollectListBucketEntriesAsync(
+                        storageService.ListObjectsAsync(
+                            BuildListObjectsPageRequest(bucketName, prefix, cursorKey, requestedPageSize, normalizedDelimiter),
+                            innerCancellationToken),
+                        normalizedPrefix,
+                        normalizedDelimiter,
+                        markerValue: cursorKey,
+                        requestedPageSize,
+                        innerCancellationToken);
 
                     var response = BuildListBucketResult(
                         bucketName,
@@ -3598,7 +3616,7 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
                         startAfter,
                         continuationToken,
                         requestedPageSize,
-                        objects,
+                        entries,
                         isV2: true,
                         includeOwner: fetchOwner,
                         encodingType,
@@ -4558,6 +4576,113 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
         return null;
     }
 
+    /// <summary>
+    /// Builds a bounded <see cref="ListObjectsRequest"/> that pushes the prefix, the resume cursor
+    /// (<paramref name="cursorKey"/>, the last key returned on the previous page), and — when no
+    /// delimiter is in play — a page-size bound of <paramref name="maxKeys"/> + 1 into the storage layer.
+    /// When a delimiter is present a single common-prefix run can span arbitrarily many object keys, so
+    /// no numeric page-size bound is pushed; the streaming collector terminates enumeration once enough
+    /// entries have been materialized instead. Either way the whole bucket is never read.
+    /// </summary>
+    private static ListObjectsRequest BuildListObjectsPageRequest(
+        string bucketName,
+        string? prefix,
+        string? cursorKey,
+        int maxKeys,
+        string? normalizedDelimiter)
+    {
+        int? pageSize = normalizedDelimiter is not null
+            ? null
+            : maxKeys == int.MaxValue ? int.MaxValue : maxKeys + 1;
+
+        return new ListObjectsRequest
+        {
+            BucketName = bucketName,
+            Prefix = prefix,
+            ContinuationToken = cursorKey,
+            PageSize = pageSize
+        };
+    }
+
+    /// <summary>
+    /// Streams objects (already prefix- and cursor-filtered by the storage layer) and materializes only
+    /// the list bucket entries needed to render one page plus a single-entry truncation probe.
+    /// Grouping (delimiter/common-prefix) matches <see cref="BuildListBucketResult"/> exactly, but the
+    /// enumeration stops as soon as <paramref name="maxKeys"/> + 1 entries have been finalized so the
+    /// whole bucket is never materialized. A common-prefix run is finalized only once a key outside the
+    /// run is observed, so early termination never splits a run across the page boundary.
+    /// </summary>
+    private static async Task<List<ListBucketResultEntry>> CollectListBucketEntriesAsync(
+        IAsyncEnumerable<ObjectInfo> objects,
+        string normalizedPrefix,
+        string? normalizedDelimiter,
+        string? markerValue,
+        int maxKeys,
+        CancellationToken cancellationToken)
+    {
+        var entries = new List<ListBucketResultEntry>();
+
+        // Entry budget: one page plus a single probe entry to detect truncation.
+        var entryBudget = maxKeys == int.MaxValue ? int.MaxValue : maxKeys + 1;
+
+        // Pending common-prefix run awaiting finalization (finalized when a key breaks out of it).
+        string? pendingCommonPrefix = null;
+        string? pendingLastObjectKey = null;
+
+        await foreach (var currentObject in objects.WithCancellation(cancellationToken)) {
+            var key = currentObject.Key;
+
+            if (!key.StartsWith(normalizedPrefix, StringComparison.Ordinal)) {
+                continue;
+            }
+
+            if (!string.IsNullOrWhiteSpace(markerValue)
+                && StringComparer.Ordinal.Compare(key, markerValue) <= 0) {
+                continue;
+            }
+
+            // Extend an in-flight common-prefix run without emitting a new entry.
+            if (pendingCommonPrefix is not null
+                && key.StartsWith(pendingCommonPrefix, StringComparison.Ordinal)) {
+                pendingLastObjectKey = key;
+                continue;
+            }
+
+            // A key broke out of the pending run: finalize it before handling the new key.
+            if (pendingCommonPrefix is not null) {
+                entries.Add(ListBucketResultEntry.ForCommonPrefix(pendingCommonPrefix, pendingLastObjectKey!));
+                pendingCommonPrefix = null;
+                pendingLastObjectKey = null;
+
+                if (entries.Count >= entryBudget) {
+                    return entries;
+                }
+            }
+
+            if (!string.IsNullOrEmpty(normalizedDelimiter)) {
+                var suffix = key[normalizedPrefix.Length..];
+                var delimiterIndex = suffix.IndexOf(normalizedDelimiter, StringComparison.Ordinal);
+                if (delimiterIndex >= 0) {
+                    pendingCommonPrefix = normalizedPrefix + suffix[..(delimiterIndex + normalizedDelimiter.Length)];
+                    pendingLastObjectKey = key;
+                    continue;
+                }
+            }
+
+            entries.Add(ListBucketResultEntry.ForObject(currentObject));
+            if (entries.Count >= entryBudget) {
+                return entries;
+            }
+        }
+
+        // Flush any trailing common-prefix run once the stream is exhausted.
+        if (pendingCommonPrefix is not null) {
+            entries.Add(ListBucketResultEntry.ForCommonPrefix(pendingCommonPrefix, pendingLastObjectKey!));
+        }
+
+        return entries;
+    }
+
     private static S3ListBucketResult BuildListBucketResult(
         string bucketName,
         string? prefix,
@@ -4566,55 +4691,13 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
         string? startAfter,
         string? continuationToken,
         int maxKeys,
-        IReadOnlyList<ObjectInfo> objects,
+        IReadOnlyList<ListBucketResultEntry> entries,
         bool isV2,
         bool includeOwner,
         string? encodingType,
         S3BucketOwner owner)
     {
-        var normalizedPrefix = prefix ?? string.Empty;
         var normalizedDelimiter = string.IsNullOrEmpty(delimiter) ? null : delimiter;
-        var markerValue = isV2 && string.IsNullOrWhiteSpace(continuationToken)
-            ? startAfter
-            : isV2 ? continuationToken : marker;
-
-        var entries = new List<ListBucketResultEntry>();
-
-        for (var index = 0; index < objects.Count; index++) {
-            var currentObject = objects[index];
-            if (!currentObject.Key.StartsWith(normalizedPrefix, StringComparison.Ordinal)) {
-                continue;
-            }
-
-            if (!string.IsNullOrWhiteSpace(markerValue)
-                && StringComparer.Ordinal.Compare(currentObject.Key, markerValue) <= 0) {
-                continue;
-            }
-
-            if (!string.IsNullOrEmpty(normalizedDelimiter)) {
-                var suffix = currentObject.Key[normalizedPrefix.Length..];
-                var delimiterIndex = suffix.IndexOf(normalizedDelimiter, StringComparison.Ordinal);
-                if (delimiterIndex >= 0) {
-                    var commonPrefix = normalizedPrefix + suffix[..(delimiterIndex + normalizedDelimiter.Length)];
-                    var lastObjectKey = currentObject.Key;
-
-                    while (index + 1 < objects.Count) {
-                        var nextObject = objects[index + 1];
-                        if (!nextObject.Key.StartsWith(commonPrefix, StringComparison.Ordinal)) {
-                            break;
-                        }
-
-                        lastObjectKey = nextObject.Key;
-                        index++;
-                    }
-
-                    entries.Add(ListBucketResultEntry.ForCommonPrefix(commonPrefix, lastObjectKey));
-                    continue;
-                }
-            }
-
-            entries.Add(ListBucketResultEntry.ForObject(currentObject));
-        }
 
         var isTruncated = entries.Count > maxKeys;
         var page = isTruncated
