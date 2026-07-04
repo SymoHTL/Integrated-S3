@@ -3553,6 +3553,11 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
             var maxKeys = ParseMaxKeys(httpContext.Request);
             var encodingType = ParseEncodingType(httpContext.Request);
 
+            // AWS requires key-marker when version-id-marker is supplied.
+            if (!string.IsNullOrEmpty(versionIdMarker) && string.IsNullOrEmpty(keyMarker)) {
+                return ToErrorResult(httpContext, StatusCodes.Status400BadRequest, "InvalidArgument", "A version-id marker cannot be specified without a key marker.", BuildObjectResource(bucketName, null), bucketName);
+            }
+
             return await ExecuteWithRequestContextAsync(httpContext, requestContextAccessor, async innerCancellationToken => {
                 var bucketResult = await storageService.HeadBucketAsync(bucketName, innerCancellationToken);
                 if (!bucketResult.IsSuccess) {
@@ -3583,7 +3588,8 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
                         versionIdMarker,
                         encodingType,
                         requestedPageSize,
-                        versions);
+                        versions,
+                        ResolveS3ListingIdentity(httpContext.User));
 
                     return new XmlContentResult(S3XmlResponseWriter.WriteListObjectVersionsResult(response), StatusCodes.Status200OK, XmlContentType);
                 }
@@ -4568,7 +4574,8 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
         string? versionIdMarker,
         string? encodingType,
         int maxKeys,
-        IReadOnlyList<ObjectInfo> versions)
+        IReadOnlyList<ObjectInfo> versions,
+        S3BucketOwner owner)
     {
         var normalizedPrefix = prefix ?? string.Empty;
         var normalizedDelimiter = string.IsNullOrEmpty(delimiter) ? null : delimiter;
@@ -4589,7 +4596,6 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
                 var delimiterIndex = suffix.IndexOf(normalizedDelimiter, StringComparison.Ordinal);
                 if (delimiterIndex >= 0) {
                     var commonPrefix = normalizedPrefix + suffix[..(delimiterIndex + normalizedDelimiter.Length)];
-                    var lastVersion = currentVersion;
 
                     while (index + 1 < versions.Count) {
                         var nextVersion = versions[index + 1];
@@ -4597,11 +4603,12 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
                             break;
                         }
 
-                        lastVersion = nextVersion;
                         index++;
                     }
 
-                    entries.Add(ListObjectVersionsResultEntry.ForCommonPrefix(commonPrefix, lastVersion.Key, lastVersion.VersionId));
+                    // AWS uses the grouped common-prefix string as the continuation NextKeyMarker
+                    // (and omits NextVersionIdMarker) when the truncation boundary is a CommonPrefix.
+                    entries.Add(ListObjectVersionsResultEntry.ForCommonPrefix(commonPrefix, commonPrefix, null));
                     continue;
                 }
             }
@@ -4628,7 +4635,7 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
             IsTruncated = isTruncated,
             Versions = page
                 .Where(static entry => entry.Version is not null)
-                .Select(static entry => new S3ObjectVersionEntry
+                .Select(entry => new S3ObjectVersionEntry
                 {
                     Key = entry.Version!.Key,
                     VersionId = entry.Version.VersionId ?? string.Empty,
@@ -4636,7 +4643,8 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
                     IsDeleteMarker = entry.Version.IsDeleteMarker,
                     ETag = entry.Version.ETag,
                     Size = entry.Version.ContentLength,
-                    LastModifiedUtc = entry.Version.LastModifiedUtc
+                    LastModifiedUtc = entry.Version.LastModifiedUtc,
+                    Owner = owner
                 })
                 .ToArray(),
             CommonPrefixes = page

@@ -9603,6 +9603,82 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
     }
 
     [Fact]
+    public async Task ListObjectVersions_VersionIdMarkerWithoutKeyMarker_ReturnsInvalidArgument()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync("/integrated-s3/buckets/vid-marker-no-key-bucket", content: null)).StatusCode);
+        await EnableBucketVersioningAsync(client, "vid-marker-no-key-bucket");
+
+        // AWS rejects a version-id-marker supplied without a key-marker with 400 InvalidArgument.
+        var response = await client.GetAsync(
+            "/integrated-s3/vid-marker-no-key-bucket?versions&version-id-marker=some-version-id");
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal("application/xml", response.Content.Headers.ContentType?.MediaType);
+        var errorDocument = XDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal("InvalidArgument", GetRequiredElementValue(errorDocument, "Code"));
+        Assert.Contains("key marker", GetRequiredElementValue(errorDocument, "Message"), StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task ListObjectVersions_EmitsOwnerOnEachVersionEntry()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync("/integrated-s3/buckets/owner-versions-bucket", content: null)).StatusCode);
+        await EnableBucketVersioningAsync(client, "owner-versions-bucket");
+
+        await client.PutAsync(
+            "/integrated-s3/owner-versions-bucket/docs/file.txt",
+            new StringContent("v1", Encoding.UTF8, "text/plain"));
+
+        var listResponse = await client.GetAsync("/integrated-s3/owner-versions-bucket?versions");
+        Assert.Equal(HttpStatusCode.OK, listResponse.StatusCode);
+        var document = XDocument.Parse(await listResponse.Content.ReadAsStringAsync());
+
+        var version = Assert.Single(document.Root!.Elements(S3Ns + "Version"));
+        var owner = version.Element(S3Ns + "Owner");
+        Assert.NotNull(owner);
+        Assert.False(string.IsNullOrWhiteSpace(owner!.Element(S3Ns + "ID")?.Value));
+    }
+
+    [Fact]
+    public async Task ListObjectVersions_TruncatedOnCommonPrefixBoundary_NextKeyMarkerIsCommonPrefix()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync("/integrated-s3/buckets/prefix-boundary-versions-bucket", content: null)).StatusCode);
+        await EnableBucketVersioningAsync(client, "prefix-boundary-versions-bucket");
+
+        // Two grouped common prefixes under a delimiter: alpha/ and beta/.
+        await client.PutAsync(
+            "/integrated-s3/prefix-boundary-versions-bucket/alpha/one.txt",
+            new StringContent("a", Encoding.UTF8, "text/plain"));
+        await client.PutAsync(
+            "/integrated-s3/prefix-boundary-versions-bucket/alpha/two.txt",
+            new StringContent("a", Encoding.UTF8, "text/plain"));
+        await client.PutAsync(
+            "/integrated-s3/prefix-boundary-versions-bucket/beta/one.txt",
+            new StringContent("b", Encoding.UTF8, "text/plain"));
+
+        // max-keys=1 with a delimiter truncates right after the first CommonPrefix (alpha/).
+        var response = await client.GetAsync(
+            "/integrated-s3/prefix-boundary-versions-bucket?versions&delimiter=/&max-keys=1");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var document = XDocument.Parse(await response.Content.ReadAsStringAsync());
+
+        Assert.Equal("true", GetRequiredElementValue(document, "IsTruncated"));
+        var commonPrefix = Assert.Single(document.Root!.Elements(S3Ns + "CommonPrefixes"));
+        Assert.Equal("alpha/", commonPrefix.Element(S3Ns + "Prefix")?.Value);
+
+        // AWS sets NextKeyMarker to the common-prefix string (not an underlying object key)
+        // and omits NextVersionIdMarker at a CommonPrefix truncation boundary.
+        Assert.Equal("alpha/", GetRequiredElementValue(document, "NextKeyMarker"));
+        Assert.Empty(document.Root!.Elements(S3Ns + "NextVersionIdMarker"));
+    }
+
+    [Fact]
     public async Task ListObjectVersions_DeleteMarkerNotInGetResponse_OnlyInVersionsList()
     {
         using var client = await _factory.CreateClientAsync();

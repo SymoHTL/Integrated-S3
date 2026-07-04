@@ -263,4 +263,53 @@ public sealed class S3XmlResponseWriterTests
                 Assert.Equal(S3XmlTestHelper.CanonicalS3Namespace, element.Name.NamespaceName));
         }
     }
+
+    [Fact]
+    public void WriteListObjectVersionsResult_EmitsOwnerOnVersionAndDeleteMarkerEntries()
+    {
+        var timestamp = new DateTimeOffset(2026, 03, 14, 09, 00, 00, TimeSpan.Zero);
+        var owner = new S3BucketOwner { Id = "owner-id-123", DisplayName = "owner-name" };
+
+        var xml = S3XmlResponseWriter.WriteListObjectVersionsResult(new S3ListObjectVersionsResult
+        {
+            Name = "bucket",
+            MaxKeys = 2,
+            Versions =
+            [
+                new S3ObjectVersionEntry
+                {
+                    Key = "docs/a.txt",
+                    VersionId = "version-1",
+                    IsLatest = true,
+                    ETag = "etag-1",
+                    Size = 10,
+                    LastModifiedUtc = timestamp,
+                    Owner = owner
+                },
+                new S3ObjectVersionEntry
+                {
+                    Key = "docs/deleted.txt",
+                    VersionId = "version-2",
+                    IsDeleteMarker = true,
+                    LastModifiedUtc = timestamp,
+                    Owner = owner
+                }
+            ],
+            CommonPrefixes = []
+        });
+
+        var document = XDocument.Parse(xml);
+        var ns = S3XmlTestHelper.CanonicalS3Namespace;
+
+        var version = Assert.Single(document.Root!.Elements(XName.Get("Version", ns)));
+        var versionOwner = version.Element(XName.Get("Owner", ns));
+        Assert.NotNull(versionOwner);
+        Assert.Equal("owner-id-123", versionOwner!.Element(XName.Get("ID", ns))?.Value);
+        Assert.Equal("owner-name", versionOwner.Element(XName.Get("DisplayName", ns))?.Value);
+
+        var deleteMarker = Assert.Single(document.Root!.Elements(XName.Get("DeleteMarker", ns)));
+        var deleteMarkerOwner = deleteMarker.Element(XName.Get("Owner", ns));
+        Assert.NotNull(deleteMarkerOwner);
+        Assert.Equal("owner-id-123", deleteMarkerOwner!.Element(XName.Get("ID", ns))?.Value);
+    }
 }
