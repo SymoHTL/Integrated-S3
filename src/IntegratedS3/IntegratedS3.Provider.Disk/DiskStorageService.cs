@@ -165,10 +165,14 @@ internal sealed class DiskStorageService(
 
         var bucketPath = GetBucketPath(request.BucketName);
         if (Directory.Exists(bucketPath)) {
+            // The disk backend is single-tenant: an existing bucket directory is always owned by
+            // the requesting account, so this is an idempotent re-create. AWS reports this as
+            // BucketAlreadyOwnedByYou (409 outside us-east-1); BucketAlreadyExists is reserved for
+            // names owned by a *different* account, which cannot occur here.
             return StorageResult<BucketInfo>.Failure(new StorageError
             {
-                Code = StorageErrorCode.BucketAlreadyExists,
-                Message = $"Bucket '{request.BucketName}' already exists.",
+                Code = StorageErrorCode.BucketAlreadyOwnedByYou,
+                Message = $"Your previous request to create the named bucket '{request.BucketName}' succeeded and you already own it.",
                 BucketName = request.BucketName,
                 ProviderName = options.ProviderName
             });
@@ -1057,9 +1061,11 @@ internal sealed class DiskStorageService(
         using var bucketMutationLock = await AcquireBucketMutationLockAsync(bucketPath, cancellationToken);
         var existingMetadata = await ReadBucketMetadataAsync(bucketPath, cancellationToken);
         if (existingMetadata.VersioningStatus != BucketVersioningStatus.Enabled) {
+            // AWS surfaces this precondition as InvalidBucketState (409), not OperationAborted: the
+            // bucket must have versioning enabled before Object Lock can be configured.
             return StorageResult<ObjectLockConfiguration>.Failure(new StorageError
             {
-                Code = StorageErrorCode.VersionConflict,
+                Code = StorageErrorCode.InvalidBucketState,
                 Message = $"Object Lock configuration requires versioning to be enabled on bucket '{request.BucketName}'.",
                 BucketName = request.BucketName,
                 ProviderName = options.ProviderName,

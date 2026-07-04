@@ -24,7 +24,7 @@ internal sealed class BlazorWasmSampleDataSeeder(IStorageService storageService)
             BucketName = BlazorWasmSampleDefaults.BucketName
         }, cancellationToken);
 
-        if (!createBucketResult.IsSuccess && createBucketResult.Error?.Code != StorageErrorCode.BucketAlreadyExists) {
+        if (!createBucketResult.IsSuccess && createBucketResult.Error?.Code is not (StorageErrorCode.BucketAlreadyExists or StorageErrorCode.BucketAlreadyOwnedByYou)) {
             throw new InvalidOperationException($"Unable to seed bucket '{BlazorWasmSampleDefaults.BucketName}': {createBucketResult.Error?.Message}");
         }
 

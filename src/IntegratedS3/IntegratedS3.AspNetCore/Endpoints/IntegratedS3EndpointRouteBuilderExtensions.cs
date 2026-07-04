@@ -4186,6 +4186,8 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
             StorageErrorCode.MethodNotAllowed => StatusCodes.Status405MethodNotAllowed,
             StorageErrorCode.VersionConflict => StatusCodes.Status409Conflict,
             StorageErrorCode.BucketAlreadyExists => StatusCodes.Status409Conflict,
+            StorageErrorCode.BucketAlreadyOwnedByYou => StatusCodes.Status409Conflict,
+            StorageErrorCode.InvalidBucketState => StatusCodes.Status409Conflict,
             StorageErrorCode.BucketNotEmpty => StatusCodes.Status409Conflict,
             StorageErrorCode.MultipartConflict => StatusCodes.Status409Conflict,
             StorageErrorCode.NoSuchUpload => StatusCodes.Status404NotFound,
@@ -4195,7 +4197,7 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
             StorageErrorCode.Throttled => StatusCodes.Status429TooManyRequests,
             StorageErrorCode.ProviderUnavailable => StatusCodes.Status503ServiceUnavailable,
             StorageErrorCode.UnsupportedCapability => StatusCodes.Status501NotImplemented,
-            StorageErrorCode.QuotaExceeded => StatusCodes.Status413PayloadTooLarge,
+            StorageErrorCode.QuotaExceeded => StatusCodes.Status400BadRequest,
             StorageErrorCode.ObjectLocked => StatusCodes.Status403Forbidden,
             _ => StatusCodes.Status500InternalServerError
         };
@@ -4227,6 +4229,8 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
             StorageErrorCode.MethodNotAllowed => "MethodNotAllowed",
             StorageErrorCode.VersionConflict => "OperationAborted",
             StorageErrorCode.BucketAlreadyExists => "BucketAlreadyExists",
+            StorageErrorCode.BucketAlreadyOwnedByYou => "BucketAlreadyOwnedByYou",
+            StorageErrorCode.InvalidBucketState => "InvalidBucketState",
             StorageErrorCode.BucketNotEmpty => "BucketNotEmpty",
             StorageErrorCode.MultipartConflict => "InvalidRequest",
             StorageErrorCode.NoSuchUpload => "NoSuchUpload",
