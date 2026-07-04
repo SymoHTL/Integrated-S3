@@ -105,6 +105,7 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
     private const string StartAfterQueryParameterName = "start-after";
     private const string MaxKeysQueryParameterName = "max-keys";
     private const int MaxKeysLimit = 1000;
+    private const int MaxAwsChunkedLineLength = 16 * 1024;
     private const string MaxUploadsQueryParameterName = "max-uploads";
     private const string MaxPartsQueryParameterName = "max-parts";
     private const string ContinuationTokenQueryParameterName = "continuation-token";
@@ -7063,6 +7064,11 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
                     }
 
                     return Encoding.ASCII.GetString(buffer, 0, position);
+                }
+
+                if (position >= MaxAwsChunkedLineLength) {
+                    throw new FormatException(
+                        $"The aws-chunked request body contains a line longer than the {MaxAwsChunkedLineLength}-byte limit.");
                 }
 
                 if (position >= buffer.Length) {
