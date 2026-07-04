@@ -3220,6 +3220,166 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
     }
 
     [Fact]
+    public async Task S3CompatibleBucketRoute_ListObjectsV1_WithNonIntegerMaxKeys_ReturnsInvalidArgument()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        await client.PutAsync("/integrated-s3/buckets/invalid-maxkeys-v1-bucket", content: null);
+
+        var response = await client.GetAsync("/integrated-s3/invalid-maxkeys-v1-bucket?max-keys=abc");
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal("application/xml", response.Content.Headers.ContentType?.MediaType);
+        var errorDocument = XDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal("InvalidArgument", GetRequiredElementValue(errorDocument, "Code"));
+        Assert.Contains("max-keys", GetRequiredElementValue(errorDocument, "Message"), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task S3CompatibleBucketRoute_ListType2_WithNonIntegerMaxKeys_ReturnsInvalidArgument()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        await client.PutAsync("/integrated-s3/buckets/invalid-maxkeys-v2-bucket", content: null);
+
+        var response = await client.GetAsync("/integrated-s3/invalid-maxkeys-v2-bucket?list-type=2&max-keys=abc");
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal("application/xml", response.Content.Headers.ContentType?.MediaType);
+        var errorDocument = XDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal("InvalidArgument", GetRequiredElementValue(errorDocument, "Code"));
+        Assert.Contains("max-keys", GetRequiredElementValue(errorDocument, "Message"), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task S3CompatibleBucketRoute_ListObjectVersions_WithNonIntegerMaxKeys_ReturnsInvalidArgument()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        await client.PutAsync("/integrated-s3/buckets/invalid-maxkeys-versions-bucket", content: null);
+
+        var response = await client.GetAsync("/integrated-s3/invalid-maxkeys-versions-bucket?versions&max-keys=abc");
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal("application/xml", response.Content.Headers.ContentType?.MediaType);
+        var errorDocument = XDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal("InvalidArgument", GetRequiredElementValue(errorDocument, "Code"));
+        Assert.Contains("max-keys", GetRequiredElementValue(errorDocument, "Message"), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task S3CompatibleBucketRoute_ListObjectsV1_WithNegativeMaxKeys_ReturnsInvalidArgument()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        await client.PutAsync("/integrated-s3/buckets/negative-maxkeys-v1-bucket", content: null);
+
+        var response = await client.GetAsync("/integrated-s3/negative-maxkeys-v1-bucket?max-keys=-1");
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal("application/xml", response.Content.Headers.ContentType?.MediaType);
+        var errorDocument = XDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal("InvalidArgument", GetRequiredElementValue(errorDocument, "Code"));
+        Assert.Contains("max-keys", GetRequiredElementValue(errorDocument, "Message"), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task S3CompatibleBucketRoute_ListType2_WithNegativeMaxKeys_ReturnsInvalidArgument()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        await client.PutAsync("/integrated-s3/buckets/negative-maxkeys-v2-bucket", content: null);
+
+        var response = await client.GetAsync("/integrated-s3/negative-maxkeys-v2-bucket?list-type=2&max-keys=-1");
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal("application/xml", response.Content.Headers.ContentType?.MediaType);
+        var errorDocument = XDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal("InvalidArgument", GetRequiredElementValue(errorDocument, "Code"));
+        Assert.Contains("max-keys", GetRequiredElementValue(errorDocument, "Message"), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task S3CompatibleBucketRoute_ListObjectVersions_WithNegativeMaxKeys_ReturnsInvalidArgument()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        await client.PutAsync("/integrated-s3/buckets/negative-maxkeys-versions-bucket", content: null);
+
+        var response = await client.GetAsync("/integrated-s3/negative-maxkeys-versions-bucket?versions&max-keys=-1");
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal("application/xml", response.Content.Headers.ContentType?.MediaType);
+        var errorDocument = XDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal("InvalidArgument", GetRequiredElementValue(errorDocument, "Code"));
+        Assert.Contains("max-keys", GetRequiredElementValue(errorDocument, "Message"), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task S3CompatibleBucketRoute_ListObjectsV1_WithUnsupportedEncodingType_ReturnsInvalidArgument()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        await client.PutAsync("/integrated-s3/buckets/invalid-encoding-v1-bucket", content: null);
+
+        var response = await client.GetAsync("/integrated-s3/invalid-encoding-v1-bucket?encoding-type=bogus");
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal("application/xml", response.Content.Headers.ContentType?.MediaType);
+        var errorDocument = XDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal("InvalidArgument", GetRequiredElementValue(errorDocument, "Code"));
+        Assert.Contains("encoding-type", GetRequiredElementValue(errorDocument, "Message"), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task S3CompatibleBucketRoute_ListType2_WithUnsupportedEncodingType_ReturnsInvalidArgument()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        await client.PutAsync("/integrated-s3/buckets/invalid-encoding-v2-bucket", content: null);
+
+        var response = await client.GetAsync("/integrated-s3/invalid-encoding-v2-bucket?list-type=2&encoding-type=bogus");
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal("application/xml", response.Content.Headers.ContentType?.MediaType);
+        var errorDocument = XDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal("InvalidArgument", GetRequiredElementValue(errorDocument, "Code"));
+        Assert.Contains("encoding-type", GetRequiredElementValue(errorDocument, "Message"), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task S3CompatibleBucketRoute_ListObjectVersions_WithUnsupportedEncodingType_ReturnsInvalidArgument()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        await client.PutAsync("/integrated-s3/buckets/invalid-encoding-versions-bucket", content: null);
+
+        var response = await client.GetAsync("/integrated-s3/invalid-encoding-versions-bucket?versions&encoding-type=bogus");
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal("application/xml", response.Content.Headers.ContentType?.MediaType);
+        var errorDocument = XDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal("InvalidArgument", GetRequiredElementValue(errorDocument, "Code"));
+        Assert.Contains("encoding-type", GetRequiredElementValue(errorDocument, "Message"), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task S3CompatibleBucketRoute_ListType2_WithNonBooleanFetchOwner_ReturnsInvalidArgument()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        await client.PutAsync("/integrated-s3/buckets/invalid-fetch-owner-v2-bucket", content: null);
+
+        var response = await client.GetAsync("/integrated-s3/invalid-fetch-owner-v2-bucket?list-type=2&fetch-owner=maybe");
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal("application/xml", response.Content.Headers.ContentType?.MediaType);
+        var errorDocument = XDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal("InvalidArgument", GetRequiredElementValue(errorDocument, "Code"));
+        Assert.Contains("fetch-owner", GetRequiredElementValue(errorDocument, "Message"), StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task S3CompatibleBucketRoute_ListType2_WithFetchOwnerAndEncodingType_ReturnsOwnerMetadata()
     {
         using var client = await _factory.CreateClientAsync();
