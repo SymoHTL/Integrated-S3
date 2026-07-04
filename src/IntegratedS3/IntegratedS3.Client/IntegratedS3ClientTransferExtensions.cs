@@ -856,7 +856,17 @@ public static class IntegratedS3ClientTransferExtensions
             RestorePartialDownload(fileStream, filePath, originalLength, exception);
             throw;
         }
+        catch (OperationCanceledException exception) {
+            // Roll the file back so a cancelled resume leaves the partial file at its
+            // pre-append length rather than the caller's real file torn beyond originalLength.
+            RestorePartialDownload(fileStream, filePath, originalLength, exception);
+            throw;
+        }
         catch (Exception exception) {
+            // Any other mid-append failure (transient socket IOException, HttpRequestException,
+            // etc.) must also roll back; otherwise the already-flushed bytes past originalLength
+            // silently corrupt the caller's file and poison the next resume attempt.
+            RestorePartialDownload(fileStream, filePath, originalLength, exception);
             if (exception is IOException ioException) {
                 throw CreateTransferHttpRequestException("The resumed download failed while appending to the destination file.", ioException);
             }

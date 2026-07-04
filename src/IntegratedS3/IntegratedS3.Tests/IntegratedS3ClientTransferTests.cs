@@ -1476,7 +1476,59 @@ public sealed class IntegratedS3ClientTransferTests(WebUiApplicationFactory fact
             var innerException = Assert.IsType<IOException>(exception.InnerException);
             Assert.Equal("Simulated resume failure.", innerException.Message);
             Assert.True(File.Exists(destPath), "Pre-existing partial files should be preserved on resume failure.");
-            Assert.Equal("partial-ta", await File.ReadAllTextAsync(destPath));
+            // Regression for #112: an IOException after some appended bytes were already flushed
+            // must roll the file back to its pre-append length rather than leaving the torn bytes
+            // ("partial-ta") on disk, which would silently corrupt the caller's file and poison the
+            // next resume attempt.
+            Assert.Equal("partial-", await File.ReadAllTextAsync(destPath));
+        }
+        finally {
+            Directory.Delete(tempDir, recursive: true);
+        }
+    }
+
+    // Regression for #112: a mid-append cancellation (OperationCanceledException while reading the
+    // response body) must also roll the destination back to its original length. Before the fix
+    // only InvalidDataException rolled back; cancellation re-threw with the already-flushed bytes
+    // ("partial-ta") left committed past originalLength, silently corrupting the caller's file.
+    [Fact]
+    public async Task DownloadToFileWithResumeAsync_ResumeCancelledMidAppend_RollsFileBackToOriginalLength()
+    {
+        var tempDir = CreateTransferTempDirectory();
+        Directory.CreateDirectory(tempDir);
+        try {
+            var destPath = Path.Combine(tempDir, "resume-cancelled.txt");
+            const string existingPayload = "partial-";
+            await File.WriteAllTextAsync(destPath, existingPayload);
+
+            var capturingClient = new CapturingIntegratedS3Client();
+            var existingLength = new FileInfo(destPath).Length;
+            using var transferClient = new HttpClient(new DelegateHttpMessageHandler((request, cancellationToken) => {
+                var response = new HttpResponseMessage(HttpStatusCode.PartialContent)
+                {
+                    Content = new StreamContent(new ThrowingReadStream(
+                        Encoding.UTF8.GetBytes("tail"),
+                        bytesBeforeFailure: 2,
+                        new OperationCanceledException("Simulated resume cancellation.")))
+                };
+                response.Content.Headers.ContentRange = new ContentRangeHeaderValue(
+                    existingLength,
+                    existingLength + 3,
+                    existingLength + 4);
+                return Task.FromResult(response);
+            }));
+
+            await Assert.ThrowsAsync<OperationCanceledException>(() =>
+                capturingClient.DownloadToFileWithResumeAsync(
+                    transferClient,
+                    "bucket",
+                    "key",
+                    destPath,
+                    expiresInSeconds: 60));
+
+            Assert.True(File.Exists(destPath), "Pre-existing partial files should be preserved on resume cancellation.");
+            Assert.Equal(existingPayload, await File.ReadAllTextAsync(destPath));
+            Assert.Equal(existingLength, new FileInfo(destPath).Length);
         }
         finally {
             Directory.Delete(tempDir, recursive: true);
