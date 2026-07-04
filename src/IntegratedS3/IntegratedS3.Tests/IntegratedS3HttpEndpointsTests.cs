@@ -1496,6 +1496,93 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
         await AssertErrorResponseAsync(missingResponse, HttpStatusCode.NotFound, "ServerSideEncryptionConfigurationNotFoundError");
     }
 
+    [Fact]
+    public async Task S3CompatibleBucketPublicAccessBlock_RoundTripsXmlPayload()
+    {
+        var storageService = new RecordingStorageService();
+        await using var isolatedClient = await CreateStorageServiceIsolatedClientAsync(storageService);
+        using var client = isolatedClient.Client;
+
+        using var putRequest = new HttpRequestMessage(HttpMethod.Put, "/integrated-s3/public-access-block-bucket?publicAccessBlock")
+        {
+            Content = new StringContent("""
+<PublicAccessBlockConfiguration>
+  <BlockPublicAcls>true</BlockPublicAcls>
+  <IgnorePublicAcls>false</IgnorePublicAcls>
+  <BlockPublicPolicy>true</BlockPublicPolicy>
+  <RestrictPublicBuckets>false</RestrictPublicBuckets>
+</PublicAccessBlockConfiguration>
+""", Encoding.UTF8, "application/xml")
+        };
+
+        var putResponse = await client.SendAsync(putRequest);
+        Assert.Equal(HttpStatusCode.OK, putResponse.StatusCode);
+
+        var putPublicAccessBlock = storageService.LastPutBucketPublicAccessBlockRequest
+            ?? throw new Xunit.Sdk.XunitException("Expected bucket public access block request to reach the storage service.");
+        Assert.True(putPublicAccessBlock.BlockPublicAcls);
+        Assert.False(putPublicAccessBlock.IgnorePublicAcls);
+        Assert.True(putPublicAccessBlock.BlockPublicPolicy);
+        Assert.False(putPublicAccessBlock.RestrictPublicBuckets);
+
+        var getResponse = await client.GetAsync("/integrated-s3/public-access-block-bucket?publicAccessBlock");
+        Assert.Equal(HttpStatusCode.OK, getResponse.StatusCode);
+        Assert.Equal("application/xml", getResponse.Content.Headers.ContentType?.MediaType);
+
+        var document = XDocument.Parse(await getResponse.Content.ReadAsStringAsync());
+        Assert.Equal("PublicAccessBlockConfiguration", document.Root?.Name.LocalName);
+        Assert.Equal("true", document.Root!.Element(S3Ns + "BlockPublicAcls")?.Value);
+        Assert.Equal("false", document.Root!.Element(S3Ns + "IgnorePublicAcls")?.Value);
+        Assert.Equal("true", document.Root!.Element(S3Ns + "BlockPublicPolicy")?.Value);
+        Assert.Equal("false", document.Root!.Element(S3Ns + "RestrictPublicBuckets")?.Value);
+
+        var deleteResponse = await client.DeleteAsync("/integrated-s3/public-access-block-bucket?publicAccessBlock");
+        Assert.Equal(HttpStatusCode.NoContent, deleteResponse.StatusCode);
+
+        var missingResponse = await client.GetAsync("/integrated-s3/public-access-block-bucket?publicAccessBlock");
+        await AssertErrorResponseAsync(missingResponse, HttpStatusCode.NotFound, "NoSuchPublicAccessBlockConfiguration");
+    }
+
+    [Fact]
+    public async Task S3CompatibleBucketPublicAccessBlock_PersistsThroughDiskProvider()
+    {
+        using var client = await _factory.CreateClientAsync();
+        const string bucketName = "public-access-block-disk-bucket";
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync($"/integrated-s3/buckets/{bucketName}", content: null)).StatusCode);
+
+        // GET before any config is set surfaces the specific NoSuch* 404.
+        var missingBefore = await client.GetAsync($"/integrated-s3/{bucketName}?publicAccessBlock");
+        await AssertErrorResponseAsync(missingBefore, HttpStatusCode.NotFound, "NoSuchPublicAccessBlockConfiguration");
+
+        using var putRequest = new HttpRequestMessage(HttpMethod.Put, $"/integrated-s3/{bucketName}?publicAccessBlock")
+        {
+            Content = new StringContent("""
+<PublicAccessBlockConfiguration>
+  <BlockPublicAcls>true</BlockPublicAcls>
+  <IgnorePublicAcls>true</IgnorePublicAcls>
+  <BlockPublicPolicy>false</BlockPublicPolicy>
+  <RestrictPublicBuckets>true</RestrictPublicBuckets>
+</PublicAccessBlockConfiguration>
+""", Encoding.UTF8, "application/xml")
+        };
+        Assert.Equal(HttpStatusCode.OK, (await client.SendAsync(putRequest)).StatusCode);
+
+        var getResponse = await client.GetAsync($"/integrated-s3/{bucketName}?publicAccessBlock");
+        Assert.Equal(HttpStatusCode.OK, getResponse.StatusCode);
+        var document = XDocument.Parse(await getResponse.Content.ReadAsStringAsync());
+        Assert.Equal("PublicAccessBlockConfiguration", document.Root?.Name.LocalName);
+        Assert.Equal("true", document.Root!.Element(S3Ns + "BlockPublicAcls")?.Value);
+        Assert.Equal("true", document.Root!.Element(S3Ns + "IgnorePublicAcls")?.Value);
+        Assert.Equal("false", document.Root!.Element(S3Ns + "BlockPublicPolicy")?.Value);
+        Assert.Equal("true", document.Root!.Element(S3Ns + "RestrictPublicBuckets")?.Value);
+
+        Assert.Equal(HttpStatusCode.NoContent, (await client.DeleteAsync($"/integrated-s3/{bucketName}?publicAccessBlock")).StatusCode);
+
+        var missingAfter = await client.GetAsync($"/integrated-s3/{bucketName}?publicAccessBlock");
+        await AssertErrorResponseAsync(missingAfter, HttpStatusCode.NotFound, "NoSuchPublicAccessBlockConfiguration");
+    }
+
     [Theory]
     [InlineData("?tagging", "NoSuchTagSet")]
     [InlineData("?website", "NoSuchWebsiteConfiguration")]
@@ -1508,6 +1595,7 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
     // Regression for #153: ?intelligent-tiering was rejected by the request validator before dispatch,
     // so the (existing) handler was unreachable. It must now route through and surface the mapped 404.
     [InlineData("?intelligent-tiering&id=report", "NoSuchConfiguration")]
+    [InlineData("?publicAccessBlock", "NoSuchPublicAccessBlockConfiguration")]
     public async Task S3CompatibleBucketSubresource_WhenConfigAbsent_ReturnsNoSuchCodeWithNotFoundStatus(string query, string expectedCode)
     {
         // Regression test for #152: absent bucket subresource configs must surface the specific
@@ -10189,6 +10277,9 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
         public ValueTask<StorageResult<BucketTaggingConfiguration>> GetBucketTaggingAsync(string bucketName, CancellationToken cancellationToken = default)
             => ValueTask.FromResult(StorageResult<BucketTaggingConfiguration>.Failure(NotFound(StorageErrorCode.TaggingConfigurationNotFound, bucketName)));
 
+        public ValueTask<StorageResult<BucketPublicAccessBlockConfiguration>> GetBucketPublicAccessBlockAsync(string bucketName, CancellationToken cancellationToken = default)
+            => ValueTask.FromResult(StorageResult<BucketPublicAccessBlockConfiguration>.Failure(NotFound(StorageErrorCode.PublicAccessBlockConfigurationNotFound, bucketName)));
+
         public ValueTask<StorageResult<BucketWebsiteConfiguration>> GetBucketWebsiteAsync(string bucketName, CancellationToken cancellationToken = default)
             => ValueTask.FromResult(StorageResult<BucketWebsiteConfiguration>.Failure(NotFound(StorageErrorCode.WebsiteConfigurationNotFound, bucketName)));
 
@@ -10222,6 +10313,8 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
         public ValueTask<StorageResult<BucketDefaultEncryptionConfiguration>> GetBucketDefaultEncryptionAsync(string bucketName, CancellationToken cancellationToken = default) => throw Boom();
         public ValueTask<StorageResult<BucketDefaultEncryptionConfiguration>> PutBucketDefaultEncryptionAsync(PutBucketDefaultEncryptionRequest request, CancellationToken cancellationToken = default) => throw Boom();
         public ValueTask<StorageResult> DeleteBucketDefaultEncryptionAsync(DeleteBucketDefaultEncryptionRequest request, CancellationToken cancellationToken = default) => throw Boom();
+        public ValueTask<StorageResult<BucketPublicAccessBlockConfiguration>> PutBucketPublicAccessBlockAsync(PutBucketPublicAccessBlockRequest request, CancellationToken cancellationToken = default) => throw Boom();
+        public ValueTask<StorageResult> DeleteBucketPublicAccessBlockAsync(DeleteBucketPublicAccessBlockRequest request, CancellationToken cancellationToken = default) => throw Boom();
         public ValueTask<StorageResult<BucketInfo>> HeadBucketAsync(string bucketName, CancellationToken cancellationToken = default) => throw Boom();
         public ValueTask<StorageResult> DeleteBucketAsync(DeleteBucketRequest request, CancellationToken cancellationToken = default) => throw Boom();
         public IAsyncEnumerable<ObjectInfo> ListObjectsAsync(ListObjectsRequest request, CancellationToken cancellationToken = default) => throw Boom();
@@ -10317,6 +10410,12 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
         public ValueTask<StorageResult<BucketDefaultEncryptionConfiguration>> PutBucketDefaultEncryptionAsync(PutBucketDefaultEncryptionRequest request, CancellationToken cancellationToken = default) => throw Boom();
 
         public ValueTask<StorageResult> DeleteBucketDefaultEncryptionAsync(DeleteBucketDefaultEncryptionRequest request, CancellationToken cancellationToken = default) => throw Boom();
+
+        public ValueTask<StorageResult<BucketPublicAccessBlockConfiguration>> GetBucketPublicAccessBlockAsync(string bucketName, CancellationToken cancellationToken = default) => throw Boom();
+
+        public ValueTask<StorageResult<BucketPublicAccessBlockConfiguration>> PutBucketPublicAccessBlockAsync(PutBucketPublicAccessBlockRequest request, CancellationToken cancellationToken = default) => throw Boom();
+
+        public ValueTask<StorageResult> DeleteBucketPublicAccessBlockAsync(DeleteBucketPublicAccessBlockRequest request, CancellationToken cancellationToken = default) => throw Boom();
 
         public ValueTask<StorageResult<BucketInfo>> HeadBucketAsync(string bucketName, CancellationToken cancellationToken = default) => throw Boom();
 
@@ -10480,6 +10579,10 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
 
         public DeleteBucketDefaultEncryptionRequest? LastDeleteBucketDefaultEncryptionRequest { get; private set; }
 
+        public PutBucketPublicAccessBlockRequest? LastPutBucketPublicAccessBlockRequest { get; private set; }
+
+        public DeleteBucketPublicAccessBlockRequest? LastDeleteBucketPublicAccessBlockRequest { get; private set; }
+
         public ObjectInfo? PutObjectResult { get; set; }
 
         public ObjectInfo? CopyObjectResult { get; set; }
@@ -10508,6 +10611,8 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
         public MultipartUploadPart? UploadPartCopyResult { get; set; }
 
         private readonly Dictionary<string, BucketDefaultEncryptionConfiguration> _bucketDefaultEncryptions = new(StringComparer.Ordinal);
+
+        private readonly Dictionary<string, BucketPublicAccessBlockConfiguration> _bucketPublicAccessBlocks = new(StringComparer.Ordinal);
 
         public IAsyncEnumerable<BucketInfo> ListBucketsAsync(CancellationToken cancellationToken = default) => throw new NotSupportedException();
 
@@ -10552,6 +10657,39 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
         {
             LastDeleteBucketDefaultEncryptionRequest = request;
             _bucketDefaultEncryptions.Remove(request.BucketName);
+            return ValueTask.FromResult(StorageResult.Success());
+        }
+
+        public ValueTask<StorageResult<BucketPublicAccessBlockConfiguration>> GetBucketPublicAccessBlockAsync(string bucketName, CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            return ValueTask.FromResult(_bucketPublicAccessBlocks.TryGetValue(bucketName, out var configuration)
+                ? StorageResult<BucketPublicAccessBlockConfiguration>.Success(ClonePublicAccessBlock(bucketName, configuration))
+                : StorageResult<BucketPublicAccessBlockConfiguration>.Failure(CreatePublicAccessBlockNotFound(bucketName)));
+        }
+
+        public ValueTask<StorageResult<BucketPublicAccessBlockConfiguration>> PutBucketPublicAccessBlockAsync(PutBucketPublicAccessBlockRequest request, CancellationToken cancellationToken = default)
+        {
+            LastPutBucketPublicAccessBlockRequest = request;
+
+            var configuration = new BucketPublicAccessBlockConfiguration
+            {
+                BucketName = request.BucketName,
+                BlockPublicAcls = request.BlockPublicAcls,
+                IgnorePublicAcls = request.IgnorePublicAcls,
+                BlockPublicPolicy = request.BlockPublicPolicy,
+                RestrictPublicBuckets = request.RestrictPublicBuckets
+            };
+
+            _bucketPublicAccessBlocks[request.BucketName] = configuration;
+            return ValueTask.FromResult(StorageResult<BucketPublicAccessBlockConfiguration>.Success(ClonePublicAccessBlock(request.BucketName, configuration)));
+        }
+
+        public ValueTask<StorageResult> DeleteBucketPublicAccessBlockAsync(DeleteBucketPublicAccessBlockRequest request, CancellationToken cancellationToken = default)
+        {
+            LastDeleteBucketPublicAccessBlockRequest = request;
+            _bucketPublicAccessBlocks.Remove(request.BucketName);
             return ValueTask.FromResult(StorageResult.Success());
         }
 
@@ -10847,6 +10985,29 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
             {
                 Code = StorageErrorCode.BucketEncryptionConfigurationNotFound,
                 Message = $"Bucket '{bucketName}' does not have a default encryption configuration.",
+                BucketName = bucketName,
+                SuggestedHttpStatusCode = 404
+            };
+        }
+
+        private static BucketPublicAccessBlockConfiguration ClonePublicAccessBlock(string bucketName, BucketPublicAccessBlockConfiguration configuration)
+        {
+            return new BucketPublicAccessBlockConfiguration
+            {
+                BucketName = bucketName,
+                BlockPublicAcls = configuration.BlockPublicAcls,
+                IgnorePublicAcls = configuration.IgnorePublicAcls,
+                BlockPublicPolicy = configuration.BlockPublicPolicy,
+                RestrictPublicBuckets = configuration.RestrictPublicBuckets
+            };
+        }
+
+        private static StorageError CreatePublicAccessBlockNotFound(string bucketName)
+        {
+            return new StorageError
+            {
+                Code = StorageErrorCode.PublicAccessBlockConfigurationNotFound,
+                Message = $"Bucket '{bucketName}' does not have a public access block configuration.",
                 BucketName = bucketName,
                 SuggestedHttpStatusCode = 404
             };

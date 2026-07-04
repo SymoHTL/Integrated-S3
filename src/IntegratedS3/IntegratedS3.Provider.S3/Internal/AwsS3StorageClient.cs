@@ -10,6 +10,7 @@ using Microsoft.Extensions.Logging;
 using PutBucketDefaultEncryptionStorageRequest = IntegratedS3.Abstractions.Requests.PutBucketDefaultEncryptionRequest;
 using UploadPartCopyStorageRequest = IntegratedS3.Abstractions.Requests.UploadPartCopyRequest;
 using PutBucketTaggingStorageRequest = IntegratedS3.Abstractions.Requests.PutBucketTaggingRequest;
+using PutBucketPublicAccessBlockStorageRequest = IntegratedS3.Abstractions.Requests.PutBucketPublicAccessBlockRequest;
 using PutBucketLoggingStorageRequest = IntegratedS3.Abstractions.Requests.PutBucketLoggingRequest;
 using PutBucketWebsiteStorageRequest = IntegratedS3.Abstractions.Requests.PutBucketWebsiteRequest;
 using PutBucketRequestPaymentStorageRequest = IntegratedS3.Abstractions.Requests.PutBucketRequestPaymentRequest;
@@ -326,6 +327,66 @@ internal sealed class AwsS3StorageClient : IS3StorageClient
         };
 
         await _s3.DeleteBucketEncryptionAsync(request, cancellationToken).ConfigureAwait(false);
+    }
+
+    // -------------------------------------------------------------------------
+    // Bucket Public Access Block
+    // -------------------------------------------------------------------------
+
+    public async Task<BucketPublicAccessBlockConfiguration> GetBucketPublicAccessBlockAsync(string bucketName, CancellationToken cancellationToken = default)
+    {
+        var request = new GetPublicAccessBlockRequest
+        {
+            BucketName = bucketName
+        };
+
+        var response = await _s3.GetPublicAccessBlockAsync(request, cancellationToken).ConfigureAwait(false);
+        var config = response.PublicAccessBlockConfiguration;
+        return new BucketPublicAccessBlockConfiguration
+        {
+            BucketName = bucketName,
+            BlockPublicAcls = config?.BlockPublicAcls ?? false,
+            IgnorePublicAcls = config?.IgnorePublicAcls ?? false,
+            BlockPublicPolicy = config?.BlockPublicPolicy ?? false,
+            RestrictPublicBuckets = config?.RestrictPublicBuckets ?? false
+        };
+    }
+
+    public async Task<BucketPublicAccessBlockConfiguration> SetBucketPublicAccessBlockAsync(PutBucketPublicAccessBlockStorageRequest request, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+
+        var putRequest = new PutPublicAccessBlockRequest
+        {
+            BucketName = request.BucketName,
+            PublicAccessBlockConfiguration = new Amazon.S3.Model.PublicAccessBlockConfiguration
+            {
+                BlockPublicAcls = request.BlockPublicAcls,
+                IgnorePublicAcls = request.IgnorePublicAcls,
+                BlockPublicPolicy = request.BlockPublicPolicy,
+                RestrictPublicBuckets = request.RestrictPublicBuckets
+            }
+        };
+
+        await _s3.PutPublicAccessBlockAsync(putRequest, cancellationToken).ConfigureAwait(false);
+        return new BucketPublicAccessBlockConfiguration
+        {
+            BucketName = request.BucketName,
+            BlockPublicAcls = request.BlockPublicAcls,
+            IgnorePublicAcls = request.IgnorePublicAcls,
+            BlockPublicPolicy = request.BlockPublicPolicy,
+            RestrictPublicBuckets = request.RestrictPublicBuckets
+        };
+    }
+
+    public async Task DeleteBucketPublicAccessBlockAsync(string bucketName, CancellationToken cancellationToken = default)
+    {
+        var request = new DeletePublicAccessBlockRequest
+        {
+            BucketName = bucketName
+        };
+
+        await _s3.DeletePublicAccessBlockAsync(request, cancellationToken).ConfigureAwait(false);
     }
 
     // -------------------------------------------------------------------------

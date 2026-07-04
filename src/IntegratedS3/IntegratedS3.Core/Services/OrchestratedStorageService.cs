@@ -749,6 +749,71 @@ internal sealed class OrchestratedStorageService(
         return result;
     }
 
+    // ── Bucket Public Access Block ───────────────────────────────────────
+
+    public async ValueTask<StorageResult<BucketPublicAccessBlockConfiguration>> GetBucketPublicAccessBlockAsync(string bucketName, CancellationToken cancellationToken = default)
+    {
+        return await ExecuteReadAsync(
+            StorageOperationType.GetBucketPublicAccessBlock,
+            (backend, ct) => backend.GetBucketPublicAccessBlockAsync(bucketName, ct),
+            onSuccess: null,
+            cancellationToken);
+    }
+
+    public async ValueTask<StorageResult<BucketPublicAccessBlockConfiguration>> PutBucketPublicAccessBlockAsync(PutBucketPublicAccessBlockRequest request, CancellationToken cancellationToken = default)
+    {
+        var backend = GetPrimaryBackend();
+        var strictReplicationError = await GetStrictReplicaWritePreflightErrorAsync(backend, request.BucketName, objectKey: null, versionId: null, cancellationToken: cancellationToken);
+        if (strictReplicationError is not null) {
+            return StorageResult<BucketPublicAccessBlockConfiguration>.Failure(strictReplicationError);
+        }
+
+        var result = await backend.PutBucketPublicAccessBlockAsync(request, cancellationToken);
+        ObserveResult(backend, result);
+        if (result.IsSuccess && result.Value is not null) {
+            var replicationError = await ApplyReplicaWritePolicyAsync(
+                StorageOperationType.PutBucketPublicAccessBlock,
+                backend,
+                request.BucketName,
+                objectKey: null,
+                versionId: null,
+                writeThroughOperation: (replicaBackend, ct) => WriteReplicaPutBucketPublicAccessBlockAsync(replicaBackend, request, ct),
+                cancellationToken: CancellationToken.None);
+            if (replicationError is not null) {
+                return StorageResult<BucketPublicAccessBlockConfiguration>.Failure(replicationError);
+            }
+        }
+
+        return result;
+    }
+
+    public async ValueTask<StorageResult> DeleteBucketPublicAccessBlockAsync(DeleteBucketPublicAccessBlockRequest request, CancellationToken cancellationToken = default)
+    {
+        var backend = GetPrimaryBackend();
+        var strictReplicationError = await GetStrictReplicaWritePreflightErrorAsync(backend, request.BucketName, objectKey: null, versionId: null, cancellationToken: cancellationToken);
+        if (strictReplicationError is not null) {
+            return StorageResult.Failure(strictReplicationError);
+        }
+
+        var result = await backend.DeleteBucketPublicAccessBlockAsync(request, cancellationToken);
+        ObserveResult(backend, result);
+        if (result.IsSuccess) {
+            var replicationError = await ApplyReplicaWritePolicyAsync(
+                StorageOperationType.DeleteBucketPublicAccessBlock,
+                backend,
+                request.BucketName,
+                objectKey: null,
+                versionId: null,
+                writeThroughOperation: (replicaBackend, ct) => WriteReplicaDeleteBucketPublicAccessBlockAsync(replicaBackend, request, ct),
+                cancellationToken: CancellationToken.None);
+            if (replicationError is not null) {
+                return StorageResult.Failure(replicationError);
+            }
+        }
+
+        return result;
+    }
+
     // ── Bucket Logging ──────────────────────────────────────────────────
 
     public async ValueTask<StorageResult<BucketLoggingConfiguration>> GetBucketLoggingAsync(string bucketName, CancellationToken cancellationToken = default)
@@ -2456,6 +2521,28 @@ internal sealed class OrchestratedStorageService(
         ObserveResult(replicaBackend, replicaResult);
         if (!replicaResult.IsSuccess && replicaResult.Error?.Code is not (StorageErrorCode.TaggingConfigurationNotFound or StorageErrorCode.BucketNotFound)) {
             return replicaResult.Error ?? CreateReplicaOperationError(replicaBackend, request.BucketName, objectKey: null, versionId: null, message: "Replica bucket tagging delete did not succeed.");
+        }
+
+        return null;
+    }
+
+    private async ValueTask<StorageError?> WriteReplicaPutBucketPublicAccessBlockAsync(IStorageBackend replicaBackend, PutBucketPublicAccessBlockRequest request, CancellationToken cancellationToken)
+    {
+        var replicaResult = await replicaBackend.PutBucketPublicAccessBlockAsync(request, cancellationToken);
+        ObserveResult(replicaBackend, replicaResult);
+        if (!replicaResult.IsSuccess || replicaResult.Value is null) {
+            return replicaResult.Error ?? CreateReplicaOperationError(replicaBackend, request.BucketName, objectKey: null, versionId: null, message: "Replica bucket public access block update did not return configuration metadata.");
+        }
+
+        return null;
+    }
+
+    private async ValueTask<StorageError?> WriteReplicaDeleteBucketPublicAccessBlockAsync(IStorageBackend replicaBackend, DeleteBucketPublicAccessBlockRequest request, CancellationToken cancellationToken)
+    {
+        var replicaResult = await replicaBackend.DeleteBucketPublicAccessBlockAsync(request, cancellationToken);
+        ObserveResult(replicaBackend, replicaResult);
+        if (!replicaResult.IsSuccess && replicaResult.Error?.Code is not (StorageErrorCode.PublicAccessBlockConfigurationNotFound or StorageErrorCode.BucketNotFound)) {
+            return replicaResult.Error ?? CreateReplicaOperationError(replicaBackend, request.BucketName, objectKey: null, versionId: null, message: "Replica bucket public access block delete did not succeed.");
         }
 
         return null;

@@ -145,6 +145,7 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
     private const string MetricsQueryParameterName = "metrics";
     private const string InventoryQueryParameterName = "inventory";
     private const string IntelligentTieringQueryParameterName = "intelligent-tiering";
+    private const string PublicAccessBlockQueryParameterName = "publicAccessBlock";
     private const string IdQueryParameterName = "id";
     private const string RestoreQueryParameterName = "restore";
     private const string ResponseContentTypeQueryParameterName = "response-content-type";
@@ -199,10 +200,11 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
     private static readonly HashSet<string> BucketMetricsQueryParameters = CreateQueryParameterSet(MetricsQueryParameterName, IdQueryParameterName);
     private static readonly HashSet<string> BucketInventoryQueryParameters = CreateQueryParameterSet(InventoryQueryParameterName, IdQueryParameterName);
     private static readonly HashSet<string> BucketIntelligentTieringQueryParameters = CreateQueryParameterSet(IntelligentTieringQueryParameterName, IdQueryParameterName);
+    private static readonly HashSet<string> BucketPublicAccessBlockQueryParameters = CreateQueryParameterSet(PublicAccessBlockQueryParameterName);
     private static readonly HashSet<string> BucketVersionListingQueryParameters = CreateQueryParameterSet(VersionsQueryParameterName, PrefixQueryParameterName, DelimiterQueryParameterName, MaxKeysQueryParameterName, KeyMarkerQueryParameterName, VersionIdMarkerQueryParameterName, EncodingTypeQueryParameterName);
     private static readonly HashSet<string> BucketMultipartUploadsQueryParameters = CreateQueryParameterSet(UploadsQueryParameterName, PrefixQueryParameterName, DelimiterQueryParameterName, MaxUploadsQueryParameterName, KeyMarkerQueryParameterName, UploadIdMarkerQueryParameterName, EncodingTypeQueryParameterName);
     private static readonly HashSet<string> BucketDeleteQueryParameters = CreateQueryParameterSet(DeleteQueryParameterName);
-    private static readonly HashSet<string> KnownBucketQueryParameters = CreateQueryParameterSet(ListTypeQueryParameterName, PrefixQueryParameterName, DelimiterQueryParameterName, MarkerQueryParameterName, StartAfterQueryParameterName, MaxKeysQueryParameterName, MaxUploadsQueryParameterName, ContinuationTokenQueryParameterName, EncodingTypeQueryParameterName, FetchOwnerQueryParameterName, LocationQueryParameterName, AclQueryParameterName, CorsQueryParameterName, PolicyQueryParameterName, VersioningQueryParameterName, EncryptionQueryParameterName, TaggingQueryParameterName, LoggingQueryParameterName, WebsiteQueryParameterName, RequestPaymentQueryParameterName, AccelerateQueryParameterName, LifecycleQueryParameterName, ReplicationQueryParameterName, NotificationQueryParameterName, ObjectLockQueryParameterName, AnalyticsQueryParameterName, MetricsQueryParameterName, InventoryQueryParameterName, IntelligentTieringQueryParameterName, IdQueryParameterName, VersionsQueryParameterName, KeyMarkerQueryParameterName, VersionIdMarkerQueryParameterName, UploadIdMarkerQueryParameterName, UploadsQueryParameterName, DeleteQueryParameterName);
+    private static readonly HashSet<string> KnownBucketQueryParameters = CreateQueryParameterSet(ListTypeQueryParameterName, PrefixQueryParameterName, DelimiterQueryParameterName, MarkerQueryParameterName, StartAfterQueryParameterName, MaxKeysQueryParameterName, MaxUploadsQueryParameterName, ContinuationTokenQueryParameterName, EncodingTypeQueryParameterName, FetchOwnerQueryParameterName, LocationQueryParameterName, AclQueryParameterName, CorsQueryParameterName, PolicyQueryParameterName, VersioningQueryParameterName, EncryptionQueryParameterName, TaggingQueryParameterName, LoggingQueryParameterName, WebsiteQueryParameterName, RequestPaymentQueryParameterName, AccelerateQueryParameterName, LifecycleQueryParameterName, ReplicationQueryParameterName, NotificationQueryParameterName, ObjectLockQueryParameterName, AnalyticsQueryParameterName, MetricsQueryParameterName, InventoryQueryParameterName, IntelligentTieringQueryParameterName, PublicAccessBlockQueryParameterName, IdQueryParameterName, VersionsQueryParameterName, KeyMarkerQueryParameterName, VersionIdMarkerQueryParameterName, UploadIdMarkerQueryParameterName, UploadsQueryParameterName, DeleteQueryParameterName);
     private static readonly HashSet<string> ObjectVersionQueryParameters = CreateQueryParameterSet(VersionIdQueryParameterName);
     private static readonly HashSet<string> ObjectAclQueryParameters = CreateQueryParameterSet(AclQueryParameterName);
     private static readonly HashSet<string> ObjectTaggingQueryParameters = CreateQueryParameterSet(TaggingQueryParameterName, VersionIdQueryParameterName);
@@ -1724,6 +1726,7 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
                 "GET" when httpContext.Request.Query.ContainsKey(PolicyQueryParameterName) => await GetBucketPolicyAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, cancellationToken),
                 "GET" when httpContext.Request.Query.ContainsKey(VersioningQueryParameterName) => await GetBucketVersioningAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
                 "GET" when httpContext.Request.Query.ContainsKey(EncryptionQueryParameterName) => await GetBucketDefaultEncryptionAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
+                "GET" when httpContext.Request.Query.ContainsKey(PublicAccessBlockQueryParameterName) => await GetBucketPublicAccessBlockAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
                 "GET" when httpContext.Request.Query.ContainsKey(TaggingQueryParameterName) => await GetBucketTaggingAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
                 "GET" when httpContext.Request.Query.ContainsKey(LoggingQueryParameterName) => await GetBucketLoggingAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
                 "GET" when httpContext.Request.Query.ContainsKey(WebsiteQueryParameterName) => await GetBucketWebsiteAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
@@ -1766,6 +1769,7 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
                 "PUT" when httpContext.Request.Query.ContainsKey(PolicyQueryParameterName) => await PutBucketPolicyAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, cancellationToken),
                 "PUT" when httpContext.Request.Query.ContainsKey(VersioningQueryParameterName) => await PutBucketVersioningAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
                 "PUT" when httpContext.Request.Query.ContainsKey(EncryptionQueryParameterName) => await PutBucketDefaultEncryptionAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
+                "PUT" when httpContext.Request.Query.ContainsKey(PublicAccessBlockQueryParameterName) => await PutBucketPublicAccessBlockAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
                 "PUT" when httpContext.Request.Query.ContainsKey(TaggingQueryParameterName) => await PutBucketTaggingAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
                 "PUT" when httpContext.Request.Query.ContainsKey(LoggingQueryParameterName) => await PutBucketLoggingAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
                 "PUT" when httpContext.Request.Query.ContainsKey(WebsiteQueryParameterName) => await PutBucketWebsiteAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
@@ -1782,6 +1786,7 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
                 "DELETE" when httpContext.Request.Query.ContainsKey(CorsQueryParameterName) => await DeleteBucketCorsAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
                 "DELETE" when httpContext.Request.Query.ContainsKey(PolicyQueryParameterName) => await DeleteBucketPolicyAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, cancellationToken),
                 "DELETE" when httpContext.Request.Query.ContainsKey(EncryptionQueryParameterName) => await DeleteBucketDefaultEncryptionAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
+                "DELETE" when httpContext.Request.Query.ContainsKey(PublicAccessBlockQueryParameterName) => await DeleteBucketPublicAccessBlockAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
                 "DELETE" when httpContext.Request.Query.ContainsKey(TaggingQueryParameterName) => await DeleteBucketTaggingAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
                 "DELETE" when httpContext.Request.Query.ContainsKey(WebsiteQueryParameterName) => await DeleteBucketWebsiteAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
                 "DELETE" when httpContext.Request.Query.ContainsKey(LifecycleQueryParameterName) => await DeleteBucketLifecycleAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
@@ -4236,6 +4241,7 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
             StorageErrorCode.MetricsConfigurationNotFound => StatusCodes.Status404NotFound,
             StorageErrorCode.InventoryConfigurationNotFound => StatusCodes.Status404NotFound,
             StorageErrorCode.IntelligentTieringConfigurationNotFound => StatusCodes.Status404NotFound,
+            StorageErrorCode.PublicAccessBlockConfigurationNotFound => StatusCodes.Status404NotFound,
             StorageErrorCode.AccessDenied => StatusCodes.Status403Forbidden,
             StorageErrorCode.InvalidTag => StatusCodes.Status400BadRequest,
             StorageErrorCode.InvalidChecksum => StatusCodes.Status400BadRequest,
@@ -4279,6 +4285,7 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
             StorageErrorCode.MetricsConfigurationNotFound => "NoSuchConfiguration",
             StorageErrorCode.InventoryConfigurationNotFound => "NoSuchConfiguration",
             StorageErrorCode.IntelligentTieringConfigurationNotFound => "NoSuchConfiguration",
+            StorageErrorCode.PublicAccessBlockConfigurationNotFound => "NoSuchPublicAccessBlockConfiguration",
             StorageErrorCode.AccessDenied => "AccessDenied",
             StorageErrorCode.InvalidTag => "InvalidTag",
             StorageErrorCode.InvalidChecksum => "BadDigest",
@@ -4942,6 +4949,7 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
         var isBucketMetricsRequest = queryKeys.Contains(MetricsQueryParameterName) && queryKeys.IsSubsetOf(BucketMetricsQueryParameters);
         var isBucketInventoryRequest = queryKeys.Contains(InventoryQueryParameterName) && queryKeys.IsSubsetOf(BucketInventoryQueryParameters);
         var isBucketIntelligentTieringRequest = queryKeys.Contains(IntelligentTieringQueryParameterName) && queryKeys.IsSubsetOf(BucketIntelligentTieringQueryParameters);
+        var isBucketPublicAccessBlockRequest = queryKeys.SetEquals(BucketPublicAccessBlockQueryParameters);
         var isListObjectVersionsRequest = queryKeys.Contains(VersionsQueryParameterName) && queryKeys.IsSubsetOf(BucketVersionListingQueryParameters);
         var isListMultipartUploadsRequest = queryKeys.Contains(UploadsQueryParameterName) && queryKeys.IsSubsetOf(BucketMultipartUploadsQueryParameters);
         var isDeleteObjectsRequest = queryKeys.SetEquals(BucketDeleteQueryParameters);
@@ -4983,6 +4991,7 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
                     || isBucketMetricsRequest
                     || isBucketInventoryRequest
                     || isBucketIntelligentTieringRequest
+                    || isBucketPublicAccessBlockRequest
                     || isListObjectVersionsRequest
                     || isListMultipartUploadsRequest) {
                     break;
@@ -5026,7 +5035,8 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
                     || isBucketAnalyticsRequest
                     || isBucketMetricsRequest
                     || isBucketInventoryRequest
-                    || isBucketIntelligentTieringRequest) {
+                    || isBucketIntelligentTieringRequest
+                    || isBucketPublicAccessBlockRequest) {
                     break;
                 }
 
@@ -5044,7 +5054,8 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
                     || isBucketAnalyticsRequest
                     || isBucketMetricsRequest
                     || isBucketInventoryRequest
-                    || isBucketIntelligentTieringRequest) {
+                    || isBucketIntelligentTieringRequest
+                    || isBucketPublicAccessBlockRequest) {
                     break;
                 }
 
@@ -9796,6 +9807,100 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
         }
     }
 
+    // ── Bucket Public Access Block ───────────────────────────────────────────
+
+    private static async Task<IResult> GetBucketPublicAccessBlockAsync(
+        string bucketName,
+        HttpContext httpContext,
+        IIntegratedS3RequestContextAccessor requestContextAccessor,
+        IStorageService storageService,
+        CancellationToken cancellationToken)
+    {
+        try {
+            return await ExecuteWithRequestContextAsync(httpContext, requestContextAccessor, async innerCancellationToken => {
+                var result = await storageService.GetBucketPublicAccessBlockAsync(bucketName, innerCancellationToken);
+                if (!result.IsSuccess) {
+                    return ToErrorResult(httpContext, result.Error, resourceOverride: BuildObjectResource(bucketName, null));
+                }
+
+                var config = result.Value!;
+                return new XmlContentResult(
+                    S3XmlResponseWriter.WritePublicAccessBlockConfiguration(new S3PublicAccessBlockConfiguration
+                    {
+                        BlockPublicAcls = config.BlockPublicAcls,
+                        IgnorePublicAcls = config.IgnorePublicAcls,
+                        BlockPublicPolicy = config.BlockPublicPolicy,
+                        RestrictPublicBuckets = config.RestrictPublicBuckets
+                    }),
+                    StatusCodes.Status200OK,
+                    XmlContentType);
+            }, cancellationToken);
+        }
+        catch (EndpointStorageAuthorizationException exception) {
+            return ToErrorResult(httpContext, exception.Error, resourceOverride: BuildObjectResource(bucketName, null));
+        }
+    }
+
+    private static async Task<IResult> PutBucketPublicAccessBlockAsync(
+        string bucketName,
+        HttpContext httpContext,
+        IIntegratedS3RequestContextAccessor requestContextAccessor,
+        IStorageService storageService,
+        CancellationToken cancellationToken)
+    {
+        S3PublicAccessBlockConfiguration requestBody;
+        try {
+            requestBody = await S3XmlRequestReader.ReadPublicAccessBlockConfigurationAsync(httpContext.Request.Body, cancellationToken);
+        }
+        catch (FormatException exception) {
+            return ToErrorResult(httpContext, StatusCodes.Status400BadRequest, "MalformedXML", exception.Message, BuildObjectResource(bucketName, null), bucketName);
+        }
+
+        try {
+            return await ExecuteWithRequestContextAsync(httpContext, requestContextAccessor, async innerCancellationToken => {
+                var result = await storageService.PutBucketPublicAccessBlockAsync(new PutBucketPublicAccessBlockRequest
+                {
+                    BucketName = bucketName,
+                    BlockPublicAcls = requestBody.BlockPublicAcls,
+                    IgnorePublicAcls = requestBody.IgnorePublicAcls,
+                    BlockPublicPolicy = requestBody.BlockPublicPolicy,
+                    RestrictPublicBuckets = requestBody.RestrictPublicBuckets
+                }, innerCancellationToken);
+
+                return result.IsSuccess
+                    ? TypedResults.Ok()
+                    : ToErrorResult(httpContext, result.Error, resourceOverride: BuildObjectResource(bucketName, null));
+            }, cancellationToken);
+        }
+        catch (EndpointStorageAuthorizationException exception) {
+            return ToErrorResult(httpContext, exception.Error, resourceOverride: BuildObjectResource(bucketName, null));
+        }
+    }
+
+    private static async Task<IResult> DeleteBucketPublicAccessBlockAsync(
+        string bucketName,
+        HttpContext httpContext,
+        IIntegratedS3RequestContextAccessor requestContextAccessor,
+        IStorageService storageService,
+        CancellationToken cancellationToken)
+    {
+        try {
+            return await ExecuteWithRequestContextAsync(httpContext, requestContextAccessor, async innerCancellationToken => {
+                var result = await storageService.DeleteBucketPublicAccessBlockAsync(new DeleteBucketPublicAccessBlockRequest
+                {
+                    BucketName = bucketName
+                }, innerCancellationToken);
+
+                return result.IsSuccess
+                    ? TypedResults.NoContent()
+                    : ToErrorResult(httpContext, result.Error, resourceOverride: BuildObjectResource(bucketName, null));
+            }, cancellationToken);
+        }
+        catch (EndpointStorageAuthorizationException exception) {
+            return ToErrorResult(httpContext, exception.Error, resourceOverride: BuildObjectResource(bucketName, null));
+        }
+    }
+
     // ── Bucket Logging ──────────────────────────────────────────────────────
 
     private static async Task<IResult> GetBucketLoggingAsync(
@@ -11577,6 +11682,7 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
         if (request.Query.ContainsKey(PolicyQueryParameterName)) return $"{method}BucketPolicy";
         if (request.Query.ContainsKey(VersioningQueryParameterName)) return $"{method}BucketVersioning";
         if (request.Query.ContainsKey(EncryptionQueryParameterName)) return $"{method}BucketEncryption";
+        if (request.Query.ContainsKey(PublicAccessBlockQueryParameterName)) return $"{method}BucketPublicAccessBlock";
         if (request.Query.ContainsKey(TaggingQueryParameterName)) return $"{method}BucketTagging";
         if (request.Query.ContainsKey(LoggingQueryParameterName)) return $"{method}BucketLogging";
         if (request.Query.ContainsKey(WebsiteQueryParameterName)) return $"{method}BucketWebsite";

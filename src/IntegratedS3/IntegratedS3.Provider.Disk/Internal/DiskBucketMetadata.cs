@@ -47,6 +47,9 @@ internal sealed class DiskBucketMetadata
 
     [JsonPropertyName("intelligentTieringConfigurations")]
     public Dictionary<string, DiskBucketIntelligentTieringConfiguration>? IntelligentTieringConfigurations { get; init; }
+
+    [JsonPropertyName("publicAccessBlockConfiguration")]
+    public DiskBucketPublicAccessBlockConfiguration? PublicAccessBlockConfiguration { get; init; }
 }
 
 internal sealed class DiskBucketCorsConfiguration
@@ -75,6 +78,23 @@ internal sealed class DiskBucketTaggingConfiguration
 {
     [JsonPropertyName("tags")]
     public Dictionary<string, string> Tags { get; init; } = new();
+}
+
+// --- Public Access Block ---
+
+internal sealed class DiskBucketPublicAccessBlockConfiguration
+{
+    [JsonPropertyName("blockPublicAcls")]
+    public bool BlockPublicAcls { get; init; }
+
+    [JsonPropertyName("ignorePublicAcls")]
+    public bool IgnorePublicAcls { get; init; }
+
+    [JsonPropertyName("blockPublicPolicy")]
+    public bool BlockPublicPolicy { get; init; }
+
+    [JsonPropertyName("restrictPublicBuckets")]
+    public bool RestrictPublicBuckets { get; init; }
 }
 
 // --- Logging ---

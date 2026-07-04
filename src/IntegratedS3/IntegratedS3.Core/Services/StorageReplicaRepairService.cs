@@ -41,6 +41,7 @@ internal sealed class StorageReplicaRepairService(
                 or StorageOperationType.PutBucketRequestPayment
                 or StorageOperationType.PutBucketAccelerate
                 or StorageOperationType.PutBucketLifecycle or StorageOperationType.DeleteBucketLifecycle
+                or StorageOperationType.PutBucketPublicAccessBlock or StorageOperationType.DeleteBucketPublicAccessBlock
                 => await RepairReplicaBucketConfigFallbackAsync(primaryBackend, replicaBackend, entry.BucketName, entry, cancellationToken),
             StorageOperationType.DeleteBucket => await RepairReplicaBucketDeleteAsync(replicaBackend, entry.BucketName, cancellationToken),
             StorageOperationType.CopyObject or StorageOperationType.PutObject => string.IsNullOrWhiteSpace(entry.ObjectKey)
