@@ -282,6 +282,7 @@ internal sealed class StorageReplicaRepairService(
             ContentLength = sourceResponse.Object.ContentLength,
             ContentType = sourceResponse.Object.ContentType,
             Metadata = CloneMetadata(sourceResponse.Object.Metadata),
+            Tags = CloneTags(sourceResponse.Object.Tags),
             Checksums = CloneChecksums(sourceResponse.Object.Checksums),
             OverwriteIfExists = true
         }, cancellationToken);

@@ -2782,6 +2782,73 @@ public sealed class IntegratedS3CoreOrchestrationTests
     }
 
     [Fact]
+    public async Task StorageReplicaRepairService_RepairReplicaObject_PreservesPrimaryObjectTags()
+    {
+        var primaryBackend = new InMemoryStorageBackend("primary-memory", isPrimary: true);
+        var replicaBackend = new InMemoryStorageBackend("replica-memory");
+
+        await using var fixture = new CoreStorageFixture(overrideCatalogStore: true, addDefaultDiskStorage: false, configureServices: services => {
+            services.AddSingleton<IStorageBackend>(primaryBackend);
+            services.AddSingleton<IStorageBackend>(replicaBackend);
+        });
+
+        var repairService = fixture.Services.GetRequiredService<IStorageReplicaRepairService>();
+
+        Assert.True((await primaryBackend.CreateBucketAsync(new CreateBucketRequest { BucketName = "tagged-bucket" })).IsSuccess);
+        Assert.True((await replicaBackend.CreateBucketAsync(new CreateBucketRequest { BucketName = "tagged-bucket" })).IsSuccess);
+
+        // Primary carries an object with a non-empty tag set.
+        primaryBackend.AddObject("tagged-bucket", "docs/tagged.txt", "primary payload");
+        Assert.True((await primaryBackend.PutObjectTagsAsync(new PutObjectTagsRequest
+        {
+            BucketName = "tagged-bucket",
+            Key = "docs/tagged.txt",
+            Tags = new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["environment"] = "production",
+                ["owner"] = "copilot"
+            }
+        })).IsSuccess);
+
+        // Replica holds a stale, tagless copy of the same key that must be healed.
+        replicaBackend.AddObject("tagged-bucket", "docs/tagged.txt", "stale payload");
+
+        var repair = CreateRepairEntry(
+            StorageReplicaRepairOrigin.Reconciliation,
+            StorageReplicaRepairStatus.Pending,
+            StorageOperationType.PutObject,
+            primaryBackend.Name,
+            replicaBackend.Name,
+            "tagged-bucket",
+            "docs/tagged.txt");
+
+        var repairError = await repairService.RepairAsync(repair);
+        Assert.Null(repairError);
+
+        // Content is healed to the primary copy.
+        var repairedObject = await replicaBackend.GetObjectAsync(new GetObjectRequest
+        {
+            BucketName = "tagged-bucket",
+            Key = "docs/tagged.txt"
+        });
+        Assert.True(repairedObject.IsSuccess);
+        await using (var repairedContent = repairedObject.Value!) {
+            Assert.Equal("primary payload", await ReadContentAsStringAsync(repairedContent.Content));
+        }
+
+        // Regression: the repaired replica must carry the primary's tag set, not an empty one.
+        var repairedTags = await replicaBackend.GetObjectTagsAsync(new GetObjectTagsRequest
+        {
+            BucketName = "tagged-bucket",
+            Key = "docs/tagged.txt"
+        });
+        Assert.True(repairedTags.IsSuccess);
+        Assert.Equal(2, repairedTags.Value!.Tags.Count);
+        Assert.Equal("production", repairedTags.Value.Tags["environment"]);
+        Assert.Equal("copilot", repairedTags.Value.Tags["owner"]);
+    }
+
+    [Fact]
     public async Task OrchestratedStorageService_WriteThroughAll_ReplicatesBucketsAndObjects()
     {
         await using var fixture = new CoreStorageFixture(configureServices: services => {
@@ -4654,7 +4721,9 @@ public sealed class IntegratedS3CoreOrchestrationTests
                 ETag = $"{request.BucketName}:{request.Key}:{bytes.Length}",
                 LastModifiedUtc = DateTimeOffset.UtcNow,
                 Metadata = request.Metadata,
-                Tags = null,
+                Tags = request.Tags is null || request.Tags.Count == 0
+                    ? null
+                    : new Dictionary<string, string>(request.Tags, StringComparer.Ordinal),
                 Checksums = request.Checksums
             };
             _objects[(request.BucketName, request.Key)] = new StoredObject
