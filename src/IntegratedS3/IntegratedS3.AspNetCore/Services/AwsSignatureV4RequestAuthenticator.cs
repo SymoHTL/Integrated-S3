@@ -31,6 +31,14 @@ internal sealed class AwsSignatureV4RequestAuthenticator(
     private const string StreamingSigV4aPayloadTrailer = "STREAMING-AWS4-ECDSA-P256-SHA256-PAYLOAD-TRAILER";
     private const string StreamingUnsignedPayloadTrailer = "STREAMING-UNSIGNED-PAYLOAD-TRAILER";
 
+    /// <summary>
+    /// AWS-parity hard ceiling for the presigned-URL <c>X-Amz-Expires</c> value: 604800 seconds
+    /// (7 days). AWS S3 rejects any larger value with <c>AuthorizationQueryParametersError</c>
+    /// regardless of server configuration, so this bound is enforced independently of the
+    /// configurable <see cref="IntegratedS3Options.MaximumPresignedUrlExpirySeconds"/>.
+    /// </summary>
+    private const int MaximumPresignedUrlExpiryHardCapSeconds = 604800;
+
     public async ValueTask<IntegratedS3RequestAuthenticationResult> AuthenticateAsync(HttpContext httpContext, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(httpContext);
@@ -196,6 +204,10 @@ internal sealed class AwsSignatureV4RequestAuthenticator(
 
         if (!TryValidateCredentialScope(presignedRequest.CredentialScope, settings, out var scopeError, out var statusCode)) {
             return IntegratedS3RequestAuthenticationResult.Failure("AuthorizationQueryParametersError", scopeError!, statusCode);
+        }
+
+        if (presignedRequest.ExpiresSeconds > MaximumPresignedUrlExpiryHardCapSeconds) {
+            return IntegratedS3RequestAuthenticationResult.Failure("AuthorizationQueryParametersError", $"X-Amz-Expires must be less than or equal to {MaximumPresignedUrlExpiryHardCapSeconds} seconds.", statusCode: 400);
         }
 
         if (presignedRequest.ExpiresSeconds > settings.MaximumPresignedUrlExpirySeconds) {
@@ -444,6 +456,10 @@ internal sealed class AwsSignatureV4RequestAuthenticator(
 
         if (!TryValidateSigV4aRegionSet(presignedRequest.RegionSet, settings, out var regionError, out statusCode)) {
             return IntegratedS3RequestAuthenticationResult.Failure("AuthorizationQueryParametersError", regionError!, statusCode);
+        }
+
+        if (presignedRequest.ExpiresSeconds > MaximumPresignedUrlExpiryHardCapSeconds) {
+            return IntegratedS3RequestAuthenticationResult.Failure("AuthorizationQueryParametersError", $"X-Amz-Expires must be less than or equal to {MaximumPresignedUrlExpiryHardCapSeconds} seconds.", statusCode: 400);
         }
 
         if (presignedRequest.ExpiresSeconds > settings.MaximumPresignedUrlExpirySeconds) {

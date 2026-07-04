@@ -1943,6 +1943,96 @@ public sealed class IntegratedS3SigV4ConformanceTests : IClassFixture<WebUiAppli
         Assert.Contains("60", GetRequiredElementValue(errorDocument, "Message"), StringComparison.Ordinal);
     }
 
+    // Regression for #161: AWS S3 caps X-Amz-Expires at 604800 seconds (7 days) and rejects any
+    // larger value with AuthorizationQueryParametersError regardless of server configuration. The
+    // hard cap must apply even when the operator raises MaximumPresignedUrlExpirySeconds above it.
+    [Fact]
+    public async Task SigV4PresignedQueryAuthentication_ExpiryBeyondAwsHardCap_ReturnsXmlError()
+    {
+        const string accessKeyId = "sigv4-hardcap-access";
+        const string secretAccessKey = "sigv4-hardcap-secret";
+
+        await using var isolatedClient = await CreateAuthenticatedClientAsync(
+            accessKeyId,
+            secretAccessKey,
+            // Configure a maximum well above the AWS hard cap so only the hard cap can reject.
+            options => options.MaximumPresignedUrlExpirySeconds = 604800 * 4);
+        using var client = isolatedClient.Client;
+
+        using var request = CreateSigV4PresignedRequest(
+            HttpMethod.Get,
+            "/integrated-s3/buckets/hardcap-bucket/objects/docs/hardcap.txt",
+            accessKeyId,
+            secretAccessKey,
+            expiresSeconds: 604801);
+        var response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal("application/xml", response.Content.Headers.ContentType?.MediaType);
+        var hardCapErrorDocument = XDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal("AuthorizationQueryParametersError", GetRequiredElementValue(hardCapErrorDocument, "Code"));
+        Assert.Contains("604800", GetRequiredElementValue(hardCapErrorDocument, "Message"), StringComparison.Ordinal);
+    }
+
+    // Regression for #161: X-Amz-Expires exactly at the AWS hard cap (604800) must be accepted; the
+    // ceiling is inclusive. This guards the boundary against an off-by-one that would reject 7-day URLs.
+    [Fact]
+    public async Task SigV4PresignedQueryAuthentication_ExpiryExactlyAtAwsHardCap_IsAccepted()
+    {
+        const string accessKeyId = "sigv4-hardcap-boundary-access";
+        const string secretAccessKey = "sigv4-hardcap-boundary-secret";
+
+        await using var isolatedClient = await CreateAuthenticatedClientAsync(
+            accessKeyId,
+            secretAccessKey,
+            options => options.MaximumPresignedUrlExpirySeconds = 604800 * 4);
+        using var client = isolatedClient.Client;
+
+        await CreateBucketAsync(client, accessKeyId, secretAccessKey, "hardcap-boundary-bucket");
+
+        using var request = CreateSigV4PresignedRequest(
+            HttpMethod.Get,
+            "/integrated-s3/buckets/hardcap-boundary-bucket/objects/docs/missing.txt",
+            accessKeyId,
+            secretAccessKey,
+            expiresSeconds: 604800);
+        var response = await client.SendAsync(request);
+
+        // A 604800s expiry passes the auth cap; the request reaches storage and 404s on the missing
+        // object rather than being rejected at authorization with a 400 AuthorizationQueryParametersError.
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task SigV4HeaderAuthentication_TimestampWithinDefaultFifteenMinuteSkew_Succeeds()
+    {
+        // Regression for #161: the default AllowedSignatureClockSkewMinutes is 15 (AWS parity), not 5.
+        // A request signed ~10 minutes ago — which the old 5-minute default rejected — must now pass
+        // WITHOUT any explicit skew override on the options.
+        const string accessKeyId = "sigv4-default-skew-access";
+        const string secretAccessKey = "sigv4-default-skew-secret";
+
+        await using var isolatedClient = await CreateAuthenticatedClientAsync(accessKeyId, secretAccessKey);
+        using var client = isolatedClient.Client;
+
+        using var request = CreateSigV4HeaderSignedRequest(
+            HttpMethod.Get,
+            "/integrated-s3/",
+            accessKeyId,
+            secretAccessKey,
+            signedAtUtc: DateTimeOffset.UtcNow.AddMinutes(-10));
+        var response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+    }
+
+    [Fact]
+    public void IntegratedS3Options_AllowedSignatureClockSkewMinutes_DefaultsToAwsFifteenMinutes()
+    {
+        // Regression for #161: default clock-skew tolerance matches the AWS S3 ±15-minute window.
+        Assert.Equal(15, new IntegratedS3Options().AllowedSignatureClockSkewMinutes);
+    }
+
     [Fact]
     public async Task SigV4PresignedQueryAuthentication_FutureTimestampOutsideClockSkew_ReturnsXmlError()
     {

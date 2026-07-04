@@ -152,7 +152,8 @@ public sealed class IntegratedS3SigV4aConformanceTests : IClassFixture<WebUiAppl
     // Regression for #113: the SigV4a header path shares the same symmetric clock-skew barrier as
     // SigV4 (IsOutsideAllowedClockSkew) but had zero coverage. A request whose x-amz-date is too far
     // in the PAST — a captured, replayed request — must be rejected with RequestTimeTooSkewed.
-    // Default AllowedSignatureClockSkewMinutes is 5, so a 6-minute-stale timestamp is outside it.
+    // Default AllowedSignatureClockSkewMinutes is 15 (AWS parity), so a 20-minute-stale timestamp is
+    // outside it.
     [Fact]
     public async Task SigV4aHeaderAuthentication_StaleTimestampOutsideClockSkew_ReturnsRequestTimeTooSkewed()
     {
@@ -167,7 +168,7 @@ public sealed class IntegratedS3SigV4aConformanceTests : IClassFixture<WebUiAppl
             "/integrated-s3/",
             accessKeyId,
             secretAccessKey,
-            signedAtUtc: DateTimeOffset.UtcNow.AddMinutes(-6));
+            signedAtUtc: DateTimeOffset.UtcNow.AddMinutes(-20));
         var response = await client.SendAsync(request);
 
         Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
@@ -192,7 +193,7 @@ public sealed class IntegratedS3SigV4aConformanceTests : IClassFixture<WebUiAppl
             "/integrated-s3/",
             accessKeyId,
             secretAccessKey,
-            signedAtUtc: DateTimeOffset.UtcNow.AddMinutes(6));
+            signedAtUtc: DateTimeOffset.UtcNow.AddMinutes(20));
         var response = await client.SendAsync(request);
 
         Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
