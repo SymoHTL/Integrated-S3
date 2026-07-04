@@ -2620,6 +2620,15 @@ internal sealed class DiskStorageService(
 
         var partPath = GetMultipartPartPath(uploadDirectoryPath, request.PartNumber);
         var tempPartPath = $"{partPath}.{Guid.NewGuid():N}.tmp";
+        // The returned ETag/checksum/length MUST describe the bytes THIS call wrote. The finalized
+        // part path is shared per (uploadId, partNumber), so two concurrent UploadPart calls for the
+        // same part number race on partPath: re-reading partPath after File.Move could observe the
+        // other caller's bytes. Capture the metadata from this call's exclusively-owned temp file
+        // BEFORE the atomic File.Move so the response always matches what this call persisted. The
+        // File.Move rename is atomic, so the persisted part is never torn (last writer wins).
+        long partLength;
+        DateTime partLastWriteTimeUtc;
+        IReadOnlyDictionary<string, string> actualChecksums;
         if (HasCopySource(request)) {
             if (!string.IsNullOrWhiteSpace(request.ChecksumAlgorithm)
                 || request.Checksums is { Count: > 0 }) {
@@ -2684,7 +2693,19 @@ internal sealed class DiskStorageService(
                     await FlushToStableStorageAsync(tempStream, cancellationToken);
                 }
 
-                File.Move(tempPartPath, partPath, overwrite: true);
+                // Capture this call's metadata from the temp file before publishing it, so the
+                // response describes the bytes this call wrote even if a concurrent same-part
+                // upload overwrites partPath immediately after the move.
+                var tempInfo = new FileInfo(tempPartPath);
+                partLength = tempInfo.Length;
+                partLastWriteTimeUtc = tempInfo.LastWriteTimeUtc;
+                actualChecksums = await ComputeChecksumsAsync(tempPartPath, cancellationToken);
+
+                // Serialize the publish for this (uploadId, partNumber). Concurrent overwrite moves
+                // into the same destination fail with UnauthorizedAccessException on Windows.
+                using (await AcquireMultipartPartMutationLockAsync(uploadDirectoryPath, request.PartNumber, cancellationToken)) {
+                    File.Move(tempPartPath, partPath, overwrite: true);
+                }
             }
             finally {
                 if (File.Exists(tempPartPath)) {
@@ -2709,7 +2730,19 @@ internal sealed class DiskStorageService(
                     await FlushToStableStorageAsync(tempStream, cancellationToken);
                 }
 
-                File.Move(tempPartPath, partPath, overwrite: true);
+                // Capture this call's metadata from the temp file before publishing it, so the
+                // response describes the bytes this call wrote even if a concurrent same-part
+                // upload overwrites partPath immediately after the move.
+                var tempInfo = new FileInfo(tempPartPath);
+                partLength = tempInfo.Length;
+                partLastWriteTimeUtc = tempInfo.LastWriteTimeUtc;
+                actualChecksums = await ComputeChecksumsAsync(tempPartPath, cancellationToken);
+
+                // Serialize the publish for this (uploadId, partNumber). Concurrent overwrite moves
+                // into the same destination fail with UnauthorizedAccessException on Windows.
+                using (await AcquireMultipartPartMutationLockAsync(uploadDirectoryPath, request.PartNumber, cancellationToken)) {
+                    File.Move(tempPartPath, partPath, overwrite: true);
+                }
             }
             finally {
                 if (File.Exists(tempPartPath)) {
@@ -2718,8 +2751,6 @@ internal sealed class DiskStorageService(
             }
         }
 
-        var partInfo = new FileInfo(partPath);
-        var actualChecksums = await ComputeChecksumsAsync(partPath, cancellationToken);
         var checksumValidationError = ValidateRequestedChecksums(request.Checksums, actualChecksums, request.BucketName, request.Key);
         if (checksumValidationError is not null) {
             return StorageResult<MultipartUploadPart>.Failure(checksumValidationError);
@@ -2729,8 +2760,8 @@ internal sealed class DiskStorageService(
         {
             PartNumber = request.PartNumber,
             ETag = BuildPartETag(actualChecksums),
-            ContentLength = partInfo.Length,
-            LastModifiedUtc = partInfo.LastWriteTimeUtc,
+            ContentLength = partLength,
+            LastModifiedUtc = partLastWriteTimeUtc,
             Checksums = CreateMultipartPartResponseChecksums(
                 actualChecksums,
                 uploadChecksumAlgorithm,
@@ -2825,6 +2856,13 @@ internal sealed class DiskStorageService(
 
         var partPath = GetMultipartPartPath(uploadDirectoryPath, request.PartNumber);
         var tempPartPath = $"{partPath}.{Guid.NewGuid():N}.tmp";
+        // Capture the metadata from this call's exclusively-owned temp file before the atomic
+        // publish and serialize the publish, so the response always describes the bytes this call
+        // wrote and a concurrent same-part publish cannot fail the overwrite move on Windows. See
+        // the matching handling in UploadMultipartPartAsync.
+        long partLength;
+        DateTime partLastWriteTimeUtc;
+        IReadOnlyDictionary<string, string> actualChecksums;
         try {
             // The copy source is opened lock-free, so a concurrent delete/overwrite of the
             // source key can race this open. Translate a lost TOCTOU race to NoSuchKey (404)
@@ -2847,7 +2885,14 @@ internal sealed class DiskStorageService(
                 await FlushToStableStorageAsync(tempStream, cancellationToken);
             }
 
-            File.Move(tempPartPath, partPath, overwrite: true);
+            var tempInfo = new FileInfo(tempPartPath);
+            partLength = tempInfo.Length;
+            partLastWriteTimeUtc = tempInfo.LastWriteTimeUtc;
+            actualChecksums = await ComputeChecksumsAsync(tempPartPath, cancellationToken);
+
+            using (await AcquireMultipartPartMutationLockAsync(uploadDirectoryPath, request.PartNumber, cancellationToken)) {
+                File.Move(tempPartPath, partPath, overwrite: true);
+            }
         }
         finally {
             if (File.Exists(tempPartPath)) {
@@ -2855,8 +2900,6 @@ internal sealed class DiskStorageService(
             }
         }
 
-        var partInfo = new FileInfo(partPath);
-        var actualChecksums = await ComputeChecksumsAsync(partPath, cancellationToken);
         var checksumValidationError = ValidateRequestedChecksums(request.Checksums, actualChecksums, request.BucketName, request.Key);
         if (checksumValidationError is not null) {
             return StorageResult<MultipartUploadPart>.Failure(checksumValidationError);
@@ -2866,8 +2909,8 @@ internal sealed class DiskStorageService(
         {
             PartNumber = request.PartNumber,
             ETag = BuildPartETag(actualChecksums),
-            ContentLength = partInfo.Length,
-            LastModifiedUtc = partInfo.LastWriteTimeUtc,
+            ContentLength = partLength,
+            LastModifiedUtc = partLastWriteTimeUtc,
             Checksums = CreateMultipartPartResponseChecksums(
                 actualChecksums,
                 uploadChecksumAlgorithm,
@@ -6626,6 +6669,21 @@ internal sealed class DiskStorageService(
     private ValueTask<MutationLockReleaser> AcquireObjectMutationLockAsync(string bucketName, string key, CancellationToken cancellationToken)
     {
         return AcquireMutationLockAsync(GetBucketPath(bucketName), NormalizeKey(key), cancellationToken);
+    }
+
+    /// <summary>
+    /// Serializes finalization of a single multipart part identified by its upload directory and
+    /// part number. Two concurrent UploadPart calls for the same <c>(uploadId, partNumber)</c>
+    /// publish into the same shared part path, so without this lock their
+    /// <see cref="File.Move(string, string, bool)"/> overwrites can race (a concurrent overwrite of
+    /// the same destination fails with <c>UnauthorizedAccessException</c> on Windows) and their
+    /// returned ETag/checksum could describe the other caller's bytes. Locks are striped, so
+    /// unrelated parts may occasionally share a stripe, which only adds contention and never
+    /// changes correctness.
+    /// </summary>
+    private ValueTask<MutationLockReleaser> AcquireMultipartPartMutationLockAsync(string uploadDirectoryPath, int partNumber, CancellationToken cancellationToken)
+    {
+        return AcquireMutationLockAsync(uploadDirectoryPath, partNumber.ToString(System.Globalization.CultureInfo.InvariantCulture), cancellationToken);
     }
 
     private async ValueTask<MutationLockReleaser> AcquireMutationLockAsync(string bucketPath, string? key, CancellationToken cancellationToken)
