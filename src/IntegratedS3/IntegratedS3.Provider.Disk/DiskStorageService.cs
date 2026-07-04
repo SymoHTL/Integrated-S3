@@ -1881,7 +1881,7 @@ internal sealed class DiskStorageService(
             yield return new MultipartUploadPart
             {
                 PartNumber = partNumber,
-                ETag = BuildETag(partInfo),
+                ETag = BuildPartETag(actualChecksums),
                 ContentLength = partInfo.Length,
                 LastModifiedUtc = partInfo.LastWriteTimeUtc,
                 Checksums = CreateMultipartPartResponseChecksums(
@@ -2728,7 +2728,7 @@ internal sealed class DiskStorageService(
         return StorageResult<MultipartUploadPart>.Success(new MultipartUploadPart
         {
             PartNumber = request.PartNumber,
-            ETag = BuildETag(partInfo),
+            ETag = BuildPartETag(actualChecksums),
             ContentLength = partInfo.Length,
             LastModifiedUtc = partInfo.LastWriteTimeUtc,
             Checksums = CreateMultipartPartResponseChecksums(
@@ -2865,7 +2865,7 @@ internal sealed class DiskStorageService(
         return StorageResult<MultipartUploadPart>.Success(new MultipartUploadPart
         {
             PartNumber = request.PartNumber,
-            ETag = BuildETag(partInfo),
+            ETag = BuildPartETag(actualChecksums),
             ContentLength = partInfo.Length,
             LastModifiedUtc = partInfo.LastWriteTimeUtc,
             Checksums = CreateMultipartPartResponseChecksums(
@@ -2953,6 +2953,10 @@ internal sealed class DiskStorageService(
             ? new List<string>(request.Parts.Count)
             : null;
 
+        // Base64 MD5 of each part's bytes, in part order. Used to synthesize the S3 multipart object
+        // ETag "<hex(MD5(concat(partMd5Bytes)))>-<partCount>" independently of the checksum algorithm.
+        var partMd5Checksums = new List<string>(request.Parts.Count);
+
         // Validate the client-supplied part list before consuming it. AWS requires parts to be
         // listed in strictly ascending part-number order with no duplicates, and each part number
         // must fall within the 1..10000 range. These checks must run against the caller's original
@@ -3011,7 +3015,10 @@ internal sealed class DiskStorageService(
                         }
                     }
 
-                    var actualETag = BuildETag(new FileInfo(partPath));
+                    // Derive both the part ETag and the per-part MD5 (for the composite object ETag)
+                    // from the part's content, so completion no longer depends on filesystem mtime.
+                    var actualPartChecksums = await ComputeChecksumsAsync(partPath, cancellationToken);
+                    var actualETag = BuildPartETag(actualPartChecksums);
                     if (!string.Equals(NormalizeETag(requestedPart.ETag), NormalizeETag(actualETag), StringComparison.Ordinal)) {
                         return StorageResult<ObjectInfo>.Failure(InvalidPart(
                             $"The ETag supplied for part '{requestedPart.PartNumber}' does not match the ETag of the uploaded part.",
@@ -3019,11 +3026,7 @@ internal sealed class DiskStorageService(
                             request.Key));
                     }
 
-                    IReadOnlyDictionary<string, string>? actualPartChecksums = null;
-                    if (compositePartChecksums is not null
-                        || (requestedPart.Checksums is not null && requestedPart.Checksums.Count > 0)) {
-                        actualPartChecksums = await ComputeChecksumsAsync(partPath, cancellationToken);
-                    }
+                    partMd5Checksums.Add(actualPartChecksums[Md5ChecksumAlgorithm]);
 
                     var partChecksumValidationError = ValidateRequestedChecksums(requestedPart.Checksums, actualPartChecksums, request.BucketName, request.Key);
                     if (partChecksumValidationError is not null) {
@@ -3061,6 +3064,9 @@ internal sealed class DiskStorageService(
                     [uploadChecksumAlgorithm!] = BuildCompositeChecksum(uploadChecksumAlgorithm!, compositePartChecksums)
                 }
                 : await ComputeChecksumsAsync(objectPath, cancellationToken);
+            // A completed multipart object always exposes the composite S3 ETag
+            // "<hex(MD5(concat(partMd5Bytes)))>-<partCount>", regardless of any checksum algorithm.
+            var multipartETag = BuildMultipartETag(partMd5Checksums);
             var versionId = CreateVersionId();
             await WriteStoredObjectStateAsync(
                 request.BucketName,
@@ -3079,7 +3085,8 @@ internal sealed class DiskStorageService(
                 contentDisposition: uploadState.State.ContentDisposition,
                 contentEncoding: uploadState.State.ContentEncoding,
                 contentLanguage: uploadState.State.ContentLanguage,
-                expiresUtc: uploadState.State.ExpiresUtc);
+                expiresUtc: uploadState.State.ExpiresUtc,
+                etag: multipartETag);
 
             await DeleteStoredMultipartStateAsync(request.BucketName, request.Key, request.UploadId, uploadState.UploadDirectoryPath, cancellationToken);
             Directory.Delete(uploadState.UploadDirectoryPath, recursive: true);
@@ -3803,7 +3810,7 @@ internal sealed class DiskStorageService(
             ContentEncoding = metadata.IsDeleteMarker ? null : metadata.ContentEncoding,
             ContentLanguage = metadata.IsDeleteMarker ? null : metadata.ContentLanguage,
             ExpiresUtc = metadata.IsDeleteMarker ? null : metadata.ExpiresUtc,
-            ETag = metadata.IsDeleteMarker ? null : fileInfo is null ? null : BuildETag(fileInfo),
+            ETag = ResolveObjectETag(metadata, fileInfo),
             LastModifiedUtc = lastModifiedUtc,
             Metadata = metadata.Metadata,
             Tags = metadata.Tags,
@@ -3959,14 +3966,24 @@ internal sealed class DiskStorageService(
         string? contentDisposition = null,
         string? contentEncoding = null,
         string? contentLanguage = null,
-        DateTimeOffset? expiresUtc = null)
+        DateTimeOffset? expiresUtc = null,
+        string? etag = null)
     {
+        // Persist the S3 content ETag so it never depends on filesystem mtime. Multipart callers
+        // pass the composite "<md5>-<partCount>" form explicitly; every other write path stores a
+        // single object and derives the single-part hex-MD5 ETag here (reusing the MD5 already
+        // computed into the checksum dictionary when present, hashing the content otherwise).
+        var resolvedETag = isDeleteMarker
+            ? null
+            : etag ?? await ComputeSinglePartETagAsync(objectPath, checksums, cancellationToken);
+
         if (_objectStateStore is null) {
             await WriteMetadataAsync(objectPath, new DiskObjectMetadata
             {
                 VersionId = versionId,
                 IsLatest = isLatest,
                 IsDeleteMarker = isDeleteMarker,
+                ETag = resolvedETag,
                 LastModifiedUtc = lastModifiedUtc,
                 ContentType = contentType,
                 CacheControl = isDeleteMarker ? null : cacheControl,
@@ -4000,7 +4017,7 @@ internal sealed class DiskStorageService(
             ContentEncoding = isDeleteMarker ? null : contentEncoding,
             ContentLanguage = isDeleteMarker ? null : contentLanguage,
             ExpiresUtc = isDeleteMarker ? null : expiresUtc,
-            ETag = isDeleteMarker ? null : fileInfo is null ? null : BuildETag(fileInfo),
+            ETag = resolvedETag,
             LastModifiedUtc = lastModifiedUtc ?? fileInfo?.LastWriteTimeUtc ?? DateTimeOffset.UtcNow,
             Metadata = metadata is null ? null : new Dictionary<string, string>(metadata, StringComparer.Ordinal),
             Tags = tags is null ? null : new Dictionary<string, string>(tags, StringComparer.Ordinal),
@@ -4649,6 +4666,7 @@ internal sealed class DiskStorageService(
                 VersionId = objectInfo.VersionId,
                 IsLatest = objectInfo.IsLatest,
                 IsDeleteMarker = objectInfo.IsDeleteMarker,
+                ETag = objectInfo.ETag,
                 LastModifiedUtc = objectInfo.LastModifiedUtc,
                 ContentType = objectInfo.ContentType,
                 CacheControl = objectInfo.CacheControl,
@@ -5491,9 +5509,95 @@ internal sealed class DiskStorageService(
         }
     }
 
-    private static string BuildETag(FileInfo fileInfo)
+    /// <summary>
+    /// Resolves the S3 ETag returned to clients for a stored object. Prefers the ETag persisted at
+    /// write time (single-part hex-MD5 or the multipart composite form), then falls back to deriving
+    /// the single-part hex-MD5 from the stored MD5 checksum for legacy metadata written before the
+    /// ETag was persisted. Returns null for delete markers, missing content, or content with no
+    /// recoverable MD5 (never the old size+mtime string, which is not a valid S3 ETag).
+    /// </summary>
+    private static string? ResolveObjectETag(DiskObjectMetadata metadata, FileInfo? fileInfo)
     {
-        return $"{fileInfo.Length:x}-{fileInfo.LastWriteTimeUtc.Ticks:x}";
+        if (metadata.IsDeleteMarker || fileInfo is null) {
+            return null;
+        }
+
+        if (!string.IsNullOrEmpty(metadata.ETag)) {
+            return metadata.ETag;
+        }
+
+        if (TryGetChecksumValue(metadata.Checksums, Md5ChecksumAlgorithm, out var md5Base64)) {
+            try {
+                return Convert.ToHexStringLower(Convert.FromBase64String(md5Base64));
+            }
+            catch (FormatException) {
+                return null;
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Computes the S3 single-part ETag for the content at <paramref name="contentPath"/>: the
+    /// lowercase-hex MD5 of the object bytes. Prefers the MD5 already present in
+    /// <paramref name="checksums"/> (stored base64 by <see cref="ComputeChecksumsAsync"/>) to avoid
+    /// re-reading the file, and falls back to hashing the content when MD5 is absent (e.g. a
+    /// PutObject that persisted only a caller-requested non-MD5 checksum).
+    /// </summary>
+    private static async Task<string?> ComputeSinglePartETagAsync(string contentPath, IReadOnlyDictionary<string, string>? checksums, CancellationToken cancellationToken)
+    {
+        if (TryGetChecksumValue(checksums, Md5ChecksumAlgorithm, out var md5Base64)) {
+            try {
+                return Convert.ToHexStringLower(Convert.FromBase64String(md5Base64));
+            }
+            catch (FormatException) {
+                // Fall through to recomputing from content on a malformed stored value.
+            }
+        }
+
+        if (!File.Exists(contentPath)) {
+            return null;
+        }
+
+        await using var stream = new FileStream(contentPath, FileMode.Open, FileAccess.Read, FileShare.Read, 81920, FileOptions.Asynchronous | FileOptions.SequentialScan);
+        using var md5 = IncrementalHash.CreateHash(HashAlgorithmName.MD5);
+        var buffer = new byte[81920];
+        while (true) {
+            var read = await stream.ReadAsync(buffer.AsMemory(0, buffer.Length), cancellationToken);
+            if (read == 0) {
+                break;
+            }
+
+            md5.AppendData(buffer, 0, read);
+        }
+
+        return Convert.ToHexStringLower(md5.GetHashAndReset());
+    }
+
+    /// <summary>
+    /// Builds the S3 multipart object ETag: <c>&lt;hex(MD5(concat(partMd5Bytes)))&gt;-&lt;partCount&gt;</c>.
+    /// Each element of <paramref name="partMd5Base64"/> is the base64 MD5 of one part's bytes.
+    /// </summary>
+    private static string BuildMultipartETag(IReadOnlyList<string> partMd5Base64)
+    {
+        using var md5 = IncrementalHash.CreateHash(HashAlgorithmName.MD5);
+        foreach (var partMd5 in partMd5Base64) {
+            md5.AppendData(Convert.FromBase64String(partMd5));
+        }
+
+        return $"{Convert.ToHexStringLower(md5.GetHashAndReset())}-{partMd5Base64.Count}";
+    }
+
+    /// <summary>
+    /// Computes the S3 ETag of a single uploaded multipart part: the lowercase-hex MD5 of the part's
+    /// bytes, taken from the MD5 already computed by <see cref="ComputeChecksumsAsync"/>.
+    /// </summary>
+    private static string BuildPartETag(IReadOnlyDictionary<string, string> partChecksums)
+    {
+        return TryGetChecksumValue(partChecksums, Md5ChecksumAlgorithm, out var md5Base64)
+            ? Convert.ToHexStringLower(Convert.FromBase64String(md5Base64))
+            : throw new InvalidOperationException("Multipart part MD5 checksum is required to derive the part ETag.");
     }
 
     private static string CreateVersionId()

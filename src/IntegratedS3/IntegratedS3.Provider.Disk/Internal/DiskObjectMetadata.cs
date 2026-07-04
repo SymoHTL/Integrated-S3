@@ -8,6 +8,15 @@ internal sealed class DiskObjectMetadata
 
     public bool IsDeleteMarker { get; init; }
 
+    /// <summary>
+    /// The S3 content ETag persisted at write time so it is independent of filesystem mtime.
+    /// Single-part objects store the lowercase-hex MD5 of the content; multipart objects store the
+    /// composite form <c>&lt;hex(MD5(concat(partMd5Bytes)))&gt;-&lt;partCount&gt;</c>. Null for delete
+    /// markers and for legacy metadata written before this field existed (callers fall back to
+    /// deriving the ETag from the stored checksums).
+    /// </summary>
+    public string? ETag { get; init; }
+
     public DateTimeOffset? LastModifiedUtc { get; init; }
 
     public string? ContentType { get; init; }

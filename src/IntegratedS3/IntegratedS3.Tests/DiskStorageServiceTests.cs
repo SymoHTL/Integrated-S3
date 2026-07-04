@@ -5376,4 +5376,205 @@ public sealed class DiskStorageServiceTests
         using var reader = new StreamReader(response.Content, Encoding.UTF8, leaveOpen: false);
         Assert.Equal("still readable", await reader.ReadToEndAsync());
     }
+
+    private static string ComputeContentMd5Hex(byte[] content)
+    {
+        return Convert.ToHexStringLower(System.Security.Cryptography.MD5.HashData(content));
+    }
+
+    private static string ComputeContentMd5Hex(string content)
+    {
+        return ComputeContentMd5Hex(Encoding.UTF8.GetBytes(content));
+    }
+
+    [Fact]
+    public async Task DiskStorage_PutObject_ETagIsContentMd5Hex()
+    {
+        await using var fixture = new DiskStorageFixture();
+        var storageService = fixture.Services.GetRequiredService<IStorageBackend>();
+        await storageService.CreateBucketAsync(new CreateBucketRequest { BucketName = "etag-md5" });
+
+        const string payload = "hello integrated s3";
+        await using var uploadStream = new MemoryStream(Encoding.UTF8.GetBytes(payload));
+        var putResult = await storageService.PutObjectAsync(new PutObjectRequest
+        {
+            BucketName = "etag-md5",
+            Key = "docs/hello.txt",
+            Content = uploadStream,
+            ContentType = "text/plain"
+        });
+
+        Assert.True(putResult.IsSuccess);
+
+        // The single-part ETag must be the lowercase-hex MD5 of the content (S3 contract), not the
+        // old "<length:x>-<mtimeTicks:x>" string. This is a known-content -> known-MD5 assertion.
+        var expectedETag = ComputeContentMd5Hex(payload);
+        Assert.Equal(expectedETag, putResult.Value!.ETag);
+
+        // HeadObject must return the same persisted content ETag.
+        var headResult = await storageService.HeadObjectAsync(new HeadObjectRequest
+        {
+            BucketName = "etag-md5",
+            Key = "docs/hello.txt"
+        });
+        Assert.True(headResult.IsSuccess);
+        Assert.Equal(expectedETag, headResult.Value!.ETag);
+    }
+
+    [Fact]
+    public async Task DiskStorage_ObjectETag_IsStableAcrossFilesystemMtimeChange()
+    {
+        await using var fixture = new DiskStorageFixture();
+        var storageService = fixture.Services.GetRequiredService<IStorageBackend>();
+        await storageService.CreateBucketAsync(new CreateBucketRequest { BucketName = "etag-mtime" });
+
+        const string payload = "content that must keep its etag";
+        await using (var uploadStream = new MemoryStream(Encoding.UTF8.GetBytes(payload))) {
+            var putResult = await storageService.PutObjectAsync(new PutObjectRequest
+            {
+                BucketName = "etag-mtime",
+                Key = "docs/stable.txt",
+                Content = uploadStream,
+                ContentType = "text/plain"
+            });
+            Assert.True(putResult.IsSuccess);
+        }
+
+        var expectedETag = ComputeContentMd5Hex(payload);
+
+        // Simulate any external process (backup, AV, replication/copy) resetting the content file's
+        // last-write time. With a content-derived ETag the value must not move; the old size+mtime
+        // ETag would change here and break conditional requests and integrity checks.
+        var contentPath = FindObjectContentPath(fixture.RootPath, "etag-mtime");
+        File.SetLastWriteTimeUtc(contentPath, new DateTime(2000, 1, 1, 0, 0, 0, DateTimeKind.Utc));
+
+        var headResult = await storageService.HeadObjectAsync(new HeadObjectRequest
+        {
+            BucketName = "etag-mtime",
+            Key = "docs/stable.txt"
+        });
+
+        Assert.True(headResult.IsSuccess);
+        Assert.Equal(expectedETag, headResult.Value!.ETag);
+    }
+
+    [Fact]
+    public async Task DiskStorage_UploadPart_ETagIsPartContentMd5Hex()
+    {
+        await using var fixture = new DiskStorageFixture();
+        var storageService = fixture.Services.GetRequiredService<IStorageBackend>();
+        await storageService.CreateBucketAsync(new CreateBucketRequest { BucketName = "part-etag" });
+
+        var initiateResult = await storageService.InitiateMultipartUploadAsync(new InitiateMultipartUploadRequest
+        {
+            BucketName = "part-etag",
+            Key = "docs/assembled.bin",
+            ContentType = "application/octet-stream"
+        });
+        Assert.True(initiateResult.IsSuccess);
+
+        var partBytes = new byte[5 * 1024 * 1024];
+        for (var i = 0; i < partBytes.Length; i++) {
+            partBytes[i] = (byte)(i % 251);
+        }
+
+        await using var partStream = new MemoryStream(partBytes);
+        var part = await storageService.UploadMultipartPartAsync(new UploadMultipartPartRequest
+        {
+            BucketName = "part-etag",
+            Key = "docs/assembled.bin",
+            UploadId = initiateResult.Value!.UploadId,
+            PartNumber = 1,
+            Content = partStream
+        });
+
+        Assert.True(part.IsSuccess);
+        Assert.Equal(ComputeContentMd5Hex(partBytes), part.Value!.ETag);
+    }
+
+    [Fact]
+    public async Task DiskStorage_CompleteMultipart_ETagIsCompositeMd5WithPartCount()
+    {
+        await using var fixture = new DiskStorageFixture();
+        var storageService = fixture.Services.GetRequiredService<IStorageBackend>();
+        await storageService.CreateBucketAsync(new CreateBucketRequest { BucketName = "composite-etag" });
+
+        var initiateResult = await storageService.InitiateMultipartUploadAsync(new InitiateMultipartUploadRequest
+        {
+            BucketName = "composite-etag",
+            Key = "docs/assembled.bin",
+            ContentType = "application/octet-stream"
+        });
+        Assert.True(initiateResult.IsSuccess);
+
+        // Two parts: the first must meet the 5 MiB S3 minimum, the last may be small.
+        var part1Bytes = new byte[5 * 1024 * 1024];
+        for (var i = 0; i < part1Bytes.Length; i++) {
+            part1Bytes[i] = (byte)(i % 97);
+        }
+
+        var part2Bytes = Encoding.UTF8.GetBytes("final tiny part");
+
+        await using var part1Stream = new MemoryStream(part1Bytes);
+        var part1 = await storageService.UploadMultipartPartAsync(new UploadMultipartPartRequest
+        {
+            BucketName = "composite-etag",
+            Key = "docs/assembled.bin",
+            UploadId = initiateResult.Value!.UploadId,
+            PartNumber = 1,
+            Content = part1Stream
+        });
+
+        await using var part2Stream = new MemoryStream(part2Bytes);
+        var part2 = await storageService.UploadMultipartPartAsync(new UploadMultipartPartRequest
+        {
+            BucketName = "composite-etag",
+            Key = "docs/assembled.bin",
+            UploadId = initiateResult.Value!.UploadId,
+            PartNumber = 2,
+            Content = part2Stream
+        });
+
+        Assert.True(part1.IsSuccess);
+        Assert.True(part2.IsSuccess);
+
+        // Touch a part file's mtime before completion: with content-derived part ETags this must not
+        // produce a spurious InvalidPart, because part validation no longer depends on mtime.
+        var partsDirectory = Directory
+            .EnumerateDirectories(Path.Combine(fixture.RootPath, ".integrateds3-multipart"), "parts", SearchOption.AllDirectories)
+            .FirstOrDefault();
+        if (partsDirectory is not null) {
+            foreach (var partFile in Directory.EnumerateFiles(partsDirectory, "*.part")) {
+                File.SetLastWriteTimeUtc(partFile, new DateTime(2001, 2, 3, 4, 5, 6, DateTimeKind.Utc));
+            }
+        }
+
+        var completeResult = await storageService.CompleteMultipartUploadAsync(new CompleteMultipartUploadRequest
+        {
+            BucketName = "composite-etag",
+            Key = "docs/assembled.bin",
+            UploadId = initiateResult.Value!.UploadId,
+            Parts = [part1.Value!, part2.Value!]
+        });
+
+        Assert.True(completeResult.IsSuccess);
+
+        // Expected composite ETag: hex(MD5(concat(part MD5 bytes)))-<partCount>.
+        var concatenatedPartMd5 = System.Security.Cryptography.MD5.HashData(part1Bytes)
+            .Concat(System.Security.Cryptography.MD5.HashData(part2Bytes))
+            .ToArray();
+        var expectedETag = $"{Convert.ToHexStringLower(System.Security.Cryptography.MD5.HashData(concatenatedPartMd5))}-2";
+
+        Assert.Equal(expectedETag, completeResult.Value!.ETag);
+        Assert.Matches(@"^[0-9a-f]{32}-\d+$", completeResult.Value.ETag!);
+
+        // The persisted composite ETag must survive a re-read via HeadObject.
+        var headResult = await storageService.HeadObjectAsync(new HeadObjectRequest
+        {
+            BucketName = "composite-etag",
+            Key = "docs/assembled.bin"
+        });
+        Assert.True(headResult.IsSuccess);
+        Assert.Equal(expectedETag, headResult.Value!.ETag);
+    }
 }
