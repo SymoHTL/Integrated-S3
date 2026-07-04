@@ -2167,6 +2167,7 @@ internal sealed class DiskStorageService(
             await using (var sourceStream = new FileStream(sourcePath, FileMode.Open, FileAccess.Read, FileShare.Read, 81920, FileOptions.Asynchronous | FileOptions.SequentialScan))
             await using (var destinationStream = new FileStream(tempDestinationPath, FileMode.CreateNew, FileAccess.Write, FileShare.None, 81920, FileOptions.Asynchronous | FileOptions.SequentialScan)) {
                 await sourceStream.CopyToAsync(destinationStream, cancellationToken);
+                await FlushToStableStorageAsync(destinationStream, cancellationToken);
             }
 
             var sourceMetadata = sourceObject.Metadata;
@@ -2307,6 +2308,7 @@ internal sealed class DiskStorageService(
         try {
             await using (var tempStream = new FileStream(tempFilePath, FileMode.CreateNew, FileAccess.Write, FileShare.None, 81920, FileOptions.Asynchronous | FileOptions.SequentialScan)) {
                 await request.Content.CopyToAsync(tempStream, cancellationToken);
+                await FlushToStableStorageAsync(tempStream, cancellationToken);
             }
 
             var actualChecksums = await ComputeChecksumsAsync(tempFilePath, cancellationToken);
@@ -2644,6 +2646,8 @@ internal sealed class DiskStorageService(
                     else {
                         await sourceStream.CopyToAsync(tempStream, cancellationToken);
                     }
+
+                    await FlushToStableStorageAsync(tempStream, cancellationToken);
                 }
 
                 File.Move(tempPartPath, partPath, overwrite: true);
@@ -2668,6 +2672,7 @@ internal sealed class DiskStorageService(
             try {
                 await using (var tempStream = new FileStream(tempPartPath, FileMode.CreateNew, FileAccess.Write, FileShare.None, 81920, FileOptions.Asynchronous | FileOptions.SequentialScan)) {
                     await request.Content.CopyToAsync(tempStream, cancellationToken);
+                    await FlushToStableStorageAsync(tempStream, cancellationToken);
                 }
 
                 File.Move(tempPartPath, partPath, overwrite: true);
@@ -2796,6 +2801,8 @@ internal sealed class DiskStorageService(
                 else {
                     await sourceStream.CopyToAsync(tempStream, cancellationToken);
                 }
+
+                await FlushToStableStorageAsync(tempStream, cancellationToken);
             }
 
             File.Move(tempPartPath, partPath, overwrite: true);
@@ -2996,6 +3003,8 @@ internal sealed class DiskStorageService(
                     await using var sourceStream = new FileStream(partPath, FileMode.Open, FileAccess.Read, FileShare.Read, 81920, FileOptions.Asynchronous | FileOptions.SequentialScan);
                     await sourceStream.CopyToAsync(destinationStream, cancellationToken);
                 }
+
+                await FlushToStableStorageAsync(destinationStream, cancellationToken);
             }
 
             if (await HasCurrentVersionStateAsync(request.BucketName, request.Key, cancellationToken)
@@ -5250,6 +5259,7 @@ internal sealed class DiskStorageService(
         try {
             await using (var stream = new FileStream(tempBucketMetadataPath, FileMode.CreateNew, FileAccess.Write, FileShare.None, 4096, FileOptions.Asynchronous | FileOptions.SequentialScan)) {
                 await JsonSerializer.SerializeAsync(stream, metadata, DiskStorageJsonSerializerContext.Default.DiskBucketMetadata, cancellationToken);
+                await FlushToStableStorageAsync(stream, cancellationToken);
             }
 
             File.Move(tempBucketMetadataPath, bucketMetadataPath, overwrite: true);
@@ -5327,6 +5337,7 @@ internal sealed class DiskStorageService(
         try {
             await using (var stream = new FileStream(tempStatePath, FileMode.CreateNew, FileAccess.Write, FileShare.None, 4096, FileOptions.Asynchronous | FileOptions.SequentialScan)) {
                 await JsonSerializer.SerializeAsync(stream, diskState, DiskStorageJsonSerializerContext.Default.DiskMultipartUploadState, cancellationToken);
+                await FlushToStableStorageAsync(stream, cancellationToken);
             }
 
             File.Move(tempStatePath, statePath, overwrite: true);
@@ -5389,6 +5400,31 @@ internal sealed class DiskStorageService(
         }
     }
 
+    /// <summary>
+    /// Forces the buffered contents of a write-path temp file to stable storage before the caller
+    /// publishes it with an atomic <see cref="File.Move(string, string, bool)"/> rename.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Disposing a <see cref="FileStream"/> flushes user-space buffers into the OS page cache, but it
+    /// does not force the data blocks onto physical media. <see cref="File.Move(string, string, bool)"/>
+    /// then publishes the final name while those blocks may still be volatile, so a crash or power loss
+    /// can leave a renamed-but-empty/torn object or an unparseable JSON sidecar.
+    /// </para>
+    /// <para>
+    /// Calling this before the rename first drains any user-space buffers with
+    /// <see cref="Stream.FlushAsync(CancellationToken)"/> and then issues
+    /// <see cref="FileStream.Flush(bool)"/> with <c>flushToDisk: true</c>, which asks the OS to push the
+    /// file's data to disk. The call must happen while the stream is still open (before the enclosing
+    /// <c>await using</c> block disposes it).
+    /// </para>
+    /// </remarks>
+    private static async ValueTask FlushToStableStorageAsync(FileStream stream, CancellationToken cancellationToken)
+    {
+        await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
+        stream.Flush(flushToDisk: true);
+    }
+
     private static async Task WriteMetadataAsync(string objectPath, DiskObjectMetadata metadata, CancellationToken cancellationToken)
     {
         var metadataPath = GetMetadataPath(objectPath);
@@ -5401,6 +5437,7 @@ internal sealed class DiskStorageService(
         try {
             await using (var stream = new FileStream(tempMetadataPath, FileMode.CreateNew, FileAccess.Write, FileShare.None, 4096, FileOptions.Asynchronous | FileOptions.SequentialScan)) {
                 await JsonSerializer.SerializeAsync(stream, metadata, DiskStorageJsonSerializerContext.Default.DiskObjectMetadata, cancellationToken);
+                await FlushToStableStorageAsync(stream, cancellationToken);
             }
 
             File.Move(tempMetadataPath, metadataPath, overwrite: true);
