@@ -839,6 +839,41 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
     }
 
     [Fact]
+    public async Task PutObject_WithMultiChunkAwsChunkedFraming_RoundTripsDecodedPayload()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        const string bucketName = "aws-chunked-multi-chunk-bucket";
+        const string objectKey = "docs/multi-chunk.txt";
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync($"/integrated-s3/buckets/{bucketName}", content: null)).StatusCode);
+
+        // Realistic multi-chunk framing: several data chunks (of differing, mostly-odd sizes) followed
+        // by the zero-length terminating chunk. This forces the buffered framing reader to hand bytes it
+        // read ahead while scanning each chunk-size line back to the payload copy, and to re-scan the
+        // next chunk-size line from bytes that may already sit in the read-ahead buffer. A regression in
+        // the buffered reader would corrupt or truncate the decoded object here.
+        var expectedPayload = string.Concat(Enumerable.Range(0, 4096).Select(static i => (char)('a' + (i % 26))));
+        var payloadBytes = Encoding.UTF8.GetBytes(expectedPayload);
+        var body = BuildMultiChunkAwsChunkedPayload(payloadBytes, [1, 17, 200, 1, 1000, 2877]);
+
+        using var putRequest = new HttpRequestMessage(HttpMethod.Put, $"/integrated-s3/{bucketName}/{objectKey}")
+        {
+            Content = new ByteArrayContent(body)
+        };
+        putRequest.Content.Headers.ContentType = new MediaTypeHeaderValue("text/plain");
+        putRequest.Content.Headers.ContentEncoding.Add("aws-chunked");
+        putRequest.Headers.TryAddWithoutValidation("x-amz-decoded-content-length", payloadBytes.Length.ToString(CultureInfo.InvariantCulture));
+
+        var putResponse = await client.SendAsync(putRequest);
+        Assert.Equal(HttpStatusCode.OK, putResponse.StatusCode);
+
+        var getResponse = await client.GetAsync($"/integrated-s3/{bucketName}/{objectKey}");
+        Assert.Equal(HttpStatusCode.OK, getResponse.StatusCode);
+        Assert.Equal(expectedPayload, await getResponse.Content.ReadAsStringAsync());
+    }
+
+    [Fact]
     public async Task PutObject_WithUnsignedTrailerBackedSha1Checksum_PersistsAndEmitsSha1Headers()
     {
         using var client = await _factory.CreateClientAsync();
@@ -12324,6 +12359,30 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
         }
 
         WriteAscii(stream, "\r\n");
+        return stream.ToArray();
+    }
+
+    private static byte[] BuildMultiChunkAwsChunkedPayload(byte[] payloadBytes, IReadOnlyList<int> chunkSizes)
+    {
+        using var stream = new MemoryStream();
+        var offset = 0;
+        foreach (var requestedSize in chunkSizes) {
+            if (offset >= payloadBytes.Length) {
+                break;
+            }
+
+            var size = Math.Min(requestedSize, payloadBytes.Length - offset);
+            WriteAscii(stream, $"{size:x}\r\n");
+            stream.Write(payloadBytes, offset, size);
+            WriteAscii(stream, "\r\n");
+            offset += size;
+        }
+
+        if (offset != payloadBytes.Length) {
+            throw new InvalidOperationException("The supplied chunk sizes do not cover the whole payload.");
+        }
+
+        WriteAscii(stream, "0\r\n\r\n");
         return stream.ToArray();
     }
 

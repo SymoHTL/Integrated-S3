@@ -7381,9 +7381,17 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
         long? maxDecodedBytes,
         CancellationToken cancellationToken)
     {
+        // Read the aws-chunked framing (chunk-size lines, chunk-signature extensions, CRLF
+        // terminators, and trailer headers) through a reusable read-ahead buffer instead of one
+        // awaited single-byte ReadAsync per byte. The buffer is refilled in large reads and both the
+        // framing scanners and the chunk-payload copy drain from it, so no byte is ever lost across
+        // the framing/payload boundary. This is a pure performance change: parsing semantics, the
+        // per-chunk SHA-256/signature chain, the line-length cap, the size cap, and trailer handling
+        // all behave byte-for-byte identically to the previous per-byte reader.
+        using var reader = new AwsChunkedFrameReader(source);
         var totalDecodedBytes = 0L;
         while (true) {
-            var chunkHeader = await ReadLineAsync(source, cancellationToken)
+            var chunkHeader = await reader.ReadLineAsync(cancellationToken)
                 ?? throw new FormatException("The aws-chunked request body ended unexpectedly.");
             var separatorIndex = chunkHeader.IndexOf(';');
             var chunkLengthText = (separatorIndex >= 0 ? chunkHeader[..separatorIndex] : chunkHeader).Trim();
@@ -7411,25 +7419,192 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
                     var verifiedFinalSignature = chunkSignatureVerifier.VerifyChunk(
                         chunkHeader,
                         S3SigV4Signer.ComputeSha256Hex(ReadOnlySpan<byte>.Empty));
-                    await ConsumeChunkTrailersAsync(source, trailerHeaders, trailerHeaderEntries, cancellationToken);
+                    await ConsumeChunkTrailersAsync(reader, trailerHeaders, trailerHeaderEntries, cancellationToken);
                     return verifiedFinalSignature;
                 }
 
-                await ConsumeChunkTrailersAsync(source, trailerHeaders, trailerHeaderEntries, cancellationToken);
+                await ConsumeChunkTrailersAsync(reader, trailerHeaders, trailerHeaderEntries, cancellationToken);
                 return TryGetAwsChunkSignature(chunkHeader);
             }
 
             if (chunkSignatureVerifier is null) {
-                await CopyExactBytesAsync(source, destination, chunkLength, hasher: null, cancellationToken);
-                await ExpectCrLfAsync(source, cancellationToken);
+                await reader.CopyExactBytesAsync(destination, chunkLength, hasher: null, cancellationToken);
+                await reader.ExpectCrLfAsync(cancellationToken);
                 continue;
             }
 
             using var chunkHasher = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
-            await CopyExactBytesAsync(source, destination, chunkLength, chunkHasher, cancellationToken);
-            await ExpectCrLfAsync(source, cancellationToken);
+            await reader.CopyExactBytesAsync(destination, chunkLength, chunkHasher, cancellationToken);
+            await reader.ExpectCrLfAsync(cancellationToken);
             var chunkContentHashHex = Convert.ToHexStringLower(chunkHasher.GetCurrentHash());
             chunkSignatureVerifier.VerifyChunk(chunkHeader, chunkContentHashHex);
+        }
+    }
+
+    /// <summary>
+    /// Reads <c>aws-chunked</c> framing from an underlying request-body stream through a single
+    /// reusable read-ahead buffer. The buffer is refilled in large (<see cref="ReadAheadBufferSize"/>)
+    /// reads; the framing scanners (<see cref="ReadLineAsync"/>, <see cref="ExpectCrLfAsync"/>) and the
+    /// bulk payload copy (<see cref="CopyExactBytesAsync"/>) all consume bytes from the same buffer, so
+    /// bytes read ahead while scanning a chunk-size line are handed back to the payload copy rather
+    /// than lost. This replaces the previous <c>byte[1]</c>-per-byte reader without changing any
+    /// parsing or security semantics.
+    /// </summary>
+    private sealed class AwsChunkedFrameReader : IDisposable
+    {
+        private const int ReadAheadBufferSize = 8 * 1024;
+
+        private readonly Stream _source;
+        private byte[] _buffer;
+        private int _start;
+        private int _end;
+        private bool _disposed;
+
+        public AwsChunkedFrameReader(Stream source)
+        {
+            _source = source;
+            _buffer = System.Buffers.ArrayPool<byte>.Shared.Rent(ReadAheadBufferSize);
+        }
+
+        private int Buffered => _end - _start;
+
+        /// <summary>
+        /// Refills the read-ahead buffer from the underlying stream when it is empty. Returns the
+        /// number of buffered bytes available, or 0 at end of stream. Existing unconsumed bytes are
+        /// preserved; a refill only happens when the buffer is drained.
+        /// </summary>
+        private async ValueTask<int> EnsureBufferedAsync(CancellationToken cancellationToken)
+        {
+            if (_start < _end) {
+                return _end - _start;
+            }
+
+            _start = 0;
+            _end = await _source.ReadAsync(_buffer.AsMemory(0, _buffer.Length), cancellationToken);
+            return _end;
+        }
+
+        /// <summary>
+        /// Reads one byte from the buffered stream, or -1 at end of stream. Replaces the former
+        /// per-byte <c>byte[1]</c> allocation + awaited <c>ReadAsync</c>.
+        /// </summary>
+        private async ValueTask<int> ReadByteAsync(CancellationToken cancellationToken)
+        {
+            if (await EnsureBufferedAsync(cancellationToken) == 0) {
+                return -1;
+            }
+
+            return _buffer[_start++];
+        }
+
+        /// <summary>
+        /// Reads a single CRLF-terminated ASCII line (the chunk-size line or a trailer header). The
+        /// CRLF is consumed but not returned. Returns <see langword="null"/> only at a clean end of
+        /// stream before any byte of a line was read. Enforces the same 16 KiB line-length cap.
+        /// </summary>
+        public async ValueTask<string?> ReadLineAsync(CancellationToken cancellationToken)
+        {
+            var buffer = System.Buffers.ArrayPool<byte>.Shared.Rent(512);
+            var position = 0;
+
+            try {
+                while (true) {
+                    var nextByte = await ReadByteAsync(cancellationToken);
+                    if (nextByte < 0) {
+                        return position == 0 ? null : throw new FormatException("The aws-chunked request body contains an incomplete line.");
+                    }
+
+                    if (nextByte == '\r') {
+                        var lineFeed = await ReadByteAsync(cancellationToken);
+                        if (lineFeed != '\n') {
+                            throw new FormatException("The aws-chunked request body contains an invalid line terminator.");
+                        }
+
+                        return Encoding.ASCII.GetString(buffer, 0, position);
+                    }
+
+                    if (position >= MaxAwsChunkedLineLength) {
+                        throw new FormatException(
+                            $"The aws-chunked request body contains a line longer than the {MaxAwsChunkedLineLength}-byte limit.");
+                    }
+
+                    if (position >= buffer.Length) {
+                        var larger = System.Buffers.ArrayPool<byte>.Shared.Rent(buffer.Length * 2);
+                        Buffer.BlockCopy(buffer, 0, larger, 0, position);
+                        System.Buffers.ArrayPool<byte>.Shared.Return(buffer);
+                        buffer = larger;
+                    }
+
+                    buffer[position++] = (byte)nextByte;
+                }
+            }
+            finally {
+                System.Buffers.ArrayPool<byte>.Shared.Return(buffer);
+            }
+        }
+
+        /// <summary>
+        /// Copies exactly <paramref name="byteCount"/> payload bytes to <paramref name="destination"/>,
+        /// hashing them into <paramref name="hasher"/> when supplied. Drains any bytes already read
+        /// ahead into the framing buffer first, then reads the remainder from the underlying stream in
+        /// large blocks.
+        /// </summary>
+        public async ValueTask CopyExactBytesAsync(Stream destination, long byteCount, IncrementalHash? hasher, CancellationToken cancellationToken)
+        {
+            var remaining = byteCount;
+
+            // Consume payload bytes that were pulled into the read-ahead buffer while scanning the
+            // preceding chunk-size line before touching the underlying stream again.
+            while (remaining > 0 && Buffered > 0) {
+                var take = (int)Math.Min(Buffered, remaining);
+                hasher?.AppendData(_buffer.AsSpan(_start, take));
+                await destination.WriteAsync(_buffer.AsMemory(_start, take), cancellationToken);
+                _start += take;
+                remaining -= take;
+            }
+
+            if (remaining == 0) {
+                return;
+            }
+
+            var copyBuffer = System.Buffers.ArrayPool<byte>.Shared.Rent(81920);
+            try {
+                while (remaining > 0) {
+                    var read = await _source.ReadAsync(copyBuffer.AsMemory(0, (int)Math.Min(copyBuffer.Length, remaining)), cancellationToken);
+                    if (read == 0) {
+                        throw new FormatException("The aws-chunked request body ended unexpectedly while reading a chunk.");
+                    }
+
+                    hasher?.AppendData(copyBuffer.AsSpan(0, read));
+                    await destination.WriteAsync(copyBuffer.AsMemory(0, read), cancellationToken);
+                    remaining -= read;
+                }
+            }
+            finally {
+                System.Buffers.ArrayPool<byte>.Shared.Return(copyBuffer);
+            }
+        }
+
+        /// <summary>
+        /// Consumes the CRLF that terminates a chunk's payload, throwing when it is absent.
+        /// </summary>
+        public async ValueTask ExpectCrLfAsync(CancellationToken cancellationToken)
+        {
+            if (await ReadByteAsync(cancellationToken) != '\r'
+                || await ReadByteAsync(cancellationToken) != '\n') {
+                throw new FormatException("The aws-chunked request body is missing the expected chunk terminator.");
+            }
+        }
+
+        public void Dispose()
+        {
+            if (_disposed) {
+                return;
+            }
+
+            _disposed = true;
+            System.Buffers.ArrayPool<byte>.Shared.Return(_buffer);
+            _buffer = null!;
         }
     }
 
@@ -7454,55 +7629,14 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
         return new AwsChunkedChunkSignatureVerifier(signingContext);
     }
 
-    private static async Task<string?> ReadLineAsync(Stream source, CancellationToken cancellationToken)
-    {
-        var buffer = System.Buffers.ArrayPool<byte>.Shared.Rent(512);
-        var position = 0;
-
-        try {
-            while (true) {
-                var nextByte = await ReadSingleByteAsync(source, cancellationToken);
-                if (nextByte < 0) {
-                    return position == 0 ? null : throw new FormatException("The aws-chunked request body contains an incomplete line.");
-                }
-
-                if (nextByte == '\r') {
-                    var lineFeed = await ReadSingleByteAsync(source, cancellationToken);
-                    if (lineFeed != '\n') {
-                        throw new FormatException("The aws-chunked request body contains an invalid line terminator.");
-                    }
-
-                    return Encoding.ASCII.GetString(buffer, 0, position);
-                }
-
-                if (position >= MaxAwsChunkedLineLength) {
-                    throw new FormatException(
-                        $"The aws-chunked request body contains a line longer than the {MaxAwsChunkedLineLength}-byte limit.");
-                }
-
-                if (position >= buffer.Length) {
-                    var larger = System.Buffers.ArrayPool<byte>.Shared.Rent(buffer.Length * 2);
-                    Buffer.BlockCopy(buffer, 0, larger, 0, position);
-                    System.Buffers.ArrayPool<byte>.Shared.Return(buffer);
-                    buffer = larger;
-                }
-
-                buffer[position++] = (byte)nextByte;
-            }
-        }
-        finally {
-            System.Buffers.ArrayPool<byte>.Shared.Return(buffer);
-        }
-    }
-
     private static async Task ConsumeChunkTrailersAsync(
-        Stream source,
+        AwsChunkedFrameReader reader,
         Dictionary<string, string> trailerHeaders,
         List<KeyValuePair<string, string>> trailerHeaderEntries,
         CancellationToken cancellationToken)
     {
         while (true) {
-            var trailerLine = await ReadLineAsync(source, cancellationToken)
+            var trailerLine = await reader.ReadLineAsync(cancellationToken)
                 ?? throw new FormatException("The aws-chunked request body ended before the terminating trailer section.");
             if (trailerLine.Length == 0) {
                 return;
@@ -7546,38 +7680,6 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
         }
 
         return null;
-    }
-
-    private static async Task CopyExactBytesAsync(Stream source, Stream destination, long byteCount, IncrementalHash? hasher, CancellationToken cancellationToken)
-    {
-        var remaining = byteCount;
-        var buffer = new byte[81920];
-
-        while (remaining > 0) {
-            var read = await source.ReadAsync(buffer.AsMemory(0, (int)Math.Min(buffer.Length, remaining)), cancellationToken);
-            if (read == 0) {
-                throw new FormatException("The aws-chunked request body ended unexpectedly while reading a chunk.");
-            }
-
-            hasher?.AppendData(buffer.AsSpan(0, read));
-            await destination.WriteAsync(buffer.AsMemory(0, read), cancellationToken);
-            remaining -= read;
-        }
-    }
-
-    private static async Task ExpectCrLfAsync(Stream source, CancellationToken cancellationToken)
-    {
-        if (await ReadSingleByteAsync(source, cancellationToken) != '\r'
-            || await ReadSingleByteAsync(source, cancellationToken) != '\n') {
-            throw new FormatException("The aws-chunked request body is missing the expected chunk terminator.");
-        }
-    }
-
-    private static async Task<int> ReadSingleByteAsync(Stream source, CancellationToken cancellationToken)
-    {
-        var buffer = new byte[1];
-        var read = await source.ReadAsync(buffer.AsMemory(0, 1), cancellationToken);
-        return read == 0 ? -1 : buffer[0];
     }
 
     private static CopySourceReference ParseCopySource(string rawValue)
