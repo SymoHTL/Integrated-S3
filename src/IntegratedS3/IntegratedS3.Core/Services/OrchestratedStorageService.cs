@@ -2003,7 +2003,9 @@ internal sealed class OrchestratedStorageService(
         var replicaResult = await replicaBackend.CreateBucketAsync(request, cancellationToken);
         ObserveResult(replicaBackend, replicaResult);
         if (!replicaResult.IsSuccess) {
-            if (replicaResult.Error?.Code != StorageErrorCode.BucketAlreadyExists) {
+            // A replica bucket that already exists (regardless of ownership-specific code) is not a
+            // failure for replication — it is the idempotent case; fall through to refresh/versioning.
+            if (replicaResult.Error?.Code is not (StorageErrorCode.BucketAlreadyExists or StorageErrorCode.BucketAlreadyOwnedByYou)) {
                 return replicaResult.Error ?? CreateReplicaOperationError(replicaBackend, request.BucketName, objectKey: null, versionId: null, message: "Replica bucket create did not succeed.");
             }
 

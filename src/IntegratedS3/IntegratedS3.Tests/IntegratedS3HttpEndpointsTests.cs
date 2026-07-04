@@ -2573,8 +2573,11 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
 
         var errorDocument = XDocument.Parse(await secondResponse.Content.ReadAsStringAsync());
         S3XmlTestHelper.AssertRoot(errorDocument, "Error");
-        Assert.Equal("BucketAlreadyExists", GetRequiredElementValue(errorDocument, "Code"));
-        Assert.Contains("already exists", GetRequiredElementValue(errorDocument, "Message"), StringComparison.OrdinalIgnoreCase);
+        // The disk backend is single-tenant, so re-creating an existing bucket is an idempotent
+        // owner re-create. AWS reports this as BucketAlreadyOwnedByYou, not BucketAlreadyExists
+        // (which is reserved for names owned by a different account).
+        Assert.Equal("BucketAlreadyOwnedByYou", GetRequiredElementValue(errorDocument, "Code"));
+        Assert.Contains("you already own it", GetRequiredElementValue(errorDocument, "Message"), StringComparison.OrdinalIgnoreCase);
         Assert.Equal("/conflict-bucket", GetRequiredElementValue(errorDocument, "Resource"));
     }
 
@@ -5207,7 +5210,8 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
 """, Encoding.UTF8, "application/xml")
         };
 
-        await AssertErrorResponseAsync(await client.SendAsync(putObjectLockRequest), HttpStatusCode.Conflict, "OperationAborted");
+        // AWS returns InvalidBucketState (409) for enabling Object Lock without versioning, not OperationAborted.
+        await AssertErrorResponseAsync(await client.SendAsync(putObjectLockRequest), HttpStatusCode.Conflict, "InvalidBucketState");
     }
 
     [Fact]
@@ -7358,6 +7362,38 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
         Assert.Equal("InvalidRequest", GetRequiredElementValue(document, "Code"));
         Assert.Contains("x-amz-server-side-encryption-aws-kms-key-id", GetRequiredElementValue(document, "Message"));
         Assert.Null(storageService.LastPutObjectRequest);
+    }
+
+    [Fact]
+    public async Task S3CompatiblePutObject_WhenQuotaExceeded_ReturnsEntityTooLargeWith400()
+    {
+        var storageService = new RecordingStorageService
+        {
+            PutObjectFailure = new StorageError
+            {
+                Code = StorageErrorCode.QuotaExceeded,
+                Message = "A storage quota was exceeded.",
+                BucketName = "quota-bucket",
+                ObjectKey = "docs/over-quota.txt",
+                ProviderName = "recording"
+            }
+        };
+        await using var isolatedClient = await CreateStorageServiceIsolatedClientAsync(storageService);
+        using var client = isolatedClient.Client;
+
+        using var request = new HttpRequestMessage(HttpMethod.Put, "/integrated-s3/quota-bucket/docs/over-quota.txt")
+        {
+            Content = new StringContent("payload", Encoding.UTF8, "text/plain")
+        };
+
+        var response = await client.SendAsync(request);
+
+        // AWS EntityTooLarge is HTTP 400, not 413.
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal("application/xml", response.Content.Headers.ContentType?.MediaType);
+
+        var document = XDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal("EntityTooLarge", GetRequiredElementValue(document, "Code"));
     }
 
     [Fact]
@@ -10372,9 +10408,15 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
                     customerEncryption: ToCustomerEncryptionInfo(request.DestinationCustomerEncryption))));
         }
 
+        public StorageError? PutObjectFailure { get; set; }
+
         public ValueTask<StorageResult<ObjectInfo>> PutObjectAsync(PutObjectRequest request, CancellationToken cancellationToken = default)
         {
             LastPutObjectRequest = request;
+
+            if (PutObjectFailure is not null) {
+                return new ValueTask<StorageResult<ObjectInfo>>(StorageResult<ObjectInfo>.Failure(PutObjectFailure));
+            }
 
             return new ValueTask<StorageResult<ObjectInfo>>(StorageResult<ObjectInfo>.Success(
                 PutObjectResult ?? CreateObjectInfo(

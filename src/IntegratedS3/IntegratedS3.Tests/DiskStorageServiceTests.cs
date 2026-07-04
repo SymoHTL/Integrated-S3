@@ -819,6 +819,28 @@ public sealed class DiskStorageServiceTests
     }
 
     [Fact]
+    public async Task DiskStorage_CreateBucket_WhenAlreadyExists_ReturnsBucketAlreadyOwnedByYou()
+    {
+        await using var fixture = new DiskStorageFixture();
+        var storageService = fixture.Services.GetRequiredService<IStorageBackend>();
+        const string bucketName = "owned-by-you";
+
+        Assert.True((await storageService.CreateBucketAsync(new CreateBucketRequest
+        {
+            BucketName = bucketName
+        })).IsSuccess);
+
+        var secondCreate = await storageService.CreateBucketAsync(new CreateBucketRequest
+        {
+            BucketName = bucketName
+        });
+
+        Assert.False(secondCreate.IsSuccess);
+        // Single-tenant disk backend: an owner re-create is BucketAlreadyOwnedByYou, not BucketAlreadyExists.
+        Assert.Equal(StorageErrorCode.BucketAlreadyOwnedByYou, secondCreate.Error!.Code);
+    }
+
+    [Fact]
     public async Task DiskStorage_BucketMetadataDeleteOperations_PreserveOtherConfigurationsUntilEmpty()
     {
         await using var fixture = new DiskStorageFixture();
@@ -4777,7 +4799,8 @@ public sealed class DiskStorageServiceTests
         });
 
         Assert.False(putObjectLock.IsSuccess);
-        Assert.Equal(StorageErrorCode.VersionConflict, putObjectLock.Error!.Code);
+        // AWS surfaces this precondition as InvalidBucketState (not OperationAborted / VersionConflict).
+        Assert.Equal(StorageErrorCode.InvalidBucketState, putObjectLock.Error!.Code);
         Assert.Equal(409, putObjectLock.Error.SuggestedHttpStatusCode);
         Assert.Contains("versioning", putObjectLock.Error.Message, StringComparison.OrdinalIgnoreCase);
 

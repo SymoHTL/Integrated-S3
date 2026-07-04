@@ -41,8 +41,14 @@ public enum StorageErrorCode
     /// <summary>A concurrent modification was detected on the same object version.</summary>
     VersionConflict,
 
-    /// <summary>A bucket with the specified name already exists.</summary>
+    /// <summary>A bucket with the specified name already exists and is owned by another account.</summary>
     BucketAlreadyExists,
+
+    /// <summary>A bucket with the specified name already exists and is owned by the requesting account (idempotent re-create).</summary>
+    BucketAlreadyOwnedByYou,
+
+    /// <summary>The bucket is in a state that does not permit the requested operation (e.g., enabling Object Lock without versioning).</summary>
+    InvalidBucketState,
 
     /// <summary>The bucket cannot be deleted because it still contains objects.</summary>
     BucketNotEmpty,

@@ -45,8 +45,8 @@ internal static class S3ErrorTranslator
                  $"Bucket '{bucketName}' already exists (owned by another account)."),
 
             "BucketAlreadyOwnedByYou" =>
-                (StorageErrorCode.BucketAlreadyExists,
-                 $"Bucket '{bucketName}' already exists and is owned by you."),
+                (StorageErrorCode.BucketAlreadyOwnedByYou,
+                 $"Your previous request to create the named bucket '{bucketName}' succeeded and you already own it."),
 
             "BadDigest" =>
                 (StorageErrorCode.InvalidChecksum,

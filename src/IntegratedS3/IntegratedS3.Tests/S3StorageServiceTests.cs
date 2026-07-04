@@ -292,6 +292,21 @@ public sealed class S3StorageServiceTests
         Assert.Equal(StorageErrorCode.BucketAlreadyExists, result.Error!.Code);
     }
 
+    [Fact]
+    public async Task CreateBucketAsync_TranslatesBucketAlreadyOwnedByYou_ToDistinctCode()
+    {
+        var fake = new FakeS3Client();
+        fake.CreateBucketException = new AmazonS3Exception(
+            "Bucket already owned by you.", ErrorType.Sender, "BucketAlreadyOwnedByYou", "req-1", HttpStatusCode.Conflict);
+
+        var svc = BuildService(fake);
+        var result = await svc.CreateBucketAsync(new CreateBucketRequest { BucketName = "my-bucket" });
+
+        Assert.False(result.IsSuccess);
+        // Must be distinguished from BucketAlreadyExists (a name owned by another account).
+        Assert.Equal(StorageErrorCode.BucketAlreadyOwnedByYou, result.Error!.Code);
+    }
+
     // --- HeadBucketAsync ---
 
     [Fact]
