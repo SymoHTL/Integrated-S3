@@ -66,6 +66,34 @@ public interface IStorageCatalogStore
     ValueTask<StoredObjectEntry?> GetObjectAsync(string providerName, string bucketName, string key, string? versionId = null, CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Records, for a replica row, which PRIMARY version id the replica's own <paramref name="replicaVersionId"/>
+    /// mirrors, so that version-specific operations (e.g. tagging a historical version) can later be translated
+    /// from a primary version id to the corresponding replica version id. This is a no-op when the matching replica
+    /// row does not exist. Callers should only invoke it for versioned objects where a concrete primary version id
+    /// is known; unversioned/null versions need no mapping.
+    /// </summary>
+    /// <param name="replicaProviderName">The replica storage provider that owns the row.</param>
+    /// <param name="bucketName">The bucket containing the object.</param>
+    /// <param name="key">The object key.</param>
+    /// <param name="primaryVersionId">The primary version id that the replica version mirrors.</param>
+    /// <param name="replicaVersionId">The replica's own version id for the mirrored object.</param>
+    /// <param name="cancellationToken">A token to cancel the operation.</param>
+    ValueTask RecordReplicaVersionMappingAsync(string replicaProviderName, string bucketName, string key, string primaryVersionId, string replicaVersionId, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Resolves the replica's own version id that mirrors the supplied <paramref name="primaryVersionId"/> for the
+    /// given replica provider, bucket, and key, or <see langword="null"/> when no mapping has been recorded (e.g. a
+    /// legacy replica row, or one not yet replicated). Never returns the primary version id verbatim.
+    /// </summary>
+    /// <param name="replicaProviderName">The replica storage provider to resolve against.</param>
+    /// <param name="bucketName">The bucket containing the object.</param>
+    /// <param name="key">The object key.</param>
+    /// <param name="primaryVersionId">The primary version id to translate.</param>
+    /// <param name="cancellationToken">A token to cancel the operation.</param>
+    /// <returns>The corresponding replica version id, or <see langword="null"/> when unmapped.</returns>
+    ValueTask<string?> GetReplicaVersionIdForPrimaryAsync(string replicaProviderName, string bucketName, string key, string primaryVersionId, CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Lists object entries in the catalog, optionally filtered by provider, bucket, and key prefix.
     /// </summary>
     /// <param name="providerName">If specified, limits results to this provider.</param>

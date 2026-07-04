@@ -301,6 +301,55 @@ internal sealed class EntityFrameworkStorageCatalogStore<TDbContext>(
         await query.ExecuteDeleteAsync(cancellationToken);
     }
 
+    public async ValueTask RecordReplicaVersionMappingAsync(string replicaProviderName, string bucketName, string key, string primaryVersionId, string replicaVersionId, CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(replicaVersionId) || string.IsNullOrWhiteSpace(primaryVersionId)) {
+            return;
+        }
+
+        await EnsureInitializedAsync(cancellationToken);
+
+        await using var scope = serviceProvider.CreateAsyncScope();
+        var dbContext = ResolveDbContext(scope);
+
+        // Stamp the primary version id onto the already-persisted replica row (identified by its own version id).
+        // A set-based update avoids touching the concurrency token / other columns; if the replica row does not
+        // exist yet (upsert not committed), this is a harmless no-op and the mapping is (re)recorded on the next
+        // repair pass.
+        await dbContext.Set<ObjectCatalogRecord>()
+            .Where(existing => existing.ProviderName == replicaProviderName
+                && existing.BucketName == bucketName
+                && existing.Key == key
+                && existing.VersionId == replicaVersionId)
+            .ExecuteUpdateAsync(setters => setters
+                .SetProperty(static existing => existing.PrimaryVersionId, primaryVersionId), cancellationToken);
+    }
+
+    public async ValueTask<string?> GetReplicaVersionIdForPrimaryAsync(string replicaProviderName, string bucketName, string key, string primaryVersionId, CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(primaryVersionId)) {
+            return null;
+        }
+
+        await EnsureInitializedAsync(cancellationToken);
+
+        await using var scope = serviceProvider.CreateAsyncScope();
+        var dbContext = ResolveDbContext(scope);
+
+        // Resolve the replica's own version id from the primary version it mirrors. Order by the surrogate key
+        // descending (a monotonically increasing int, which every relational provider — including SQLite — can
+        // translate) so that if a re-repair ever leaves two rows mapped to the same primary version, the most
+        // recently inserted replica version wins.
+        return await dbContext.Set<ObjectCatalogRecord>()
+            .Where(existing => existing.ProviderName == replicaProviderName
+                && existing.BucketName == bucketName
+                && existing.Key == key
+                && existing.PrimaryVersionId == primaryVersionId)
+            .OrderByDescending(existing => existing.Id)
+            .Select(existing => existing.VersionId)
+            .FirstOrDefaultAsync(cancellationToken);
+    }
+
     public async ValueTask<StoredObjectEntry?> GetObjectAsync(string providerName, string bucketName, string key, string? versionId = null, CancellationToken cancellationToken = default)
     {
         await EnsureInitializedAsync(cancellationToken);

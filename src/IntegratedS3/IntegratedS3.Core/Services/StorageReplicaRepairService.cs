@@ -298,6 +298,12 @@ internal sealed class StorageReplicaRepairService(
         }
 
         await catalogStore.UpsertObjectAsync(replicaBackend.Name, replicaResult.Value, cancellationToken);
+        // #126: record the primary->replica version mapping so a later version-specific tag repair can translate.
+        // Only meaningful when both sides carry a concrete (versioned) version id.
+        if (!string.IsNullOrWhiteSpace(versionId) && !string.IsNullOrWhiteSpace(replicaResult.Value.VersionId)) {
+            await catalogStore.RecordReplicaVersionMappingAsync(replicaBackend.Name, bucketName, key, versionId, replicaResult.Value.VersionId, cancellationToken);
+        }
+
         return null;
     }
 
@@ -309,6 +315,19 @@ internal sealed class StorageReplicaRepairService(
         string? requestedVersionId,
         CancellationToken cancellationToken)
     {
+        // #126: translate the PRIMARY version id (as recorded on the repair entry) to this replica's own version.
+        // A null request means "latest" and passes through. An explicit-but-unmapped version means the replica has
+        // no corresponding version yet (the object repair that records the mapping has not run / completed): skip so
+        // we never tag the wrong replica version. A subsequent object repair records the mapping and a re-queued tag
+        // repair then reconciles.
+        string? replicaVersionId = null;
+        if (!string.IsNullOrWhiteSpace(requestedVersionId)) {
+            replicaVersionId = await catalogStore.GetReplicaVersionIdForPrimaryAsync(replicaBackend.Name, bucketName, key, requestedVersionId, cancellationToken);
+            if (string.IsNullOrWhiteSpace(replicaVersionId)) {
+                return null;
+            }
+        }
+
         var primaryTagResult = await primaryBackend.GetObjectTagsAsync(new GetObjectTagsRequest
         {
             BucketName = bucketName,
@@ -318,7 +337,7 @@ internal sealed class StorageReplicaRepairService(
         ObserveResult(primaryBackend, primaryTagResult);
         if (!primaryTagResult.IsSuccess || primaryTagResult.Value is null) {
             if (primaryTagResult.Error?.Code is StorageErrorCode.ObjectNotFound or StorageErrorCode.BucketNotFound) {
-                return await ReconcileReplicaObjectDeletionAsync(replicaBackend, bucketName, key, requestedVersionId, cancellationToken);
+                return await ReconcileReplicaObjectDeletionAsync(replicaBackend, bucketName, key, replicaVersionId, cancellationToken);
             }
 
             return primaryTagResult.Error ?? CreatePrimaryReplicationSourceError(primaryBackend, bucketName, key, requestedVersionId, "Primary object tags could not be resolved for replica repair.");
@@ -330,7 +349,7 @@ internal sealed class StorageReplicaRepairService(
             {
                 BucketName = bucketName,
                 Key = key,
-                VersionId = requestedVersionId
+                VersionId = replicaVersionId
             }, cancellationToken);
         }
         else {
@@ -338,17 +357,17 @@ internal sealed class StorageReplicaRepairService(
             {
                 BucketName = bucketName,
                 Key = key,
-                VersionId = requestedVersionId,
+                VersionId = replicaVersionId,
                 Tags = CloneTags(primaryTagResult.Value.Tags) ?? new Dictionary<string, string>(StringComparer.Ordinal)
             }, cancellationToken);
         }
 
         ObserveResult(replicaBackend, replicaResult);
         if (!replicaResult.IsSuccess || replicaResult.Value is null) {
-            return replicaResult.Error ?? CreateReplicaOperationError(replicaBackend, bucketName, key, requestedVersionId, "Replica tag repair did not return tag metadata.");
+            return replicaResult.Error ?? CreateReplicaOperationError(replicaBackend, bucketName, key, replicaVersionId, "Replica tag repair did not return tag metadata.");
         }
 
-        await RefreshCatalogObjectAsync(replicaBackend, bucketName, key, requestedVersionId, cancellationToken);
+        await RefreshCatalogObjectAsync(replicaBackend, bucketName, key, replicaVersionId, cancellationToken);
         return null;
     }
 
