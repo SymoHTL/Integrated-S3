@@ -70,4 +70,7 @@ public sealed class S3ObjectVersionEntry
 
     /// <summary>The storage class of the object version.</summary>
     public string StorageClass { get; init; } = "STANDARD";
+
+    /// <summary>The owner of the object version.</summary>
+    public S3BucketOwner? Owner { get; init; }
 }

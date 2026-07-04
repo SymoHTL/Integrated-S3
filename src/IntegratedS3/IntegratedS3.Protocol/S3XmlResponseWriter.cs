@@ -467,6 +467,10 @@ public static class S3XmlResponseWriter
                 xmlWriter.WriteElementString("StorageClass", version.StorageClass);
             }
 
+            if (version.Owner is not null) {
+                WriteOwner(xmlWriter, "Owner", version.Owner);
+            }
+
             xmlWriter.WriteEndElement();
         }
 
