@@ -1539,7 +1539,7 @@ public abstract class StorageProviderContractTests
 
     /// <summary>
     /// Verifies that an in-progress multipart upload can be aborted, that completing an
-    /// aborted upload fails with <see cref="StorageErrorCode.MultipartConflict"/>, and that
+    /// aborted upload fails with <see cref="StorageErrorCode.NoSuchUpload"/>, and that
     /// the upload no longer appears in the active upload listing.
     /// </summary>
     [Fact]
@@ -1586,7 +1586,7 @@ public abstract class StorageProviderContractTests
             Key = "docs/aborted.txt",
             UploadId = initiatedUpload.UploadId,
             Parts = [uploadedPart]
-        }), StorageErrorCode.MultipartConflict);
+        }), StorageErrorCode.NoSuchUpload);
 
         var uploads = await storage.ListMultipartUploadsAsync(new ListMultipartUploadsRequest
         {

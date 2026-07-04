@@ -3215,7 +3215,7 @@ public sealed class DiskStorageServiceTests
         });
 
         Assert.False(completeResult.IsSuccess);
-        Assert.Equal(IntegratedS3.Abstractions.Errors.StorageErrorCode.MultipartConflict, completeResult.Error!.Code);
+        Assert.Equal(IntegratedS3.Abstractions.Errors.StorageErrorCode.NoSuchUpload, completeResult.Error!.Code);
     }
 
     [Fact]
@@ -4865,5 +4865,227 @@ public sealed class DiskStorageServiceTests
     private static string GetBucketMetadataPath(string rootPath, string bucketName)
     {
         return Path.Combine(rootPath, bucketName, ".integrateds3.bucket.json");
+    }
+
+    // ---- Regression tests for issue #147: multipart error family must map to distinct S3 codes ----
+
+    private static async Task<(string UploadId, MultipartUploadPart Part1, MultipartUploadPart Part2)> SeedTwoPartMultipartUploadAsync(
+        IStorageBackend storageService,
+        string bucketName,
+        string key)
+    {
+        await storageService.CreateBucketAsync(new CreateBucketRequest { BucketName = bucketName });
+
+        var initiate = await storageService.InitiateMultipartUploadAsync(new InitiateMultipartUploadRequest
+        {
+            BucketName = bucketName,
+            Key = key,
+            ContentType = "text/plain"
+        });
+        Assert.True(initiate.IsSuccess);
+
+        await using var part1Stream = new MemoryStream(Encoding.UTF8.GetBytes("hello "));
+        var part1 = await storageService.UploadMultipartPartAsync(new UploadMultipartPartRequest
+        {
+            BucketName = bucketName,
+            Key = key,
+            UploadId = initiate.Value!.UploadId,
+            PartNumber = 1,
+            Content = part1Stream
+        });
+        Assert.True(part1.IsSuccess);
+
+        await using var part2Stream = new MemoryStream(Encoding.UTF8.GetBytes("world"));
+        var part2 = await storageService.UploadMultipartPartAsync(new UploadMultipartPartRequest
+        {
+            BucketName = bucketName,
+            Key = key,
+            UploadId = initiate.Value.UploadId,
+            PartNumber = 2,
+            Content = part2Stream
+        });
+        Assert.True(part2.IsSuccess);
+
+        return (initiate.Value.UploadId, part1.Value!, part2.Value!);
+    }
+
+    [Fact]
+    public async Task DiskStorage_Complete_MissingPart_ReturnsInvalidPart()
+    {
+        await using var fixture = new DiskStorageFixture();
+        var storageService = fixture.Services.GetRequiredService<IStorageBackend>();
+        var (uploadId, part1, _) = await SeedTwoPartMultipartUploadAsync(storageService, "mp-invalidpart-missing", "docs/obj.txt");
+
+        // Reference a part number (3) that was never uploaded.
+        var completeResult = await storageService.CompleteMultipartUploadAsync(new CompleteMultipartUploadRequest
+        {
+            BucketName = "mp-invalidpart-missing",
+            Key = "docs/obj.txt",
+            UploadId = uploadId,
+            Parts =
+            [
+                part1,
+                new MultipartUploadPart { PartNumber = 3, ETag = "\"deadbeef\"", ContentLength = 0, LastModifiedUtc = default }
+            ]
+        });
+
+        Assert.False(completeResult.IsSuccess);
+        Assert.Equal(StorageErrorCode.InvalidPart, completeResult.Error!.Code);
+        Assert.Equal(400, completeResult.Error.SuggestedHttpStatusCode);
+    }
+
+    [Fact]
+    public async Task DiskStorage_Complete_ETagMismatch_ReturnsInvalidPart()
+    {
+        await using var fixture = new DiskStorageFixture();
+        var storageService = fixture.Services.GetRequiredService<IStorageBackend>();
+        var (uploadId, part1, part2) = await SeedTwoPartMultipartUploadAsync(storageService, "mp-invalidpart-etag", "docs/obj.txt");
+
+        var completeResult = await storageService.CompleteMultipartUploadAsync(new CompleteMultipartUploadRequest
+        {
+            BucketName = "mp-invalidpart-etag",
+            Key = "docs/obj.txt",
+            UploadId = uploadId,
+            Parts =
+            [
+                part1,
+                new MultipartUploadPart { PartNumber = part2.PartNumber, ETag = "\"0000000000000000000000000000ffff\"", ContentLength = 0, LastModifiedUtc = default }
+            ]
+        });
+
+        Assert.False(completeResult.IsSuccess);
+        Assert.Equal(StorageErrorCode.InvalidPart, completeResult.Error!.Code);
+        Assert.Equal(400, completeResult.Error.SuggestedHttpStatusCode);
+    }
+
+    [Fact]
+    public async Task DiskStorage_Complete_PartsNotAscending_ReturnsInvalidPartOrder()
+    {
+        await using var fixture = new DiskStorageFixture();
+        var storageService = fixture.Services.GetRequiredService<IStorageBackend>();
+        var (uploadId, part1, part2) = await SeedTwoPartMultipartUploadAsync(storageService, "mp-partorder-desc", "docs/obj.txt");
+
+        // Parts supplied in descending order must be rejected, not silently re-sorted.
+        var completeResult = await storageService.CompleteMultipartUploadAsync(new CompleteMultipartUploadRequest
+        {
+            BucketName = "mp-partorder-desc",
+            Key = "docs/obj.txt",
+            UploadId = uploadId,
+            Parts = [part2, part1]
+        });
+
+        Assert.False(completeResult.IsSuccess);
+        Assert.Equal(StorageErrorCode.InvalidPartOrder, completeResult.Error!.Code);
+        Assert.Equal(400, completeResult.Error.SuggestedHttpStatusCode);
+    }
+
+    [Fact]
+    public async Task DiskStorage_Complete_DuplicatePartNumbers_ReturnsInvalidPartOrder()
+    {
+        await using var fixture = new DiskStorageFixture();
+        var storageService = fixture.Services.GetRequiredService<IStorageBackend>();
+        var (uploadId, part1, _) = await SeedTwoPartMultipartUploadAsync(storageService, "mp-partorder-dup", "docs/obj.txt");
+
+        var completeResult = await storageService.CompleteMultipartUploadAsync(new CompleteMultipartUploadRequest
+        {
+            BucketName = "mp-partorder-dup",
+            Key = "docs/obj.txt",
+            UploadId = uploadId,
+            Parts = [part1, part1]
+        });
+
+        Assert.False(completeResult.IsSuccess);
+        Assert.Equal(StorageErrorCode.InvalidPartOrder, completeResult.Error!.Code);
+        Assert.Equal(400, completeResult.Error.SuggestedHttpStatusCode);
+    }
+
+    [Fact]
+    public async Task DiskStorage_UploadPart_PartNumberAboveMaximum_ReturnsInvalidArgument()
+    {
+        await using var fixture = new DiskStorageFixture();
+        var storageService = fixture.Services.GetRequiredService<IStorageBackend>();
+        await storageService.CreateBucketAsync(new CreateBucketRequest { BucketName = "mp-partrange" });
+
+        var initiate = await storageService.InitiateMultipartUploadAsync(new InitiateMultipartUploadRequest
+        {
+            BucketName = "mp-partrange",
+            Key = "docs/obj.txt"
+        });
+        Assert.True(initiate.IsSuccess);
+
+        await using var partStream = new MemoryStream(Encoding.UTF8.GetBytes("payload"));
+        var uploadResult = await storageService.UploadMultipartPartAsync(new UploadMultipartPartRequest
+        {
+            BucketName = "mp-partrange",
+            Key = "docs/obj.txt",
+            UploadId = initiate.Value!.UploadId,
+            PartNumber = 10001,
+            Content = partStream
+        });
+
+        Assert.False(uploadResult.IsSuccess);
+        Assert.Equal(StorageErrorCode.InvalidArgument, uploadResult.Error!.Code);
+        Assert.Equal(400, uploadResult.Error.SuggestedHttpStatusCode);
+    }
+
+    [Fact]
+    public async Task DiskStorage_UploadPart_UnknownUploadId_ReturnsNoSuchUpload()
+    {
+        await using var fixture = new DiskStorageFixture();
+        var storageService = fixture.Services.GetRequiredService<IStorageBackend>();
+        await storageService.CreateBucketAsync(new CreateBucketRequest { BucketName = "mp-nosuchupload-uploadpart" });
+
+        await using var partStream = new MemoryStream(Encoding.UTF8.GetBytes("payload"));
+        var uploadResult = await storageService.UploadMultipartPartAsync(new UploadMultipartPartRequest
+        {
+            BucketName = "mp-nosuchupload-uploadpart",
+            Key = "docs/obj.txt",
+            UploadId = "00000000000000000000000000000000",
+            PartNumber = 1,
+            Content = partStream
+        });
+
+        Assert.False(uploadResult.IsSuccess);
+        Assert.Equal(StorageErrorCode.NoSuchUpload, uploadResult.Error!.Code);
+        Assert.Equal(404, uploadResult.Error.SuggestedHttpStatusCode);
+    }
+
+    [Fact]
+    public async Task DiskStorage_Abort_UnknownUploadId_ReturnsNoSuchUpload()
+    {
+        await using var fixture = new DiskStorageFixture();
+        var storageService = fixture.Services.GetRequiredService<IStorageBackend>();
+        await storageService.CreateBucketAsync(new CreateBucketRequest { BucketName = "mp-nosuchupload-abort" });
+
+        var abortResult = await storageService.AbortMultipartUploadAsync(new AbortMultipartUploadRequest
+        {
+            BucketName = "mp-nosuchupload-abort",
+            Key = "docs/obj.txt",
+            UploadId = "00000000000000000000000000000000"
+        });
+
+        Assert.False(abortResult.IsSuccess);
+        Assert.Equal(StorageErrorCode.NoSuchUpload, abortResult.Error!.Code);
+        Assert.Equal(404, abortResult.Error.SuggestedHttpStatusCode);
+    }
+
+    [Fact]
+    public async Task DiskStorage_Complete_UnknownUploadId_ReturnsNoSuchUpload()
+    {
+        await using var fixture = new DiskStorageFixture();
+        var storageService = fixture.Services.GetRequiredService<IStorageBackend>();
+        await storageService.CreateBucketAsync(new CreateBucketRequest { BucketName = "mp-nosuchupload-complete" });
+
+        var completeResult = await storageService.CompleteMultipartUploadAsync(new CompleteMultipartUploadRequest
+        {
+            BucketName = "mp-nosuchupload-complete",
+            Key = "docs/obj.txt",
+            UploadId = "00000000000000000000000000000000",
+            Parts = [new MultipartUploadPart { PartNumber = 1, ETag = "\"deadbeef\"", ContentLength = 0, LastModifiedUtc = default }]
+        });
+
+        Assert.False(completeResult.IsSuccess);
+        Assert.Equal(StorageErrorCode.NoSuchUpload, completeResult.Error!.Code);
+        Assert.Equal(404, completeResult.Error.SuggestedHttpStatusCode);
     }
 }

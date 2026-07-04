@@ -129,6 +129,7 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
     private const string UploadsQueryParameterName = "uploads";
     private const string UploadIdQueryParameterName = "uploadId";
     private const string PartNumberQueryParameterName = "partNumber";
+    private const int MaxMultipartPartNumber = 10000;
     private const string PartNumberMarkerQueryParameterName = "part-number-marker";
     private const string VersionIdQueryParameterName = "versionId";
     private const string DeleteQueryParameterName = "delete";
@@ -4163,6 +4164,10 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
             StorageErrorCode.BucketAlreadyExists => StatusCodes.Status409Conflict,
             StorageErrorCode.BucketNotEmpty => StatusCodes.Status409Conflict,
             StorageErrorCode.MultipartConflict => StatusCodes.Status409Conflict,
+            StorageErrorCode.NoSuchUpload => StatusCodes.Status404NotFound,
+            StorageErrorCode.InvalidPart => StatusCodes.Status400BadRequest,
+            StorageErrorCode.InvalidPartOrder => StatusCodes.Status400BadRequest,
+            StorageErrorCode.InvalidArgument => StatusCodes.Status400BadRequest,
             StorageErrorCode.Throttled => StatusCodes.Status429TooManyRequests,
             StorageErrorCode.ProviderUnavailable => StatusCodes.Status503ServiceUnavailable,
             StorageErrorCode.UnsupportedCapability => StatusCodes.Status501NotImplemented,
@@ -4200,6 +4205,10 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
             StorageErrorCode.BucketAlreadyExists => "BucketAlreadyExists",
             StorageErrorCode.BucketNotEmpty => "BucketNotEmpty",
             StorageErrorCode.MultipartConflict => "InvalidRequest",
+            StorageErrorCode.NoSuchUpload => "NoSuchUpload",
+            StorageErrorCode.InvalidPart => "InvalidPart",
+            StorageErrorCode.InvalidPartOrder => "InvalidPartOrder",
+            StorageErrorCode.InvalidArgument => "InvalidArgument",
             StorageErrorCode.Throttled => "SlowDown",
             StorageErrorCode.ProviderUnavailable => "ServiceUnavailable",
             StorageErrorCode.UnsupportedCapability => "NotImplemented",
@@ -6661,9 +6670,9 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
             return false;
         }
 
-        if (!int.TryParse(values.ToString(), out var parsedPartNumber) || parsedPartNumber <= 0) {
+        if (!int.TryParse(values.ToString(), out var parsedPartNumber) || parsedPartNumber < 1 || parsedPartNumber > MaxMultipartPartNumber) {
             partNumber = null;
-            error = $"The '{PartNumberQueryParameterName}' query parameter must be a positive integer.";
+            error = $"Part number must be an integer between 1 and {MaxMultipartPartNumber}, inclusive.";
             return false;
         }
 
