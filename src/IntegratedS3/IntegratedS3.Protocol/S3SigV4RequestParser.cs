@@ -87,14 +87,11 @@ public static class S3SigV4RequestParser
         }
 
         var parameterSection = trimmed[AlgorithmName.Length..].TrimStart();
-        var parameters = parameterSection.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-            .Select(static part => part.Split('=', 2, StringSplitOptions.TrimEntries))
-            .ToDictionary(
-                static parts => parts[0],
-                static parts => parts.Length > 1 ? parts[1] : string.Empty,
-                StringComparer.Ordinal);
+        if (!TryBuildAuthorizationParameters(parameterSection, out var parameters, out error)) {
+            return true;
+        }
 
-        if (!parameters.TryGetValue("Credential", out var credential)
+        if (!parameters!.TryGetValue("Credential", out var credential)
             || !TryParseCredentialScope(credential, out var credentialScope, out error)) {
             error ??= "The authorization header must include a valid Credential component.";
             return true;
@@ -224,6 +221,26 @@ public static class S3SigV4RequestParser
         return true;
     }
 
+    private static bool TryBuildAuthorizationParameters(string parameterSection, out Dictionary<string, string>? parameters, out string? error)
+    {
+        parameters = new Dictionary<string, string>(StringComparer.Ordinal);
+        error = null;
+
+        foreach (var part in parameterSection.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)) {
+            var pair = part.Split('=', 2, StringSplitOptions.TrimEntries);
+            var key = pair[0];
+            var value = pair.Length > 1 ? pair[1] : string.Empty;
+
+            if (!parameters.TryAdd(key, value)) {
+                parameters = null;
+                error = "The authorization header contains duplicate parameters.";
+                return false;
+            }
+        }
+
+        return true;
+    }
+
     private static bool TryParseCredentialScope(string? value, out S3SigV4CredentialScope? credentialScope, out string? error)
     {
         credentialScope = null;
@@ -286,14 +303,11 @@ public static class S3SigV4RequestParser
         error = null;
 
         var parameterSection = trimmed[SigV4aAlgorithmName.Length..].TrimStart();
-        var parameters = parameterSection.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-            .Select(static part => part.Split('=', 2, StringSplitOptions.TrimEntries))
-            .ToDictionary(
-                static parts => parts[0],
-                static parts => parts.Length > 1 ? parts[1] : string.Empty,
-                StringComparer.Ordinal);
+        if (!TryBuildAuthorizationParameters(parameterSection, out var parameters, out error)) {
+            return true;
+        }
 
-        if (!parameters.TryGetValue("Credential", out var credential)
+        if (!parameters!.TryGetValue("Credential", out var credential)
             || !TryParseSigV4aCredentialScope(credential, out var credentialScope, out error)) {
             error ??= "The authorization header must include a valid Credential component.";
             return true;
