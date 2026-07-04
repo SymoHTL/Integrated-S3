@@ -50,6 +50,18 @@ public enum StorageErrorCode
     /// <summary>A multipart upload ID conflict or invalid state transition was detected.</summary>
     MultipartConflict,
 
+    /// <summary>The specified multipart upload does not exist, or has been completed or aborted.</summary>
+    NoSuchUpload,
+
+    /// <summary>One or more listed multipart parts is missing or has a mismatched ETag.</summary>
+    InvalidPart,
+
+    /// <summary>The multipart parts were not supplied in ascending part-number order (or contain duplicates).</summary>
+    InvalidPartOrder,
+
+    /// <summary>An argument value violates its allowed range or format (e.g., part number outside 1..10000).</summary>
+    InvalidArgument,
+
     /// <summary>The request was rate-limited by the storage backend.</summary>
     Throttled,
 

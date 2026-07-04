@@ -667,11 +667,11 @@ public sealed class RcloneS3MultipartEncodingCompatibilityTests : IClassFixture<
     }
 
     [Fact]
-    public async Task Error_CompleteMultipartWithWrongPartOrder_DiskProviderAutoSorts()
+    public async Task Error_CompleteMultipartWithWrongPartOrder_ReturnsInvalidPartOrder()
     {
-        // Note: Real S3 rejects parts in wrong order with InvalidPartOrder.
-        // The disk provider auto-sorts parts (see DiskStorageService.cs OrderBy),
-        // so this test verifies the disk backend silently reorders and succeeds.
+        // Real S3 rejects parts supplied out of ascending part-number order with
+        // InvalidPartOrder (HTTP 400). The disk provider must match this behavior
+        // instead of silently re-sorting (issue #147).
         using var client = await _factory.CreateClientAsync();
         var bucket = Bucket();
         const string key = "wrong-order-test.dat";
@@ -686,14 +686,19 @@ public sealed class RcloneS3MultipartEncodingCompatibilityTests : IClassFixture<
         var etag2 = await UploadPartAsync(client, bucket, key, uploadId, 2, part2Data);
         var etag3 = await UploadPartAsync(client, bucket, key, uploadId, 3, part3Data);
 
-        // Complete with parts in reversed order (3, 1, 2)
+        // Complete with parts in reversed order (3, 1, 2) must be rejected.
         var completeResp = await CompleteMultipartAsync(client, bucket, key, uploadId,
             [(3, etag3), (1, etag1), (2, etag2)]);
 
-        // Disk provider auto-sorts, so this succeeds
-        Assert.Equal(HttpStatusCode.OK, completeResp.StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, completeResp.StatusCode);
+        var errorDoc = XDocument.Parse(await completeResp.Content.ReadAsStringAsync());
+        Assert.Equal("InvalidPartOrder", El(errorDoc, "Code"));
 
-        // Content should be in part-number order (1,2,3), not submission order
+        // In ascending part-number order (1, 2, 3) the same upload completes successfully.
+        var orderedResp = await CompleteMultipartAsync(client, bucket, key, uploadId,
+            [(1, etag1), (2, etag2), (3, etag3)]);
+        Assert.Equal(HttpStatusCode.OK, orderedResp.StatusCode);
+
         var getResp = await client.GetAsync(ObjectPath(bucket, key));
         var downloaded = await getResp.Content.ReadAsByteArrayAsync();
         Assert.Equal(

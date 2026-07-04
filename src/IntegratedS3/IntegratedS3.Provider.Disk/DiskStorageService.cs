@@ -27,6 +27,7 @@ internal sealed class DiskStorageService(
     private const string VersionStoreDirectoryName = ".integrateds3-versions";
     private const string MultipartUploadsDirectoryName = ".integrateds3-multipart";
     private const string MultipartStateFileName = "upload.json";
+    private const int MaxMultipartPartNumber = 10000;
     private const string Md5ChecksumAlgorithm = "md5";
     private const string Sha256ChecksumAlgorithm = "sha256";
     private const string Sha1ChecksumAlgorithm = "sha1";
@@ -2534,9 +2535,9 @@ internal sealed class DiskStorageService(
     {
         ArgumentNullException.ThrowIfNull(request);
 
-        if (request.PartNumber <= 0) {
-            return StorageResult<MultipartUploadPart>.Failure(MultipartConflict(
-                "Multipart part numbers must be greater than zero.",
+        if (request.PartNumber < 1 || request.PartNumber > MaxMultipartPartNumber) {
+            return StorageResult<MultipartUploadPart>.Failure(InvalidPartArgument(
+                $"Part number must be an integer between 1 and {MaxMultipartPartNumber}, inclusive.",
                 request.BucketName,
                 request.Key));
         }
@@ -2894,28 +2895,52 @@ internal sealed class DiskStorageService(
                 || string.Equals(uploadChecksumAlgorithm, Crc32cChecksumAlgorithm, StringComparison.OrdinalIgnoreCase))
             ? new List<string>(request.Parts.Count)
             : null;
+
+        // Validate the client-supplied part list before consuming it. AWS requires parts to be
+        // listed in strictly ascending part-number order with no duplicates, and each part number
+        // must fall within the 1..10000 range. These checks must run against the caller's original
+        // order (request.Parts), not a re-sorted copy, so that InvalidPartOrder is surfaced.
+        var previousPartNumber = 0;
+        foreach (var requestedPart in request.Parts) {
+            if (requestedPart.PartNumber < 1 || requestedPart.PartNumber > MaxMultipartPartNumber) {
+                return StorageResult<ObjectInfo>.Failure(InvalidPartArgument(
+                    $"Part number must be an integer between 1 and {MaxMultipartPartNumber}, inclusive.",
+                    request.BucketName,
+                    request.Key));
+            }
+
+            if (requestedPart.PartNumber == previousPartNumber) {
+                return StorageResult<ObjectInfo>.Failure(InvalidPartOrder(
+                    $"The list of parts was not in ascending order. Part '{requestedPart.PartNumber}' is listed more than once.",
+                    request.BucketName,
+                    request.Key));
+            }
+
+            if (requestedPart.PartNumber < previousPartNumber) {
+                return StorageResult<ObjectInfo>.Failure(InvalidPartOrder(
+                    $"The list of parts was not in ascending order. Part '{requestedPart.PartNumber}' followed part '{previousPartNumber}'.",
+                    request.BucketName,
+                    request.Key));
+            }
+
+            previousPartNumber = requestedPart.PartNumber;
+        }
+
         try {
             await using (var destinationStream = new FileStream(tempObjectPath, FileMode.CreateNew, FileAccess.Write, FileShare.None, 81920, FileOptions.Asynchronous | FileOptions.SequentialScan)) {
-                foreach (var requestedPart in request.Parts.OrderBy(static part => part.PartNumber)) {
-                    if (requestedPart.PartNumber <= 0) {
-                        return StorageResult<ObjectInfo>.Failure(MultipartConflict(
-                            "Multipart part numbers must be greater than zero.",
-                            request.BucketName,
-                            request.Key));
-                    }
-
+                foreach (var requestedPart in request.Parts) {
                     var partPath = GetMultipartPartPath(uploadState.UploadDirectoryPath, requestedPart.PartNumber);
                     if (!File.Exists(partPath)) {
-                        return StorageResult<ObjectInfo>.Failure(MultipartConflict(
-                            $"Multipart part '{requestedPart.PartNumber}' was not found for upload '{request.UploadId}'.",
+                        return StorageResult<ObjectInfo>.Failure(InvalidPart(
+                            $"One or more of the specified parts could not be found. Part '{requestedPart.PartNumber}' was not uploaded for upload '{request.UploadId}'.",
                             request.BucketName,
                             request.Key));
                     }
 
                     var actualETag = BuildETag(new FileInfo(partPath));
                     if (!string.Equals(NormalizeETag(requestedPart.ETag), NormalizeETag(actualETag), StringComparison.Ordinal)) {
-                        return StorageResult<ObjectInfo>.Failure(MultipartConflict(
-                            $"Multipart part '{requestedPart.PartNumber}' does not match the supplied ETag.",
+                        return StorageResult<ObjectInfo>.Failure(InvalidPart(
+                            $"The ETag supplied for part '{requestedPart.PartNumber}' does not match the ETag of the uploaded part.",
                             request.BucketName,
                             request.Key));
                     }
@@ -5228,7 +5253,7 @@ internal sealed class DiskStorageService(
         var uploadDirectoryPath = GetMultipartUploadPath(bucketName, uploadId);
         var statePath = GetMultipartStatePath(uploadDirectoryPath);
         if (_multipartStateStore is null && !File.Exists(statePath)) {
-            return StorageResult<MultipartUploadStateContext>.Failure(MultipartConflict(
+            return StorageResult<MultipartUploadStateContext>.Failure(NoSuchUpload(
                 $"Multipart upload '{uploadId}' was not found.",
                 bucketName,
                 key));
@@ -5239,7 +5264,7 @@ internal sealed class DiskStorageService(
             || !string.Equals(state.BucketName, bucketName, StringComparison.Ordinal)
             || !string.Equals(state.Key, key, StringComparison.Ordinal)
             || !string.Equals(state.UploadId, uploadId, StringComparison.Ordinal)) {
-            return StorageResult<MultipartUploadStateContext>.Failure(MultipartConflict(
+            return StorageResult<MultipartUploadStateContext>.Failure(NoSuchUpload(
                 $"Multipart upload '{uploadId}' does not match the supplied bucket or key.",
                 bucketName,
                 key));
@@ -6026,6 +6051,58 @@ internal sealed class DiskStorageService(
         return new StorageError
         {
             Code = StorageErrorCode.MultipartConflict,
+            Message = message,
+            BucketName = bucketName,
+            ObjectKey = objectKey,
+            ProviderName = options.ProviderName,
+            SuggestedHttpStatusCode = 400
+        };
+    }
+
+    private StorageError NoSuchUpload(string message, string bucketName, string objectKey)
+    {
+        return new StorageError
+        {
+            Code = StorageErrorCode.NoSuchUpload,
+            Message = message,
+            BucketName = bucketName,
+            ObjectKey = objectKey,
+            ProviderName = options.ProviderName,
+            SuggestedHttpStatusCode = 404
+        };
+    }
+
+    private StorageError InvalidPart(string message, string bucketName, string objectKey)
+    {
+        return new StorageError
+        {
+            Code = StorageErrorCode.InvalidPart,
+            Message = message,
+            BucketName = bucketName,
+            ObjectKey = objectKey,
+            ProviderName = options.ProviderName,
+            SuggestedHttpStatusCode = 400
+        };
+    }
+
+    private StorageError InvalidPartOrder(string message, string bucketName, string objectKey)
+    {
+        return new StorageError
+        {
+            Code = StorageErrorCode.InvalidPartOrder,
+            Message = message,
+            BucketName = bucketName,
+            ObjectKey = objectKey,
+            ProviderName = options.ProviderName,
+            SuggestedHttpStatusCode = 400
+        };
+    }
+
+    private StorageError InvalidPartArgument(string message, string bucketName, string objectKey)
+    {
+        return new StorageError
+        {
+            Code = StorageErrorCode.InvalidArgument,
             Message = message,
             BucketName = bucketName,
             ObjectKey = objectKey,

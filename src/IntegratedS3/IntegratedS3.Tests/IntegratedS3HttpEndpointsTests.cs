@@ -10798,6 +10798,79 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
     private static async Task AssertNotImplementedResponseAsync(HttpResponseMessage response)
         => await AssertErrorResponseAsync(response, HttpStatusCode.NotImplemented, "NotImplemented");
 
+    [Fact]
+    public async Task S3CompatibleUploadPart_PartNumberAboveMaximum_ReturnsInvalidArgument()
+    {
+        using var client = await _factory.CreateClientAsync();
+        const string bucketName = "multipart-partnumber-range-bucket";
+        const string objectKey = "docs/range.txt";
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync($"/integrated-s3/buckets/{bucketName}", content: null)).StatusCode);
+
+        using var initiateRequest = new HttpRequestMessage(HttpMethod.Post, $"/integrated-s3/{bucketName}/{objectKey}?uploads")
+        {
+            Content = new ByteArrayContent([])
+        };
+        var initiateResponse = await client.SendAsync(initiateRequest);
+        Assert.Equal(HttpStatusCode.OK, initiateResponse.StatusCode);
+        var uploadId = GetRequiredElementValue(XDocument.Parse(await initiateResponse.Content.ReadAsStringAsync()), "UploadId");
+
+        var partResponse = await client.PutAsync(
+            $"/integrated-s3/{bucketName}/{objectKey}?partNumber=10001&uploadId={Uri.EscapeDataString(uploadId)}",
+            new StringContent("payload", Encoding.UTF8, "text/plain"));
+
+        await AssertErrorResponseAsync(partResponse, HttpStatusCode.BadRequest, "InvalidArgument");
+    }
+
+    [Fact]
+    public async Task S3CompatibleCompleteMultipartUpload_PartsNotAscending_ReturnsInvalidPartOrder()
+    {
+        using var client = await _factory.CreateClientAsync();
+        const string bucketName = "multipart-partorder-bucket";
+        const string objectKey = "docs/order.txt";
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync($"/integrated-s3/buckets/{bucketName}", content: null)).StatusCode);
+
+        using var initiateRequest = new HttpRequestMessage(HttpMethod.Post, $"/integrated-s3/{bucketName}/{objectKey}?uploads")
+        {
+            Content = new ByteArrayContent([])
+        };
+        var initiateResponse = await client.SendAsync(initiateRequest);
+        Assert.Equal(HttpStatusCode.OK, initiateResponse.StatusCode);
+        var uploadId = GetRequiredElementValue(XDocument.Parse(await initiateResponse.Content.ReadAsStringAsync()), "UploadId");
+
+        var firstPartResponse = await client.PutAsync(
+            $"/integrated-s3/{bucketName}/{objectKey}?partNumber=1&uploadId={Uri.EscapeDataString(uploadId)}",
+            new StringContent("hello ", Encoding.UTF8, "text/plain"));
+        Assert.Equal(HttpStatusCode.OK, firstPartResponse.StatusCode);
+        var firstPartETag = firstPartResponse.Headers.ETag?.Tag ?? throw new Xunit.Sdk.XunitException("Expected first part ETag header.");
+
+        var secondPartResponse = await client.PutAsync(
+            $"/integrated-s3/{bucketName}/{objectKey}?partNumber=2&uploadId={Uri.EscapeDataString(uploadId)}",
+            new StringContent("world", Encoding.UTF8, "text/plain"));
+        Assert.Equal(HttpStatusCode.OK, secondPartResponse.StatusCode);
+        var secondPartETag = secondPartResponse.Headers.ETag?.Tag ?? throw new Xunit.Sdk.XunitException("Expected second part ETag header.");
+
+        // Parts listed in descending order (2 then 1) must be rejected with InvalidPartOrder.
+        using var completeRequest = new HttpRequestMessage(HttpMethod.Post, $"/integrated-s3/{bucketName}/{objectKey}?uploadId={Uri.EscapeDataString(uploadId)}")
+        {
+            Content = new StringContent($"""
+<CompleteMultipartUpload>
+  <Part>
+    <PartNumber>2</PartNumber>
+    <ETag>{secondPartETag}</ETag>
+  </Part>
+  <Part>
+    <PartNumber>1</PartNumber>
+    <ETag>{firstPartETag}</ETag>
+  </Part>
+</CompleteMultipartUpload>
+""", Encoding.UTF8, "application/xml")
+        };
+
+        await AssertErrorResponseAsync(await client.SendAsync(completeRequest), HttpStatusCode.BadRequest, "InvalidPartOrder");
+    }
+
     private static async Task AssertErrorResponseAsync(HttpResponseMessage response, HttpStatusCode expectedStatusCode, string expectedCode)
     {
         Assert.Equal(expectedStatusCode, response.StatusCode);

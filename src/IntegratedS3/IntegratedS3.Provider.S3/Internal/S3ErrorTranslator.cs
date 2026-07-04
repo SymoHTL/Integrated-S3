@@ -34,7 +34,7 @@ internal static class S3ErrorTranslator
                  $"Bucket '{bucketName}' does not have a default encryption configuration."),
 
             "NoSuchUpload" =>
-                (StorageErrorCode.MultipartConflict,
+                (StorageErrorCode.NoSuchUpload,
                  $"Multipart upload for object '{objectKey}' in bucket '{bucketName}' does not exist or is no longer active."),
 
             "BucketAlreadyExists" =>
@@ -78,12 +78,18 @@ internal static class S3ErrorTranslator
                      : ex.Message),
 
             "InvalidPart" =>
-                (StorageErrorCode.MultipartConflict,
+                (StorageErrorCode.InvalidPart,
                  $"One or more multipart parts for object '{objectKey}' in bucket '{bucketName}' were missing or had mismatched ETags/checksums."),
 
             "InvalidPartOrder" =>
-                (StorageErrorCode.MultipartConflict,
+                (StorageErrorCode.InvalidPartOrder,
                  $"Multipart parts for object '{objectKey}' in bucket '{bucketName}' were not supplied in ascending part-number order."),
+
+            "InvalidArgument" =>
+                (StorageErrorCode.InvalidArgument,
+                 !string.IsNullOrEmpty(objectKey)
+                     ? $"An argument supplied for object '{objectKey}' in bucket '{bucketName}' was invalid: {ex.Message}"
+                     : ex.Message),
 
             "EntityTooSmall" =>
                 (StorageErrorCode.MultipartConflict,
