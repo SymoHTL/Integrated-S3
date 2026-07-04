@@ -4,6 +4,7 @@ using IntegratedS3.Core.Models;
 using IntegratedS3.Core.Options;
 using IntegratedS3.Core.Persistence;
 using IntegratedS3.Core.Services;
+using IntegratedS3.EntityFramework.Serialization;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
@@ -254,9 +255,9 @@ internal sealed class EntityFrameworkStorageCatalogStore<TDbContext>(
             record.ExpiresUtc = @object.ExpiresUtc;
             record.ETag = @object.ETag;
             record.LastModifiedUtc = @object.LastModifiedUtc;
-            record.MetadataJson = @object.Metadata is null ? null : JsonSerializer.Serialize(@object.Metadata);
-            record.TagsJson = @object.Tags is null ? null : JsonSerializer.Serialize(@object.Tags);
-            record.ChecksumsJson = @object.Checksums is null ? null : JsonSerializer.Serialize(@object.Checksums);
+            record.MetadataJson = SerializeDictionary(@object.Metadata);
+            record.TagsJson = SerializeDictionary(@object.Tags);
+            record.ChecksumsJson = SerializeDictionary(@object.Checksums);
             record.RetentionMode = @object.RetentionMode;
             record.RetainUntilDateUtc = @object.RetainUntilDateUtc;
             record.LegalHoldStatus = @object.LegalHoldStatus;
@@ -376,15 +377,9 @@ internal sealed class EntityFrameworkStorageCatalogStore<TDbContext>(
                 ExpiresUtc = @object.ExpiresUtc,
                 ETag = @object.ETag,
                 LastModifiedUtc = @object.LastModifiedUtc,
-                Metadata = string.IsNullOrWhiteSpace(@object.MetadataJson)
-                    ? null
-                    : JsonSerializer.Deserialize<Dictionary<string, string>>(@object.MetadataJson),
-                Tags = string.IsNullOrWhiteSpace(@object.TagsJson)
-                    ? null
-                    : JsonSerializer.Deserialize<Dictionary<string, string>>(@object.TagsJson),
-                Checksums = string.IsNullOrWhiteSpace(@object.ChecksumsJson)
-                    ? null
-                    : JsonSerializer.Deserialize<Dictionary<string, string>>(@object.ChecksumsJson),
+                Metadata = DeserializeDictionary(@object.MetadataJson),
+                Tags = DeserializeDictionary(@object.TagsJson),
+                Checksums = DeserializeDictionary(@object.ChecksumsJson),
                 RetentionMode = @object.RetentionMode,
                 RetainUntilDateUtc = @object.RetainUntilDateUtc,
                 LegalHoldStatus = @object.LegalHoldStatus,
@@ -397,6 +392,32 @@ internal sealed class EntityFrameworkStorageCatalogStore<TDbContext>(
                     : null,
                 LastSyncedAtUtc = @object.LastSyncedAtUtc
         };
+
+    /// <summary>
+    /// Serializes a metadata/tags/checksums dictionary to its JSON-column representation via the source-generated
+    /// <see cref="EntityFrameworkCatalogJsonSerializerContext"/>, returning <see langword="null"/> for a null source
+    /// so the column stays NULL. The source is materialized into a concrete <see cref="Dictionary{TKey,TValue}"/>
+    /// (when it is not already one) so the generated <see cref="Dictionary{TKey,TValue}"/> type info applies; with
+    /// default options this yields the same JSON shape as the previous reflection-based path.
+    /// </summary>
+    private static string? SerializeDictionary(IReadOnlyDictionary<string, string>? source)
+    {
+        if (source is null) {
+            return null;
+        }
+
+        var dictionary = source as Dictionary<string, string> ?? new Dictionary<string, string>(source);
+        return JsonSerializer.Serialize(dictionary, EntityFrameworkCatalogJsonSerializerContext.Default.DictionaryStringString);
+    }
+
+    /// <summary>
+    /// Deserializes a JSON-column value back into a dictionary via the source-generated
+    /// <see cref="EntityFrameworkCatalogJsonSerializerContext"/>, treating null/blank input as "no value".
+    /// </summary>
+    private static Dictionary<string, string>? DeserializeDictionary(string? json)
+        => string.IsNullOrWhiteSpace(json)
+            ? null
+            : JsonSerializer.Deserialize(json, EntityFrameworkCatalogJsonSerializerContext.Default.DictionaryStringString);
 
     private async Task EnsureInitializedAsync(CancellationToken cancellationToken)
     {

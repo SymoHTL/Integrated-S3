@@ -5,6 +5,7 @@ using IntegratedS3.Abstractions.Models;
 using IntegratedS3.Abstractions.Services;
 using IntegratedS3.Core.Options;
 using IntegratedS3.Core.Persistence;
+using IntegratedS3.EntityFramework.Serialization;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
@@ -117,8 +118,8 @@ internal sealed class EntityFrameworkStorageMultipartStateStore<TDbContext>(
         record.ContentLanguage = state.ContentLanguage;
         record.ExpiresUtc = state.ExpiresUtc;
         record.ChecksumAlgorithm = state.ChecksumAlgorithm;
-        record.MetadataJson = state.Metadata is null ? null : JsonSerializer.Serialize(state.Metadata);
-        record.TagsJson = state.Tags is null ? null : JsonSerializer.Serialize(state.Tags);
+        record.MetadataJson = SerializeDictionary(state.Metadata);
+        record.TagsJson = SerializeDictionary(state.Tags);
         record.LastSyncedAtUtc = DateTimeOffset.UtcNow;
 
         if (isNew)
@@ -206,12 +207,34 @@ internal sealed class EntityFrameworkStorageMultipartStateStore<TDbContext>(
             ContentLanguage = record.ContentLanguage,
             ExpiresUtc = record.ExpiresUtc,
             ChecksumAlgorithm = record.ChecksumAlgorithm,
-            Metadata = string.IsNullOrWhiteSpace(record.MetadataJson)
-                ? null
-                : JsonSerializer.Deserialize<Dictionary<string, string>>(record.MetadataJson),
-            Tags = string.IsNullOrWhiteSpace(record.TagsJson)
-                ? null
-                : JsonSerializer.Deserialize<Dictionary<string, string>>(record.TagsJson)
+            Metadata = DeserializeDictionary(record.MetadataJson),
+            Tags = DeserializeDictionary(record.TagsJson)
         };
     }
+
+    /// <summary>
+    /// Serializes a metadata/tags dictionary to its JSON-column representation via the source-generated
+    /// <see cref="EntityFrameworkCatalogJsonSerializerContext"/>, returning <see langword="null"/> for a null source
+    /// so the column stays NULL. The source is materialized into a concrete <see cref="Dictionary{TKey,TValue}"/>
+    /// (when it is not already one) so the generated type info applies; with default options this yields the same
+    /// JSON shape as the previous reflection-based path.
+    /// </summary>
+    private static string? SerializeDictionary(IReadOnlyDictionary<string, string>? source)
+    {
+        if (source is null) {
+            return null;
+        }
+
+        var dictionary = source as Dictionary<string, string> ?? new Dictionary<string, string>(source);
+        return JsonSerializer.Serialize(dictionary, EntityFrameworkCatalogJsonSerializerContext.Default.DictionaryStringString);
+    }
+
+    /// <summary>
+    /// Deserializes a JSON-column value back into a dictionary via the source-generated
+    /// <see cref="EntityFrameworkCatalogJsonSerializerContext"/>, treating null/blank input as "no value".
+    /// </summary>
+    private static Dictionary<string, string>? DeserializeDictionary(string? json)
+        => string.IsNullOrWhiteSpace(json)
+            ? null
+            : JsonSerializer.Deserialize(json, EntityFrameworkCatalogJsonSerializerContext.Default.DictionaryStringString);
 }
