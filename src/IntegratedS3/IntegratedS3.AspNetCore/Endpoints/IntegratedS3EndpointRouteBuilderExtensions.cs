@@ -9,6 +9,7 @@ using System.Text.Json;
 using System.Xml;
 using System.Xml.Linq;
 using IntegratedS3.Abstractions.Capabilities;
+using IntegratedS3.Abstractions.Comparers;
 using IntegratedS3.Abstractions.Errors;
 using IntegratedS3.Abstractions.Models;
 using IntegratedS3.Abstractions.Requests;
@@ -3493,10 +3494,10 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
                     return ToErrorResult(httpContext, StatusCodes.Status400BadRequest, "InvalidArgument", "max-uploads must be between 1 and 1000.", BuildObjectResource(bucketName, null), bucketName);
                 }
 
-                var normalizedKeyMarker = string.IsNullOrWhiteSpace(keyMarker)
+                var normalizedKeyMarker = string.IsNullOrEmpty(keyMarker)
                     ? null
                     : keyMarker;
-                var normalizedUploadIdMarker = normalizedKeyMarker is null || string.IsNullOrWhiteSpace(uploadIdMarker)
+                var normalizedUploadIdMarker = normalizedKeyMarker is null || string.IsNullOrEmpty(uploadIdMarker)
                     ? null
                     : uploadIdMarker;
                 var requestedPageSize = parsedMaxUploads ?? 1000;
@@ -3569,7 +3570,7 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
                 try {
                     var normalizedPrefix = prefix ?? string.Empty;
                     var normalizedDelimiter = string.IsNullOrEmpty(delimiter) ? null : delimiter;
-                    var cursorKey = string.IsNullOrWhiteSpace(marker) ? null : marker;
+                    var cursorKey = string.IsNullOrEmpty(marker) ? null : marker;
 
                     var entries = await CollectListBucketEntriesAsync(
                         storageService.ListObjectsAsync(
@@ -3641,9 +3642,9 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
                 try {
                     var normalizedPrefix = prefix ?? string.Empty;
                     var normalizedDelimiter = string.IsNullOrEmpty(delimiter) ? null : delimiter;
-                    var cursorKey = !string.IsNullOrWhiteSpace(continuationToken)
+                    var cursorKey = !string.IsNullOrEmpty(continuationToken)
                         ? continuationToken
-                        : string.IsNullOrWhiteSpace(startAfter) ? null : startAfter;
+                        : string.IsNullOrEmpty(startAfter) ? null : startAfter;
 
                     var entries = await CollectListBucketEntriesAsync(
                         storageService.ListObjectsAsync(
@@ -4520,7 +4521,7 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
         }
 
         var startAfter = values.ToString();
-        return string.IsNullOrWhiteSpace(startAfter)
+        return string.IsNullOrEmpty(startAfter)
             ? null
             : startAfter;
     }
@@ -4532,7 +4533,7 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
         }
 
         var marker = values.ToString();
-        return string.IsNullOrWhiteSpace(marker)
+        return string.IsNullOrEmpty(marker)
             ? null
             : marker;
     }
@@ -4685,8 +4686,8 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
                 continue;
             }
 
-            if (!string.IsNullOrWhiteSpace(markerValue)
-                && StringComparer.Ordinal.Compare(key, markerValue) <= 0) {
+            if (!string.IsNullOrEmpty(markerValue)
+                && Utf8OrdinalComparer.Instance.Compare(key, markerValue) <= 0) {
                 continue;
             }
 
@@ -9725,11 +9726,11 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
 
     private static bool IsVersionAfterMarker(ObjectInfo version, string? keyMarker, string? versionIdMarker)
     {
-        if (string.IsNullOrWhiteSpace(keyMarker)) {
+        if (string.IsNullOrEmpty(keyMarker)) {
             return true;
         }
 
-        var keyComparison = StringComparer.Ordinal.Compare(version.Key, keyMarker);
+        var keyComparison = Utf8OrdinalComparer.Instance.Compare(version.Key, keyMarker);
         if (keyComparison > 0) {
             return true;
         }
@@ -9738,17 +9739,17 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
             return false;
         }
 
-        return !string.IsNullOrWhiteSpace(versionIdMarker)
+        return !string.IsNullOrEmpty(versionIdMarker)
                && StringComparer.Ordinal.Compare(version.VersionId, versionIdMarker) < 0;
     }
 
     private static bool IsMultipartUploadAfterMarker(MultipartUploadInfo upload, string? keyMarker, string? uploadIdMarker)
     {
-        if (string.IsNullOrWhiteSpace(keyMarker)) {
+        if (string.IsNullOrEmpty(keyMarker)) {
             return true;
         }
 
-        var keyComparison = StringComparer.Ordinal.Compare(upload.Key, keyMarker);
+        var keyComparison = Utf8OrdinalComparer.Instance.Compare(upload.Key, keyMarker);
         if (keyComparison > 0) {
             return true;
         }
@@ -9757,7 +9758,7 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
             return false;
         }
 
-        return !string.IsNullOrWhiteSpace(uploadIdMarker)
+        return !string.IsNullOrEmpty(uploadIdMarker)
                && StringComparer.Ordinal.Compare(upload.UploadId, uploadIdMarker) > 0;
     }
 

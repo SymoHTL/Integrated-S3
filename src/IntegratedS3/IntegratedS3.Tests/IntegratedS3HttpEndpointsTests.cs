@@ -4578,6 +4578,111 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
             static key => Assert.Equal("c.txt", key));
     }
 
+    // Regression tests for issue #167.
+
+    [Fact]
+    public async Task S3CompatibleBucketRoute_ListType2_SortsAstralPlaneKeys_InUtf8ByteOrder()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        // "k\u{1F600}" (astral) and "k豈" (BMP) sort in OPPOSITE orders under UTF-16 ordinal vs
+        // UTF-8 bytes. AWS uses UTF-8 bytes: "k" then "k豈" (3-byte) then "k\u{1F600}" (4-byte).
+        const string astralKey = "k\U0001F600";
+        const string bmpKey = "k豈";
+
+        await client.PutAsync("/integrated-s3/buckets/utf8-sort-bucket", content: null);
+        foreach (var key in new[] { astralKey, bmpKey, "k" }) {
+            var putResponse = await client.PutAsync(
+                $"/integrated-s3/buckets/utf8-sort-bucket/objects/{Uri.EscapeDataString(key)}",
+                new StringContent("x", Encoding.UTF8, "text/plain"));
+            Assert.Equal(HttpStatusCode.OK, putResponse.StatusCode);
+        }
+
+        var response = await client.GetAsync("/integrated-s3/utf8-sort-bucket?list-type=2");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        var document = XDocument.Parse(await response.Content.ReadAsStringAsync());
+        var keys = document.Root!.S3Elements("Contents")
+            .Select(static content => content.S3Element("Key")?.Value)
+            .ToArray();
+
+        // UTF-8 byte order — the BMP key precedes the astral key (the reverse of UTF-16 ordinal).
+        Assert.Collection(keys,
+            static key => Assert.Equal("k", key),
+            key => Assert.Equal(bmpKey, key),
+            key => Assert.Equal(astralKey, key));
+    }
+
+    [Fact]
+    public async Task S3CompatibleBucketRoute_ListType2_WithSingleSpaceDelimiter_GroupsOnSpace()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        await client.PutAsync("/integrated-s3/buckets/space-delimiter-bucket", content: null);
+        foreach (var key in new[] { "alpha beta", "alpha gamma", "solo" }) {
+            var putResponse = await client.PutAsync(
+                $"/integrated-s3/buckets/space-delimiter-bucket/objects/{Uri.EscapeDataString(key)}",
+                new StringContent("x", Encoding.UTF8, "text/plain"));
+            Assert.Equal(HttpStatusCode.OK, putResponse.StatusCode);
+        }
+
+        // A single-space delimiter is a legitimate S3 value and must NOT be dropped as whitespace.
+        var response = await client.GetAsync($"/integrated-s3/space-delimiter-bucket?list-type=2&delimiter={Uri.EscapeDataString(" ")}");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        // PreserveWhitespace so the whitespace-only <Delimiter> element text is not normalized away.
+        var document = XDocument.Parse(await response.Content.ReadAsStringAsync(), LoadOptions.PreserveWhitespace);
+
+        // The space delimiter is echoed back verbatim rather than suppressed.
+        Assert.Equal(" ", GetRequiredElementValue(document, "Delimiter"));
+
+        // "alpha beta" and "alpha gamma" collapse into the common prefix "alpha " (up to the space).
+        var prefixes = document.Root!.S3Elements("CommonPrefixes")
+            .Select(static prefix => prefix.S3Element("Prefix")?.Value)
+            .ToArray();
+        Assert.Collection(prefixes, static prefix => Assert.Equal("alpha ", prefix));
+
+        // "solo" has no space, so it is returned as a plain object.
+        var keys = document.Root.S3Elements("Contents")
+            .Select(static content => content.S3Element("Key")?.Value)
+            .ToArray();
+        Assert.Collection(keys, static key => Assert.Equal("solo", key));
+    }
+
+    [Fact]
+    public async Task S3CompatibleBucketRoute_ListType2_WithWhitespaceStartAfter_IsHonored()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        await client.PutAsync("/integrated-s3/buckets/space-start-after-bucket", content: null);
+        // A single space sorts before every printable key, so a start-after of " " must keep every key.
+        foreach (var key in new[] { "!bang", "apple", "zebra" }) {
+            var putResponse = await client.PutAsync(
+                $"/integrated-s3/buckets/space-start-after-bucket/objects/{Uri.EscapeDataString(key)}",
+                new StringContent("x", Encoding.UTF8, "text/plain"));
+            Assert.Equal(HttpStatusCode.OK, putResponse.StatusCode);
+        }
+
+        // A whitespace-only start-after must be treated as the literal value " ", not dropped as absent.
+        var response = await client.GetAsync($"/integrated-s3/space-start-after-bucket?list-type=2&start-after={Uri.EscapeDataString(" ")}");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        // PreserveWhitespace so the whitespace-only <StartAfter> element text is not normalized away.
+        var document = XDocument.Parse(await response.Content.ReadAsStringAsync(), LoadOptions.PreserveWhitespace);
+
+        // The literal space is echoed back in StartAfter rather than suppressed.
+        Assert.Equal(" ", GetRequiredElementValue(document, "StartAfter"));
+
+        // "!bang" (0x21) sorts after " " (0x20), so all three keys survive the marker filter.
+        var keys = document.Root!.S3Elements("Contents")
+            .Select(static content => content.S3Element("Key")?.Value)
+            .ToArray();
+        Assert.Collection(keys,
+            static key => Assert.Equal("!bang", key),
+            static key => Assert.Equal("apple", key),
+            static key => Assert.Equal("zebra", key));
+    }
+
     [Fact]
     public async Task S3CompatibleDeleteMissingObjects_AreIdempotentAndVersionedDeletesCreateDeleteMarkers()
     {

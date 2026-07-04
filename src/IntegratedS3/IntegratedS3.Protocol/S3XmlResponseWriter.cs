@@ -428,19 +428,19 @@ public static class S3XmlResponseWriter
         xmlWriter.WriteElementString("Prefix", EncodeS3ListValue(response.Prefix ?? string.Empty, response.EncodingType));
 
         if (response.IsV2) {
-            if (!string.IsNullOrWhiteSpace(response.Delimiter)) {
+            if (!string.IsNullOrEmpty(response.Delimiter)) {
                 xmlWriter.WriteElementString("Delimiter", EncodeS3ListValue(response.Delimiter, response.EncodingType));
             }
 
-            if (!string.IsNullOrWhiteSpace(response.StartAfter)) {
+            if (!string.IsNullOrEmpty(response.StartAfter)) {
                 xmlWriter.WriteElementString("StartAfter", EncodeS3ListValue(response.StartAfter, response.EncodingType));
             }
 
-            if (!string.IsNullOrWhiteSpace(response.ContinuationToken)) {
+            if (!string.IsNullOrEmpty(response.ContinuationToken)) {
                 xmlWriter.WriteElementString("ContinuationToken", response.ContinuationToken);
             }
 
-            if (!string.IsNullOrWhiteSpace(response.NextContinuationToken)) {
+            if (!string.IsNullOrEmpty(response.NextContinuationToken)) {
                 xmlWriter.WriteElementString("NextContinuationToken", response.NextContinuationToken);
             }
 
@@ -449,11 +449,11 @@ public static class S3XmlResponseWriter
         else {
             xmlWriter.WriteElementString("Marker", EncodeS3ListValue(response.Marker ?? string.Empty, response.EncodingType));
 
-            if (!string.IsNullOrWhiteSpace(response.Delimiter)) {
+            if (!string.IsNullOrEmpty(response.Delimiter)) {
                 xmlWriter.WriteElementString("Delimiter", EncodeS3ListValue(response.Delimiter, response.EncodingType));
             }
 
-            if (!string.IsNullOrWhiteSpace(response.NextMarker)) {
+            if (!string.IsNullOrEmpty(response.NextMarker)) {
                 xmlWriter.WriteElementString("NextMarker", EncodeS3ListValue(response.NextMarker, response.EncodingType));
             }
         }
@@ -509,7 +509,7 @@ public static class S3XmlResponseWriter
         xmlWriter.WriteElementString("Name", response.Name);
         xmlWriter.WriteElementString("Prefix", EncodeS3ListValue(response.Prefix ?? string.Empty, response.EncodingType));
 
-        if (!string.IsNullOrWhiteSpace(response.Delimiter)) {
+        if (!string.IsNullOrEmpty(response.Delimiter)) {
             xmlWriter.WriteElementString("Delimiter", EncodeS3ListValue(response.Delimiter, response.EncodingType));
         }
 
@@ -518,11 +518,11 @@ public static class S3XmlResponseWriter
         xmlWriter.WriteElementString("KeyMarker", EncodeS3ListValue(response.KeyMarker ?? string.Empty, response.EncodingType));
         xmlWriter.WriteElementString("VersionIdMarker", response.VersionIdMarker ?? string.Empty);
 
-        if (!string.IsNullOrWhiteSpace(response.NextKeyMarker)) {
+        if (!string.IsNullOrEmpty(response.NextKeyMarker)) {
             xmlWriter.WriteElementString("NextKeyMarker", EncodeS3ListValue(response.NextKeyMarker, response.EncodingType));
         }
 
-        if (!string.IsNullOrWhiteSpace(response.NextVersionIdMarker)) {
+        if (!string.IsNullOrEmpty(response.NextVersionIdMarker)) {
             xmlWriter.WriteElementString("NextVersionIdMarker", response.NextVersionIdMarker);
         }
 
@@ -584,15 +584,15 @@ public static class S3XmlResponseWriter
         xmlWriter.WriteElementString("UploadIdMarker", response.UploadIdMarker ?? string.Empty);
         xmlWriter.WriteElementString("Prefix", EncodeS3ListValue(response.Prefix ?? string.Empty, response.EncodingType));
 
-        if (!string.IsNullOrWhiteSpace(response.Delimiter)) {
+        if (!string.IsNullOrEmpty(response.Delimiter)) {
             xmlWriter.WriteElementString("Delimiter", EncodeS3ListValue(response.Delimiter, response.EncodingType));
         }
 
-        if (!string.IsNullOrWhiteSpace(response.NextKeyMarker)) {
+        if (!string.IsNullOrEmpty(response.NextKeyMarker)) {
             xmlWriter.WriteElementString("NextKeyMarker", EncodeS3ListValue(response.NextKeyMarker, response.EncodingType));
         }
 
-        if (!string.IsNullOrWhiteSpace(response.NextUploadIdMarker)) {
+        if (!string.IsNullOrEmpty(response.NextUploadIdMarker)) {
             xmlWriter.WriteElementString("NextUploadIdMarker", response.NextUploadIdMarker);
         }
 
