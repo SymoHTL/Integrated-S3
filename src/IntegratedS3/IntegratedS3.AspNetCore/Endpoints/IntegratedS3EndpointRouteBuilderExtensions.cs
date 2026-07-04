@@ -1659,6 +1659,13 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
                                 $"bytes {normalizedRange.Start}-{normalizedRange.End}/{objectInfo.ContentLength}";
                             httpContext.Response.ContentLength =
                                 normalizedRange.End!.Value - normalizedRange.Start!.Value + 1;
+
+                            // Mirror GET: on a genuine partial 206 the whole-object x-amz-checksum-*
+                            // headers do not describe the ranged extent, so drop them (see issue #233).
+                            if (IsPartialRange(normalizedRange, objectInfo.ContentLength)) {
+                                RemoveChecksumValueHeaders(httpContext.Response);
+                            }
+
                             return TypedResults.StatusCode(StatusCodes.Status206PartialContent);
                         }
                     }
@@ -9422,9 +9429,26 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
     {
         httpResponse.Headers.Remove(ChecksumCrc32HeaderName);
         httpResponse.Headers.Remove(ChecksumCrc32cHeaderName);
+        httpResponse.Headers.Remove(ChecksumCrc64NvmeHeaderName);
         httpResponse.Headers.Remove(ChecksumSha1HeaderName);
         httpResponse.Headers.Remove(ChecksumSha256HeaderName);
         httpResponse.Headers.Remove(ChecksumTypeHeaderName);
+    }
+
+    /// <summary>
+    /// Determines whether a normalized response range covers only part of the object (a genuine
+    /// partial <c>206</c>) rather than the entire byte extent. The stored <c>x-amz-checksum-*</c>
+    /// values describe the whole object, so they are meaningless — and actively harmful — on a
+    /// partial response: an AWS SDK client that validates checksums recomputes over the returned
+    /// slice and fails when it does not match the whole-object digest (see issue #233). A range
+    /// that spans <c>[0, TotalContentLength - 1]</c> covers the whole object and is treated as a
+    /// full response, so the whole-object checksum still applies.
+    /// </summary>
+    private static bool IsPartialRange(ObjectRange range, long totalContentLength)
+    {
+        var start = range.Start ?? 0;
+        var end = range.End ?? totalContentLength - 1;
+        return start > 0 || end < totalContentLength - 1;
     }
 
     private static void ApplyServerSideEncryptionHeaders(HttpResponse httpResponse, ObjectServerSideEncryptionInfo? serverSideEncryption)
@@ -9889,6 +9913,15 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
             if (response.Range is not null) {
                 httpContext.Response.StatusCode = StatusCodes.Status206PartialContent;
                 httpContext.Response.Headers.ContentRange = $"bytes {response.Range.Start}-{response.Range.End}/{response.TotalContentLength}";
+
+                // The x-amz-checksum-* headers applied above describe the whole object. On a genuine
+                // partial 206 the body is only a slice, so a validating client (e.g. AWS SDK for .NET
+                // v4, default) recomputes the checksum over the slice and fails the request. AWS omits
+                // the whole-object checksum on a partial 206; mirror that. A range covering the whole
+                // object is a full response and keeps the checksum. See issue #233.
+                if (IsPartialRange(response.Range, response.TotalContentLength)) {
+                    RemoveChecksumValueHeaders(httpContext.Response);
+                }
             }
             else {
                 httpContext.Response.StatusCode = StatusCodes.Status200OK;
@@ -9952,6 +9985,11 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
             ApplyObjectHeaders(httpContext.Response, firstResponse.Object);
             ApplyObjectTaggingCountHeader(httpContext.Response, firstResponse.Object);
             httpContext.Response.Headers.AcceptRanges = "bytes";
+
+            // A multipart/byteranges response is always a partial 206. The whole-object
+            // x-amz-checksum-* headers do not describe the returned slices and break client-side
+            // checksum validation, so drop them (see issue #233).
+            RemoveChecksumValueHeaders(httpContext.Response);
 
             // Apply response-* overrides (Content-Disposition, Cache-Control, etc.) before the
             // multipart container Content-Type is set below, so the transport type still wins for

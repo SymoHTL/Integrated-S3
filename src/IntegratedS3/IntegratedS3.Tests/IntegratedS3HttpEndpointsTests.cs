@@ -3483,6 +3483,76 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
         Assert.Equal("integrated", await response.Content.ReadAsStringAsync());
     }
 
+    // Regression for issue #233: a whole-object x-amz-checksum-* header must not accompany a partial
+    // 206 body. The stored checksum covers the full object, so a validating client (AWS SDK for .NET
+    // v4, default) recomputes it over the returned slice and fails. A full 200 (and a range covering
+    // the whole object) must still carry the checksum.
+    [Fact]
+    public async Task GetObject_PartialRange_OmitsWholeObjectChecksumHeader_ButFullResponseKeepsIt()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        const string payload = "hello integrated s3"; // 19 bytes
+        var expectedChecksumCrc32c = ChecksumTestAlgorithms.ComputeCrc32cBase64(payload);
+
+        await client.PutAsync("/integrated-s3/buckets/range-checksum-bucket", content: null);
+        await client.PutAsync(
+            "/integrated-s3/buckets/range-checksum-bucket/objects/docs/range.txt",
+            new StringContent(payload, Encoding.UTF8, "text/plain"));
+
+        // Full GET (200): the whole-object checksum is present, as before.
+        var fullResponse = await client.GetAsync("/integrated-s3/buckets/range-checksum-bucket/objects/docs/range.txt");
+        Assert.Equal(HttpStatusCode.OK, fullResponse.StatusCode);
+        Assert.Equal(expectedChecksumCrc32c, Assert.Single(fullResponse.Headers.GetValues("x-amz-checksum-crc32c")));
+
+        // Partial GET (206): no whole-object checksum header of any algorithm.
+        using var partialRequest = new HttpRequestMessage(HttpMethod.Get, "/integrated-s3/buckets/range-checksum-bucket/objects/docs/range.txt");
+        partialRequest.Headers.Range = new RangeHeaderValue(6, 15);
+        var partialResponse = await client.SendAsync(partialRequest);
+        Assert.Equal(HttpStatusCode.PartialContent, partialResponse.StatusCode);
+        Assert.False(partialResponse.Headers.Contains("x-amz-checksum-crc32"));
+        Assert.False(partialResponse.Headers.Contains("x-amz-checksum-crc32c"));
+        Assert.False(partialResponse.Headers.Contains("x-amz-checksum-crc64nvme"));
+        Assert.False(partialResponse.Headers.Contains("x-amz-checksum-sha1"));
+        Assert.False(partialResponse.Headers.Contains("x-amz-checksum-sha256"));
+        Assert.False(partialResponse.Headers.Contains("x-amz-checksum-type"));
+
+        // A range covering the whole object [0, size) is a full response and keeps the checksum.
+        using var fullRangeRequest = new HttpRequestMessage(HttpMethod.Get, "/integrated-s3/buckets/range-checksum-bucket/objects/docs/range.txt");
+        fullRangeRequest.Headers.Range = new RangeHeaderValue(0, 18);
+        var fullRangeResponse = await client.SendAsync(fullRangeRequest);
+        Assert.Equal(HttpStatusCode.PartialContent, fullRangeResponse.StatusCode);
+        Assert.Equal(expectedChecksumCrc32c, Assert.Single(fullRangeResponse.Headers.GetValues("x-amz-checksum-crc32c")));
+    }
+
+    // Regression for issue #233: HEAD mirrors GET — a partial 206 must not carry the whole-object
+    // checksum, but a full HEAD (200) still does.
+    [Fact]
+    public async Task HeadObject_PartialRange_OmitsWholeObjectChecksumHeader_ButFullResponseKeepsIt()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        const string payload = "hello integrated s3"; // 19 bytes
+        var expectedChecksumCrc32c = ChecksumTestAlgorithms.ComputeCrc32cBase64(payload);
+
+        await client.PutAsync("/integrated-s3/buckets/head-range-checksum-bucket", content: null);
+        await client.PutAsync(
+            "/integrated-s3/buckets/head-range-checksum-bucket/objects/docs/range.txt",
+            new StringContent(payload, Encoding.UTF8, "text/plain"));
+
+        using var fullHeadRequest = new HttpRequestMessage(HttpMethod.Head, "/integrated-s3/buckets/head-range-checksum-bucket/objects/docs/range.txt");
+        var fullHeadResponse = await client.SendAsync(fullHeadRequest);
+        Assert.Equal(HttpStatusCode.OK, fullHeadResponse.StatusCode);
+        Assert.Equal(expectedChecksumCrc32c, Assert.Single(fullHeadResponse.Headers.GetValues("x-amz-checksum-crc32c")));
+
+        using var partialHeadRequest = new HttpRequestMessage(HttpMethod.Head, "/integrated-s3/buckets/head-range-checksum-bucket/objects/docs/range.txt");
+        partialHeadRequest.Headers.Range = new RangeHeaderValue(6, 15);
+        var partialHeadResponse = await client.SendAsync(partialHeadRequest);
+        Assert.Equal(HttpStatusCode.PartialContent, partialHeadResponse.StatusCode);
+        Assert.False(partialHeadResponse.Headers.Contains("x-amz-checksum-crc32c"));
+        Assert.False(partialHeadResponse.Headers.Contains("x-amz-checksum-type"));
+    }
+
     [Fact]
     public async Task GetObject_WithUnsatisfiableRange_Returns416WithContentRange()
     {
