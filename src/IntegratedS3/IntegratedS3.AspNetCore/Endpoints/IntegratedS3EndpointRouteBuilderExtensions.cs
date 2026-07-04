@@ -1280,7 +1280,8 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
         HttpRequest request,
         IIntegratedS3RequestContextAccessor requestContextAccessor,
         IStorageService storageService,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool s3CompatibleResponse = false)
     {
         ApplyObjectUploadBodySizeLimit(httpContext);
 
@@ -1427,7 +1428,12 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
                         ApplyChecksumAlgorithmHeader(httpContext.Response, checksumAlgorithm);
                     }
 
-                    return TypedResults.Ok(result.Value);
+                    // AWS S3 PutObject returns an empty body (the ETag travels in the response
+                    // header only). The S3-compatible surface must therefore not emit the JSON
+                    // ObjectInfo DTO; the native /buckets/.../objects/... API keeps returning it.
+                    return s3CompatibleResponse
+                        ? TypedResults.Ok()
+                        : TypedResults.Ok(result.Value);
                 }, cancellationToken);
             }
             finally {
@@ -2375,9 +2381,13 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
                 }
             }
 
-            return result.IsSuccess
-                ? TypedResults.Ok()
-                : ToErrorResult(httpContext, result.Error, resourceOverride: BuildObjectResource(bucketName, null));
+            if (!result.IsSuccess) {
+                return ToErrorResult(httpContext, result.Error, resourceOverride: BuildObjectResource(bucketName, null));
+            }
+
+            // AWS S3 CreateBucket returns a Location response header pointing at the new bucket.
+            httpContext.Response.Headers.Location = $"/{bucketName}";
+            return TypedResults.Ok();
         }
         catch (EndpointStorageAuthorizationException exception) {
             return ToErrorResult(httpContext, exception.Error, resourceOverride: BuildObjectResource(bucketName, null));
@@ -2440,7 +2450,7 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
                 "POST" when TryGetMultipartUploadId(httpContext.Request, out _, out _) => await CompleteMultipartUploadAsync(resolvedRequest.BucketName, key, httpContext, requestContextAccessor, storageService, cancellationToken),
                 "DELETE" when TryGetMultipartUploadId(httpContext.Request, out _, out _) => await AbortMultipartUploadAsync(resolvedRequest.BucketName, key, httpContext, requestContextAccessor, storageService, cancellationToken),
                 "GET" => await GetObjectAsync(resolvedRequest.BucketName, key, httpContext, httpContext.Request, requestContextAccessor, storageService, cancellationToken),
-                "PUT" => await PutObjectAsync(resolvedRequest.BucketName, key, httpContext, httpContext.Request, requestContextAccessor, storageService, cancellationToken),
+                "PUT" => await PutObjectAsync(resolvedRequest.BucketName, key, httpContext, httpContext.Request, requestContextAccessor, storageService, cancellationToken, s3CompatibleResponse: true),
                 "HEAD" => await HeadObjectAsync(resolvedRequest.BucketName, key, httpContext, requestContextAccessor, storageService, cancellationToken),
                 "DELETE" => await DeleteObjectAsync(resolvedRequest.BucketName, key, httpContext, requestContextAccessor, storageService, cancellationToken),
                 _ => TypedResults.StatusCode(StatusCodes.Status405MethodNotAllowed)
@@ -3196,6 +3206,10 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
 
                 var completedObject = result.Value!;
                 ApplyObjectIdentityHeaders(httpContext.Response, completedObject);
+                // AWS does not set a top-level ETag response header on CompleteMultipartUpload:
+                // the ETag lives inside the <CompleteMultipartUploadResult> body because the body
+                // may instead carry a delayed error after the 200 status line.
+                httpContext.Response.Headers.Remove(HeaderNames.ETag);
                 return new XmlContentResult(
                     S3XmlResponseWriter.WriteCompleteMultipartUploadResult(new S3CompleteMultipartUploadResult
                     {
@@ -4045,6 +4059,7 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
                 Message = message,
                 Resource = resource,
                 RequestId = httpContext.TraceIdentifier,
+                HostId = httpContext.TraceIdentifier,
                 BucketName = bucketName,
                 Key = key
             }),
@@ -4098,6 +4113,9 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
     private static IResult ToCopyObjectResult(HttpContext httpContext, ObjectInfo @object, string? sourceVersionId)
     {
         ApplyObjectResultHeaders(httpContext.Response, @object);
+        // AWS does not set a top-level ETag response header on CopyObject: the ETag lives inside
+        // the <CopyObjectResult> body because the body may instead carry a delayed error.
+        httpContext.Response.Headers.Remove(HeaderNames.ETag);
         ApplyChecksumAlgorithmHeader(httpContext.Response, GetResponseChecksumAlgorithm(@object.Checksums));
         if (!string.IsNullOrWhiteSpace(sourceVersionId)) {
             httpContext.Response.Headers[CopySourceVersionIdHeaderName] = sourceVersionId;

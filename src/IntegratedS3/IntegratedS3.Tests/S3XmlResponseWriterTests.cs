@@ -312,4 +312,40 @@ public sealed class S3XmlResponseWriterTests
         Assert.NotNull(deleteMarkerOwner);
         Assert.Equal("owner-id-123", deleteMarkerOwner!.Element(XName.Get("ID", ns))?.Value);
     }
+
+    [Fact]
+    public void WriteError_EmitsHostId_WhenProvided()
+    {
+        var ns = S3XmlTestHelper.CanonicalS3Namespace;
+
+        var xml = S3XmlResponseWriter.WriteError(new S3ErrorResponse
+        {
+            Code = "NoSuchBucket",
+            Message = "The specified bucket does not exist.",
+            Resource = "/bucket/key",
+            RequestId = "request-id-123",
+            HostId = "host-id-456"
+        });
+
+        var document = XDocument.Parse(xml);
+        S3XmlTestHelper.AssertRoot(document, "Error");
+        Assert.Equal("host-id-456", document.Root!.Element(XName.Get("HostId", ns))?.Value);
+        Assert.Equal("request-id-123", document.Root!.Element(XName.Get("RequestId", ns))?.Value);
+    }
+
+    [Fact]
+    public void WriteError_OmitsHostId_WhenNotProvided()
+    {
+        var ns = S3XmlTestHelper.CanonicalS3Namespace;
+
+        var xml = S3XmlResponseWriter.WriteError(new S3ErrorResponse
+        {
+            Code = "NoSuchBucket",
+            Message = "The specified bucket does not exist."
+        });
+
+        var document = XDocument.Parse(xml);
+        S3XmlTestHelper.AssertRoot(document, "Error");
+        Assert.Null(document.Root!.Element(XName.Get("HostId", ns)));
+    }
 }

@@ -10964,6 +10964,117 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
     }
 
     [Fact]
+    public async Task PutObject_S3CompatiblePath_ReturnsEmptyBodyAndEtagHeader()
+    {
+        using var client = await _factory.CreateClientAsync();
+        const string bucketName = "wire-put-empty-body-bucket";
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync($"/integrated-s3/buckets/{bucketName}", content: null)).StatusCode);
+
+        var response = await client.PutAsync(
+            $"/integrated-s3/{bucketName}/docs/put-empty.txt",
+            new StringContent("wire format payload", Encoding.UTF8, "text/plain"));
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        // AWS S3 PutObject: ETag travels only in the response header, body is empty (never JSON).
+        Assert.False(string.IsNullOrWhiteSpace(response.Headers.ETag?.Tag), "PutObject must set the ETag response header.");
+        var body = await response.Content.ReadAsStringAsync();
+        Assert.Equal(string.Empty, body);
+        Assert.NotEqual("application/json", response.Content.Headers.ContentType?.MediaType);
+    }
+
+    [Fact]
+    public async Task CopyObject_S3CompatiblePath_OmitsEtagResponseHeaderAndKeepsBodyEtag()
+    {
+        using var client = await _factory.CreateClientAsync();
+        const string bucketName = "wire-copy-no-etag-header-bucket";
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync($"/integrated-s3/buckets/{bucketName}", content: null)).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await client.PutAsync(
+            $"/integrated-s3/{bucketName}/docs/copy-source.txt",
+            new StringContent("copy source payload", Encoding.UTF8, "text/plain"))).StatusCode);
+
+        using var copyRequest = new HttpRequestMessage(HttpMethod.Put, $"/integrated-s3/{bucketName}/docs/copy-dest.txt");
+        copyRequest.Headers.TryAddWithoutValidation("x-amz-copy-source", $"/{bucketName}/docs/copy-source.txt");
+        var copyResponse = await client.SendAsync(copyRequest);
+
+        Assert.Equal(HttpStatusCode.OK, copyResponse.StatusCode);
+        // AWS does not set a top-level ETag header on CopyObject; the ETag is only in the body.
+        Assert.Null(copyResponse.Headers.ETag);
+        Assert.False(copyResponse.Headers.Contains("ETag"), "CopyObject must not emit an ETag response header.");
+
+        var copyDocument = XDocument.Parse(await copyResponse.Content.ReadAsStringAsync());
+        S3XmlTestHelper.AssertRoot(copyDocument, "CopyObjectResult");
+        Assert.False(string.IsNullOrWhiteSpace(GetRequiredElementValue(copyDocument, "ETag")), "CopyObjectResult body must carry the ETag.");
+    }
+
+    [Fact]
+    public async Task CompleteMultipartUpload_OmitsEtagResponseHeaderAndBodyHasLocation()
+    {
+        using var client = await _factory.CreateClientAsync();
+        const string bucketName = "wire-complete-mpu-bucket";
+        const string objectKey = "docs/complete-mpu.dat";
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync($"/integrated-s3/buckets/{bucketName}", content: null)).StatusCode);
+
+        using var initiateRequest = new HttpRequestMessage(HttpMethod.Post, $"/integrated-s3/{bucketName}/{objectKey}?uploads")
+        {
+            Content = new ByteArrayContent([])
+        };
+        var initiateResponse = await client.SendAsync(initiateRequest);
+        Assert.Equal(HttpStatusCode.OK, initiateResponse.StatusCode);
+        var uploadId = XDocument.Parse(await initiateResponse.Content.ReadAsStringAsync()).Root!.S3Element("UploadId")!.Value;
+
+        // A single part is the final part, so it is exempt from the S3 minimum part-size rule.
+        var partResponse = await client.PutAsync(
+            $"/integrated-s3/{bucketName}/{objectKey}?partNumber=1&uploadId={Uri.EscapeDataString(uploadId)}",
+            new ByteArrayContent(Encoding.UTF8.GetBytes("only part payload")));
+        Assert.Equal(HttpStatusCode.OK, partResponse.StatusCode);
+        var partETag = partResponse.Headers.ETag?.Tag ?? throw new Xunit.Sdk.XunitException("Expected UploadPart ETag header.");
+
+        using var completeRequest = new HttpRequestMessage(HttpMethod.Post, $"/integrated-s3/{bucketName}/{objectKey}?uploadId={Uri.EscapeDataString(uploadId)}")
+        {
+            Content = new StringContent($"""
+<CompleteMultipartUpload>
+  <Part>
+    <PartNumber>1</PartNumber>
+    <ETag>{partETag}</ETag>
+  </Part>
+</CompleteMultipartUpload>
+""", Encoding.UTF8, "application/xml")
+        };
+        var completeResponse = await client.SendAsync(completeRequest);
+
+        Assert.Equal(HttpStatusCode.OK, completeResponse.StatusCode);
+        // AWS does not set a top-level ETag header on CompleteMultipartUpload.
+        Assert.Null(completeResponse.Headers.ETag);
+        Assert.False(completeResponse.Headers.Contains("ETag"), "CompleteMultipartUpload must not emit an ETag response header.");
+
+        var completeDocument = XDocument.Parse(await completeResponse.Content.ReadAsStringAsync());
+        S3XmlTestHelper.AssertRoot(completeDocument, "CompleteMultipartUploadResult");
+        Assert.False(string.IsNullOrWhiteSpace(GetRequiredElementValue(completeDocument, "Location")), "CompleteMultipartUploadResult body must include <Location>.");
+        Assert.False(string.IsNullOrWhiteSpace(GetRequiredElementValue(completeDocument, "ETag")), "CompleteMultipartUploadResult body must carry the ETag.");
+    }
+
+    [Fact]
+    public async Task S3ErrorResponse_Body_IncludesHostIdMirroringHeader()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        var errorResponse = await client.GetAsync("/integrated-s3/nonexistent-hostid-bucket/doc.txt");
+        Assert.Equal(HttpStatusCode.NotFound, errorResponse.StatusCode);
+
+        var hostIdHeader = errorResponse.Headers.GetValues("x-amz-id-2").Single();
+
+        var errorDocument = XDocument.Parse(await errorResponse.Content.ReadAsStringAsync());
+        Assert.Equal(S3Ns + "Error", errorDocument.Root!.Name);
+        var bodyHostId = GetRequiredElementValue(errorDocument, "HostId");
+        Assert.False(string.IsNullOrWhiteSpace(bodyHostId), "Error body must include <HostId>.");
+        Assert.Equal(hostIdHeader, bodyHostId);
+    }
+
+    [Fact]
     public async Task ListObjectVersions_WithEncodingTypeUrl_ReturnsUrlEncodedKeyFields()
     {
         using var client = await _factory.CreateClientAsync();
