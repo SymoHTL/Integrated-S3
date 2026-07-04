@@ -3089,7 +3089,7 @@ internal sealed class DiskStorageService(
                 etag: multipartETag);
 
             await DeleteStoredMultipartStateAsync(request.BucketName, request.Key, request.UploadId, uploadState.UploadDirectoryPath, cancellationToken);
-            Directory.Delete(uploadState.UploadDirectoryPath, recursive: true);
+            DeleteDirectoryIfExists(uploadState.UploadDirectoryPath);
         }
         finally {
             if (File.Exists(tempObjectPath)) {
@@ -3109,14 +3109,23 @@ internal sealed class DiskStorageService(
             return StorageResult.Failure(BucketNotFound(request.BucketName));
         }
 
+        // Serialize against CompleteMultipartUpload on the same striped object mutation lock so an
+        // Abort concurrent with a Complete cannot interleave and delete the upload directory out from
+        // under an in-flight assemble/cleanup (which would surface as an unhandled 500 instead of a
+        // deterministic S3 error). Re-read the multipart state *after* acquiring the lock: a Complete
+        // (or a second Abort) that ran first may already have removed it, in which case we return a
+        // clean NoSuchUpload rather than throwing.
+        using var objectMutationLock = await AcquireObjectMutationLockAsync(request.BucketName, request.Key, cancellationToken);
+
         var uploadStateResult = await ReadMultipartStateAsync(request.BucketName, request.Key, request.UploadId, cancellationToken);
         if (!uploadStateResult.IsSuccess) {
             return StorageResult.Failure(uploadStateResult.Error!);
         }
 
-        Directory.Delete(uploadStateResult.Value!.UploadDirectoryPath, recursive: true);
-        await DeleteStoredMultipartStateAsync(request.BucketName, request.Key, request.UploadId, uploadStateResult.Value.UploadDirectoryPath, cancellationToken);
-        DeleteEmptyParentDirectories(Path.GetDirectoryName(uploadStateResult.Value.UploadDirectoryPath), GetMultipartRootPath());
+        var uploadDirectoryPath = uploadStateResult.Value!.UploadDirectoryPath;
+        DeleteDirectoryIfExists(uploadDirectoryPath);
+        await DeleteStoredMultipartStateAsync(request.BucketName, request.Key, request.UploadId, uploadDirectoryPath, cancellationToken);
+        DeleteEmptyParentDirectories(Path.GetDirectoryName(uploadDirectoryPath), GetMultipartRootPath());
         return StorageResult.Success();
     }
 
@@ -4649,12 +4658,25 @@ internal sealed class DiskStorageService(
 
     private static async ValueTask<DiskMultipartUploadState?> ReadDiskMultipartUploadStateAsync(string statePath, CancellationToken cancellationToken)
     {
-        if (!File.Exists(statePath)) {
+        // The multipart state sidecar is read without holding the object mutation lock (Complete and
+        // Abort both read it before acquiring the lock). A concurrent Abort/Complete may delete the
+        // upload directory containing this file while it is open. Share FileShare.Delete so a
+        // concurrent directory delete cannot fault this reader with a sharing violation; translate a
+        // lost race (file removed out from under us) to a null "no such upload" result.
+        FileStream stream;
+        try {
+            stream = new FileStream(statePath, FileMode.Open, FileAccess.Read, FileShare.Read | FileShare.Delete, 4096, FileOptions.Asynchronous | FileOptions.SequentialScan);
+        }
+        catch (FileNotFoundException) {
+            return null;
+        }
+        catch (DirectoryNotFoundException) {
             return null;
         }
 
-        await using var stream = new FileStream(statePath, FileMode.Open, FileAccess.Read, FileShare.Read, 4096, FileOptions.Asynchronous | FileOptions.SequentialScan);
-        return await JsonSerializer.DeserializeAsync(stream, DiskStorageJsonSerializerContext.Default.DiskMultipartUploadState, cancellationToken);
+        await using (stream) {
+            return await JsonSerializer.DeserializeAsync(stream, DiskStorageJsonSerializerContext.Default.DiskMultipartUploadState, cancellationToken);
+        }
     }
 
     private static DiskObjectMetadata ToDiskObjectMetadata(ObjectInfo? objectInfo)
@@ -6417,6 +6439,27 @@ internal sealed class DiskStorageService(
     {
         var utcValue = value.ToUniversalTime();
         return utcValue.AddTicks(-(utcValue.Ticks % TimeSpan.TicksPerSecond));
+    }
+
+    /// <summary>
+    /// Recursively deletes <paramref name="directoryPath"/> if it still exists, treating an
+    /// already-removed directory as a benign no-op. Unlike <see cref="File.Delete(string)"/>,
+    /// <see cref="Directory.Delete(string, bool)"/> throws <see cref="DirectoryNotFoundException"/>
+    /// when the path is missing; this makes multipart cleanup idempotent so a concurrent
+    /// Abort/Complete (or a repeated Abort) cannot turn into an unhandled exception.
+    /// </summary>
+    private static void DeleteDirectoryIfExists(string directoryPath)
+    {
+        if (string.IsNullOrWhiteSpace(directoryPath)) {
+            return;
+        }
+
+        try {
+            Directory.Delete(directoryPath, recursive: true);
+        }
+        catch (DirectoryNotFoundException) {
+            // Another Abort/Complete on the same upload already removed the directory. No-op.
+        }
     }
 
     private static void DeleteEmptyParentDirectories(string? currentDirectoryPath, string stopAtDirectoryPath)
