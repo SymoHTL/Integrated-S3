@@ -48,7 +48,17 @@ public static class IntegratedS3CatalogModelBuilderExtensions
             entity.Property(static @object => @object.TagsJson).HasMaxLength(32_768);
             entity.Property(static @object => @object.ChecksumsJson).HasMaxLength(4096);
             entity.Property(static @object => @object.ServerSideEncryptionKeyId).HasMaxLength(512);
+            entity.Property(static @object => @object.Version).IsConcurrencyToken();
             entity.HasIndex(static @object => new { @object.ProviderName, @object.BucketName, @object.Key, @object.VersionId }).IsUnique();
+            // Enforce the "at most one latest version per key" invariant as a hard database constraint so that
+            // two concurrent writers cannot both commit an IsLatest = true row for the same key. A filtered unique
+            // index is used (only rows with IsLatest = true participate) so historical, non-latest versions are
+            // unaffected. The filter predicate targets the column name emitted for the boolean flag; it is valid
+            // for the SQL Server, PostgreSQL, and SQLite providers used with this catalog.
+            entity.HasIndex(static @object => new { @object.ProviderName, @object.BucketName, @object.Key })
+                .IsUnique()
+                .HasFilter("\"IsLatest\" = 1")
+                .HasDatabaseName("IX_IntegratedS3Objects_SingleLatestPerKey");
             entity.HasIndex(static @object => new { @object.ProviderName, @object.BucketName, @object.Key, @object.IsLatest });
         });
 
