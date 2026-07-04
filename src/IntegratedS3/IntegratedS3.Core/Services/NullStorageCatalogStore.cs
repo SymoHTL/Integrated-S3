@@ -30,7 +30,12 @@ internal sealed class NullStorageCatalogStore : IStorageCatalogStore
         return ValueTask.CompletedTask;
     }
 
-    public ValueTask<IReadOnlyList<StoredObjectEntry>> ListObjectsAsync(string? providerName = null, string? bucketName = null, CancellationToken cancellationToken = default)
+    public ValueTask<StoredObjectEntry?> GetObjectAsync(string providerName, string bucketName, string key, string? versionId = null, CancellationToken cancellationToken = default)
+    {
+        return ValueTask.FromResult<StoredObjectEntry?>(null);
+    }
+
+    public ValueTask<IReadOnlyList<StoredObjectEntry>> ListObjectsAsync(string? providerName = null, string? bucketName = null, string? keyPrefix = null, CancellationToken cancellationToken = default)
     {
         return ValueTask.FromResult<IReadOnlyList<StoredObjectEntry>>([]);
     }
