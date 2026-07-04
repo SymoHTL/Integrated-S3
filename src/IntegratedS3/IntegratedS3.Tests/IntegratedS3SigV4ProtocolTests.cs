@@ -160,6 +160,39 @@ public sealed class IntegratedS3SigV4ProtocolTests
     }
 
     [Fact]
+    public void AuthorizationHeaderParser_RejectsDuplicateParametersWithoutThrowing()
+    {
+        // A crafted header with two Credential parameters must be reported through the
+        // error out-parameter (yielding a 400), not surface as an unhandled ArgumentException (500).
+        // Regression for issue #118.
+        const string header = "AWS4-HMAC-SHA256 " +
+            "Credential=AKID/20240101/us-east-1/s3/aws4_request, " +
+            "Credential=OTHER/20240101/us-east-1/s3/aws4_request, " +
+            "SignedHeaders=host, Signature=abc";
+
+        var recognized = S3SigV4RequestParser.TryParseAuthorizationHeader(header, out var authorization, out var error);
+
+        Assert.True(recognized);
+        Assert.Null(authorization);
+        Assert.Equal("The authorization header contains duplicate parameters.", error);
+    }
+
+    [Fact]
+    public void SigV4aAuthorizationHeaderParser_RejectsDuplicateParametersWithoutThrowing()
+    {
+        // The SigV4a header path shares the same duplicate-key defect. Regression for issue #118.
+        const string header = "AWS4-ECDSA-P256-SHA256 " +
+            "Credential=AKID/20240101/s3/aws4_request, " +
+            "Signature=abc, Signature=def, SignedHeaders=host";
+
+        var recognized = S3SigV4RequestParser.TryParseAuthorizationHeader(header, out var authorization, out var error);
+
+        Assert.True(recognized);
+        Assert.Null(authorization);
+        Assert.Equal("The authorization header contains duplicate parameters.", error);
+    }
+
+    [Fact]
     public void Presigner_BuildsExpectedQueryParametersAndExpiry()
     {
         var signedAtUtc = new DateTimeOffset(2026, 3, 11, 18, 0, 0, TimeSpan.Zero);
