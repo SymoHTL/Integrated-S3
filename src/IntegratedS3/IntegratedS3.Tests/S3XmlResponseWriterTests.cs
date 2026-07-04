@@ -314,6 +314,37 @@ public sealed class S3XmlResponseWriterTests
     }
 
     [Fact]
+    public void EmptyConfigurationResponses_EmitCanonicalS3NamespaceOnSelfClosingRoot()
+    {
+        // Regression for #117: empty configs serialize the root as a self-closing element
+        // (e.g. <NotificationConfiguration />). The namespace must still be present on the
+        // root, not dropped because a post-processing string Replace found no "<Root>".
+        var responses = new (string RootName, string Xml)[]
+        {
+            ("NotificationConfiguration",
+                S3XmlResponseWriter.WriteNotificationConfiguration(new S3NotificationConfiguration())),
+            ("BucketLoggingStatus",
+                S3XmlResponseWriter.WriteBucketLoggingStatus(new S3BucketLoggingStatus())),
+            ("LifecycleConfiguration",
+                S3XmlResponseWriter.WriteLifecycleConfiguration(new S3LifecycleConfiguration())),
+            ("ReplicationConfiguration",
+                S3XmlResponseWriter.WriteReplicationConfiguration(new S3ReplicationConfiguration())),
+            ("ObjectLockConfiguration",
+                S3XmlResponseWriter.WriteObjectLockConfiguration(new S3ObjectLockConfiguration()))
+        };
+
+        foreach (var (rootName, xml) in responses) {
+            // The root must be self-closing to exercise the original bug path.
+            Assert.Contains($"<{rootName} ", xml, StringComparison.Ordinal);
+            Assert.DoesNotContain($"</{rootName}>", xml, StringComparison.Ordinal);
+
+            var document = XDocument.Parse(xml);
+            S3XmlTestHelper.AssertRoot(document, rootName);
+            Assert.Equal(S3XmlTestHelper.CanonicalS3Namespace, document.Root!.Name.NamespaceName);
+        }
+    }
+
+    [Fact]
     public void WriteError_EmitsHostId_WhenProvided()
     {
         var ns = S3XmlTestHelper.CanonicalS3Namespace;
