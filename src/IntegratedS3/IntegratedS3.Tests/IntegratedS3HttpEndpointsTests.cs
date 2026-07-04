@@ -159,6 +159,113 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
     }
 
     [Fact]
+    public async Task GetObject_WithResponseHeaderOverrideQueryParams_OverridesResponseHeaders()
+    {
+        using var client = await _factory.CreateClientAsync();
+        const string bucketName = "response-override-get-bucket";
+        const string objectKey = "docs/override.txt";
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync($"/integrated-s3/buckets/{bucketName}", content: null)).StatusCode);
+
+        using var uploadRequest = new HttpRequestMessage(HttpMethod.Put, $"/integrated-s3/{bucketName}/{objectKey}")
+        {
+            Content = new StringContent("response override payload", Encoding.UTF8, "text/plain")
+        };
+        Assert.Equal(HttpStatusCode.OK, (await client.SendAsync(uploadRequest)).StatusCode);
+
+        const string expiresValue = "Wed, 21 Oct 2026 07:28:00 GMT";
+        var query =
+            "?response-content-type=application%2Fpdf" +
+            "&response-content-language=de-AT" +
+            "&response-expires=" + Uri.EscapeDataString(expiresValue) +
+            "&response-cache-control=" + Uri.EscapeDataString("max-age=42, private") +
+            "&response-content-disposition=" + Uri.EscapeDataString("attachment; filename=\"renamed.pdf\"") +
+            "&response-content-encoding=gzip";
+
+        var downloadResponse = await client.GetAsync($"/integrated-s3/{bucketName}/{objectKey}{query}");
+
+        Assert.Equal(HttpStatusCode.OK, downloadResponse.StatusCode);
+        Assert.Equal("application/pdf", downloadResponse.Content.Headers.ContentType?.MediaType);
+        Assert.Contains("de-AT", downloadResponse.Content.Headers.ContentLanguage);
+        Assert.Equal(expiresValue, Assert.Single(downloadResponse.Content.Headers.GetValues("Expires")));
+        Assert.Equal("max-age=42, private", downloadResponse.Headers.CacheControl?.ToString());
+        Assert.Equal("attachment", downloadResponse.Content.Headers.ContentDisposition?.DispositionType);
+        Assert.Equal("renamed.pdf", downloadResponse.Content.Headers.ContentDisposition?.FileName?.Trim('"'));
+        Assert.Contains("gzip", downloadResponse.Content.Headers.ContentEncoding);
+        Assert.Equal("response override payload", await downloadResponse.Content.ReadAsStringAsync());
+    }
+
+    [Fact]
+    public async Task HeadObject_WithResponseHeaderOverrideQueryParams_OverridesResponseHeaders()
+    {
+        using var client = await _factory.CreateClientAsync();
+        const string bucketName = "response-override-head-bucket";
+        const string objectKey = "docs/override.txt";
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync($"/integrated-s3/buckets/{bucketName}", content: null)).StatusCode);
+
+        using var uploadRequest = new HttpRequestMessage(HttpMethod.Put, $"/integrated-s3/{bucketName}/{objectKey}")
+        {
+            Content = new StringContent("response override payload", Encoding.UTF8, "text/plain")
+        };
+        Assert.Equal(HttpStatusCode.OK, (await client.SendAsync(uploadRequest)).StatusCode);
+
+        const string expiresValue = "Wed, 21 Oct 2026 07:28:00 GMT";
+        var query =
+            "?response-content-type=application%2Fpdf" +
+            "&response-content-language=de-AT" +
+            "&response-expires=" + Uri.EscapeDataString(expiresValue) +
+            "&response-cache-control=" + Uri.EscapeDataString("max-age=42, private") +
+            "&response-content-disposition=" + Uri.EscapeDataString("attachment; filename=\"renamed.pdf\"") +
+            "&response-content-encoding=gzip";
+
+        using var headRequest = new HttpRequestMessage(HttpMethod.Head, $"/integrated-s3/{bucketName}/{objectKey}{query}");
+        var headResponse = await client.SendAsync(headRequest);
+
+        Assert.Equal(HttpStatusCode.OK, headResponse.StatusCode);
+        Assert.Equal("application/pdf", headResponse.Content.Headers.ContentType?.MediaType);
+        Assert.Contains("de-AT", headResponse.Content.Headers.ContentLanguage);
+        Assert.Equal(expiresValue, Assert.Single(headResponse.Content.Headers.GetValues("Expires")));
+        Assert.Equal("max-age=42, private", headResponse.Headers.CacheControl?.ToString());
+        Assert.Equal("attachment", headResponse.Content.Headers.ContentDisposition?.DispositionType);
+        Assert.Equal("renamed.pdf", headResponse.Content.Headers.ContentDisposition?.FileName?.Trim('"'));
+        Assert.Contains("gzip", headResponse.Content.Headers.ContentEncoding);
+    }
+
+    [Theory]
+    [InlineData("response-content-type=text%2Fcsv")]
+    [InlineData("response-content-language=fr-FR")]
+    [InlineData("response-expires=Wed%2C%2021%20Oct%202026%2007%3A28%3A00%20GMT")]
+    [InlineData("response-cache-control=no-cache")]
+    [InlineData("response-content-disposition=inline")]
+    [InlineData("response-content-encoding=identity")]
+    public async Task GetObject_WithSingleResponseOverrideParam_DoesNotReturn501(string overrideQuery)
+    {
+        using var client = await _factory.CreateClientAsync();
+        const string bucketName = "response-override-single-bucket";
+        var objectKey = $"docs/{Guid.NewGuid():N}.txt";
+
+        // Theory cases share the bucket; the first creates it, later runs see it already exists.
+        var createBucketStatus = (await client.PutAsync($"/integrated-s3/buckets/{bucketName}", content: null)).StatusCode;
+        Assert.True(createBucketStatus is HttpStatusCode.Created or HttpStatusCode.Conflict, $"Unexpected bucket create status: {createBucketStatus}");
+
+        using var uploadRequest = new HttpRequestMessage(HttpMethod.Put, $"/integrated-s3/{bucketName}/{objectKey}")
+        {
+            Content = new StringContent("single override payload", Encoding.UTF8, "text/plain")
+        };
+        Assert.Equal(HttpStatusCode.OK, (await client.SendAsync(uploadRequest)).StatusCode);
+
+        var getResponse = await client.GetAsync($"/integrated-s3/{bucketName}/{objectKey}?{overrideQuery}");
+        Assert.NotEqual(HttpStatusCode.NotImplemented, getResponse.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, getResponse.StatusCode);
+
+        using var headRequest = new HttpRequestMessage(HttpMethod.Head, $"/integrated-s3/{bucketName}/{objectKey}?{overrideQuery}");
+        var headResponse = await client.SendAsync(headRequest);
+        Assert.NotEqual(HttpStatusCode.NotImplemented, headResponse.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, headResponse.StatusCode);
+    }
+
+    [Fact]
     public async Task PutObject_WithChecksumHeaders_ValidatesPayloadAndEmitsCurrentVersionHeaders()
     {
         using var client = await _factory.CreateClientAsync();

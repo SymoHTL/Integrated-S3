@@ -147,6 +147,12 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
     private const string IntelligentTieringQueryParameterName = "intelligent-tiering";
     private const string IdQueryParameterName = "id";
     private const string RestoreQueryParameterName = "restore";
+    private const string ResponseContentTypeQueryParameterName = "response-content-type";
+    private const string ResponseContentLanguageQueryParameterName = "response-content-language";
+    private const string ResponseExpiresQueryParameterName = "response-expires";
+    private const string ResponseCacheControlQueryParameterName = "response-cache-control";
+    private const string ResponseContentDispositionQueryParameterName = "response-content-disposition";
+    private const string ResponseContentEncodingQueryParameterName = "response-content-encoding";
     private const string SelectQueryParameterName = "select";
     private const string SelectTypeQueryParameterName = "select-type";
     private const string OriginHeaderName = "Origin";
@@ -204,11 +210,18 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
     private static readonly HashSet<string> ObjectAttributesQueryParameters = CreateQueryParameterSet(AttributesQueryParameterName, VersionIdQueryParameterName);
     private static readonly HashSet<string> ObjectRestoreQueryParameters = CreateQueryParameterSet(RestoreQueryParameterName, VersionIdQueryParameterName);
     private static readonly HashSet<string> ObjectSelectQueryParameters = CreateQueryParameterSet(SelectQueryParameterName, SelectTypeQueryParameterName);
+    private static readonly HashSet<string> ResponseHeaderOverrideQueryParameters = CreateQueryParameterSet(
+        ResponseContentTypeQueryParameterName,
+        ResponseContentLanguageQueryParameterName,
+        ResponseExpiresQueryParameterName,
+        ResponseCacheControlQueryParameterName,
+        ResponseContentDispositionQueryParameterName,
+        ResponseContentEncodingQueryParameterName);
     private static readonly HashSet<string> ObjectMultipartInitiateQueryParameters = CreateQueryParameterSet(UploadsQueryParameterName);
     private static readonly HashSet<string> ObjectMultipartPartQueryParameters = CreateQueryParameterSet(UploadIdQueryParameterName, PartNumberQueryParameterName);
     private static readonly HashSet<string> ObjectMultipartUploadQueryParameters = CreateQueryParameterSet(UploadIdQueryParameterName);
     private static readonly HashSet<string> ObjectMultipartListPartsQueryParameters = CreateQueryParameterSet(UploadIdQueryParameterName, PartNumberMarkerQueryParameterName, MaxPartsQueryParameterName, EncodingTypeQueryParameterName);
-    private static readonly HashSet<string> KnownObjectQueryParameters = CreateQueryParameterSet(AclQueryParameterName, TaggingQueryParameterName, RetentionQueryParameterName, LegalHoldQueryParameterName, AttributesQueryParameterName, VersionIdQueryParameterName, RestoreQueryParameterName, SelectQueryParameterName, SelectTypeQueryParameterName, UploadsQueryParameterName, UploadIdQueryParameterName, PartNumberQueryParameterName, PartNumberMarkerQueryParameterName, MaxPartsQueryParameterName, EncodingTypeQueryParameterName);
+    private static readonly HashSet<string> KnownObjectQueryParameters = CreateQueryParameterSet(AclQueryParameterName, TaggingQueryParameterName, RetentionQueryParameterName, LegalHoldQueryParameterName, AttributesQueryParameterName, VersionIdQueryParameterName, RestoreQueryParameterName, SelectQueryParameterName, SelectTypeQueryParameterName, UploadsQueryParameterName, UploadIdQueryParameterName, PartNumberQueryParameterName, PartNumberMarkerQueryParameterName, MaxPartsQueryParameterName, EncodingTypeQueryParameterName, ResponseContentTypeQueryParameterName, ResponseContentLanguageQueryParameterName, ResponseExpiresQueryParameterName, ResponseCacheControlQueryParameterName, ResponseContentDispositionQueryParameterName, ResponseContentEncodingQueryParameterName);
     private static readonly HashSet<string> SupportedManagedServerSideEncryptionRequestHeaders = new(StringComparer.OrdinalIgnoreCase)
     {
         ServerSideEncryptionHeaderName,
@@ -1475,6 +1488,8 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
                     return customerEncryptionError;
                 }
 
+                var responseOverrides = ResponseHeaderOverrides.FromRequest(request);
+
                 var rawRange = request.Headers.Range.ToString();
                 var multipleRanges = ParseMultipleRangeHeaders(rawRange);
 
@@ -1486,7 +1501,8 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
                         headers.IfModifiedSince,
                         headers.IfUnmodifiedSince,
                         customerEncryption,
-                        multipleRanges);
+                        multipleRanges,
+                        responseOverrides);
                 }
 
                 var result = await storageService.GetObjectAsync(new GetObjectRequest
@@ -1506,7 +1522,7 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
                     return ToErrorResult(httpContext, result.Error, resourceOverride: BuildObjectResource(bucketName, key), explicitVersionId: versionId);
                 }
 
-                return new StreamObjectResult(result.Value!);
+                return new StreamObjectResult(result.Value!, responseOverrides);
             }, cancellationToken);
         }
         catch (EndpointStorageAuthorizationException exception) {
@@ -1560,9 +1576,11 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
                 }
 
                 var objectInfo = result.Value!;
+                var responseOverrides = ResponseHeaderOverrides.FromRequest(httpContext.Request);
                 ApplyObjectHeaders(httpContext.Response, objectInfo);
                 ApplyObjectTaggingCountHeader(httpContext.Response, objectInfo);
                 httpContext.Response.Headers.AcceptRanges = "bytes";
+                responseOverrides.Apply(httpContext.Response);
 
                 if (!MatchesIfMatch(httpContext.Request.Headers.IfMatch.ToString(), objectInfo.ETag)) {
                     return TypedResults.StatusCode(StatusCodes.Status412PreconditionFailed);
@@ -1584,7 +1602,7 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
                     return TypedResults.StatusCode(StatusCodes.Status304NotModified);
                 }
 
-                httpContext.Response.ContentType = objectInfo.ContentType ?? "application/octet-stream";
+                httpContext.Response.ContentType = responseOverrides.ContentType ?? objectInfo.ContentType ?? "application/octet-stream";
 
                 // AWS honors the Range header on HEAD, mirroring GET: a satisfiable range yields 206
                 // with Content-Range and the ranged Content-Length (no body); an unsatisfiable range
@@ -5041,6 +5059,16 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
     private static bool TryValidateObjectRequestSubresources(HttpRequest request, out string? errorCode, out string? errorMessage, out int statusCode)
     {
         var queryKeys = GetValidatedQueryKeys(request);
+
+        // GET/HEAD object retrieval accepts the S3 response-header override parameters
+        // (response-content-type, response-content-disposition, etc.) alongside a plain
+        // or versioned object request. They do not designate a subresource, so strip them
+        // before matching the object/versioned-object shapes. Other methods reject them.
+        if ((request.Method == "GET" || request.Method == "HEAD") && queryKeys.Overlaps(ResponseHeaderOverrideQueryParameters)) {
+            queryKeys = queryKeys.Where(static queryKey => !ResponseHeaderOverrideQueryParameters.Contains(queryKey))
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        }
+
         var isCurrentObjectRequest = queryKeys.SetEquals(EmptyQueryParameters);
         var isVersionedObjectRequest = queryKeys.SetEquals(ObjectVersionQueryParameters);
         var isAclRequest = queryKeys.SetEquals(ObjectAclQueryParameters);
@@ -8761,6 +8789,76 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
         }
     }
 
+    /// <summary>
+    /// The S3 <c>response-*</c> GET/HEAD query parameters that override representation headers on
+    /// the response. All fields are the raw provided values (verbatim); AWS does not validate them.
+    /// </summary>
+    private readonly record struct ResponseHeaderOverrides(
+        string? ContentType,
+        string? ContentLanguage,
+        string? Expires,
+        string? CacheControl,
+        string? ContentDisposition,
+        string? ContentEncoding)
+    {
+        public bool HasAny =>
+            ContentType is not null
+            || ContentLanguage is not null
+            || Expires is not null
+            || CacheControl is not null
+            || ContentDisposition is not null
+            || ContentEncoding is not null;
+
+        public static ResponseHeaderOverrides FromRequest(HttpRequest request)
+        {
+            ArgumentNullException.ThrowIfNull(request);
+
+            return new ResponseHeaderOverrides(
+                ReadOverride(request, ResponseContentTypeQueryParameterName),
+                ReadOverride(request, ResponseContentLanguageQueryParameterName),
+                ReadOverride(request, ResponseExpiresQueryParameterName),
+                ReadOverride(request, ResponseCacheControlQueryParameterName),
+                ReadOverride(request, ResponseContentDispositionQueryParameterName),
+                ReadOverride(request, ResponseContentEncodingQueryParameterName));
+        }
+
+        // Applies the overrides after the object's own representation headers, replacing them.
+        // Content-Type is set via HttpResponse.ContentType so the framework keeps it in sync.
+        public void Apply(HttpResponse httpResponse)
+        {
+            ArgumentNullException.ThrowIfNull(httpResponse);
+
+            if (ContentType is not null) {
+                httpResponse.ContentType = ContentType;
+            }
+
+            if (ContentLanguage is not null) {
+                httpResponse.Headers[HeaderNames.ContentLanguage] = ContentLanguage;
+            }
+
+            if (Expires is not null) {
+                httpResponse.Headers[HeaderNames.Expires] = Expires;
+            }
+
+            if (CacheControl is not null) {
+                httpResponse.Headers.CacheControl = CacheControl;
+            }
+
+            if (ContentDisposition is not null) {
+                httpResponse.Headers[HeaderNames.ContentDisposition] = ContentDisposition;
+            }
+
+            if (ContentEncoding is not null) {
+                httpResponse.Headers[HeaderNames.ContentEncoding] = ContentEncoding;
+            }
+        }
+
+        private static string? ReadOverride(HttpRequest request, string queryKey)
+        {
+            return request.Query.TryGetValue(queryKey, out var value) ? value.ToString() : null;
+        }
+    }
+
     private static void ApplyObjectHeaders(HttpResponse httpResponse, ObjectInfo objectInfo)
     {
         ApplyObjectResultHeaders(httpResponse, objectInfo);
@@ -9242,7 +9340,7 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
         }
     }
 
-    private sealed class StreamObjectResult(GetObjectResponse objectResponse) : IResult, IAsyncDisposable
+    private sealed class StreamObjectResult(GetObjectResponse objectResponse, ResponseHeaderOverrides responseOverrides = default) : IResult, IAsyncDisposable
     {
         private GetObjectResponse? _objectResponse = objectResponse;
 
@@ -9264,11 +9362,13 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
             httpContext.Response.Headers.AcceptRanges = "bytes";
 
             if (response.IsNotModified) {
+                responseOverrides.Apply(httpContext.Response);
                 httpContext.Response.StatusCode = StatusCodes.Status304NotModified;
                 return;
             }
 
             httpContext.Response.ContentType = response.Object.ContentType ?? "application/octet-stream";
+            responseOverrides.Apply(httpContext.Response);
             httpContext.Response.ContentLength = response.Object.ContentLength;
 
             if (response.Range is not null) {
@@ -9304,7 +9404,8 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
         DateTimeOffset? ifModifiedSinceUtc,
         DateTimeOffset? ifUnmodifiedSinceUtc,
         ObjectCustomerEncryptionSettings? customerEncryption,
-        ObjectRange[] ranges) : IResult
+        ObjectRange[] ranges,
+        ResponseHeaderOverrides responseOverrides = default) : IResult
     {
         public async Task ExecuteAsync(HttpContext httpContext)
         {
@@ -9337,13 +9438,18 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
             ApplyObjectTaggingCountHeader(httpContext.Response, firstResponse.Object);
             httpContext.Response.Headers.AcceptRanges = "bytes";
 
+            // Apply response-* overrides (Content-Disposition, Cache-Control, etc.) before the
+            // multipart container Content-Type is set below, so the transport type still wins for
+            // Content-Type while the other overrides survive.
+            responseOverrides.Apply(httpContext.Response);
+
             if (firstResponse.IsNotModified) {
                 httpContext.Response.StatusCode = StatusCodes.Status304NotModified;
                 return;
             }
 
             var totalLength = firstResponse.TotalContentLength;
-            var contentType = firstResponse.Object.ContentType ?? "application/octet-stream";
+            var contentType = responseOverrides.ContentType ?? firstResponse.Object.ContentType ?? "application/octet-stream";
 
             httpContext.Response.StatusCode = StatusCodes.Status206PartialContent;
             httpContext.Response.ContentType = $"multipart/byteranges; boundary={boundary}";
