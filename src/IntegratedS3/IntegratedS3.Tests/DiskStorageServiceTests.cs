@@ -3155,6 +3155,32 @@ public sealed class DiskStorageServiceTests
         Assert.Equal(compositeChecksum, response.Object.Checksums!["crc32c"]);
     }
 
+    [Theory]
+    [InlineData("CRC64NVME")]
+    [InlineData("crc64nvme")]
+    public async Task DiskStorage_InitiateMultipartUpload_RejectsCrc64NvmeUpFront(string checksumAlgorithm)
+    {
+        // Regression for #119: CRC64NVME was accepted at InitiateMultipartUpload but rejected by every
+        // subsequent lifecycle operation, leaving the caller with an "accepted then dead" UploadId and a
+        // leaked on-disk upload directory. The accepted-algorithm set must be consistent across the whole
+        // lifecycle: because the multipart composite-checksum path cannot synthesize CRC64NVME, it must be
+        // rejected up front at initiate rather than accepted-then-dead.
+        await using var fixture = new DiskStorageFixture();
+        var storageService = fixture.Services.GetRequiredService<IStorageBackend>();
+        await storageService.CreateBucketAsync(new CreateBucketRequest { BucketName = "multipart-crc64nvme" });
+
+        var initiateResult = await storageService.InitiateMultipartUploadAsync(new InitiateMultipartUploadRequest
+        {
+            BucketName = "multipart-crc64nvme",
+            Key = "docs/assembled.txt",
+            ContentType = "text/plain",
+            ChecksumAlgorithm = checksumAlgorithm
+        });
+
+        Assert.False(initiateResult.IsSuccess);
+        Assert.Equal(StorageErrorCode.UnsupportedCapability, initiateResult.Error!.Code);
+    }
+
     [Fact]
     public async Task DiskStorage_InitiateMultipartUpload_RejectsInvalidTagCharacters()
     {

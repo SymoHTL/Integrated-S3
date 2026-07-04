@@ -1992,11 +1992,7 @@ internal sealed class DiskStorageService(
 
         var uploadState = uploadStateResult.Value!;
         var uploadChecksumAlgorithm = uploadState.State.ChecksumAlgorithm;
-        if (!string.IsNullOrWhiteSpace(uploadChecksumAlgorithm)
-            && !string.Equals(uploadChecksumAlgorithm, Sha256ChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)
-            && !string.Equals(uploadChecksumAlgorithm, Sha1ChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)
-            && !string.Equals(uploadChecksumAlgorithm, Crc32ChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)
-            && !string.Equals(uploadChecksumAlgorithm, Crc32cChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)) {
+        if (!IsMultipartSupportedChecksumAlgorithm(uploadChecksumAlgorithm)) {
             throw new NotSupportedException(
                 $"Checksum algorithm '{uploadChecksumAlgorithm}' is not currently supported for multipart uploads.");
         }
@@ -2686,12 +2682,7 @@ internal sealed class DiskStorageService(
                 request.Key)));
         }
 
-        if (!string.IsNullOrWhiteSpace(checksumAlgorithm)
-            && !string.Equals(checksumAlgorithm, Sha256ChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)
-            && !string.Equals(checksumAlgorithm, Sha1ChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)
-            && !string.Equals(checksumAlgorithm, Crc32ChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)
-            && !string.Equals(checksumAlgorithm, Crc32cChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)
-            && !string.Equals(checksumAlgorithm, Crc64NvmeChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)) {
+        if (!IsMultipartSupportedChecksumAlgorithm(checksumAlgorithm)) {
             return ValueTask.FromResult(StorageResult<MultipartUploadInfo>.Failure(StorageError.Unsupported(
                 $"Checksum algorithm '{request.ChecksumAlgorithm}' is not currently supported for multipart uploads.",
                 request.BucketName,
@@ -2738,11 +2729,7 @@ internal sealed class DiskStorageService(
 
         var uploadDirectoryPath = uploadStateResult.Value!.UploadDirectoryPath;
         var uploadChecksumAlgorithm = uploadStateResult.Value.State.ChecksumAlgorithm;
-        if (!string.IsNullOrWhiteSpace(uploadChecksumAlgorithm)
-            && !string.Equals(uploadChecksumAlgorithm, Sha256ChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)
-            && !string.Equals(uploadChecksumAlgorithm, Sha1ChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)
-            && !string.Equals(uploadChecksumAlgorithm, Crc32ChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)
-            && !string.Equals(uploadChecksumAlgorithm, Crc32cChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)) {
+        if (!IsMultipartSupportedChecksumAlgorithm(uploadChecksumAlgorithm)) {
             return StorageResult<MultipartUploadPart>.Failure(StorageError.Unsupported(
                 $"Checksum algorithm '{uploadChecksumAlgorithm}' is not currently supported for multipart uploads.",
                 request.BucketName,
@@ -2974,11 +2961,7 @@ internal sealed class DiskStorageService(
 
         var uploadDirectoryPath = uploadStateResult.Value!.UploadDirectoryPath;
         var uploadChecksumAlgorithm = uploadStateResult.Value.State.ChecksumAlgorithm;
-        if (!string.IsNullOrWhiteSpace(uploadChecksumAlgorithm)
-            && !string.Equals(uploadChecksumAlgorithm, Sha256ChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)
-            && !string.Equals(uploadChecksumAlgorithm, Sha1ChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)
-            && !string.Equals(uploadChecksumAlgorithm, Crc32ChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)
-            && !string.Equals(uploadChecksumAlgorithm, Crc32cChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)) {
+        if (!IsMultipartSupportedChecksumAlgorithm(uploadChecksumAlgorithm)) {
             return StorageResult<MultipartUploadPart>.Failure(StorageError.Unsupported(
                 $"Checksum algorithm '{uploadChecksumAlgorithm}' is not currently supported for multipart uploads.",
                 request.BucketName,
@@ -3116,11 +3099,7 @@ internal sealed class DiskStorageService(
 
         var uploadState = uploadStateResult.Value!;
         var uploadChecksumAlgorithm = uploadState.State.ChecksumAlgorithm;
-        if (!string.IsNullOrWhiteSpace(uploadChecksumAlgorithm)
-            && !string.Equals(uploadChecksumAlgorithm, Sha256ChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)
-            && !string.Equals(uploadChecksumAlgorithm, Sha1ChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)
-            && !string.Equals(uploadChecksumAlgorithm, Crc32ChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)
-            && !string.Equals(uploadChecksumAlgorithm, Crc32cChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)) {
+        if (!IsMultipartSupportedChecksumAlgorithm(uploadChecksumAlgorithm)) {
             return StorageResult<ObjectInfo>.Failure(StorageError.Unsupported(
                 $"Checksum algorithm '{uploadChecksumAlgorithm}' is not currently supported for multipart uploads.",
                 request.BucketName,
@@ -6054,6 +6033,24 @@ internal sealed class DiskStorageService(
 
         checksumAlgorithm = null;
         return false;
+    }
+
+    // Single source of truth for which checksum algorithms the multipart lifecycle can carry end-to-end.
+    // A blank algorithm is always allowed (no checksum requested). CRC64NVME is intentionally excluded:
+    // although it is a valid single-part checksum (accepted as pass-through), the multipart composite
+    // path (BuildCompositeChecksum) cannot synthesize it, so accepting it at initiate would leave the
+    // upload dead at UploadPart/Complete. All multipart lifecycle gates (initiate, upload part,
+    // upload-part-copy, complete, list parts) must use this helper so the accepted set cannot drift.
+    private static bool IsMultipartSupportedChecksumAlgorithm(string? checksumAlgorithm)
+    {
+        if (string.IsNullOrWhiteSpace(checksumAlgorithm)) {
+            return true;
+        }
+
+        return string.Equals(checksumAlgorithm, Sha256ChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(checksumAlgorithm, Sha1ChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(checksumAlgorithm, Crc32ChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(checksumAlgorithm, Crc32cChecksumAlgorithm, StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool TryGetChecksumValue(IReadOnlyDictionary<string, string>? checksums, string? algorithm, out string value)
