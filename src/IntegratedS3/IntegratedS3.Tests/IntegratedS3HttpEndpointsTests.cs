@@ -912,6 +912,51 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
         Assert.Contains("x-amz-trailer-signature", GetRequiredElementValue(document, "Message"), StringComparison.Ordinal);
     }
 
+    [Fact]
+    public async Task PutObject_WithTrailerBackedPayloadHashAndTrailerSignatureButNoSigningContext_ReturnsAccessDenied()
+    {
+        // Regression for #114: a request that declares a signed-trailer streaming payload hash
+        // (STREAMING-AWS4-HMAC-SHA256-PAYLOAD-TRAILER) and supplies an 'x-amz-trailer-signature'
+        // trailer, but is not authenticated with SigV4 (the default test host does not enable
+        // AWS Signature V4 authentication), previously failed open: the trailer signature was
+        // never checked and the object was accepted. It must now be rejected because there is
+        // no signing context to verify the trailer signature against.
+        using var client = await _factory.CreateClientAsync();
+
+        const string bucketName = "aws-chunked-trailer-signature-no-context-bucket";
+        const string objectKey = "docs/trailer-signature-no-context.txt";
+        const string payload = "hello from signed aws chunked trailer without signing context";
+        var checksum = ComputeSha256Base64(payload);
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync($"/integrated-s3/buckets/{bucketName}", content: null)).StatusCode);
+
+        using var putRequest = CreateAwsChunkedPutObjectRequest(
+            $"/integrated-s3/{bucketName}/{objectKey}",
+            payload,
+            sdkChecksumAlgorithm: "SHA256",
+            declaredTrailerHeaderNames: ["x-amz-checksum-sha256"],
+            trailerHeaderEntries:
+            [
+                new KeyValuePair<string, string>("x-amz-checksum-sha256", checksum),
+                // An arbitrary, unverifiable trailer signature. There is no authenticated secret
+                // key to validate it against, so the request must be rejected rather than accepted.
+                new KeyValuePair<string, string>("x-amz-trailer-signature", new string('0', 64))
+            ]);
+        putRequest.Headers.TryAddWithoutValidation("x-amz-content-sha256", "STREAMING-AWS4-HMAC-SHA256-PAYLOAD-TRAILER");
+
+        var response = await client.SendAsync(putRequest);
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+        Assert.Equal("application/xml", response.Content.Headers.ContentType?.MediaType);
+
+        var document = XDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal("AccessDenied", GetRequiredElementValue(document, "Code"));
+
+        // The object must not have been written by the fail-open path.
+        var getResponse = await client.GetAsync($"/integrated-s3/{bucketName}/{objectKey}");
+        Assert.Equal(HttpStatusCode.NotFound, getResponse.StatusCode);
+    }
+
     [Theory]
     [InlineData("SHA1", "x-amz-checksum-sha1", "aws-chunked-signed-trailer-sha1-valid-bucket", "docs/signed-trailer-sha1.txt", "hello from signed aws chunked sha1 trailer")]
     [InlineData("CRC32", "x-amz-checksum-crc32", "aws-chunked-signed-trailer-crc32-valid-bucket", "docs/signed-trailer-crc32.txt", "hello from signed aws chunked crc32 trailer")]

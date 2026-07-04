@@ -8291,8 +8291,19 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
         }
 
         if (!AwsChunkedTrailerSigningContextStore.TryGet(request.HttpContext, out var signingContext)) {
-            errorResult = null;
-            return true;
+            // The request declares a signed-trailer streaming payload hash and carries an
+            // 'x-amz-trailer-signature' trailer, but no signing context was established (the
+            // built-in SigV4/SigV4a authenticator did not run and succeed). Without a signing
+            // context there is no authenticated secret key to verify the trailer signature
+            // against, so the signature cannot be validated. Reject rather than fail open:
+            // accepting here would silently skip trailer-signature verification.
+            errorResult = ToErrorResult(
+                request.HttpContext,
+                StatusCodes.Status403Forbidden,
+                "AccessDenied",
+                $"The request declares a signed streaming payload hash and includes an '{AwsTrailerSignatureHeaderName}' trailer, but the trailer signature cannot be validated because the request was not authenticated with AWS Signature Version 4.",
+                resource: null);
+            return false;
         }
 
         var finalChunkSignature = preparedBody.FinalChunkSignature;
