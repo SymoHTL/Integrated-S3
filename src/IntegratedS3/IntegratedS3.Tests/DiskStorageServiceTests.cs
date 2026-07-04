@@ -3372,6 +3372,179 @@ public sealed class DiskStorageServiceTests
     }
 
     [Fact]
+    public async Task DiskStorage_MultipartUpload_AbortTwice_IsIdempotent()
+    {
+        await using var fixture = new DiskStorageFixture();
+        var storageService = fixture.Services.GetRequiredService<IStorageBackend>();
+        await storageService.CreateBucketAsync(new CreateBucketRequest { BucketName = "multipart-abort-twice" });
+
+        var initiateResult = await storageService.InitiateMultipartUploadAsync(new InitiateMultipartUploadRequest
+        {
+            BucketName = "multipart-abort-twice",
+            Key = "docs/aborted.txt"
+        });
+        Assert.True(initiateResult.IsSuccess);
+
+        await using var partStream = new MemoryStream(Encoding.UTF8.GetBytes("temporary"));
+        var uploadPartResult = await storageService.UploadMultipartPartAsync(new UploadMultipartPartRequest
+        {
+            BucketName = "multipart-abort-twice",
+            Key = "docs/aborted.txt",
+            UploadId = initiateResult.Value!.UploadId,
+            PartNumber = 1,
+            Content = partStream
+        });
+        Assert.True(uploadPartResult.IsSuccess);
+
+        var firstAbort = await storageService.AbortMultipartUploadAsync(new AbortMultipartUploadRequest
+        {
+            BucketName = "multipart-abort-twice",
+            Key = "docs/aborted.txt",
+            UploadId = initiateResult.Value.UploadId
+        });
+        Assert.True(firstAbort.IsSuccess);
+
+        // A repeated Abort on an upload whose directory was already removed must not throw a
+        // DirectoryNotFoundException; it should return a deterministic NoSuchUpload failure.
+        var secondAbort = await storageService.AbortMultipartUploadAsync(new AbortMultipartUploadRequest
+        {
+            BucketName = "multipart-abort-twice",
+            Key = "docs/aborted.txt",
+            UploadId = initiateResult.Value.UploadId
+        });
+
+        Assert.False(secondAbort.IsSuccess);
+        Assert.Equal(IntegratedS3.Abstractions.Errors.StorageErrorCode.NoSuchUpload, secondAbort.Error!.Code);
+    }
+
+    [Fact]
+    public async Task DiskStorage_MultipartUpload_AbortAfterComplete_IsIdempotent()
+    {
+        await using var fixture = new DiskStorageFixture();
+        var storageService = fixture.Services.GetRequiredService<IStorageBackend>();
+        await storageService.CreateBucketAsync(new CreateBucketRequest { BucketName = "multipart-abort-after-complete" });
+
+        var initiateResult = await storageService.InitiateMultipartUploadAsync(new InitiateMultipartUploadRequest
+        {
+            BucketName = "multipart-abort-after-complete",
+            Key = "docs/assembled.txt"
+        });
+        Assert.True(initiateResult.IsSuccess);
+
+        await using var partStream = new MemoryStream(Encoding.UTF8.GetBytes("completed"));
+        var uploadPartResult = await storageService.UploadMultipartPartAsync(new UploadMultipartPartRequest
+        {
+            BucketName = "multipart-abort-after-complete",
+            Key = "docs/assembled.txt",
+            UploadId = initiateResult.Value!.UploadId,
+            PartNumber = 1,
+            Content = partStream
+        });
+        Assert.True(uploadPartResult.IsSuccess);
+
+        var completeResult = await storageService.CompleteMultipartUploadAsync(new CompleteMultipartUploadRequest
+        {
+            BucketName = "multipart-abort-after-complete",
+            Key = "docs/assembled.txt",
+            UploadId = initiateResult.Value.UploadId,
+            Parts = [uploadPartResult.Value!]
+        });
+        Assert.True(completeResult.IsSuccess);
+
+        // Complete already cleaned up the upload directory. A follow-up Abort (e.g. a client retry)
+        // must be a benign no-op returning NoSuchUpload rather than throwing on the missing directory.
+        var abortResult = await storageService.AbortMultipartUploadAsync(new AbortMultipartUploadRequest
+        {
+            BucketName = "multipart-abort-after-complete",
+            Key = "docs/assembled.txt",
+            UploadId = initiateResult.Value.UploadId
+        });
+
+        Assert.False(abortResult.IsSuccess);
+        Assert.Equal(IntegratedS3.Abstractions.Errors.StorageErrorCode.NoSuchUpload, abortResult.Error!.Code);
+    }
+
+    [Fact]
+    public async Task DiskStorage_MultipartUpload_ConcurrentAbortAndComplete_NeverThrowsAndStaysConsistent()
+    {
+        await using var fixture = new DiskStorageFixture();
+        var storageService = fixture.Services.GetRequiredService<IStorageBackend>();
+        await storageService.CreateBucketAsync(new CreateBucketRequest { BucketName = "multipart-abort-race" });
+
+        // Many iterations to shake out interleavings between a lock-holding Complete and a
+        // concurrent Abort on the same bucket/key/uploadId. Each iteration must terminate with a
+        // clean StorageResult on both operations — never a thrown DirectoryNotFoundException/500.
+        for (var iteration = 0; iteration < 60; iteration++)
+        {
+            var key = $"docs/race-{iteration}.txt";
+
+            var initiateResult = await storageService.InitiateMultipartUploadAsync(new InitiateMultipartUploadRequest
+            {
+                BucketName = "multipart-abort-race",
+                Key = key
+            });
+            Assert.True(initiateResult.IsSuccess);
+            var uploadId = initiateResult.Value!.UploadId;
+
+            await using (var partStream = new MemoryStream(Encoding.UTF8.GetBytes($"payload-{iteration}")))
+            {
+                var uploadPartResult = await storageService.UploadMultipartPartAsync(new UploadMultipartPartRequest
+                {
+                    BucketName = "multipart-abort-race",
+                    Key = key,
+                    UploadId = uploadId,
+                    PartNumber = 1,
+                    Content = partStream
+                });
+                Assert.True(uploadPartResult.IsSuccess);
+
+                var completeTask = Task.Run(async () => await storageService.CompleteMultipartUploadAsync(new CompleteMultipartUploadRequest
+                {
+                    BucketName = "multipart-abort-race",
+                    Key = key,
+                    UploadId = uploadId,
+                    Parts = [uploadPartResult.Value!]
+                }));
+
+                var abortTask = Task.Run(async () => await storageService.AbortMultipartUploadAsync(new AbortMultipartUploadRequest
+                {
+                    BucketName = "multipart-abort-race",
+                    Key = key,
+                    UploadId = uploadId
+                }));
+
+                // Neither operation may throw; both must resolve to a StorageResult. If either threw,
+                // Task.WhenAll rethrows here and the test fails, which is precisely the bug we guard.
+                var completeResult = await completeTask;
+                var abortResult = await abortTask;
+
+                // Every outcome must be either a clean success or a clean, well-defined failure.
+                Assert.True(
+                    completeResult.IsSuccess
+                        || completeResult.Error!.Code is IntegratedS3.Abstractions.Errors.StorageErrorCode.NoSuchUpload
+                            or IntegratedS3.Abstractions.Errors.StorageErrorCode.MultipartConflict
+                            or IntegratedS3.Abstractions.Errors.StorageErrorCode.InvalidPart,
+                    $"Unexpected Complete outcome: {completeResult.Error?.Code}");
+                Assert.True(
+                    abortResult.IsSuccess
+                        || abortResult.Error!.Code == IntegratedS3.Abstractions.Errors.StorageErrorCode.NoSuchUpload,
+                    $"Unexpected Abort outcome: {abortResult.Error?.Code}");
+            }
+
+            // A follow-up Abort of the same upload id must always be a clean no-op (NoSuchUpload),
+            // proving no orphaned upload directory/state survived the race.
+            var trailingAbort = await storageService.AbortMultipartUploadAsync(new AbortMultipartUploadRequest
+            {
+                BucketName = "multipart-abort-race",
+                Key = key,
+                UploadId = uploadId
+            });
+            Assert.False(trailingAbort.IsSuccess);
+            Assert.Equal(IntegratedS3.Abstractions.Errors.StorageErrorCode.NoSuchUpload, trailingAbort.Error!.Code);
+        }
+    }
+
+    [Fact]
     public async Task DiskStorage_MultipartUpload_ListMultipartUploads_AppliesPrefixMarkersAndPageSize()
     {
         await using var fixture = new DiskStorageFixture();
