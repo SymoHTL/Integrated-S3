@@ -3635,6 +3635,80 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
     }
 
     [Fact]
+    public async Task PutObject_WithInvalidCopySourceConditionalDate_IgnoresConditionInsteadOf400()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        await client.PutAsync("/integrated-s3/buckets/copy-invalid-date-source", content: null);
+        await client.PutAsync("/integrated-s3/buckets/copy-invalid-date-target", content: null);
+
+        var uploadResponse = await client.PutAsync(
+            "/integrated-s3/buckets/copy-invalid-date-source/objects/docs/source.txt",
+            new StringContent("invalid-date payload", Encoding.UTF8, "text/plain"));
+        Assert.Equal(HttpStatusCode.OK, uploadResponse.StatusCode);
+        var sourceObject = await uploadResponse.Content.ReadFromJsonAsync<ObjectInfo>(JsonOptions);
+        Assert.NotNull(sourceObject);
+
+        // AWS/RFC 7232: an unparseable conditional date header is treated as ABSENT (the precondition
+        // simply does not apply) rather than failing the request with 400 InvalidArgument.
+        using var invalidUnmodifiedCopyRequest = new HttpRequestMessage(HttpMethod.Put, "/integrated-s3/buckets/copy-invalid-date-target/objects/docs/invalid-unmodified.txt");
+        invalidUnmodifiedCopyRequest.Headers.TryAddWithoutValidation("x-amz-copy-source", "/copy-invalid-date-source/docs/source.txt");
+        invalidUnmodifiedCopyRequest.Headers.TryAddWithoutValidation("x-amz-copy-source-if-unmodified-since", "not-a-valid-http-date");
+
+        var invalidUnmodifiedCopyResponse = await client.SendAsync(invalidUnmodifiedCopyRequest);
+        Assert.Equal(HttpStatusCode.OK, invalidUnmodifiedCopyResponse.StatusCode);
+        var invalidUnmodifiedCopyDocument = XDocument.Parse(await invalidUnmodifiedCopyResponse.Content.ReadAsStringAsync());
+        Assert.Equal("CopyObjectResult", invalidUnmodifiedCopyDocument.Root?.Name.LocalName);
+
+        var invalidUnmodifiedCopiedObject = await client.GetAsync("/integrated-s3/buckets/copy-invalid-date-target/objects/docs/invalid-unmodified.txt");
+        Assert.Equal(HttpStatusCode.OK, invalidUnmodifiedCopiedObject.StatusCode);
+        Assert.Equal("invalid-date payload", await invalidUnmodifiedCopiedObject.Content.ReadAsStringAsync());
+
+        // An invalid If-Modified-Since is likewise ignored: the copy still succeeds.
+        using var invalidModifiedCopyRequest = new HttpRequestMessage(HttpMethod.Put, "/integrated-s3/buckets/copy-invalid-date-target/objects/docs/invalid-modified.txt");
+        invalidModifiedCopyRequest.Headers.TryAddWithoutValidation("x-amz-copy-source", "/copy-invalid-date-source/docs/source.txt");
+        invalidModifiedCopyRequest.Headers.TryAddWithoutValidation("x-amz-copy-source-if-modified-since", "garbage date value");
+
+        var invalidModifiedCopyResponse = await client.SendAsync(invalidModifiedCopyRequest);
+        Assert.Equal(HttpStatusCode.OK, invalidModifiedCopyResponse.StatusCode);
+
+        // A VALID conditional date still applies: an If-Unmodified-Since strictly before the source's
+        // LastModified means the source was modified after it → 412 PreconditionFailed.
+        using var validUnmodifiedCopyRequest = new HttpRequestMessage(HttpMethod.Put, "/integrated-s3/buckets/copy-invalid-date-target/objects/docs/valid-unmodified.txt");
+        validUnmodifiedCopyRequest.Headers.TryAddWithoutValidation("x-amz-copy-source", "/copy-invalid-date-source/docs/source.txt");
+        validUnmodifiedCopyRequest.Headers.TryAddWithoutValidation("x-amz-copy-source-if-unmodified-since", sourceObject!.LastModifiedUtc.AddMinutes(-5).ToString("R"));
+
+        var validUnmodifiedCopyResponse = await client.SendAsync(validUnmodifiedCopyRequest);
+        Assert.Equal(HttpStatusCode.PreconditionFailed, validUnmodifiedCopyResponse.StatusCode);
+        var validUnmodifiedCopyError = XDocument.Parse(await validUnmodifiedCopyResponse.Content.ReadAsStringAsync());
+        Assert.Equal("PreconditionFailed", GetRequiredElementValue(validUnmodifiedCopyError, "Code"));
+
+        var blockedHead = await client.SendAsync(new HttpRequestMessage(HttpMethod.Head, "/integrated-s3/buckets/copy-invalid-date-target/objects/docs/valid-unmodified.txt"));
+        Assert.Equal(HttpStatusCode.NotFound, blockedHead.StatusCode);
+    }
+
+    [Fact]
+    public async Task PutObject_WithInvalidExpiresRequestValue_IgnoresItInsteadOf400()
+    {
+        using var client = await _factory.CreateClientAsync();
+        const string bucketName = "invalid-expires-bucket";
+        const string objectKey = "docs/invalid-expires.txt";
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync($"/integrated-s3/buckets/{bucketName}", content: null)).StatusCode);
+
+        // An unparseable Expires request value must not fail the PUT with 400 (it is stored opaquely).
+        using var putRequest = new HttpRequestMessage(HttpMethod.Put, $"/integrated-s3/{bucketName}/{objectKey}")
+        {
+            Content = new StringContent("invalid expires payload", Encoding.UTF8, "text/plain")
+        };
+        putRequest.Content.Headers.TryAddWithoutValidation("Expires", "definitely-not-a-date");
+
+        var putResponse = await client.SendAsync(putRequest);
+        Assert.Equal(HttpStatusCode.OK, putResponse.StatusCode);
+        Assert.Equal("definitely-not-a-date", GetExpiresHeaderValue(await client.GetAsync($"/integrated-s3/{bucketName}/{objectKey}")));
+    }
+
+    [Fact]
     public async Task S3CompatibleBucketRoute_ListObjectsV1_WithMarkerAndEncodingType_ReturnsLegacyXmlPayload()
     {
         using var client = await _factory.CreateClientAsync();
