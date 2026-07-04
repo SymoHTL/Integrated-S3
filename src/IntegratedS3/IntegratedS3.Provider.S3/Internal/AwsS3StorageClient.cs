@@ -2577,24 +2577,26 @@ internal sealed class AwsS3StorageClient : IS3StorageClient
             OutputSerialization = BuildOutputSerialization(request)
         };
         var response = await _s3.SelectObjectContentAsync(sdkRequest, cancellationToken).ConfigureAwait(false);
-        var outputStream = new MemoryStream();
-        if (response.Payload is { } payload)
+        try
         {
-            var tcs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-            payload.RecordsEventReceived += (_, args) =>
-            {
-                if (args.EventStreamEvent?.Payload is { } recordPayload)
-                    recordPayload.CopyTo(outputStream);
-            };
-            payload.EndEventReceived += (_, _) => tcs.TrySetResult();
-            payload.ExceptionReceived += (_, args) => tcs.TrySetException(args.EventStreamException);
-            payload.StartProcessing();
-            await tcs.Task.ConfigureAwait(false);
-            outputStream.Position = 0;
+            // Stream the S3 Select result incrementally instead of buffering the whole payload in
+            // memory. The returned stream owns the SDK response: disposing it (which the endpoint
+            // does via `await using`) disposes the live event stream and releases the underlying HTTP
+            // connection. The read loop observes the cancellation token so an aborted request stops
+            // draining and cannot hang forever on a stalled upstream stream.
+            var eventStream = new SelectRecordsStream(response, cancellationToken);
+            return new S3SelectObjectContentResult(
+                EventStream: eventStream,
+                ContentType: "application/octet-stream");
         }
-        return new S3SelectObjectContentResult(
-            EventStream: outputStream,
-            ContentType: "application/octet-stream");
+        catch
+        {
+            // If wiring up the streaming wrapper fails, dispose the SDK event stream so its connection
+            // is not leaked before the result reaches a caller that would own it. (The response itself
+            // is not IDisposable; Payload — the live event stream — is.)
+            response.Payload?.Dispose();
+            throw;
+        }
     }
 
     // -------------------------------------------------------------------------
