@@ -422,6 +422,41 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
     }
 
     [Fact]
+    public async Task PutObject_WithAwsChunkedLineExceedingLengthCap_ReturnsBadRequestWithoutUnboundedBuffering()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        const string bucketName = "aws-chunked-oversized-line-bucket";
+        const string objectKey = "docs/oversized-line.txt";
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync($"/integrated-s3/buckets/{bucketName}", content: null)).StatusCode);
+
+        // A chunk-size line that never contains a CRLF. Before the fix, ReadLineAsync doubled its
+        // rented buffer without any cap, so this run of bytes forced unbounded managed-heap growth.
+        // The fix caps a single aws-chunked line at 16 KiB and rejects longer lines with a 400.
+        var oversizedLine = new byte[64 * 1024];
+        Array.Fill(oversizedLine, (byte)'0');
+
+        using var putRequest = new HttpRequestMessage(HttpMethod.Put, $"/integrated-s3/{bucketName}/{objectKey}")
+        {
+            Content = new ByteArrayContent(oversizedLine)
+        };
+        putRequest.Content.Headers.ContentType = new MediaTypeHeaderValue("text/plain");
+        putRequest.Content.Headers.ContentEncoding.Add("aws-chunked");
+        putRequest.Headers.TryAddWithoutValidation("x-amz-decoded-content-length", "0");
+        putRequest.Headers.TryAddWithoutValidation("x-amz-content-sha256", "STREAMING-UNSIGNED-PAYLOAD-TRAILER");
+
+        var response = await client.SendAsync(putRequest);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal("application/xml", response.Content.Headers.ContentType?.MediaType);
+
+        var document = XDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal("InvalidArgument", GetRequiredElementValue(document, "Code"));
+        Assert.Contains("16384-byte limit", GetRequiredElementValue(document, "Message"));
+    }
+
+    [Fact]
     public async Task PutObject_WithUnsignedTrailerBackedPayloadHashWithoutTrailerSignature_Succeeds()
     {
         using var client = await _factory.CreateClientAsync();
