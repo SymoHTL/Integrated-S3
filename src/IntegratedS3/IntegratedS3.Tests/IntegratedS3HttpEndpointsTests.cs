@@ -10641,6 +10641,23 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
 
             return ValueTask.CompletedTask;
         }
+
+        public ValueTask RevertToPendingAsync(string repairId, CancellationToken cancellationToken = default)
+        {
+            ArgumentException.ThrowIfNullOrWhiteSpace(repairId);
+            cancellationToken.ThrowIfCancellationRequested();
+
+            if (_entries.TryGetValue(repairId, out var entry)) {
+                _entries[repairId] = entry with
+                {
+                    Status = StorageReplicaRepairStatus.Pending,
+                    LastErrorCode = null,
+                    LastErrorMessage = null
+                };
+            }
+
+            return ValueTask.CompletedTask;
+        }
     }
 
     private static void ConfigureTestHeaderRoutePolicies(IServiceCollection services, params (string PolicyName, string RequiredScope)[] policies)

@@ -9,17 +9,50 @@ using Microsoft.Extensions.Options;
 
 namespace IntegratedS3.Core.Services;
 
-internal sealed class InProcessStorageReplicaRepairDispatcher(
-    IStorageReplicaRepairBacklog repairBacklog,
-    IOptions<IntegratedS3CoreOptions> options,
-    ILogger<InProcessStorageReplicaRepairDispatcher> logger) : IStorageReplicaRepairDispatcher
+internal sealed class InProcessStorageReplicaRepairDispatcher : IStorageReplicaRepairDispatcher, IAsyncDisposable
 {
+    /// <summary>Maximum time <see cref="DisposeAsync"/> waits for in-flight repairs to drain before giving up.</summary>
+    internal static readonly TimeSpan DefaultDrainTimeout = TimeSpan.FromSeconds(10);
+
     private static readonly Histogram<double> ReplicaRepairDuration = IntegratedS3Observability.Meter.CreateHistogram<double>(
         IntegratedS3Observability.Metrics.ReplicaRepairDuration,
         unit: "ms",
         description: "Duration of in-process replica repair executions.");
 
+    private readonly IStorageReplicaRepairBacklog _repairBacklog;
+    private readonly IOptions<IntegratedS3CoreOptions> _options;
+    private readonly ILogger<InProcessStorageReplicaRepairDispatcher> _logger;
+
     private readonly ConcurrentDictionary<string, SemaphoreSlim> _dispatchLocks = new(StringComparer.Ordinal);
+
+    // Tracks outstanding dispatch tasks so shutdown can drain them instead of abandoning in-flight repairs.
+    private readonly ConcurrentDictionary<Task, byte> _outstandingDispatches = new();
+
+    // Signalled on shutdown/dispose; linked into every dispatched repair so they observe application-stopping.
+    private readonly CancellationTokenSource _shutdownCts = new();
+
+    private readonly TimeSpan _drainTimeout;
+    private int _disposed;
+
+    public InProcessStorageReplicaRepairDispatcher(
+        IStorageReplicaRepairBacklog repairBacklog,
+        IOptions<IntegratedS3CoreOptions> options,
+        ILogger<InProcessStorageReplicaRepairDispatcher> logger)
+        : this(repairBacklog, options, logger, DefaultDrainTimeout)
+    {
+    }
+
+    internal InProcessStorageReplicaRepairDispatcher(
+        IStorageReplicaRepairBacklog repairBacklog,
+        IOptions<IntegratedS3CoreOptions> options,
+        ILogger<InProcessStorageReplicaRepairDispatcher> logger,
+        TimeSpan drainTimeout)
+    {
+        _repairBacklog = repairBacklog;
+        _options = options;
+        _logger = logger;
+        _drainTimeout = drainTimeout;
+    }
 
     public async ValueTask DispatchAsync(
         StorageReplicaRepairEntry entry,
@@ -29,8 +62,8 @@ internal sealed class InProcessStorageReplicaRepairDispatcher(
         ArgumentNullException.ThrowIfNull(entry);
         ArgumentNullException.ThrowIfNull(repairOperation);
 
-        await repairBacklog.AddAsync(entry, cancellationToken);
-        logger.LogInformation(
+        await _repairBacklog.AddAsync(entry, cancellationToken);
+        _logger.LogInformation(
             "Dispatching replica repair {RepairId} for {ReplicaBackend}. Origin {Origin}.",
             entry.Id,
             entry.ReplicaBackendName,
@@ -42,12 +75,31 @@ internal sealed class InProcessStorageReplicaRepairDispatcher(
             entry.ReplicaBackendName,
             entry.Origin,
             entry.Status);
-        if (!options.Value.Replication.AttemptInProcessAsyncReplicaWrites) {
+        if (!_options.Value.Replication.AttemptInProcessAsyncReplicaWrites) {
+            return;
+        }
+
+        // If the dispatcher is already shutting down, do not start new background work; the entry stays
+        // Pending in the backlog so a replay job (or the next boot) can pick it up.
+        if (_shutdownCts.IsCancellationRequested) {
+            _logger.LogInformation(
+                "Skipping in-process dispatch for replica repair {RepairId} because the dispatcher is shutting down. Entry left Pending.",
+                entry.Id);
             return;
         }
 
         var dispatchLock = _dispatchLocks.GetOrAdd(entry.ReplicaBackendName, static _ => new SemaphoreSlim(1, 1));
-        _ = Task.Run(() => RunDispatchAsync(entry, dispatchLock, repairOperation));
+
+        // Track the dispatched task so DisposeAsync can await it on shutdown, then prune it from the
+        // tracking set once it finishes so the set does not grow unbounded over the process lifetime.
+        var dispatch = Task.Run(() => RunDispatchAsync(entry, dispatchLock, repairOperation), CancellationToken.None);
+        _outstandingDispatches.TryAdd(dispatch, 0);
+        _ = dispatch.ContinueWith(
+            static (completed, state) => ((ConcurrentDictionary<Task, byte>)state!).TryRemove(completed, out _),
+            _outstandingDispatches,
+            CancellationToken.None,
+            TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
     }
 
     private async Task RunDispatchAsync(
@@ -55,18 +107,36 @@ internal sealed class InProcessStorageReplicaRepairDispatcher(
         SemaphoreSlim dispatchLock,
         Func<CancellationToken, ValueTask<StorageError?>> repairOperation)
     {
+        var repairToken = _shutdownCts.Token;
         using var activity = StartRepairActivity(entry);
         var startedAt = Stopwatch.GetTimestamp();
         StorageError? observedError = null;
         var succeeded = false;
 
-        await dispatchLock.WaitAsync(CancellationToken.None);
         try {
             try {
-                await repairBacklog.MarkInProgressAsync(entry.Id, CancellationToken.None);
+                await dispatchLock.WaitAsync(repairToken);
+            }
+            catch (OperationCanceledException) {
+                // Shutdown observed before we ever marked the entry in-progress; it is still Pending, nothing to revert.
+                _logger.LogInformation(
+                    "Replica repair {RepairId} for {ReplicaBackend} was not started because the dispatcher is shutting down. Entry left Pending.",
+                    entry.Id,
+                    entry.ReplicaBackendName);
+                return;
+            }
+
+            try {
+                await _repairBacklog.MarkInProgressAsync(entry.Id, CancellationToken.None);
 
                 try {
-                    observedError = await repairOperation(CancellationToken.None);
+                    observedError = await repairOperation(repairToken);
+                }
+                catch (OperationCanceledException) when (repairToken.IsCancellationRequested) {
+                    // Interrupted by shutdown after being marked in-progress: revert to a re-runnable state so the
+                    // entry is never stranded InProgress with no live owner.
+                    await RevertInterruptedAsync(entry);
+                    return;
                 }
                 catch (Exception ex) {
                     observedError = CreateDispatchError(entry, ex);
@@ -74,9 +144,9 @@ internal sealed class InProcessStorageReplicaRepairDispatcher(
 
                 if (observedError is null) {
                     succeeded = true;
-                    await repairBacklog.MarkCompletedAsync(entry.Id, CancellationToken.None);
+                    await _repairBacklog.MarkCompletedAsync(entry.Id, CancellationToken.None);
                     activity?.SetTag(IntegratedS3Observability.Tags.Result, "success");
-                    logger.LogInformation(
+                    _logger.LogInformation(
                         "Replica repair {RepairId} completed successfully for {ReplicaBackend}.",
                         entry.Id,
                         entry.ReplicaBackendName);
@@ -84,27 +154,30 @@ internal sealed class InProcessStorageReplicaRepairDispatcher(
                 }
 
                 IntegratedS3CoreTelemetry.MarkFailure(activity, observedError);
-                await repairBacklog.MarkFailedAsync(entry.Id, observedError, CancellationToken.None);
-                logger.LogWarning(
+                await _repairBacklog.MarkFailedAsync(entry.Id, observedError, CancellationToken.None);
+                _logger.LogWarning(
                     "Replica repair {RepairId} failed for {ReplicaBackend}. ErrorCode {ErrorCode}.",
                     entry.Id,
                     entry.ReplicaBackendName,
                     observedError.Code);
             }
+            catch (OperationCanceledException) when (repairToken.IsCancellationRequested) {
+                await RevertInterruptedAsync(entry);
+            }
             catch (Exception ex) {
                 observedError ??= CreateDispatchError(entry, ex);
                 IntegratedS3CoreTelemetry.MarkFailure(activity, observedError);
-                logger.LogError(
+                _logger.LogError(
                     ex,
                     "In-process replica repair dispatch for repair {RepairId} targeting provider {ReplicaBackend} failed unexpectedly.",
                     entry.Id,
                     entry.ReplicaBackendName);
 
                 try {
-                    await repairBacklog.MarkFailedAsync(entry.Id, observedError, CancellationToken.None);
+                    await _repairBacklog.MarkFailedAsync(entry.Id, observedError, CancellationToken.None);
                 }
                 catch (Exception backlogException) {
-                    logger.LogError(
+                    _logger.LogError(
                         backlogException,
                         "Failed to mark replica repair {RepairId} as failed after an unexpected dispatch exception.",
                         entry.Id);
@@ -115,6 +188,73 @@ internal sealed class InProcessStorageReplicaRepairDispatcher(
             RecordRepairDuration(entry, succeeded, observedError, Stopwatch.GetElapsedTime(startedAt));
             dispatchLock.Release();
         }
+    }
+
+    /// <summary>
+    /// Reverts an in-progress repair that was interrupted by shutdown back to <see cref="StorageReplicaRepairStatus.Pending"/>
+    /// so it is never stranded in <see cref="StorageReplicaRepairStatus.InProgress"/> with no live task owning it.
+    /// </summary>
+    private async Task RevertInterruptedAsync(StorageReplicaRepairEntry entry)
+    {
+        _logger.LogInformation(
+            "Replica repair {RepairId} for {ReplicaBackend} was interrupted by shutdown; reverting to Pending so it can be retried.",
+            entry.Id,
+            entry.ReplicaBackendName);
+
+        try {
+            await _repairBacklog.RevertToPendingAsync(entry.Id, CancellationToken.None);
+        }
+        catch (Exception ex) {
+            _logger.LogError(
+                ex,
+                "Failed to revert interrupted replica repair {RepairId} to Pending during shutdown.",
+                entry.Id);
+        }
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (Interlocked.Exchange(ref _disposed, 1) != 0) {
+            return;
+        }
+
+        // Signal every in-flight repair to observe application-stopping.
+        await _shutdownCts.CancelAsync();
+
+        var outstanding = _outstandingDispatches.Keys.ToArray();
+        if (outstanding.Length > 0) {
+            _logger.LogInformation(
+                "Draining {OutstandingCount} in-flight replica repair dispatch task(s) during shutdown.",
+                outstanding.Length);
+
+            try {
+                var drain = Task.WhenAll(outstanding);
+                var completed = await Task.WhenAny(drain, Task.Delay(_drainTimeout)).ConfigureAwait(false);
+                if (completed != drain) {
+                    _logger.LogWarning(
+                        "Timed out after {DrainTimeout} draining in-flight replica repair dispatch tasks during shutdown; " +
+                        "any still-running entries may remain InProgress until reconciled.",
+                        _drainTimeout);
+                }
+                else {
+                    // Observe faulted tasks without rethrowing (each task already handles its own errors).
+                    await drain.ConfigureAwait(false);
+                }
+            }
+            catch (Exception ex) {
+                _logger.LogWarning(
+                    ex,
+                    "One or more replica repair dispatch tasks faulted while draining during shutdown.");
+            }
+        }
+
+        foreach (var dispatchLock in _dispatchLocks.Values) {
+            dispatchLock.Dispose();
+        }
+
+        _dispatchLocks.Clear();
+        _outstandingDispatches.Clear();
+        _shutdownCts.Dispose();
     }
 
     private static Activity? StartRepairActivity(StorageReplicaRepairEntry entry)
