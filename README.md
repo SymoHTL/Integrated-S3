@@ -210,6 +210,24 @@ To report a security vulnerability, please use the private channel described in 
 
 ---
 
+## Benchmarks & E2E tests
+
+Local-first suites for catching regressions early (no paid CI required):
+
+- **Benchmarks** — `IntegratedS3.Benchmarks` is a [BenchmarkDotNet](https://benchmarkdotnet.org/) suite over
+  the hot paths (SigV4/SigV4a, S3 XML, checksums, Disk provider), reporting mean time + allocations.
+  `scripts/bench.sh` runs it; `scripts/bench-compare.sh` fails when a benchmark's mean regresses > 15% or
+  allocations grow versus the committed [baseline](benchmarks/baseline/README.md).
+- **E2E** — `IntegratedS3.E2E.Tests` boots the real host on a Kestrel loopback socket with the Disk provider
+  and drives it with the AWS SDK for .NET. `scripts/e2e-smoke.sh` runs the fast offline subset;
+  `scripts/e2e.sh` runs the full suite.
+
+Both `.sh` and `.ps1` wrappers are provided (plus a `Makefile`). CI runs only the fast free-tier checks
+automatically; benchmarks and the full E2E suite are opt-in. See
+[docs/performance-benchmarks.md](docs/performance-benchmarks.md) for details and the CI strategy.
+
+---
+
 ## License
 
 This project is licensed under the terms of the [BSD 3-Clause License](LICENSE).

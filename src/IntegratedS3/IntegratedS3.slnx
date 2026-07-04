@@ -10,6 +10,7 @@
   <Project Path="IntegratedS3.Testing/IntegratedS3.Testing.csproj" />
   <Project Path="IntegratedS3.Benchmarks/IntegratedS3.Benchmarks.csproj" />
   <Project Path="IntegratedS3.Tests/IntegratedS3.Tests.csproj" />
+  <Project Path="IntegratedS3.E2E.Tests/IntegratedS3.E2E.Tests.csproj" />
   <Project Path="WebUi/WebUi.csproj" />
   <Project Path="WebUi.MvcRazor/WebUi.MvcRazor.csproj" />
   <Project Path="WebUi.BlazorWasm.Client/WebUi.BlazorWasm.Client.csproj" />

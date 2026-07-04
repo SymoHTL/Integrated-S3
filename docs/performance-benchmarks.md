@@ -1,74 +1,88 @@
-# IntegratedS3 hot-path benchmarks
+# IntegratedS3 benchmarks & E2E tests
 
-`src\IntegratedS3\IntegratedS3.Benchmarks` is the supported benchmark harness for the Track H hot paths called out in `docs\integrated-s3-implementation-plan.md`.
+This repository ships two local-first test suites for catching correctness and performance regressions
+early, both designed to run on a developer machine (or a self-hosted runner) with **no paid CI**:
 
-It is intentionally scenario-oriented instead of microbenchmark-oriented: the harness exercises the public service and ASP.NET integration surfaces so the reported baselines track the paths adopters actually ship.
+- **`IntegratedS3.Benchmarks`** — a real [BenchmarkDotNet](https://benchmarkdotnet.org/) micro-benchmark
+  suite over the hot paths, reporting mean time **and** allocations.
+- **`IntegratedS3.E2E.Tests`** — end-to-end tests that boot the real host on a Kestrel loopback socket
+  with the Disk provider and drive it with a genuine AWS SDK for .NET S3 client.
 
-## Covered scenarios
+Perf benchmarks are deliberately kept off GitHub-hosted CI: shared runners have no CPU isolation, so
+benchmark numbers there are noise. The free CI runs only fast correctness checks; the heavy suites are
+opt-in (see [CI strategy](#ci-strategy)).
 
-The current scenario catalog covers these hot paths:
+## Benchmarks
 
-| Scenario id | Hot path | Shape |
-| --- | --- | --- |
-| `http-sigv4-head-bucket-auth` | request auth/signature validation | loopback HTTP `HEAD` bucket request with SigV4 auth |
-| `disk-head-object-metadata` | metadata lookup | `IStorageService.HeadObjectAsync(...)` against disk |
-| `disk-put-object` | object upload | `IStorageService.PutObjectAsync(...)` against disk |
-| `disk-get-object` | object download | `IStorageService.GetObjectAsync(...)` against disk |
-| `disk-upload-multipart-part` | multipart part upload | `IStorageService.UploadMultipartPartAsync(...)` against disk |
-| `disk-complete-multipart-upload` | multipart complete | `IStorageService.CompleteMultipartUploadAsync(...)` against disk |
-| `disk-mirror-put-object` | mirrored writes | write-through `PutObjectAsync(...)` across primary + replica disk backends |
-| `disk-list-objects` | list operations | `IStorageService.ListObjectsAsync(...)` against disk |
-| `service-presign-get-object` | presign generation | `IStoragePresignService.PresignObjectAsync(...)` |
-| `http-head-object-metadata` | metadata lookup | loopback HTTP `HEAD` object request with SigV4 auth |
-| `http-put-object` | object upload | loopback HTTP `PUT` object request with SigV4 auth |
-| `http-upload-multipart-part` | multipart part upload | loopback HTTP `UploadPart` request with SigV4 auth |
-| `http-get-object` | object download | loopback HTTP `GET` object request with SigV4 auth |
-| `http-list-objects` | list operations | loopback HTTP list request with SigV4 auth |
-| `aws-sdk-path-get-object-metadata` | metadata lookup | `AmazonS3Client.GetObjectMetadataAsync(...)` path-style request against the loopback S3-compatible endpoint |
-| `aws-sdk-path-put-object` | object upload | `AmazonS3Client.PutObjectAsync(...)` path-style request against the loopback S3-compatible endpoint |
-| `aws-sdk-path-upload-multipart-part` | multipart part upload | `AmazonS3Client.UploadPartAsync(...)` path-style request against the loopback S3-compatible endpoint |
-| `aws-sdk-path-get-object` | object download | `AmazonS3Client.GetObjectAsync(...)` path-style request against the loopback S3-compatible endpoint |
-| `aws-sdk-path-list-objects-v2` | list operations | `AmazonS3Client.ListObjectsV2Async(...)` path-style request against the loopback S3-compatible endpoint |
+The suite (`src/IntegratedS3/IntegratedS3.Benchmarks`) uses BenchmarkDotNet's in-process (emit) toolchain
+— this repository sets `TreatWarningsAsErrors=true` together with SourceLink and code-style analyzers,
+which break BenchmarkDotNet's default out-of-process generated project; the in-process toolchain runs the
+already-optimized assembly directly and still measures allocations via `MemoryDiagnoser`. (Runs must use
+`-c Release`, which the scripts do.)
 
-The disk scenarios provide the representative provider baselines requested by Track H, the loopback HTTP scenarios add the representative host-level `HEAD` / `GET` / `PUT` / multipart `UploadPart` / `LIST` baselines called out in the implementation plan, and the AWS SDK path-style scenarios now provide a broader reproducible repo-local client-comparison slice that covers both metadata lookup and request/response body flows against the S3-compatible endpoint surface.
+| Benchmark class | Hot paths |
+| --- | --- |
+| `SigV4Benchmarks` | SigV4 canonical-request build, string-to-sign, HMAC signature; SigV4a ECDSA key derivation / sign / verify |
+| `S3XmlBenchmarks` | `WriteListBucketResult` at 1 / 100 / 1000 keys; parse CompleteMultipartUpload & DeleteObjects |
+| `ChecksumBenchmarks` | MD5 (ETag), SHA-1, SHA-256, CRC-32C over 64 KiB / 1 MiB / 8 MiB |
+| `DiskObjectBenchmarks` | Disk provider PutObject / GetObject / multipart Complete |
+| `DiskListingBenchmarks` | ListObjects over 1 / 100 / 1000 objects |
 
-## Running the benchmarks
+### Running
 
-Use the checked-in PowerShell wrapper to refresh the committed baseline reports:
-
-```powershell
-pwsh -File eng\Invoke-HotPathBenchmarkBaselines.ps1
+```bash
+scripts/bench.sh '*'                 # run everything (Release); pass a BenchmarkDotNet filter to narrow
+scripts/bench-compare.sh             # gate the last run against benchmarks/baseline/*.json
+scripts/bench-compare.sh --update-baseline   # promote the last run to the committed baseline
 ```
 
-Useful overrides:
+`scripts/bench.ps1` / `scripts/bench-compare.ps1` are the PowerShell equivalents; `make bench` /
+`make bench-compare` / `make bench-baseline` wrap them.
 
-```powershell
-pwsh -File eng\Invoke-HotPathBenchmarkBaselines.ps1 -WarmupIterations 3 -MeasuredIterations 20
-pwsh -File eng\Invoke-HotPathBenchmarkBaselines.ps1 -Scenario http-get-object,disk-put-object
+### Regression gate
+
+`scripts/bench-compare.sh` reads the BenchmarkDotNet `JsonExporter.Full` reports for the current run and
+the committed baseline, matches benchmarks by full name + parameters, and **fails (exit 1) when any
+benchmark's mean time regresses by more than 15% or its allocations grow**. Thresholds are tunable with
+`--mean-threshold` / `--alloc-threshold`.
+
+Baselines are **hardware-specific**; the committed set and the capture hardware are documented in
+[`benchmarks/baseline/README.md`](../benchmarks/baseline/README.md). Regenerate the baseline on the
+machine that will run the gate.
+
+## E2E tests
+
+`IntegratedS3.E2E.Tests` boots the reference host (`WebUiApplication`) on `http://127.0.0.1:0` with the
+Disk provider and a seeded SigV4 credential, then drives it with `AmazonS3Client` (path-style, HTTP). It
+is split by trait:
+
+- **`Suite=Smoke`** (fast, < ~30s, offline): bucket + object CRUD, listing, a 404 path, presigned round
+  trip, plus the pure protocol property tests (S3 XML write↔reparse, SigV4 canonicalization invariants,
+  SigV4a sign/verify).
+- **`Suite=Full`**: multipart upload / complete / abort, list v1 & v2 with prefix/delimiter/pagination,
+  versioning + delete markers, conditional GETs (304 / 412), and the 403 bad-signature path.
+
+```bash
+scripts/e2e-smoke.sh    # fast smoke subset
+scripts/e2e.sh          # full suite
+scripts/soak.sh 20      # optional: run the full suite in a loop (leak / flakiness soak)
 ```
 
-The wrapper runs the benchmark project in `Release` and writes:
+## CI strategy
 
-- `docs\benchmarks\hot-path-baseline.json`
-- `docs\benchmarks\hot-path-baseline.md`
+`.github/workflows/ci.yml` runs, automatically on push/PR, a single lean **free-tier** job: restore +
+build + unit/integration tests + the `Suite=Smoke` E2E subset (all offline). Everything heavier is opt-in
+via `workflow_dispatch`:
 
-## Reported metrics
+- `run-heavy` → full E2E (Smoke + Full), AOT publish validation, and coverage across ubuntu + windows.
+- `run-benchmarks` → the BenchmarkDotNet suite + regression gate, on a **self-hosted** runner labelled
+  `benchmarks` only (never on hosted runners).
 
-Each scenario records:
+To wire a self-hosted benchmark runner later: register a runner on a quiet machine with labels
+`[self-hosted, benchmarks]`, commit a baseline generated on that box, then dispatch CI with
+`run-benchmarks=true`.
 
-- throughput (`ops/s`, plus MiB/s or logical-items/s when the workload has a stable size)
-- latency (`mean`, `p50`, `p95`, `p99`)
-- allocations (`mean` and `p95` bytes per operation)
-- LOH delta
-- temp-file churn (created, deleted, renamed, and net bytes delta inside benchmark-owned roots)
-- thread-pool pressure snapshots
-- provider breakdown
+## Optional local pre-push gate
 
-Provider-backed service scenarios record backend timing through `ProfilingStorageBackend`. Loopback HTTP scenarios bridge the server-side provider timings back to the client-side harness through a benchmark-only response header, and the AWS SDK path-style scenarios read that same header from the SDK response pipeline, so the resulting report can show both backend time and the remaining `application-overhead` time for metadata-only and body-bearing request shapes.
-
-## Limitations
-
-- The committed baselines are machine- and environment-specific snapshots. They are intended for regression tracking, not as hard pass/fail thresholds.
-- `p95` and `p99` are only as stable as the configured iteration counts. Increase `-MeasuredIterations` when you need a stricter refresh.
-- Temp-file churn only covers benchmark-owned roots. Provider activity outside those roots is intentionally excluded.
-- The current provider-breakdown baselines focus on disk, mirrored disk, loopback HTTP over disk, and AWS SDK path-style loopback access over disk, including metadata lookup comparisons. Native-S3 benchmarking can be added later once a reproducible repo-local S3 environment is part of the supported validation story.
+`scripts/install-hooks.sh` points `core.hooksPath` at `scripts/hooks/`, so `pre-push` runs build +
+unit/integration tests + the fast E2E smoke before every push. Bypass once with `git push --no-verify`.
