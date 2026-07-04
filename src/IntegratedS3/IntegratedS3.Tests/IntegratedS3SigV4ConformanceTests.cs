@@ -885,6 +885,93 @@ public sealed class IntegratedS3SigV4ConformanceTests : IClassFixture<WebUiAppli
     }
 
     [Fact]
+    public async Task SigV4HeaderAuthentication_TamperedAwsChunkedPayloadBytesWithValidChunkSignature_ReturnsSignatureDoesNotMatch()
+    {
+        // Regression for the per-chunk SigV4 signature-chain gap (issue #101): a signed streaming
+        // upload whose data-chunk bytes are flipped on the wire — but whose (originally valid)
+        // chunk-signature, final-chunk signature and trailer-signature are left untouched — must be
+        // rejected, because the server recomputes the chunk signature over the received bytes and it
+        // no longer matches. Before the fix the tampered body was accepted with all checks passing.
+        const string accessKeyId = "sigv4-chunked-payload-tamper-access";
+        const string secretAccessKey = "sigv4-chunked-payload-tamper-secret";
+        const string bucketName = "sigv4-chunked-payload-tamper-bucket";
+        const string objectKey = "docs/payload-tamper.txt";
+        const string payload = "hello from a signed aws chunked payload that will be tampered";
+
+        await using var isolatedClient = await CreateAuthenticatedClientAsync(accessKeyId, secretAccessKey);
+        using var client = isolatedClient.Client;
+
+        using var createBucketRequest = CreateSigV4HeaderSignedRequest(HttpMethod.Put, $"/integrated-s3/buckets/{bucketName}", accessKeyId, secretAccessKey);
+        Assert.Equal(HttpStatusCode.Created, (await client.SendAsync(createBucketRequest)).StatusCode);
+
+        var tamperedBytes = Encoding.UTF8.GetBytes(payload);
+        tamperedBytes[0] ^= 0xFF; // Flip a byte; same length keeps the chunk framing valid.
+
+        using var putObjectRequest = CreateSigV4AwsChunkedTrailerRequest(
+            $"/integrated-s3/buckets/{bucketName}/objects/{objectKey}",
+            accessKeyId,
+            secretAccessKey,
+            payload,
+            new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["x-amz-checksum-sha256"] = ComputeSha256Base64(payload)
+            },
+            includeTrailerSignature: true,
+            tamperedWirePayloadBytes: tamperedBytes);
+        var response = await client.SendAsync(putObjectRequest);
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+        Assert.Equal("application/xml", response.Content.Headers.ContentType?.MediaType);
+        var errorDocument = XDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal("SignatureDoesNotMatch", GetRequiredElementValue(errorDocument, "Code"));
+
+        // The tampered object must not have been stored.
+        using var getObjectRequest = CreateSigV4HeaderSignedRequest(
+            HttpMethod.Get,
+            $"/integrated-s3/buckets/{bucketName}/objects/{objectKey}",
+            accessKeyId,
+            secretAccessKey);
+        var getObjectResponse = await client.SendAsync(getObjectRequest);
+        Assert.Equal(HttpStatusCode.NotFound, getObjectResponse.StatusCode);
+    }
+
+    [Fact]
+    public async Task SigV4HeaderAuthentication_MutatedAwsChunkedDataChunkSignature_ReturnsSignatureDoesNotMatch()
+    {
+        // Regression for issue #101: mutating a data chunk's chunk-signature (bytes intact) must be
+        // rejected — the recomputed per-chunk signature no longer matches the supplied one.
+        const string accessKeyId = "sigv4-chunked-chunk-signature-mutated-access";
+        const string secretAccessKey = "sigv4-chunked-chunk-signature-mutated-secret";
+        const string bucketName = "sigv4-chunked-chunk-signature-mutated-bucket";
+        const string objectKey = "docs/chunk-signature-mutated.txt";
+        const string payload = "hello from a signed aws chunked chunk with a mutated chunk signature";
+
+        await using var isolatedClient = await CreateAuthenticatedClientAsync(accessKeyId, secretAccessKey);
+        using var client = isolatedClient.Client;
+
+        using var createBucketRequest = CreateSigV4HeaderSignedRequest(HttpMethod.Put, $"/integrated-s3/buckets/{bucketName}", accessKeyId, secretAccessKey);
+        Assert.Equal(HttpStatusCode.Created, (await client.SendAsync(createBucketRequest)).StatusCode);
+
+        using var putObjectRequest = CreateSigV4AwsChunkedTrailerRequest(
+            $"/integrated-s3/buckets/{bucketName}/objects/{objectKey}",
+            accessKeyId,
+            secretAccessKey,
+            payload,
+            new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["x-amz-checksum-sha256"] = ComputeSha256Base64(payload)
+            },
+            includeTrailerSignature: true,
+            dataChunkSignatureOverride: new string('0', 64));
+        var response = await client.SendAsync(putObjectRequest);
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+        Assert.Equal("application/xml", response.Content.Headers.ContentType?.MediaType);
+        var errorDocument = XDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal("SignatureDoesNotMatch", GetRequiredElementValue(errorDocument, "Code"));
+    }
+
+    [Fact]
     public async Task SigV4HeaderAuthentication_MissingAwsChunkedTrailerSignature_ReturnsInvalidRequest()
     {
         const string accessKeyId = "sigv4-chunked-trailer-signature-missing-access";
@@ -3064,7 +3151,9 @@ public sealed class IntegratedS3SigV4ConformanceTests : IClassFixture<WebUiAppli
         string? trailerSignatureOverride = null,
         string host = "localhost",
         DateTimeOffset? signedAtUtc = null,
-        string? securityToken = null)
+        string? securityToken = null,
+        byte[]? tamperedWirePayloadBytes = null,
+        string? dataChunkSignatureOverride = null)
     {
         var timestampUtc = signedAtUtc ?? DateTimeOffset.UtcNow;
         var payloadBytes = Encoding.UTF8.GetBytes(payload);
@@ -3105,7 +3194,9 @@ public sealed class IntegratedS3SigV4ConformanceTests : IClassFixture<WebUiAppli
                 payloadBytes,
                 trailerHeaders,
                 includeTrailerSignature,
-                trailerSignatureOverride);
+                trailerSignatureOverride,
+                tamperedWirePayloadBytes,
+                dataChunkSignatureOverride);
         request.Content = new ByteArrayContent(contentBytes);
         request.Content.Headers.TryAddWithoutValidation("Content-Type", "text/plain");
         request.Content.Headers.ContentEncoding.Add("aws-chunked");
@@ -3311,8 +3402,13 @@ public sealed class IntegratedS3SigV4ConformanceTests : IClassFixture<WebUiAppli
         byte[] payloadBytes,
         IReadOnlyDictionary<string, string> trailerHeaders,
         bool includeTrailerSignature,
-        string? trailerSignatureOverride)
+        string? trailerSignatureOverride,
+        byte[]? tamperedWirePayloadBytes = null,
+        string? dataChunkSignatureOverride = null)
     {
+        // The per-chunk signature is always computed over the ORIGINAL (signed) payload bytes.
+        // 'tamperedWirePayloadBytes' lets a test emit different bytes on the wire while keeping the
+        // otherwise-valid chunk-signature — modelling a MITM that flips body bytes without the key.
         var payloadChunkSignature = ComputeSigV4ChunkSignature(secretAccessKey, credentialScope, signedAtUtc, seedSignature, payloadBytes);
         var finalChunkSignature = ComputeSigV4ChunkSignature(secretAccessKey, credentialScope, signedAtUtc, payloadChunkSignature, Array.Empty<byte>());
         var trailerSignature = includeTrailerSignature || trailerSignatureOverride is not null
@@ -3320,9 +3416,12 @@ public sealed class IntegratedS3SigV4ConformanceTests : IClassFixture<WebUiAppli
                 ?? ComputeSigV4TrailerSignature(secretAccessKey, credentialScope, signedAtUtc, finalChunkSignature, trailerHeaders)
             : null;
 
+        var wirePayloadBytes = tamperedWirePayloadBytes ?? payloadBytes;
+        var emittedDataChunkSignature = dataChunkSignatureOverride ?? payloadChunkSignature;
+
         using var stream = new MemoryStream();
-        WriteAscii(stream, $"{payloadBytes.Length:x};chunk-signature={payloadChunkSignature}\r\n");
-        stream.Write(payloadBytes, 0, payloadBytes.Length);
+        WriteAscii(stream, $"{wirePayloadBytes.Length:x};chunk-signature={emittedDataChunkSignature}\r\n");
+        stream.Write(wirePayloadBytes, 0, wirePayloadBytes.Length);
         WriteAscii(stream, "\r\n");
         WriteAscii(stream, $"0;chunk-signature={finalChunkSignature}\r\n");
         foreach (var trailerHeader in trailerHeaders.OrderBy(static header => header.Key, StringComparer.Ordinal)) {

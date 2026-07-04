@@ -170,7 +170,12 @@ internal sealed class AwsSignatureV4RequestAuthenticator(
             return IntegratedS3RequestAuthenticationResult.Failure("SignatureDoesNotMatch", "The request signature we calculated does not match the signature you provided.");
         }
 
-        StoreAwsChunkedTrailerSigningContext(httpContext, payloadHash!, credential, authorization.CredentialScope, requestTimestampUtc);
+        // Seed the per-chunk signature chain with the client's own (now cryptographically verified)
+        // request signature text, not the server-recomputed one: AWS clients derive chunk signatures
+        // from the exact hex string they placed in the Authorization header, and the header signature
+        // is compared case-insensitively — so a differently-cased-but-valid seed must chain from the
+        // client's text to reproduce the same HMAC chain.
+        StoreAwsChunkedTrailerSigningContext(httpContext, payloadHash!, credential, authorization.CredentialScope, requestTimestampUtc, authorization.Signature);
         return IntegratedS3RequestAuthenticationResult.Success(CreatePrincipal(credential));
     }
 
@@ -240,7 +245,7 @@ internal sealed class AwsSignatureV4RequestAuthenticator(
             return IntegratedS3RequestAuthenticationResult.Failure("SignatureDoesNotMatch", "The presigned request signature does not match the expected signature.");
         }
 
-        StoreAwsChunkedTrailerSigningContext(httpContext, payloadHash!, credential, presignedRequest.CredentialScope, presignedRequest.SignedAtUtc);
+        StoreAwsChunkedTrailerSigningContext(httpContext, payloadHash!, credential, presignedRequest.CredentialScope, presignedRequest.SignedAtUtc, presignedRequest.Signature);
         return IntegratedS3RequestAuthenticationResult.Success(CreatePrincipal(credential));
     }
 
@@ -423,7 +428,7 @@ internal sealed class AwsSignatureV4RequestAuthenticator(
             return IntegratedS3RequestAuthenticationResult.Failure("SignatureDoesNotMatch", "The request signature we calculated does not match the signature you provided.");
         }
 
-        StoreSigV4aChunkedTrailerSigningContext(httpContext, payloadHash!, credential, authorization.CredentialScope, requestTimestampUtc);
+        StoreSigV4aChunkedTrailerSigningContext(httpContext, payloadHash!, credential, authorization.CredentialScope, requestTimestampUtc, authorization.Signature);
         return IntegratedS3RequestAuthenticationResult.Success(CreateSigV4aPrincipal(credential));
     }
 
@@ -492,7 +497,7 @@ internal sealed class AwsSignatureV4RequestAuthenticator(
             return IntegratedS3RequestAuthenticationResult.Failure("SignatureDoesNotMatch", "The presigned request signature does not match the expected signature.");
         }
 
-        StoreSigV4aChunkedTrailerSigningContext(httpContext, payloadHash!, credential, presignedRequest.CredentialScope, presignedRequest.SignedAtUtc);
+        StoreSigV4aChunkedTrailerSigningContext(httpContext, payloadHash!, credential, presignedRequest.CredentialScope, presignedRequest.SignedAtUtc, presignedRequest.Signature);
         return IntegratedS3RequestAuthenticationResult.Success(CreateSigV4aPrincipal(credential));
     }
 
@@ -559,7 +564,8 @@ internal sealed class AwsSignatureV4RequestAuthenticator(
         string payloadHash,
         IntegratedS3AccessKeyCredential credential,
         S3SigV4CredentialScope credentialScope,
-        DateTimeOffset requestTimestampUtc)
+        DateTimeOffset requestTimestampUtc,
+        string seedSignature)
     {
         if (!IsSignedTrailerBackedPayloadHash(payloadHash)) {
             return;
@@ -570,6 +576,7 @@ internal sealed class AwsSignatureV4RequestAuthenticator(
             CredentialScope = credentialScope,
             SignedAtUtc = requestTimestampUtc,
             SecretAccessKey = credential.SecretAccessKey,
+            SeedSignature = seedSignature,
             IsSigV4a = true,
             AccessKeyId = credential.AccessKeyId
         });
@@ -752,7 +759,8 @@ internal sealed class AwsSignatureV4RequestAuthenticator(
         string payloadHash,
         IntegratedS3AccessKeyCredential credential,
         S3SigV4CredentialScope credentialScope,
-        DateTimeOffset requestTimestampUtc)
+        DateTimeOffset requestTimestampUtc,
+        string seedSignature)
     {
         if (!IsSignedTrailerBackedPayloadHash(payloadHash)) {
             return;
@@ -762,7 +770,8 @@ internal sealed class AwsSignatureV4RequestAuthenticator(
         {
             CredentialScope = credentialScope,
             SignedAtUtc = requestTimestampUtc,
-            SecretAccessKey = credential.SecretAccessKey
+            SecretAccessKey = credential.SecretAccessKey,
+            SeedSignature = seedSignature
         });
     }
 
