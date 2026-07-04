@@ -89,6 +89,13 @@ internal sealed class IntegratedS3RequestAuthenticationEndpointFilter(
     /// </summary>
     private static (int StatusCode, string Code, string Message) MapException(Exception exception)
     {
+        if (exception is ContentSha256MismatchException) {
+            return (
+                StatusCodes.Status400BadRequest,
+                "XAmzContentSHA256Mismatch",
+                "The provided 'x-amz-content-sha256' header does not match what was computed.");
+        }
+
         if (exception is BadHttpRequestException badRequest) {
             return badRequest.StatusCode switch
             {

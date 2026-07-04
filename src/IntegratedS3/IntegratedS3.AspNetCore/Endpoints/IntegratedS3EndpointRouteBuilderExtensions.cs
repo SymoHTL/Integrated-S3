@@ -6986,6 +6986,15 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
     private static async Task<PreparedRequestBody> PrepareRequestBodyAsync(HttpRequest request, CancellationToken cancellationToken)
     {
         if (!IsAwsChunkedContent(request)) {
+            // For non-streaming signed uploads the client may send a concrete lowercase-hex
+            // SHA256 of the payload in x-amz-content-sha256 and bind it into the SigV4 signature.
+            // The signature only proves the client declared that digest; S3 additionally recomputes
+            // the digest over the received bytes and rejects mismatches with XAmzContentSHA256Mismatch.
+            // Buffer the body (preserving it for the handler) and verify when a concrete digest is present.
+            if (TryGetConcretePayloadSha256(request, out var expectedSha256)) {
+                return await BufferAndVerifyPayloadSha256Async(request, expectedSha256!, cancellationToken);
+            }
+
             return new PreparedRequestBody(request.Body, request.ContentLength, tempFilePath: null, trailerHeaders: null, trailerHeaderEntries: null, finalChunkSignature: null);
         }
 
@@ -7010,6 +7019,71 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
             }
 
             throw;
+        }
+    }
+
+    /// <summary>
+    /// Returns <see langword="true"/> and the lowercase-hex digest when the request carries a concrete
+    /// (non-sentinel) <c>x-amz-content-sha256</c> value that S3 verifies against the received body.
+    /// Sentinels (<c>UNSIGNED-PAYLOAD</c>, the <c>STREAMING-*</c> payload hashes) and non-hex values are ignored.
+    /// </summary>
+    private static bool TryGetConcretePayloadSha256(HttpRequest request, out string? expectedSha256Lower)
+    {
+        expectedSha256Lower = null;
+        var headerValue = request.Headers[AwsContentSha256HeaderName].ToString().Trim();
+        if (headerValue.Length != 64) {
+            // Concrete SHA256 digests are exactly 64 hex characters; sentinels and blanks are longer/shorter.
+            return false;
+        }
+
+        for (var i = 0; i < headerValue.Length; i++) {
+            var c = headerValue[i];
+            var isHex = c is >= '0' and <= '9' or >= 'a' and <= 'f' or >= 'A' and <= 'F';
+            if (!isHex) {
+                return false;
+            }
+        }
+
+        expectedSha256Lower = headerValue.ToLowerInvariant();
+        return true;
+    }
+
+    private static async Task<PreparedRequestBody> BufferAndVerifyPayloadSha256Async(
+        HttpRequest request,
+        string expectedSha256Lower,
+        CancellationToken cancellationToken)
+    {
+        var buffer = new MemoryStream();
+        try {
+            using var sha256 = SHA256.Create();
+            var rented = System.Buffers.ArrayPool<byte>.Shared.Rent(81920);
+            try {
+                int read;
+                while ((read = await request.Body.ReadAsync(rented.AsMemory(0, rented.Length), cancellationToken)) > 0) {
+                    sha256.TransformBlock(rented, 0, read, null, 0);
+                    await buffer.WriteAsync(rented.AsMemory(0, read), cancellationToken);
+                }
+            }
+            finally {
+                System.Buffers.ArrayPool<byte>.Shared.Return(rented);
+            }
+
+            sha256.TransformFinalBlock([], 0, 0);
+            var actualSha256Lower = Convert.ToHexStringLower(sha256.Hash!);
+            if (!string.Equals(actualSha256Lower, expectedSha256Lower, StringComparison.Ordinal)) {
+                throw new ContentSha256MismatchException();
+            }
+
+            var contentLength = buffer.Length;
+            buffer.Position = 0;
+            var preparedBody = new PreparedRequestBody(buffer, contentLength, tempFilePath: null, trailerHeaders: null, trailerHeaderEntries: null, finalChunkSignature: null, ownsContent: true);
+            buffer = null!;
+            return preparedBody;
+        }
+        finally {
+            if (buffer is not null) {
+                await buffer.DisposeAsync();
+            }
         }
     }
 
@@ -9240,7 +9314,8 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
         string? tempFilePath,
         IReadOnlyDictionary<string, string>? trailerHeaders,
         IReadOnlyList<KeyValuePair<string, string>>? trailerHeaderEntries,
-        string? finalChunkSignature) : IAsyncDisposable
+        string? finalChunkSignature,
+        bool ownsContent = false) : IAsyncDisposable
     {
         public Stream Content { get; } = content;
 
@@ -9254,12 +9329,14 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
 
         public async ValueTask DisposeAsync()
         {
-            if (tempFilePath is null) {
+            // The raw request body is owned by the framework and must not be disposed here.
+            // Temp-file-backed content and buffered (verified) content are ours to dispose.
+            if (tempFilePath is null && !ownsContent) {
                 return;
             }
 
             await Content.DisposeAsync();
-            if (File.Exists(tempFilePath)) {
+            if (tempFilePath is not null && File.Exists(tempFilePath)) {
                 File.Delete(tempFilePath);
             }
         }
