@@ -5104,7 +5104,21 @@ public sealed class IntegratedS3CoreOrchestrationTests
             return ValueTask.CompletedTask;
         }
 
-        public ValueTask<IReadOnlyList<StoredObjectEntry>> ListObjectsAsync(string? providerName = null, string? bucketName = null, CancellationToken cancellationToken = default)
+        public ValueTask<StoredObjectEntry?> GetObjectAsync(string providerName, string bucketName, string key, string? versionId = null, CancellationToken cancellationToken = default)
+        {
+            var entry = string.IsNullOrWhiteSpace(versionId)
+                ? Objects.FirstOrDefault(existing => existing.ProviderName == providerName
+                    && existing.BucketName == bucketName
+                    && string.Equals(existing.Key, key, StringComparison.Ordinal)
+                    && existing.IsLatest)
+                : Objects.FirstOrDefault(existing => existing.ProviderName == providerName
+                    && existing.BucketName == bucketName
+                    && string.Equals(existing.Key, key, StringComparison.Ordinal)
+                    && string.Equals(existing.VersionId, versionId, StringComparison.Ordinal));
+            return ValueTask.FromResult(entry);
+        }
+
+        public ValueTask<IReadOnlyList<StoredObjectEntry>> ListObjectsAsync(string? providerName = null, string? bucketName = null, string? keyPrefix = null, CancellationToken cancellationToken = default)
         {
             IEnumerable<StoredObjectEntry> result = Objects;
             if (!string.IsNullOrWhiteSpace(providerName)) {
@@ -5113,6 +5127,10 @@ public sealed class IntegratedS3CoreOrchestrationTests
 
             if (!string.IsNullOrWhiteSpace(bucketName)) {
                 result = result.Where(existing => existing.BucketName == bucketName);
+            }
+
+            if (!string.IsNullOrWhiteSpace(keyPrefix)) {
+                result = result.Where(existing => existing.Key.StartsWith(keyPrefix, StringComparison.Ordinal));
             }
 
             return ValueTask.FromResult<IReadOnlyList<StoredObjectEntry>>(result.ToArray());

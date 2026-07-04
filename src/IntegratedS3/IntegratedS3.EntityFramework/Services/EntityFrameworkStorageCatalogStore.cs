@@ -299,7 +299,31 @@ internal sealed class EntityFrameworkStorageCatalogStore<TDbContext>(
         await query.ExecuteDeleteAsync(cancellationToken);
     }
 
-    public async ValueTask<IReadOnlyList<StoredObjectEntry>> ListObjectsAsync(string? providerName = null, string? bucketName = null, CancellationToken cancellationToken = default)
+    public async ValueTask<StoredObjectEntry?> GetObjectAsync(string providerName, string bucketName, string key, string? versionId = null, CancellationToken cancellationToken = default)
+    {
+        await EnsureInitializedAsync(cancellationToken);
+
+        await using var scope = serviceProvider.CreateAsyncScope();
+        var dbContext = ResolveDbContext(scope);
+
+        // Push the key (and version) predicate into the query so the database returns only the matching row(s),
+        // using the (ProviderName, BucketName, Key, IsLatest) / unique (ProviderName, BucketName, Key, VersionId)
+        // indexes, instead of materializing the entire bucket catalog for a single point lookup.
+        var query = dbContext.Set<ObjectCatalogRecord>()
+            .Where(@object => @object.ProviderName == providerName
+                && @object.BucketName == bucketName
+                && @object.Key == key);
+
+        query = string.IsNullOrWhiteSpace(versionId)
+            ? query.Where(@object => @object.IsLatest)
+            : query.Where(@object => @object.VersionId == versionId);
+
+        return await query
+            .Select(ProjectEntry)
+            .FirstOrDefaultAsync(cancellationToken);
+    }
+
+    public async ValueTask<IReadOnlyList<StoredObjectEntry>> ListObjectsAsync(string? providerName = null, string? bucketName = null, string? keyPrefix = null, CancellationToken cancellationToken = default)
     {
         await EnsureInitializedAsync(cancellationToken);
 
@@ -315,12 +339,28 @@ internal sealed class EntityFrameworkStorageCatalogStore<TDbContext>(
             query = query.Where(@object => @object.BucketName == bucketName);
         }
 
+        // Push the key-prefix predicate into the query so unrelated keys are never materialized. A whitespace-only
+        // prefix is treated as "no filter", preserving the prior behaviour of the in-memory prefix check.
+        if (!string.IsNullOrWhiteSpace(keyPrefix)) {
+            query = query.Where(@object => @object.Key.StartsWith(keyPrefix));
+        }
+
         return await query
             .OrderBy(@object => @object.ProviderName)
             .ThenBy(@object => @object.BucketName)
             .ThenBy(@object => @object.Key)
-            .Select(@object => new StoredObjectEntry
-            {
+            .Select(ProjectEntry)
+            .ToArrayAsync(cancellationToken);
+    }
+
+    /// <summary>
+    /// Shared projection from an <see cref="ObjectCatalogRecord"/> to a <see cref="StoredObjectEntry"/>. Declared as
+    /// a LINQ expression tree so EF Core translates the column selection into SQL and both the point lookup and the
+    /// list query materialize the exact same shape (JSON columns are deserialized client-side).
+    /// </summary>
+    private static readonly System.Linq.Expressions.Expression<Func<ObjectCatalogRecord, StoredObjectEntry>> ProjectEntry =
+        @object => new StoredObjectEntry
+        {
                 ProviderName = @object.ProviderName,
                 BucketName = @object.BucketName,
                 Key = @object.Key,
@@ -356,9 +396,7 @@ internal sealed class EntityFrameworkStorageCatalogStore<TDbContext>(
                     }
                     : null,
                 LastSyncedAtUtc = @object.LastSyncedAtUtc
-            })
-            .ToArrayAsync(cancellationToken);
-    }
+        };
 
     private async Task EnsureInitializedAsync(CancellationToken cancellationToken)
     {

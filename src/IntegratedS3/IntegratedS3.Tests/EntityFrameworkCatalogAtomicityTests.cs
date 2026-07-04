@@ -1,4 +1,5 @@
 using IntegratedS3.Abstractions.Models;
+using IntegratedS3.Abstractions.Services;
 using IntegratedS3.Core.DependencyInjection;
 using IntegratedS3.Core.Persistence;
 using IntegratedS3.Core.Services;
@@ -39,15 +40,18 @@ public sealed class EntityFrameworkCatalogAtomicityTests : IDisposable
         }
     }
 
-    private ServiceProvider BuildProvider(bool failNextSaveChanges = false)
+    private ServiceProvider BuildProvider(bool failNextSaveChanges = false, ObjectSelectCapturingInterceptor? selectCapture = null)
     {
         var interceptor = new ThrowOnceSavingInterceptor { Armed = failNextSaveChanges };
 
         var services = new ServiceCollection();
         services.AddSingleton(interceptor);
-        services.AddDbContext<TestCatalogDbContext>(options => options
-            .UseSqlite($"Data Source={_databasePath}")
-            .AddInterceptors(interceptor));
+        services.AddDbContext<TestCatalogDbContext>(options => {
+            options.UseSqlite($"Data Source={_databasePath}").AddInterceptors(interceptor);
+            if (selectCapture is not null) {
+                options.AddInterceptors(selectCapture);
+            }
+        });
         services.AddIntegratedS3Core();
         services.AddEntityFrameworkStorageCatalog<TestCatalogDbContext>(options => options.EnsureCreated = true);
         return services.BuildServiceProvider();
@@ -171,11 +175,125 @@ public sealed class EntityFrameworkCatalogAtomicityTests : IDisposable
         Assert.Equal(2, objects.Count);
     }
 
+    [Fact]
+    public async Task GetObjectInfoAsync_OnMultiObjectBucket_ResolvesTheCorrectRow()
+    {
+        // Issue #138: a single-key point lookup must return the right row from a bucket that contains many
+        // other keys plus multiple versions of the target key (latest + a historical version + a delete marker).
+        await using var provider = BuildProvider();
+        var store = provider.GetRequiredService<IStorageCatalogStore>();
+        var stateStore = provider.GetRequiredService<IStorageObjectStateStore>();
+
+        // Noise: unrelated keys in the same bucket that must never be returned by the point lookup.
+        for (var i = 0; i < 25; i++) {
+            await store.UpsertObjectAsync("catalog-disk", NewObject($"noise/{i:D3}.txt", $"n{i:D3}", isLatest: true));
+        }
+
+        const string key = "docs/report.txt";
+        await store.UpsertObjectAsync("catalog-disk", NewObject(key, "version-001", isLatest: false));
+        await store.UpsertObjectAsync("catalog-disk", NewObject(key, "version-002", isLatest: true));
+
+        // Latest resolution (versionId omitted) must return version-002.
+        var latest = await stateStore.GetObjectInfoAsync("catalog-disk", "catalog-bucket", key);
+        Assert.NotNull(latest);
+        Assert.Equal("version-002", latest!.VersionId);
+        Assert.True(latest.IsLatest);
+
+        // Explicit version lookup must return that specific (non-latest) version.
+        var historical = await stateStore.GetObjectInfoAsync("catalog-disk", "catalog-bucket", key, "version-001");
+        Assert.NotNull(historical);
+        Assert.Equal("version-001", historical!.VersionId);
+        Assert.False(historical.IsLatest);
+
+        // A key that does not exist must resolve to null (not to a noise row).
+        var missing = await stateStore.GetObjectInfoAsync("catalog-disk", "catalog-bucket", "does/not/exist.txt");
+        Assert.Null(missing);
+    }
+
+    [Fact]
+    public async Task GetObjectInfoAsync_PushesKeyPredicateIntoQuery_InsteadOfMaterializingWholeBucket()
+    {
+        // Issue #138: the point lookup must filter by key in the SQL WHERE clause, not fetch the whole bucket
+        // and filter in memory. We capture the object-table SELECT and assert it references the Key column so a
+        // regression back to a full-bucket materialization would fail this test.
+        const string key = "docs/report.txt";
+
+        await using (var seedProvider = BuildProvider()) {
+            var seedStore = seedProvider.GetRequiredService<IStorageCatalogStore>();
+            for (var i = 0; i < 10; i++) {
+                await seedStore.UpsertObjectAsync("catalog-disk", NewObject($"noise/{i:D3}.txt", $"n{i:D3}", isLatest: true));
+            }
+
+            await seedStore.UpsertObjectAsync("catalog-disk", NewObject(key, "version-001", isLatest: true));
+        }
+
+        var capture = new ObjectSelectCapturingInterceptor();
+        await using var provider = BuildProvider(selectCapture: capture);
+        var stateStore = provider.GetRequiredService<IStorageObjectStateStore>();
+
+        capture.Enabled = true;
+        var latest = await stateStore.GetObjectInfoAsync("catalog-disk", "catalog-bucket", key);
+        capture.Enabled = false;
+
+        Assert.NotNull(latest);
+        Assert.Equal("version-001", latest!.VersionId);
+
+        var objectSelect = Assert.Single(capture.CapturedObjectSelects);
+        Assert.Contains("\"Key\"", objectSelect, StringComparison.Ordinal);
+        // The narrowed query pulls one row via LIMIT 1; a full-bucket materialization would have no such bound.
+        Assert.Contains("LIMIT", objectSelect, StringComparison.OrdinalIgnoreCase);
+    }
+
     private sealed class TestCatalogDbContext(DbContextOptions<TestCatalogDbContext> options) : DbContext(options)
     {
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
             modelBuilder.MapIntegratedS3Catalog();
+        }
+    }
+
+    /// <summary>
+    /// Captures the SQL text of every SELECT issued against the objects catalog table while enabled, so tests can
+    /// assert that a point lookup pushes the key predicate into the query instead of materializing the whole bucket.
+    /// </summary>
+    private sealed class ObjectSelectCapturingInterceptor : DbCommandInterceptor
+    {
+        public bool Enabled { get; set; }
+
+        public List<string> CapturedObjectSelects { get; } = [];
+
+        public override InterceptionResult<System.Data.Common.DbDataReader> ReaderExecuting(
+            System.Data.Common.DbCommand command,
+            CommandEventData eventData,
+            InterceptionResult<System.Data.Common.DbDataReader> result)
+        {
+            Capture(command);
+            return base.ReaderExecuting(command, eventData, result);
+        }
+
+        public override ValueTask<InterceptionResult<System.Data.Common.DbDataReader>> ReaderExecutingAsync(
+            System.Data.Common.DbCommand command,
+            CommandEventData eventData,
+            InterceptionResult<System.Data.Common.DbDataReader> result,
+            CancellationToken cancellationToken = default)
+        {
+            Capture(command);
+            return base.ReaderExecutingAsync(command, eventData, result, cancellationToken);
+        }
+
+        private void Capture(System.Data.Common.DbCommand command)
+        {
+            if (!Enabled) {
+                return;
+            }
+
+            var text = command.CommandText;
+            if (text.Contains("IntegratedS3Objects", StringComparison.OrdinalIgnoreCase)
+                && text.Contains("SELECT", StringComparison.OrdinalIgnoreCase)) {
+                lock (CapturedObjectSelects) {
+                    CapturedObjectSelects.Add(text);
+                }
+            }
         }
     }
 
