@@ -14,7 +14,7 @@ Versions match the `VersionPrefix` in `src/IntegratedS3/Directory.Build.props`, 
 - **Presigned `DELETE`, `HEAD`, and multipart `UploadPart` URLs** — presign issuance and validation now cover `DeleteObject`, `HeadObject`, and `UploadPart` in addition to `GetObject`/`PutObject`.
 - **Pluggable SigV4 credential resolution** — new `IIntegratedS3CredentialResolver` abstraction (with a configuration-backed default) so hosts can resolve access keys from external stores and rotate keys without a restart.
 - **Object Lock default-retention enforcement in the disk provider** — bucket default retention from the Object Lock configuration now blocks in-window permanent version deletes instead of being stored without effect.
-- **`MaxObjectSizeBytes` host option** — object upload endpoints (`PutObject`, `UploadPart`) replace the Kestrel per-request body-size limit so uploads beyond ~28.6 MiB no longer fail with `413`; configurable cap, unlimited by default up to the S3 5 GiB per-request maximum.
+- **`MaxObjectSizeBytes` host option** — object upload endpoints (`PutObject`, `UploadPart`) replace the Kestrel per-request body-size limit so uploads beyond ~28.6 MiB no longer fail with `413`; configurable cap that now **defaults to 5 GiB** (the S3 per-request maximum) instead of being unbounded. Set it to `null` to opt out of the application-level limit.
 - **Scheduled maintenance: abandoned multipart upload expiry** — the maintenance job set can expire and abort stale multipart uploads.
 - **Replica repair divergence kinds and orphan reconciliation** — repair entries now describe content/metadata/version divergence explicitly, and reconciliation can garbage-collect orphaned provider-side artifacts.
 - **Code coverage in CI plus Dependabot** — CI collects and publishes coverage reports; Dependabot keeps NuGet and GitHub Actions dependencies current.
@@ -27,6 +27,10 @@ Versions match the `VersionPrefix` in `src/IntegratedS3/Directory.Build.props`, 
 - **CI consolidated into a single workflow** — one `ci.yml` (build/test matrix, AOT validation, pack) with concurrency cancellation and NuGet caching; the legacy track-specific workflow was removed.
 - **Publishing is traceable** — the NuGet publish workflow tags the release commit (`v{version}`) and creates a GitHub Release with the packed artifacts after a successful push.
 - **README claims qualified** — feature bullets now state per-provider limits (SSE, retention/legal hold, config-only bucket subresources) instead of implying uniform support.
+
+### Security
+
+- **Bounded upload size and aws-chunked temp spooling (disk-exhaustion DoS)** — `MaxObjectSizeBytes` now defaults to 5 GiB instead of `null`, so object uploads have an application-level cap out of the box. The `Content-Encoding: aws-chunked` decode path additionally enforces this cap while spooling to a temp file — rejecting a decoded body that exceeds the cap (or whose `x-amz-decoded-content-length` already declares an oversize) with `413 EntityTooLarge` — instead of writing an unbounded stream of client-controlled data to the temp volume.
 
 ### Fixed
 

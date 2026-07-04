@@ -5878,6 +5878,113 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
     }
 
     [Fact]
+    public void IntegratedS3Options_MaxObjectSizeBytes_DefaultsToFiveGibibytes()
+    {
+        // Regression for the disk-exhaustion DoS: the shipped default must be a finite, non-null cap
+        // so object uploads (and aws-chunked temp-file spooling) are bounded out of the box.
+        Assert.Equal(5L * 1024 * 1024 * 1024, new IntegratedS3Options().MaxObjectSizeBytes);
+    }
+
+    [Fact]
+    public async Task PutObject_AwsChunkedBodyExceedingMaxObjectSizeBytes_ReturnsEntityTooLarge()
+    {
+        // Regression for the aws-chunked disk-exhaustion DoS: an actual chunk stream whose decoded size
+        // exceeds the cap must be rejected mid-spool with 413 EntityTooLarge even when the client
+        // understates x-amz-decoded-content-length, instead of being written unbounded to the temp volume.
+        await using var isolatedClient = await _factory.CreateIsolatedClientAsync(builder =>
+            builder.Services.Configure<IntegratedS3Options>(static options => options.MaxObjectSizeBytes = 1024));
+        using var client = isolatedClient.Client;
+
+        const string bucketName = "aws-chunked-oversized-body-bucket";
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync($"/integrated-s3/buckets/{bucketName}", content: null)).StatusCode);
+
+        // 4096 decoded bytes across chunk frames (> 1024 cap), but the header lies and declares only 8 bytes
+        // so the up-front declared-length check does not fire; the cumulative-byte cap in the spool loop must.
+        using var body = new MemoryStream();
+        WriteAscii(body, "800\r\n"); // 0x800 = 2048 bytes
+        body.Write(new byte[2048], 0, 2048);
+        WriteAscii(body, "\r\n800\r\n"); // another 2048 bytes
+        body.Write(new byte[2048], 0, 2048);
+        WriteAscii(body, "\r\n0\r\n\r\n");
+
+        using var putRequest = new HttpRequestMessage(HttpMethod.Put, $"/integrated-s3/{bucketName}/docs/oversized.txt")
+        {
+            Content = new ByteArrayContent(body.ToArray())
+        };
+        putRequest.Content.Headers.ContentType = new MediaTypeHeaderValue("text/plain");
+        putRequest.Content.Headers.ContentEncoding.Add("aws-chunked");
+        putRequest.Headers.TryAddWithoutValidation("x-amz-decoded-content-length", "8");
+        putRequest.Headers.TryAddWithoutValidation("x-amz-content-sha256", "STREAMING-UNSIGNED-PAYLOAD-TRAILER");
+
+        var response = await client.SendAsync(putRequest);
+
+        Assert.Equal(HttpStatusCode.RequestEntityTooLarge, response.StatusCode);
+        var document = XDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal("EntityTooLarge", GetRequiredElementValue(document, "Code"));
+    }
+
+    [Fact]
+    public async Task PutObject_AwsChunkedDeclaredDecodedLengthExceedingCap_ReturnsEntityTooLargeBeforeSpooling()
+    {
+        // The declared x-amz-decoded-content-length is checked before any byte is written to disk, so an
+        // oversized upload is rejected up front.
+        await using var isolatedClient = await _factory.CreateIsolatedClientAsync(builder =>
+            builder.Services.Configure<IntegratedS3Options>(static options => options.MaxObjectSizeBytes = 1024));
+        using var client = isolatedClient.Client;
+
+        const string bucketName = "aws-chunked-declared-oversized-bucket";
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync($"/integrated-s3/buckets/{bucketName}", content: null)).StatusCode);
+
+        using var putRequest = new HttpRequestMessage(HttpMethod.Put, $"/integrated-s3/{bucketName}/docs/declared-oversized.txt")
+        {
+            Content = new ByteArrayContent(Encoding.ASCII.GetBytes("4\r\ndata\r\n0\r\n\r\n"))
+        };
+        putRequest.Content.Headers.ContentType = new MediaTypeHeaderValue("text/plain");
+        putRequest.Content.Headers.ContentEncoding.Add("aws-chunked");
+        putRequest.Headers.TryAddWithoutValidation("x-amz-decoded-content-length", "1048576"); // 1 MiB > 1024 cap
+        putRequest.Headers.TryAddWithoutValidation("x-amz-content-sha256", "STREAMING-UNSIGNED-PAYLOAD-TRAILER");
+
+        var response = await client.SendAsync(putRequest);
+
+        Assert.Equal(HttpStatusCode.RequestEntityTooLarge, response.StatusCode);
+        var document = XDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal("EntityTooLarge", GetRequiredElementValue(document, "Code"));
+    }
+
+    [Fact]
+    public async Task PutObject_AwsChunkedBodyWithinMaxObjectSizeBytes_Succeeds()
+    {
+        // A body within the configured cap still uploads normally, proving the cap does not over-reject.
+        await using var isolatedClient = await _factory.CreateIsolatedClientAsync(builder =>
+            builder.Services.Configure<IntegratedS3Options>(static options => options.MaxObjectSizeBytes = 1024));
+        using var client = isolatedClient.Client;
+
+        const string bucketName = "aws-chunked-within-cap-bucket";
+        const string objectKey = "docs/within-cap.txt";
+        const string payload = "hello from aws chunked within cap";
+        var checksum = ComputeSha256Base64(payload);
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync($"/integrated-s3/buckets/{bucketName}", content: null)).StatusCode);
+
+        using var putRequest = CreateAwsChunkedPutObjectRequest(
+            $"/integrated-s3/{bucketName}/{objectKey}",
+            payload,
+            sdkChecksumAlgorithm: "SHA256",
+            trailerHeaders: new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["x-amz-checksum-sha256"] = checksum
+            },
+            declaredTrailerHeaderNames: ["x-amz-checksum-sha256"]);
+        putRequest.Headers.TryAddWithoutValidation("x-amz-content-sha256", "STREAMING-UNSIGNED-PAYLOAD-TRAILER");
+
+        var putResponse = await client.SendAsync(putRequest);
+        Assert.Equal(HttpStatusCode.OK, putResponse.StatusCode);
+
+        var getResponse = await client.GetAsync($"/integrated-s3/{bucketName}/{objectKey}");
+        Assert.Equal(HttpStatusCode.OK, getResponse.StatusCode);
+        Assert.Equal(payload, await getResponse.Content.ReadAsStringAsync());
+    }
+
+    [Fact]
     public async Task S3CompatiblePutObjectRetentionAndLegalHold_RouteAndEmitVersionHeaders()
     {
         var storageService = new RecordingStorageService();
