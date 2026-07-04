@@ -12,6 +12,7 @@
       `xunit` meta-package so consumers of the published IntegratedS3.Testing NuGet package do not
       inherit the analyzer/build surface of the meta-package. See issue #144.
     -->
+    <PackageReference Include="Microsoft.Extensions.Logging" />
     <PackageReference Include="xunit.core" />
     <PackageReference Include="xunit.assert" />
   </ItemGroup>
