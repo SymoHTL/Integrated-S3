@@ -1691,8 +1691,6 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
                     ParseDelimiter(httpContext.Request),
                     ParseKeyMarker(httpContext.Request),
                     ParseVersionIdMarker(httpContext.Request),
-                    ParseMaxKeys(httpContext.Request),
-                    ParseEncodingType(httpContext.Request),
                     httpContext,
                     requestContextAccessor,
                     storageService,
@@ -1735,9 +1733,6 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
                         ParseDelimiter(httpContext.Request),
                         ParseStartAfter(httpContext.Request),
                         ParseContinuationToken(httpContext.Request),
-                        ParseMaxKeys(httpContext.Request),
-                        ParseEncodingType(httpContext.Request),
-                        ParseFetchOwner(httpContext.Request),
                         httpContext,
                         requestContextAccessor,
                         storageService,
@@ -1747,8 +1742,6 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
                         ParsePrefix(httpContext.Request),
                         ParseDelimiter(httpContext.Request),
                         ParseMarker(httpContext.Request),
-                        ParseMaxKeys(httpContext.Request),
-                        ParseEncodingType(httpContext.Request),
                         httpContext,
                         requestContextAccessor,
                         storageService,
@@ -3422,14 +3415,15 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
         string? prefix,
         string? delimiter,
         string? marker,
-        int? maxKeys,
-        string? encodingType,
         HttpContext httpContext,
         IIntegratedS3RequestContextAccessor requestContextAccessor,
         IStorageService storageService,
         CancellationToken cancellationToken)
     {
         try {
+            var maxKeys = ParseMaxKeys(httpContext.Request);
+            var encodingType = ParseEncodingType(httpContext.Request);
+
             return await ExecuteWithRequestContextAsync(httpContext, requestContextAccessor, async innerCancellationToken => {
                 var bucketResult = await storageService.HeadBucketAsync(bucketName, innerCancellationToken);
                 if (!bucketResult.IsSuccess) {
@@ -3484,15 +3478,16 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
         string? delimiter,
         string? startAfter,
         string? continuationToken,
-        int? maxKeys,
-        string? encodingType,
-        bool fetchOwner,
         HttpContext httpContext,
         IIntegratedS3RequestContextAccessor requestContextAccessor,
         IStorageService storageService,
         CancellationToken cancellationToken)
     {
         try {
+            var maxKeys = ParseMaxKeys(httpContext.Request);
+            var encodingType = ParseEncodingType(httpContext.Request);
+            var fetchOwner = ParseFetchOwner(httpContext.Request);
+
             return await ExecuteWithRequestContextAsync(httpContext, requestContextAccessor, async innerCancellationToken => {
                 var bucketResult = await storageService.HeadBucketAsync(bucketName, innerCancellationToken);
                 if (!bucketResult.IsSuccess) {
@@ -3547,14 +3542,15 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
         string? delimiter,
         string? keyMarker,
         string? versionIdMarker,
-        int? maxKeys,
-        string? encodingType,
         HttpContext httpContext,
         IIntegratedS3RequestContextAccessor requestContextAccessor,
         IStorageService storageService,
         CancellationToken cancellationToken)
     {
         try {
+            var maxKeys = ParseMaxKeys(httpContext.Request);
+            var encodingType = ParseEncodingType(httpContext.Request);
+
             return await ExecuteWithRequestContextAsync(httpContext, requestContextAccessor, async innerCancellationToken => {
                 var bucketResult = await storageService.HeadBucketAsync(bucketName, innerCancellationToken);
                 if (!bucketResult.IsSuccess) {
