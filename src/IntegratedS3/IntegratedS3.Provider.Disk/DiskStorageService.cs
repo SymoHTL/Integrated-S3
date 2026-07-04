@@ -2353,17 +2353,15 @@ internal sealed class DiskStorageService(
 
             var checksums = CreateCopyObjectChecksums(actualChecksums, sourceMetadata.Checksums, checksumAlgorithm);
 
-            if (await HasCurrentVersionStateAsync(request.DestinationBucketName, request.DestinationKey, cancellationToken)
-                && await IsVersioningEnabledAsync(request.DestinationBucketName, cancellationToken)) {
-                await ArchiveCurrentObjectVersionAsync(request.DestinationBucketName, request.DestinationKey, destinationPath, cancellationToken);
-            }
+            var versioningStatus = await GetBucketVersioningStatusAsync(request.DestinationBucketName, cancellationToken);
+            await PreserveCurrentVersionBeforeOverwriteAsync(request.DestinationBucketName, request.DestinationKey, destinationPath, versioningStatus, cancellationToken);
 
             File.Move(tempDestinationPath, destinationPath, overwrite: true);
 
             var tags = request.TaggingDirective == ObjectTaggingDirective.Replace
                 ? NormalizeTags(request.Tags)
                 : NormalizeTags(sourceMetadata.Tags);
-            var versionId = CreateVersionId();
+            var versionId = AssignWriteVersionId(versioningStatus);
             var useReplacementMetadata = request.MetadataDirective == CopyObjectMetadataDirective.Replace;
             await WriteStoredObjectStateAsync(
                 request.DestinationBucketName,
@@ -2489,13 +2487,11 @@ internal sealed class DiskStorageService(
 
             var persistedChecksums = CreatePutObjectChecksums(actualChecksums, request.Checksums);
 
-            if (await HasCurrentVersionStateAsync(request.BucketName, request.Key, cancellationToken)
-                && await IsVersioningEnabledAsync(request.BucketName, cancellationToken)) {
-                await ArchiveCurrentObjectVersionAsync(request.BucketName, request.Key, objectPath, cancellationToken);
-            }
+            var versioningStatus = await GetBucketVersioningStatusAsync(request.BucketName, cancellationToken);
+            await PreserveCurrentVersionBeforeOverwriteAsync(request.BucketName, request.Key, objectPath, versioningStatus, cancellationToken);
 
             File.Move(tempFilePath, objectPath, overwrite: true);
-            var versionId = CreateVersionId();
+            var versionId = AssignWriteVersionId(versioningStatus);
             await WriteStoredObjectStateAsync(
                 request.BucketName,
                 request.Key,
@@ -3223,10 +3219,8 @@ internal sealed class DiskStorageService(
                 await FlushToStableStorageAsync(destinationStream, cancellationToken);
             }
 
-            if (await HasCurrentVersionStateAsync(request.BucketName, request.Key, cancellationToken)
-                && await IsVersioningEnabledAsync(request.BucketName, cancellationToken)) {
-                await ArchiveCurrentObjectVersionAsync(request.BucketName, request.Key, objectPath, cancellationToken);
-            }
+            var versioningStatus = await GetBucketVersioningStatusAsync(request.BucketName, cancellationToken);
+            await PreserveCurrentVersionBeforeOverwriteAsync(request.BucketName, request.Key, objectPath, versioningStatus, cancellationToken);
 
             File.Move(tempObjectPath, objectPath, overwrite: true);
             IReadOnlyDictionary<string, string> checksums = compositePartChecksums is not null
@@ -3238,7 +3232,7 @@ internal sealed class DiskStorageService(
             // A completed multipart object always exposes the composite S3 ETag
             // "<hex(MD5(concat(partMd5Bytes)))>-<partCount>", regardless of any checksum algorithm.
             var multipartETag = BuildMultipartETag(partMd5Checksums);
-            var versionId = CreateVersionId();
+            var versionId = AssignWriteVersionId(versioningStatus);
             await WriteStoredObjectStateAsync(
                 request.BucketName,
                 request.Key,
@@ -3450,7 +3444,11 @@ internal sealed class DiskStorageService(
         using var objectMutationLock = await AcquireObjectMutationLockAsync(request.BucketName, request.Key, cancellationToken);
 
         var filePath = GetObjectPath(request.BucketName, request.Key);
-        var versioningEnabled = await IsVersioningEnabledAsync(request.BucketName, cancellationToken);
+        var versioningStatus = await GetBucketVersioningStatusAsync(request.BucketName, cancellationToken);
+        var versioningEnabled = versioningStatus == BucketVersioningStatus.Enabled;
+        // Suspended buckets still create delete markers, but with the "null" version id (which
+        // overwrites any existing null version) rather than a fresh unique version id.
+        var createsDeleteMarker = versioningStatus != BucketVersioningStatus.Disabled;
 
         if (!string.IsNullOrWhiteSpace(request.VersionId)) {
             var storedObjectResult = await ResolveStoredObjectAsync(request.BucketName, request.Key, request.VersionId, cancellationToken);
@@ -3500,8 +3498,10 @@ internal sealed class DiskStorageService(
         }
 
         if (!await HasCurrentVersionStateAsync(request.BucketName, request.Key, cancellationToken)) {
-            if (versioningEnabled && !request.BypassDeleteMarkerCreation) {
-                var deleteMarker = await CreateCurrentDeleteMarkerAsync(request.BucketName, request.Key, cancellationToken);
+            if (createsDeleteMarker && !request.BypassDeleteMarkerCreation) {
+                // Enabled -> unique version id; Suspended -> null version (overwrites any prior null).
+                var deleteMarkerVersionId = AssignWriteVersionId(versioningStatus);
+                var deleteMarker = await CreateCurrentDeleteMarkerAsync(request.BucketName, request.Key, deleteMarkerVersionId, cancellationToken);
                 return StorageResult<DeleteObjectResult>.Success(new DeleteObjectResult
                 {
                     BucketName = request.BucketName,
@@ -3519,14 +3519,18 @@ internal sealed class DiskStorageService(
             });
         }
 
-        if (versioningEnabled && !request.BypassDeleteMarkerCreation) {
-            await ArchiveCurrentObjectVersionAsync(request.BucketName, request.Key, filePath, cancellationToken);
+        if (createsDeleteMarker && !request.BypassDeleteMarkerCreation) {
+            // Preserve a prior non-null version (Enabled always archives; Suspended archives only a
+            // real version, overwriting an existing null version). Then replace the current object
+            // with a delete marker: unique-versioned when Enabled, the null version when Suspended.
+            await PreserveCurrentVersionBeforeOverwriteAsync(request.BucketName, request.Key, filePath, versioningStatus, cancellationToken);
 
             if (File.Exists(filePath)) {
                 File.Delete(filePath);
             }
 
-            var deleteMarker = await CreateCurrentDeleteMarkerAsync(request.BucketName, request.Key, cancellationToken);
+            var deleteMarkerVersionId = AssignWriteVersionId(versioningStatus);
+            var deleteMarker = await CreateCurrentDeleteMarkerAsync(request.BucketName, request.Key, deleteMarkerVersionId, cancellationToken);
             return StorageResult<DeleteObjectResult>.Success(new DeleteObjectResult
             {
                 BucketName = request.BucketName,
@@ -4347,13 +4351,69 @@ internal sealed class DiskStorageService(
 
     private async Task<bool> IsVersioningEnabledAsync(string bucketName, CancellationToken cancellationToken)
     {
+        return await GetBucketVersioningStatusAsync(bucketName, cancellationToken) == BucketVersioningStatus.Enabled;
+    }
+
+    /// <summary>
+    /// Resolves the persisted versioning status for a bucket. A bucket that was never configured
+    /// (or whose directory is missing) reports <see cref="BucketVersioningStatus.Disabled"/>.
+    /// </summary>
+    private async Task<BucketVersioningStatus> GetBucketVersioningStatusAsync(string bucketName, CancellationToken cancellationToken)
+    {
         var bucketPath = GetBucketPath(bucketName);
         if (!Directory.Exists(bucketPath)) {
-            return false;
+            return BucketVersioningStatus.Disabled;
         }
 
         var metadata = await ReadBucketMetadataAsync(bucketPath, cancellationToken);
-        return metadata.VersioningStatus == BucketVersioningStatus.Enabled;
+        return metadata.VersioningStatus;
+    }
+
+    /// <summary>
+    /// Returns the version id to stamp on a freshly written object for the supplied versioning
+    /// status. Only <see cref="BucketVersioningStatus.Enabled"/> buckets mint a new unique version;
+    /// unversioned (<see cref="BucketVersioningStatus.Disabled"/>) and
+    /// <see cref="BucketVersioningStatus.Suspended"/> buckets store the AWS "null" version, which is
+    /// represented internally as a <see langword="null"/> version id so no <c>x-amz-version-id</c>
+    /// response header is emitted and a subsequent write overwrites the same null-version slot.
+    /// </summary>
+    private static string? AssignWriteVersionId(BucketVersioningStatus versioningStatus)
+    {
+        return versioningStatus == BucketVersioningStatus.Enabled ? CreateVersionId() : null;
+    }
+
+    /// <summary>
+    /// Preserves the current object's history when it is about to be overwritten by a new write.
+    /// On an <see cref="BucketVersioningStatus.Enabled"/> bucket the current object is archived as a
+    /// non-current version. On a <see cref="BucketVersioningStatus.Suspended"/> bucket a prior
+    /// non-null version is likewise archived (AWS retains versions created while versioning was
+    /// enabled), whereas an existing null version is simply overwritten in place. Unversioned
+    /// buckets keep no history and archive nothing.
+    /// </summary>
+    private async Task PreserveCurrentVersionBeforeOverwriteAsync(
+        string bucketName,
+        string key,
+        string currentPath,
+        BucketVersioningStatus versioningStatus,
+        CancellationToken cancellationToken)
+    {
+        if (versioningStatus == BucketVersioningStatus.Disabled) {
+            return;
+        }
+
+        var currentObject = await TryResolveCurrentStoredObjectAsync(bucketName, key, currentPath, cancellationToken);
+        if (currentObject is null) {
+            return;
+        }
+
+        // Enabled: archive whatever is current (minting a version id for legacy null-version state).
+        // Suspended: only archive a real (non-null) version; the existing null version is overwritten.
+        if (versioningStatus == BucketVersioningStatus.Suspended
+            && string.IsNullOrWhiteSpace(currentObject.Metadata.VersionId)) {
+            return;
+        }
+
+        await ArchiveCurrentObjectVersionAsync(bucketName, key, currentPath, cancellationToken);
     }
 
     private async Task ArchiveCurrentObjectVersionAsync(string bucketName, string key, string currentPath, CancellationToken cancellationToken)
@@ -4556,10 +4616,9 @@ internal sealed class DiskStorageService(
         return await TryResolveCurrentStoredObjectAsync(bucketName, key, currentPath, cancellationToken) is not null;
     }
 
-    private async Task<ObjectInfo> CreateCurrentDeleteMarkerAsync(string bucketName, string key, CancellationToken cancellationToken)
+    private async Task<ObjectInfo> CreateCurrentDeleteMarkerAsync(string bucketName, string key, string? versionId, CancellationToken cancellationToken)
     {
         var currentPath = GetObjectPath(bucketName, key);
-        var versionId = CreateVersionId();
         var lastModifiedUtc = DateTimeOffset.UtcNow;
 
         await WriteStoredObjectStateAsync(
