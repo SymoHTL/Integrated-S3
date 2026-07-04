@@ -179,7 +179,7 @@ See [docs/observability.md](docs/observability.md) for the full list of instrume
 | [Observability](docs/observability.md) | Traces, metrics, structured logging, and OpenTelemetry integration |
 | [Provider Contract Testing](docs/provider-contract-testing.md) | xUnit harness for validating custom `IStorageBackend` implementations |
 | [Host Maintenance Jobs](docs/host-maintenance-jobs.md) | Opt-in recurring maintenance hosted service |
-| [Performance Benchmarks](docs/performance-benchmarks.md) | BenchmarkDotNet harness and hot-path scenario catalog |
+| [Performance Benchmarks](docs/performance-benchmarks.md) | Custom Stopwatch-based hot-path benchmark harness and scenario catalog |
 | [AOT/Trimming Guidance](docs/aot-trimming-guidance.md) | Guidelines for AOT and trimming compatibility |
 
 ---
