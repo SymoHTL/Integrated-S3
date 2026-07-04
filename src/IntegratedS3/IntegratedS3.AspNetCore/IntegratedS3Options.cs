@@ -58,17 +58,29 @@ public sealed class IntegratedS3Options
     public int MaximumPresignedUrlExpirySeconds { get; set; } = 60 * 60;
 
     /// <summary>
+    /// The S3 per-request maximum object size (5 GiB), used as the default value of
+    /// <see cref="MaxObjectSizeBytes"/>.
+    /// </summary>
+    public const long DefaultMaxObjectSizeBytes = 5L * 1024 * 1024 * 1024;
+
+    /// <summary>
     /// Maximum request-body size in bytes accepted by object upload endpoints
-    /// (<c>PutObject</c> and <c>UploadPart</c>). Defaults to <see langword="null"/>.
+    /// (<c>PutObject</c> and <c>UploadPart</c>). Defaults to
+    /// <see cref="DefaultMaxObjectSizeBytes"/> (5 GiB, the S3 per-request maximum).
     /// </summary>
     /// <remarks>
     /// The object upload endpoints override the host's per-request body-size limit
-    /// (for example Kestrel's default of ~28.6 MiB) with this value before the body is read.
-    /// <see langword="null"/> removes the limit for those endpoints so uploads up to the
-    /// S3 maximum of 5 GiB per request succeed; set an explicit value to cap upload sizes.
-    /// Other endpoints keep the host-configured limit.
+    /// (for example Kestrel's default of ~28.6 MiB) with this value before the body is read,
+    /// so legitimate uploads up to the S3 maximum of 5 GiB per request succeed without host tuning.
+    /// The same cap independently bounds the temporary spool file written while decoding
+    /// <c>Content-Encoding: aws-chunked</c> bodies: a request whose decoded size exceeds the cap is
+    /// rejected with <c>413 EntityTooLarge</c> instead of being written unbounded to disk.
+    /// Set a smaller explicit value to tighten the cap. Setting it to <see langword="null"/>
+    /// removes the application-level limit for these endpoints (uploads are then bounded only by the
+    /// host's own limit, if any); this is discouraged because it re-enables the disk-exhaustion risk
+    /// on the aws-chunked path. Other endpoints keep the host-configured limit.
     /// </remarks>
-    public long? MaxObjectSizeBytes { get; set; }
+    public long? MaxObjectSizeBytes { get; set; } = DefaultMaxObjectSizeBytes;
 
     /// <summary>
     /// List of access key / secret key pairs for SigV4 authentication.

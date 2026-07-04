@@ -78,8 +78,9 @@ The most important configuration types are:
 
 ASP.NET Core hosts cap request bodies at the server default (Kestrel rejects bodies over 30,000,000 bytes, roughly 28.6 MiB) unless configured otherwise, which would fail larger `PutObject` and `UploadPart` payloads with `413 Payload Too Large` before the endpoint runs. The object upload endpoints therefore replace the host's per-request body-size limit with `IntegratedS3Options.MaxObjectSizeBytes` before the body is read:
 
-- Leave `MaxObjectSizeBytes` at its default (`null`) to remove the limit on `PutObject` and `UploadPart`, so uploads up to the S3 maximum of 5 GiB per request succeed without host tuning.
-- Set an explicit byte count (for example `5368709120` for 5 GiB) to cap upload sizes; larger requests are rejected with `413 Payload Too Large`.
+- Leave `MaxObjectSizeBytes` at its default (`5368709120`, the S3 5 GiB per-request maximum) so uploads up to that size succeed without host tuning, while still rejecting anything larger with `413 EntityTooLarge`. This default also bounds the temporary spool file written while decoding `Content-Encoding: aws-chunked` bodies, so a client cannot exhaust the temp volume by streaming an unbounded body.
+- Set a smaller explicit byte count (for example `104857600` for 100 MiB) to tighten the cap; larger requests are rejected with `413 EntityTooLarge`.
+- Set `MaxObjectSizeBytes` to `null` to fully remove the application-level limit on `PutObject` and `UploadPart` (uploads are then bounded only by the host's own limit, if any). This is discouraged because it re-enables the aws-chunked disk-exhaustion risk.
 - All other endpoints keep the host-configured limit, so lifting it for uploads does not loosen the rest of the surface.
 
 The override only applies where the server exposes a mutable per-request limit (Kestrel and IIS in-process do). If a reverse proxy such as nginx or IIS ARR sits in front of the host, raise its request body limit as well or large uploads will still be rejected upstream.

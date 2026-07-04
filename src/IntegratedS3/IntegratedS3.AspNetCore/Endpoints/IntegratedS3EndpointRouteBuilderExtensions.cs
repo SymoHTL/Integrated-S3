@@ -7127,8 +7127,10 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
     /// <summary>
     /// Replaces the host's per-request body-size limit (for example Kestrel's default of
     /// ~28.6 MiB) with <see cref="IntegratedS3Options.MaxObjectSizeBytes"/> on object upload
-    /// requests. Must run before the request body is read; once reading starts the limit
-    /// becomes read-only and the override is skipped.
+    /// requests. That option defaults to 5 GiB (the S3 per-request maximum), so the limit is
+    /// bounded by default; a <see langword="null"/> value removes the limit for these endpoints.
+    /// Must run before the request body is read; once reading starts the limit becomes read-only
+    /// and the override is skipped.
     /// </summary>
     private static void ApplyObjectUploadBodySizeLimit(HttpContext httpContext)
     {
@@ -7156,6 +7158,21 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
             return new PreparedRequestBody(request.Body, request.ContentLength, tempFilePath: null, trailerHeaders: null, trailerHeaderEntries: null, finalChunkSignature: null);
         }
 
+        // Bound the decoded body that gets spooled to a temp file by the configured upload cap.
+        // Without this, a client can stream non-terminating aws-chunked frames and fill the temp
+        // volume (disk-exhaustion DoS) because the temp write happens before any size is consulted.
+        var maxDecodedBytes = request.HttpContext.RequestServices
+            .GetRequiredService<IOptions<IntegratedS3Options>>().Value.MaxObjectSizeBytes;
+
+        // Reject up front when the client's own declared decoded length already exceeds the cap,
+        // so an oversized upload fails before a single byte is written to disk.
+        var declaredDecodedLength = TryParseDecodedContentLength(request.Headers["x-amz-decoded-content-length"].ToString());
+        if (maxDecodedBytes is { } declaredCap && declaredDecodedLength is { } declared && declared > declaredCap) {
+            throw new BadHttpRequestException(
+                "Your proposed upload exceeds the maximum allowed object size.",
+                StatusCodes.Status413PayloadTooLarge);
+        }
+
         var tempFilePath = Path.Combine(Path.GetTempPath(), $"integrateds3-aws-chunked-{Guid.NewGuid():N}.tmp");
         var trailerHeaders = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         var trailerHeaderEntries = new List<KeyValuePair<string, string>>();
@@ -7167,13 +7184,12 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
         string? finalChunkSignature = null;
         try {
             await using (var tempWriteStream = new FileStream(tempFilePath, FileMode.CreateNew, FileAccess.Write, FileShare.None, 81920, FileOptions.Asynchronous | FileOptions.SequentialScan)) {
-                finalChunkSignature = await CopyAwsChunkedContentToAsync(request.Body, tempWriteStream, trailerHeaders, trailerHeaderEntries, chunkSignatureVerifier, cancellationToken);
+                finalChunkSignature = await CopyAwsChunkedContentToAsync(request.Body, tempWriteStream, trailerHeaders, trailerHeaderEntries, chunkSignatureVerifier, maxDecodedBytes, cancellationToken);
                 await tempWriteStream.FlushAsync(cancellationToken);
             }
 
-            var decodedLength = TryParseDecodedContentLength(request.Headers["x-amz-decoded-content-length"].ToString());
             var tempReadStream = new FileStream(tempFilePath, FileMode.Open, FileAccess.Read, FileShare.Read, 81920, FileOptions.Asynchronous | FileOptions.SequentialScan);
-            var contentLength = decodedLength ?? tempReadStream.Length;
+            var contentLength = declaredDecodedLength ?? tempReadStream.Length;
             return new PreparedRequestBody(tempReadStream, contentLength, tempFilePath, trailerHeaders, trailerHeaderEntries, finalChunkSignature);
         }
         catch {
@@ -7279,8 +7295,10 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
         Dictionary<string, string> trailerHeaders,
         List<KeyValuePair<string, string>> trailerHeaderEntries,
         AwsChunkedChunkSignatureVerifier? chunkSignatureVerifier,
+        long? maxDecodedBytes,
         CancellationToken cancellationToken)
     {
+        var totalDecodedBytes = 0L;
         while (true) {
             var chunkHeader = await ReadLineAsync(source, cancellationToken)
                 ?? throw new FormatException("The aws-chunked request body ended unexpectedly.");
@@ -7288,6 +7306,17 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
             var chunkLengthText = (separatorIndex >= 0 ? chunkHeader[..separatorIndex] : chunkHeader).Trim();
             if (!long.TryParse(chunkLengthText, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out var chunkLength) || chunkLength < 0) {
                 throw new FormatException("The aws-chunked request body contains an invalid chunk length.");
+            }
+
+            // Enforce the decoded-size cap before spooling the chunk so a client cannot exhaust the
+            // temp volume by streaming unbounded (or non-terminating) chunk frames.
+            if (chunkLength > 0 && maxDecodedBytes is { } cap) {
+                totalDecodedBytes += chunkLength;
+                if (totalDecodedBytes > cap) {
+                    throw new BadHttpRequestException(
+                        "Your proposed upload exceeds the maximum allowed object size.",
+                        StatusCodes.Status413PayloadTooLarge);
+                }
             }
 
             if (chunkLength == 0) {
