@@ -59,6 +59,7 @@ The well-known names in `IntegratedS3MaintenanceJobNames` map to the Track F mai
 - `MirrorReplay`
   - build around `IStorageReplicaRepairBacklog`, provider descriptors, and any host-specific replay/remediation logic
   - the current backlog records divergence visibility, but it does **not** yet persist enough operation-specific intent to deliver a completely generic durable replay engine after process restarts
+  - the default in-process dispatcher tracks its dispatched repair tasks and ties them to the dispatcher lifetime: on graceful shutdown it cancels in-flight repairs, drains them with a bounded timeout, and reverts any interrupted entry from `InProgress` back to `Pending` (via `IStorageReplicaRepairBacklog.RevertToPendingAsync`) so it stays re-runnable. A durable backlog implementation should mirror this by reconciling any `InProgress` rows left over from a hard crash (no clean shutdown) back to `Pending`/`Failed` on boot, since those rows have no live task owner.
 - `OrphanDetection`
   - compare `IStorageCatalogStore` snapshots with one or more `IStorageBackend` listings and emit findings or cleanup actions through host-owned policy
 - `ChecksumVerification`

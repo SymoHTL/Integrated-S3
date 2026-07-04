@@ -13,5 +13,6 @@
 
   <ItemGroup>
     <InternalsVisibleTo Include="IntegratedS3.AspNetCore" />
+    <InternalsVisibleTo Include="IntegratedS3.Tests" />
   </ItemGroup>
 </Project>
