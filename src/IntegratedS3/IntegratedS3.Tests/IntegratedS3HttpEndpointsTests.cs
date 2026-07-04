@@ -2661,6 +2661,66 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
     }
 
     [Fact]
+    public async Task GetObject_WithUnsatisfiableRange_Returns416WithContentRange()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        await client.PutAsync("/integrated-s3/buckets/range-416-bucket", content: null);
+        await client.PutAsync(
+            "/integrated-s3/buckets/range-416-bucket/objects/docs/range.txt",
+            new StringContent("hello integrated s3", Encoding.UTF8, "text/plain")); // 19 bytes
+
+        using var request = new HttpRequestMessage(HttpMethod.Get, "/integrated-s3/buckets/range-416-bucket/objects/docs/range.txt");
+        request.Headers.TryAddWithoutValidation("Range", "bytes=100-200");
+
+        var response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.RequestedRangeNotSatisfiable, response.StatusCode);
+        Assert.Equal("bytes */19", response.Content.Headers.ContentRange?.ToString());
+    }
+
+    [Fact]
+    public async Task HeadObject_WithUnsatisfiableRange_Returns416WithContentRange()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        await client.PutAsync("/integrated-s3/buckets/head-range-416-bucket", content: null);
+        await client.PutAsync(
+            "/integrated-s3/buckets/head-range-416-bucket/objects/docs/range.txt",
+            new StringContent("hello integrated s3", Encoding.UTF8, "text/plain")); // 19 bytes
+
+        using var request = new HttpRequestMessage(HttpMethod.Head, "/integrated-s3/buckets/head-range-416-bucket/objects/docs/range.txt");
+        request.Headers.TryAddWithoutValidation("Range", "bytes=100-200");
+
+        var response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.RequestedRangeNotSatisfiable, response.StatusCode);
+        Assert.Equal("bytes */19", response.Content.Headers.ContentRange?.ToString());
+        Assert.Empty(await response.Content.ReadAsByteArrayAsync());
+    }
+
+    [Fact]
+    public async Task HeadObject_WithSatisfiableRange_Returns206WithContentRangeAndRangedLengthAndEmptyBody()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        await client.PutAsync("/integrated-s3/buckets/head-range-206-bucket", content: null);
+        await client.PutAsync(
+            "/integrated-s3/buckets/head-range-206-bucket/objects/docs/range.txt",
+            new StringContent("hello integrated s3", Encoding.UTF8, "text/plain")); // 19 bytes
+
+        using var request = new HttpRequestMessage(HttpMethod.Head, "/integrated-s3/buckets/head-range-206-bucket/objects/docs/range.txt");
+        request.Headers.Range = new System.Net.Http.Headers.RangeHeaderValue(6, 15);
+
+        var response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.PartialContent, response.StatusCode);
+        Assert.Equal("bytes 6-15/19", response.Content.Headers.ContentRange?.ToString());
+        Assert.Equal(10, response.Content.Headers.ContentLength);
+        Assert.Empty(await response.Content.ReadAsByteArrayAsync());
+    }
+
+    [Fact]
     public async Task GetObject_WithIfNoneMatchHeader_ReturnsNotModified()
     {
         using var client = await _factory.CreateClientAsync();

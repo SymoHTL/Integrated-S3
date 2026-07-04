@@ -1584,8 +1584,47 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
                     return TypedResults.StatusCode(StatusCodes.Status304NotModified);
                 }
 
-                httpContext.Response.ContentLength = objectInfo.ContentLength;
                 httpContext.Response.ContentType = objectInfo.ContentType ?? "application/octet-stream";
+
+                // AWS honors the Range header on HEAD, mirroring GET: a satisfiable range yields 206
+                // with Content-Range and the ranged Content-Length (no body); an unsatisfiable range
+                // yields 416 with Content-Range: bytes */<size>. A malformed or multi-range header is
+                // ignored (the full 200 response is returned), matching S3.
+                var rawRange = httpContext.Request.Headers.Range.ToString();
+                if (!string.IsNullOrWhiteSpace(rawRange)) {
+                    ObjectRange[] parsedRanges;
+                    try {
+                        parsedRanges = ParseMultipleRangeHeaders(rawRange);
+                    }
+                    catch (FormatException) {
+                        parsedRanges = [];
+                    }
+
+                    if (parsedRanges.Length == 1) {
+                        var normalizedRange = NormalizeRangeForResponse(parsedRanges[0], objectInfo.ContentLength, out var unsatisfiable);
+                        if (unsatisfiable) {
+                            // HEAD carries no body, so return a header-only 416 (mirroring AWS) rather
+                            // than the XML error document ToErrorResult would emit for GET.
+                            httpContext.Response.Headers["x-amz-request-id"] = httpContext.TraceIdentifier;
+                            httpContext.Response.Headers["x-amz-id-2"] = httpContext.TraceIdentifier;
+                            httpContext.Response.Headers[ErrorCodeHeaderName] = "InvalidRange";
+                            httpContext.Response.Headers[ErrorMessageHeaderName] = "The requested range is not satisfiable.";
+                            httpContext.Response.Headers.ContentRange = $"bytes */{objectInfo.ContentLength}";
+                            httpContext.Response.ContentLength = 0;
+                            return TypedResults.StatusCode(StatusCodes.Status416RangeNotSatisfiable);
+                        }
+
+                        if (normalizedRange is not null) {
+                            httpContext.Response.Headers.ContentRange =
+                                $"bytes {normalizedRange.Start}-{normalizedRange.End}/{objectInfo.ContentLength}";
+                            httpContext.Response.ContentLength =
+                                normalizedRange.End!.Value - normalizedRange.Start!.Value + 1;
+                            return TypedResults.StatusCode(StatusCodes.Status206PartialContent);
+                        }
+                    }
+                }
+
+                httpContext.Response.ContentLength = objectInfo.ContentLength;
 
                 return TypedResults.Ok();
             }, cancellationToken);
@@ -6808,6 +6847,55 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
         };
     }
 
+    /// <summary>
+    /// Resolves a requested byte range against a known object size using the same semantics as the
+    /// storage providers. Returns the normalized (inclusive start/end) range on success, or
+    /// <see langword="null"/> with <paramref name="unsatisfiable"/> set when the range cannot be
+    /// satisfied. Mirrors <c>DiskStorageService.NormalizeRange</c> so HEAD range handling matches GET.
+    /// </summary>
+    private static ObjectRange? NormalizeRangeForResponse(ObjectRange requestedRange, long contentLength, out bool unsatisfiable)
+    {
+        unsatisfiable = false;
+
+        if (contentLength <= 0) {
+            unsatisfiable = true;
+            return null;
+        }
+
+        long start;
+        long end;
+
+        if (requestedRange.Start is null) {
+            var suffixLength = requestedRange.End;
+            if (suffixLength is null || suffixLength <= 0) {
+                unsatisfiable = true;
+                return null;
+            }
+
+            var effectiveLength = Math.Min(suffixLength.Value, contentLength);
+            start = contentLength - effectiveLength;
+            end = contentLength - 1;
+        }
+        else {
+            start = requestedRange.Start.Value;
+            end = requestedRange.End ?? contentLength - 1;
+
+            if (start < 0 || end < start) {
+                unsatisfiable = true;
+                return null;
+            }
+
+            if (start >= contentLength) {
+                unsatisfiable = true;
+                return null;
+            }
+
+            end = Math.Min(end, contentLength - 1);
+        }
+
+        return new ObjectRange { Start = start, End = end };
+    }
+
     private static ObjectRange? ParseCopySourceRangeHeader(string? rangeHeader)
     {
         var range = ParseRangeHeader(rangeHeader);
@@ -8609,6 +8697,12 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
 
         if (error.IsDeleteMarker) {
             httpResponse.Headers[DeleteMarkerHeaderName] = "true";
+        }
+
+        // AWS requires an unsatisfiable range (416) to advertise the resource's total size via
+        // Content-Range: bytes */<size> so clients can retry with a valid range.
+        if (error.Code == StorageErrorCode.InvalidRange && error.ResourceSize is { } resourceSize && resourceSize >= 0) {
+            httpResponse.Headers.ContentRange = $"bytes */{resourceSize}";
         }
     }
 

@@ -6051,7 +6051,7 @@ internal sealed class DiskStorageService(
         }
 
         if (contentLength <= 0) {
-            error = InvalidRange("Cannot satisfy a range request for an empty object.", bucketName, objectKey);
+            error = InvalidRange("Cannot satisfy a range request for an empty object.", bucketName, objectKey, contentLength);
             return null;
         }
 
@@ -6061,7 +6061,7 @@ internal sealed class DiskStorageService(
         if (requestedRange.Start is null) {
             var suffixLength = requestedRange.End;
             if (suffixLength is null || suffixLength <= 0) {
-                error = InvalidRange("The requested suffix range is invalid.", bucketName, objectKey);
+                error = InvalidRange("The requested suffix range is invalid.", bucketName, objectKey, contentLength);
                 return null;
             }
 
@@ -6074,12 +6074,12 @@ internal sealed class DiskStorageService(
             end = requestedRange.End ?? contentLength - 1;
 
             if (start < 0 || end < start) {
-                error = InvalidRange("The requested byte range is invalid.", bucketName, objectKey);
+                error = InvalidRange("The requested byte range is invalid.", bucketName, objectKey, contentLength);
                 return null;
             }
 
             if (start >= contentLength) {
-                error = InvalidRange("The requested range starts beyond the end of the object.", bucketName, objectKey);
+                error = InvalidRange("The requested range starts beyond the end of the object.", bucketName, objectKey, contentLength);
                 return null;
             }
 
@@ -6093,7 +6093,7 @@ internal sealed class DiskStorageService(
         };
     }
 
-    private static StorageError InvalidRange(string message, string bucketName, string objectKey)
+    private static StorageError InvalidRange(string message, string bucketName, string objectKey, long resourceSize)
     {
         return new StorageError
         {
@@ -6101,7 +6101,8 @@ internal sealed class DiskStorageService(
             Message = message,
             BucketName = bucketName,
             ObjectKey = objectKey,
-            SuggestedHttpStatusCode = 416
+            SuggestedHttpStatusCode = 416,
+            ResourceSize = resourceSize
         };
     }
 
