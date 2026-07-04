@@ -2019,7 +2019,10 @@ internal sealed class DiskStorageService(
             }
 
             var partInfo = new FileInfo(partEntry.PartPath);
-            var actualChecksums = await ComputeChecksumsAsync(partEntry.PartPath, cancellationToken);
+            var actualChecksums = await ComputeChecksumsAsync(
+                partEntry.PartPath,
+                DetermineRequiredChecksumAlgorithms(requestedChecksums: null, uploadChecksumAlgorithm),
+                cancellationToken);
 
             yield return new MultipartUploadPart
             {
@@ -2344,7 +2347,10 @@ internal sealed class DiskStorageService(
                 || sourceMetadata.Checksums is null
                 || request.Checksums is { Count: > 0 };
             var actualChecksums = requiresActualChecksums
-                ? await ComputeChecksumsAsync(tempDestinationPath, cancellationToken)
+                ? await ComputeChecksumsAsync(
+                    tempDestinationPath,
+                    DetermineRequiredChecksumAlgorithms(request.Checksums, checksumAlgorithm, computeAllWhenNoneRequested: true),
+                    cancellationToken)
                 : null;
             var checksumValidationError = ValidateRequestedChecksums(request.Checksums, actualChecksums, request.DestinationBucketName, request.DestinationKey);
             if (checksumValidationError is not null) {
@@ -2474,12 +2480,19 @@ internal sealed class DiskStorageService(
 
         var tempFilePath = $"{objectPath}.{Guid.NewGuid():N}.tmp";
         try {
+            // Hash the body inline while streaming it to the temp file (only the MD5 needed for the
+            // ETag plus any client-requested/validated checksum algorithms), so the object is not
+            // read back off disk a second time just to compute digests.
+            IReadOnlyDictionary<string, string> actualChecksums;
             await using (var tempStream = new FileStream(tempFilePath, FileMode.CreateNew, FileAccess.Write, FileShare.None, 81920, FileOptions.Asynchronous | FileOptions.SequentialScan)) {
-                await request.Content.CopyToAsync(tempStream, cancellationToken);
+                actualChecksums = await CopyToTempAndComputeChecksumsAsync(
+                    request.Content,
+                    tempStream,
+                    DetermineRequiredChecksumAlgorithms(request.Checksums, computeAllWhenNoneRequested: true),
+                    cancellationToken);
                 await FlushToStableStorageAsync(tempStream, cancellationToken);
             }
 
-            var actualChecksums = await ComputeChecksumsAsync(tempFilePath, cancellationToken);
             var checksumValidationError = ValidateRequestedChecksums(request.Checksums, actualChecksums, request.BucketName, request.Key);
             if (checksumValidationError is not null) {
                 return StorageResult<ObjectInfo>.Failure(checksumValidationError);
@@ -2831,7 +2844,10 @@ internal sealed class DiskStorageService(
                 var tempInfo = new FileInfo(tempPartPath);
                 partLength = tempInfo.Length;
                 partLastWriteTimeUtc = tempInfo.LastWriteTimeUtc;
-                actualChecksums = await ComputeChecksumsAsync(tempPartPath, cancellationToken);
+                actualChecksums = await ComputeChecksumsAsync(
+                    tempPartPath,
+                    DetermineRequiredChecksumAlgorithms(request.Checksums, uploadChecksumAlgorithm) | ToChecksumAlgorithmFlag(requestChecksumAlgorithm),
+                    cancellationToken);
 
                 // Serialize the publish for this (uploadId, partNumber). Concurrent overwrite moves
                 // into the same destination fail with UnauthorizedAccessException on Windows.
@@ -2868,7 +2884,10 @@ internal sealed class DiskStorageService(
                 var tempInfo = new FileInfo(tempPartPath);
                 partLength = tempInfo.Length;
                 partLastWriteTimeUtc = tempInfo.LastWriteTimeUtc;
-                actualChecksums = await ComputeChecksumsAsync(tempPartPath, cancellationToken);
+                actualChecksums = await ComputeChecksumsAsync(
+                    tempPartPath,
+                    DetermineRequiredChecksumAlgorithms(request.Checksums, uploadChecksumAlgorithm) | ToChecksumAlgorithmFlag(requestChecksumAlgorithm),
+                    cancellationToken);
 
                 // Serialize the publish for this (uploadId, partNumber). Concurrent overwrite moves
                 // into the same destination fail with UnauthorizedAccessException on Windows.
@@ -3016,7 +3035,10 @@ internal sealed class DiskStorageService(
             var tempInfo = new FileInfo(tempPartPath);
             partLength = tempInfo.Length;
             partLastWriteTimeUtc = tempInfo.LastWriteTimeUtc;
-            actualChecksums = await ComputeChecksumsAsync(tempPartPath, cancellationToken);
+            actualChecksums = await ComputeChecksumsAsync(
+                tempPartPath,
+                DetermineRequiredChecksumAlgorithms(request.Checksums, uploadChecksumAlgorithm) | ToChecksumAlgorithmFlag(requestChecksumAlgorithm),
+                cancellationToken);
 
             using (await AcquireMultipartPartMutationLockAsync(uploadDirectoryPath, request.PartNumber, cancellationToken)) {
                 File.Move(tempPartPath, partPath, overwrite: true);
@@ -3184,7 +3206,10 @@ internal sealed class DiskStorageService(
 
                     // Derive both the part ETag and the per-part MD5 (for the composite object ETag)
                     // from the part's content, so completion no longer depends on filesystem mtime.
-                    var actualPartChecksums = await ComputeChecksumsAsync(partPath, cancellationToken);
+                    var actualPartChecksums = await ComputeChecksumsAsync(
+                        partPath,
+                        DetermineRequiredChecksumAlgorithms(requestedPart.Checksums, uploadChecksumAlgorithm),
+                        cancellationToken);
                     var actualETag = BuildPartETag(actualPartChecksums);
                     if (!string.Equals(NormalizeETag(requestedPart.ETag), NormalizeETag(actualETag), StringComparison.Ordinal)) {
                         return StorageResult<ObjectInfo>.Failure(InvalidPart(
@@ -3228,7 +3253,13 @@ internal sealed class DiskStorageService(
                 {
                     [uploadChecksumAlgorithm!] = BuildCompositeChecksum(uploadChecksumAlgorithm!, compositePartChecksums)
                 }
-                : await ComputeChecksumsAsync(objectPath, cancellationToken);
+                // Non-composite completion (no whole-object checksum algorithm, or a pass-through
+                // algorithm that cannot be server-computed): preserve the existing stored-checksum
+                // contract by persisting the full digest set for the assembled object.
+                : await ComputeChecksumsAsync(
+                    objectPath,
+                    DetermineRequiredChecksumAlgorithms(requestedChecksums: null, uploadChecksumAlgorithm, computeAllWhenNoneRequested: true),
+                    cancellationToken);
             // A completed multipart object always exposes the composite S3 ETag
             // "<hex(MD5(concat(partMd5Bytes)))>-<partCount>", regardless of any checksum algorithm.
             var multipartETag = BuildMultipartETag(partMd5Checksums);
@@ -5940,14 +5971,49 @@ internal sealed class DiskStorageService(
         }
     }
 
-    private static async Task<IReadOnlyDictionary<string, string>> ComputeChecksumsAsync(string objectPath, CancellationToken cancellationToken)
+    /// <summary>
+    /// Copies <paramref name="source"/> into <paramref name="destination"/> and computes the
+    /// requested content digests in the same single pass, so the object body is hashed inline as it
+    /// is streamed to disk rather than in a separate full re-read afterwards. MD5 is always computed
+    /// (needed for the ETag); the remaining digests are only computed when their flag is set.
+    /// </summary>
+    private static async Task<IReadOnlyDictionary<string, string>> CopyToTempAndComputeChecksumsAsync(
+        Stream source,
+        Stream destination,
+        ChecksumAlgorithms algorithms,
+        CancellationToken cancellationToken)
+    {
+        using var computation = new ChecksumComputation(algorithms);
+        var buffer = new byte[81920];
+
+        while (true) {
+            var read = await source.ReadAsync(buffer.AsMemory(0, buffer.Length), cancellationToken);
+            if (read == 0) {
+                break;
+            }
+
+            await destination.WriteAsync(buffer.AsMemory(0, read), cancellationToken);
+            computation.Append(buffer.AsSpan(0, read));
+        }
+
+        return computation.ToDictionary();
+    }
+
+    /// <summary>
+    /// Reads <paramref name="objectPath"/> once and computes only the digests in
+    /// <paramref name="algorithms"/>. MD5 is always included implicitly (see
+    /// <see cref="ChecksumComputation"/>) because every write path derives an ETag (or per-part
+    /// ETag) from it; the remaining SHA-1/SHA-256/CRC digests are only computed when the caller
+    /// actually needs them (a requested/required checksum algorithm), so a PutObject that requests
+    /// no checksum no longer pays for three cryptographic hashes plus two CRC passes over the body.
+    /// </summary>
+    private static async Task<IReadOnlyDictionary<string, string>> ComputeChecksumsAsync(
+        string objectPath,
+        ChecksumAlgorithms algorithms,
+        CancellationToken cancellationToken)
     {
         await using var stream = new FileStream(objectPath, FileMode.Open, FileAccess.Read, FileShare.Read, 81920, FileOptions.Asynchronous | FileOptions.SequentialScan);
-        using var md5 = IncrementalHash.CreateHash(HashAlgorithmName.MD5);
-        using var sha256 = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
-        using var sha1 = IncrementalHash.CreateHash(HashAlgorithmName.SHA1);
-        var crc32 = Crc32Accumulator.Create();
-        var crc32c = Crc32Accumulator.CreateCastagnoli();
+        using var computation = new ChecksumComputation(algorithms);
         var buffer = new byte[81920];
 
         while (true) {
@@ -5956,21 +6022,163 @@ internal sealed class DiskStorageService(
                 break;
             }
 
-            md5.AppendData(buffer, 0, read);
-            sha256.AppendData(buffer, 0, read);
-            sha1.AppendData(buffer, 0, read);
-            crc32.Append(buffer.AsSpan(0, read));
-            crc32c.Append(buffer.AsSpan(0, read));
+            computation.Append(buffer.AsSpan(0, read));
         }
 
-        return new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        return computation.ToDictionary();
+    }
+
+    /// <summary>
+    /// The set of content digests to compute over an object body. MD5 is implicitly always computed
+    /// (needed for every ETag / per-part ETag), so it has no flag of its own; the flags select the
+    /// additional, more expensive digests to compute in the same single pass.
+    /// </summary>
+    [Flags]
+    private enum ChecksumAlgorithms
+    {
+        None = 0,
+        Sha256 = 1 << 0,
+        Sha1 = 1 << 1,
+        Crc32 = 1 << 2,
+        Crc32c = 1 << 3,
+        All = Sha256 | Sha1 | Crc32 | Crc32c
+    }
+
+    /// <summary>
+    /// Maps a client-visible checksum algorithm key (<c>sha256</c>, <c>crc32</c>, …) to the
+    /// corresponding <see cref="ChecksumAlgorithms"/> flag. MD5 maps to <see cref="ChecksumAlgorithms.None"/>
+    /// (always computed) and CRC64NVME to <see cref="ChecksumAlgorithms.None"/> (pass-through, never
+    /// server-computed). Returns <see cref="ChecksumAlgorithms.None"/> for a null/blank/unknown key.
+    /// </summary>
+    private static ChecksumAlgorithms ToChecksumAlgorithmFlag(string? algorithm)
+    {
+        if (string.IsNullOrWhiteSpace(algorithm)) {
+            return ChecksumAlgorithms.None;
+        }
+
+        if (string.Equals(algorithm, Sha256ChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)) {
+            return ChecksumAlgorithms.Sha256;
+        }
+
+        if (string.Equals(algorithm, Sha1ChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)) {
+            return ChecksumAlgorithms.Sha1;
+        }
+
+        if (string.Equals(algorithm, Crc32ChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)) {
+            return ChecksumAlgorithms.Crc32;
+        }
+
+        if (string.Equals(algorithm, Crc32cChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)) {
+            return ChecksumAlgorithms.Crc32c;
+        }
+
+        return ChecksumAlgorithms.None;
+    }
+
+    /// <summary>
+    /// Builds the additional-digest set a write path must compute: every algorithm the client either
+    /// supplied a value for (for server-side validation) or asked the server to compute
+    /// (<paramref name="requiredAlgorithm"/>). MD5 is always computed regardless. Returns the smallest
+    /// set that still satisfies validation and the requested checksum response.
+    /// <para>
+    /// When neither a value nor an algorithm is requested and <paramref name="computeAllWhenNoneRequested"/>
+    /// is <see langword="true"/>, all digests are computed. Object-level write paths (PutObject,
+    /// CopyObject, the non-composite CompleteMultipartUpload) set this so an object stored without a
+    /// requested checksum still persists the full digest set for later retrieval, preserving the
+    /// existing stored-checksum contract; per-part paths leave it <see langword="false"/> because a
+    /// part only ever exposes the upload/requested algorithm.
+    /// </para>
+    /// </summary>
+    private static ChecksumAlgorithms DetermineRequiredChecksumAlgorithms(
+        IReadOnlyDictionary<string, string>? requestedChecksums,
+        string? requiredAlgorithm = null,
+        bool computeAllWhenNoneRequested = false)
+    {
+        var algorithms = ToChecksumAlgorithmFlag(requiredAlgorithm);
+
+        if (requestedChecksums is not null) {
+            foreach (var requestedChecksum in requestedChecksums) {
+                algorithms |= ToChecksumAlgorithmFlag(requestedChecksum.Key);
+            }
+        }
+
+        return computeAllWhenNoneRequested && algorithms == ChecksumAlgorithms.None
+            ? ChecksumAlgorithms.All
+            : algorithms;
+    }
+
+    /// <summary>
+    /// Incremental multi-digest accumulator. MD5 is always computed; SHA-1/SHA-256/CRC32/CRC32C are
+    /// only allocated and fed when their flag is set in the requested <see cref="ChecksumAlgorithms"/>.
+    /// Used both for the streaming (inline, tee) PutObject write path and for the read-back paths.
+    /// </summary>
+    private struct ChecksumComputation : IDisposable
+    {
+        private readonly IncrementalHash _md5;
+        private readonly IncrementalHash? _sha256;
+        private readonly IncrementalHash? _sha1;
+        private Crc32Accumulator _crc32;
+        private Crc32Accumulator _crc32c;
+        private readonly bool _hasCrc32;
+        private readonly bool _hasCrc32c;
+
+        public ChecksumComputation(ChecksumAlgorithms algorithms)
         {
-            ["md5"] = Convert.ToBase64String(md5.GetHashAndReset()),
-            ["sha256"] = Convert.ToBase64String(sha256.GetHashAndReset()),
-            ["sha1"] = Convert.ToBase64String(sha1.GetHashAndReset()),
-            ["crc32"] = Convert.ToBase64String(crc32.GetHashBytes()),
-            ["crc32c"] = Convert.ToBase64String(crc32c.GetHashBytes())
-        };
+            _md5 = IncrementalHash.CreateHash(HashAlgorithmName.MD5);
+            _sha256 = algorithms.HasFlag(ChecksumAlgorithms.Sha256) ? IncrementalHash.CreateHash(HashAlgorithmName.SHA256) : null;
+            _sha1 = algorithms.HasFlag(ChecksumAlgorithms.Sha1) ? IncrementalHash.CreateHash(HashAlgorithmName.SHA1) : null;
+            _hasCrc32 = algorithms.HasFlag(ChecksumAlgorithms.Crc32);
+            _hasCrc32c = algorithms.HasFlag(ChecksumAlgorithms.Crc32c);
+            _crc32 = _hasCrc32 ? Crc32Accumulator.Create() : default;
+            _crc32c = _hasCrc32c ? Crc32Accumulator.CreateCastagnoli() : default;
+        }
+
+        public void Append(ReadOnlySpan<byte> buffer)
+        {
+            _md5.AppendData(buffer);
+            _sha256?.AppendData(buffer);
+            _sha1?.AppendData(buffer);
+            if (_hasCrc32) {
+                _crc32.Append(buffer);
+            }
+
+            if (_hasCrc32c) {
+                _crc32c.Append(buffer);
+            }
+        }
+
+        public readonly IReadOnlyDictionary<string, string> ToDictionary()
+        {
+            var checksums = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+            {
+                [Md5ChecksumAlgorithm] = Convert.ToBase64String(_md5.GetHashAndReset())
+            };
+
+            if (_sha256 is not null) {
+                checksums[Sha256ChecksumAlgorithm] = Convert.ToBase64String(_sha256.GetHashAndReset());
+            }
+
+            if (_sha1 is not null) {
+                checksums[Sha1ChecksumAlgorithm] = Convert.ToBase64String(_sha1.GetHashAndReset());
+            }
+
+            if (_hasCrc32) {
+                checksums[Crc32ChecksumAlgorithm] = Convert.ToBase64String(_crc32.GetHashBytes());
+            }
+
+            if (_hasCrc32c) {
+                checksums[Crc32cChecksumAlgorithm] = Convert.ToBase64String(_crc32c.GetHashBytes());
+            }
+
+            return checksums;
+        }
+
+        public readonly void Dispose()
+        {
+            _md5.Dispose();
+            _sha256?.Dispose();
+            _sha1?.Dispose();
+        }
     }
 
     private static IReadOnlyDictionary<string, string>? NormalizeTags(IReadOnlyDictionary<string, string>? tags)

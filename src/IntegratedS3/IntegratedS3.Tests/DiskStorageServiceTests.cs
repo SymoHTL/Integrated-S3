@@ -5908,6 +5908,83 @@ public sealed class DiskStorageServiceTests
         Assert.Equal(expectedETag, headResult.Value!.ETag);
     }
 
+    // Regression for issue #122: PutObject hashes the body inline while streaming it to disk and
+    // computes only the requested checksum (plus the MD5 needed for the ETag), instead of a separate
+    // full re-read that computes all five digests. This exercises a multi-chunk payload larger than
+    // the 81920-byte streaming buffer so a broken inline tee (dropped/duplicated chunk, or a stale
+    // re-read) would corrupt the ETag/CRC or content and fail here.
+    [Fact]
+    public async Task DiskStorage_PutObject_WithRequestedChecksum_HashesInlineAndPersistsOnlyRequested()
+    {
+        await using var fixture = new DiskStorageFixture();
+        var storageService = fixture.Services.GetRequiredService<IStorageBackend>();
+        await storageService.CreateBucketAsync(new CreateBucketRequest { BucketName = "inline-hash" });
+
+        // Larger than the 81920-byte copy/hash buffer so the streaming tee loops over several chunks.
+        // Restrict to printable ASCII so the UTF-8 bytes equal the raw bytes, letting the shared
+        // string-based checksum helpers compute the expected digests over the same bytes on disk.
+        var builder = new StringBuilder(81920 * 2 + 12345);
+        const string alphabet = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+        for (var i = 0; i < 81920 * 2 + 12345; i++) {
+            builder.Append(alphabet[i % alphabet.Length]);
+        }
+        var payload = builder.ToString();
+        var payloadBytes = Encoding.UTF8.GetBytes(payload);
+        var expectedCrc32c = ComputeCrc32cBase64(payload);
+        var expectedETag = ComputeContentMd5Hex(payloadBytes);
+
+        await using var uploadStream = new MemoryStream(payloadBytes);
+        var putResult = await storageService.PutObjectAsync(new PutObjectRequest
+        {
+            BucketName = "inline-hash",
+            Key = "docs/large.bin",
+            Content = uploadStream,
+            ContentType = "application/octet-stream",
+            Checksums = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["crc32c"] = expectedCrc32c
+            }
+        });
+
+        Assert.True(putResult.IsSuccess);
+        // MD5 is still computed inline (never persisted here) so the ETag stays the content MD5.
+        Assert.Equal(expectedETag, putResult.Value!.ETag);
+        // Only the requested CRC32C digest is persisted, not all five.
+        Assert.NotNull(putResult.Value.Checksums);
+        Assert.Single(putResult.Value.Checksums!);
+        Assert.Equal(expectedCrc32c, putResult.Value.Checksums!["crc32c"]);
+        Assert.False(putResult.Value.Checksums.ContainsKey("sha256"));
+
+        // The bytes written by the inline tee must be exactly the uploaded content.
+        var getResult = await storageService.GetObjectAsync(new GetObjectRequest
+        {
+            BucketName = "inline-hash",
+            Key = "docs/large.bin"
+        });
+        Assert.True(getResult.IsSuccess);
+        await using var response = getResult.Value!;
+        await using var roundTrip = new MemoryStream();
+        await response.Content.CopyToAsync(roundTrip);
+        Assert.Equal(payloadBytes, roundTrip.ToArray());
+        Assert.Equal(expectedETag, response.Object.ETag);
+
+        // A mismatched CRC32C on an otherwise identical PUT must still be rejected (validation intact).
+        await using var mismatchStream = new MemoryStream(payloadBytes);
+        var mismatchResult = await storageService.PutObjectAsync(new PutObjectRequest
+        {
+            BucketName = "inline-hash",
+            Key = "docs/large.bin",
+            Content = mismatchStream,
+            ContentType = "application/octet-stream",
+            Checksums = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["crc32c"] = ComputeCrc32cBase64("not the payload")
+            }
+        });
+        Assert.False(mismatchResult.IsSuccess);
+        Assert.Equal(IntegratedS3.Abstractions.Errors.StorageErrorCode.InvalidChecksum, mismatchResult.Error!.Code);
+    }
+
     [Fact]
     public async Task DiskStorage_ObjectETag_IsStableAcrossFilesystemMtimeChange()
     {
