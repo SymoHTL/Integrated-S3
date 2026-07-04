@@ -1,0 +1,114 @@
+name: Security Scan
+
+# Automated CVE gating that runs independently of the normal build:
+#   * vulnerable-packages — `dotnet list package --vulnerable` over the full transitive graph,
+#     failing on any advisory that is NOT one of the documented, build-suppressed exceptions.
+#   * codeql — static analysis of the C# sources (SigV4 / auth surface warrants it).
+# The MSBuild NuGetAudit gate in Directory.Build.props already breaks `dotnet build` on new CVEs;
+# this workflow is the defence-in-depth layer and also runs on a schedule so a CVE disclosed
+# between commits is caught without waiting for a push.
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  schedule:
+    # Every Monday 06:00 UTC — catches advisories published against pinned deps between commits.
+    - cron: '0 6 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  DOTNET_NOLOGO: true
+  DOTNET_CLI_TELEMETRY_OPTOUT: true
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  vulnerable-packages:
+    name: Vulnerable NuGet packages
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+          cache: true
+          cache-dependency-path: src/IntegratedS3/Directory.Packages.props
+
+      - name: Restore
+        run: dotnet restore src/IntegratedS3/IntegratedS3.slnx
+
+      # `dotnet list package --vulnerable` exits 0 even when it finds vulnerabilities and does NOT
+      # honour NuGetAuditSuppress, so we parse its output ourselves. The two advisory URLs below are
+      # the exact set suppressed (with justification) in src/IntegratedS3/Directory.Build.props:
+      #   GHSA-2m69-gcr7-jv3q  SQLitePCLRaw.lib.e_sqlite3  (no patched 2.1.x release exists)
+      #   GHSA-v5pm-xwqc-g5wc  Microsoft.OpenApi 2.0.0     (cannot bump without breaking AspNetCore.OpenApi 10.0.3)
+      # Any advisory NOT in that allowlist fails the job. Keep this list in sync with Directory.Build.props.
+      - name: Scan for vulnerable packages
+        run: |
+          set -euo pipefail
+          ALLOWED='GHSA-2m69-gcr7-jv3q|GHSA-v5pm-xwqc-g5wc'
+          report="$(dotnet list src/IntegratedS3/IntegratedS3.slnx package --vulnerable --include-transitive)"
+          echo "$report"
+          # Extract every advisory GHSA/CVE id that appears in the report.
+          found="$(printf '%s\n' "$report" | grep -oE 'GHSA-[0-9a-z-]+|CVE-[0-9-]+' | sort -u || true)"
+          if [ -z "$found" ]; then
+            echo "No vulnerable packages reported."
+            exit 0
+          fi
+          # Anything found that is not in the documented allowlist is a gate failure.
+          unexpected="$(printf '%s\n' "$found" | grep -vE "^($ALLOWED)$" || true)"
+          if [ -n "$unexpected" ]; then
+            echo "::error::New vulnerable package advisories detected (not in the documented allowlist):"
+            printf '%s\n' "$unexpected"
+            echo "Fix by bumping the offending package, or — only if unavoidable and non-shipping —"
+            echo "add a documented NuGetAuditSuppress in Directory.Build.props and this allowlist."
+            exit 1
+          fi
+          echo "Only the documented, build-suppressed advisories were found; gate passes."
+
+  codeql:
+    name: CodeQL (C#)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+          cache: true
+          cache-dependency-path: src/IntegratedS3/Directory.Packages.props
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: csharp
+          build-mode: manual
+
+      # Manual build mode: exclude sample WebUi hosts / test project from analysis is unnecessary;
+      # a plain restore+build of the solution is what CodeQL needs to see the compiled sources.
+      - name: Build for analysis
+        run: |
+          dotnet build src/IntegratedS3/IntegratedS3.slnx --configuration Release
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: '/language:csharp'
