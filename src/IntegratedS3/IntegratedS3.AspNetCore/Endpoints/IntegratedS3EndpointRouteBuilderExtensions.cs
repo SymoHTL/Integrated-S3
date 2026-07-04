@@ -198,10 +198,11 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
     private static readonly HashSet<string> BucketAnalyticsQueryParameters = CreateQueryParameterSet(AnalyticsQueryParameterName, IdQueryParameterName);
     private static readonly HashSet<string> BucketMetricsQueryParameters = CreateQueryParameterSet(MetricsQueryParameterName, IdQueryParameterName);
     private static readonly HashSet<string> BucketInventoryQueryParameters = CreateQueryParameterSet(InventoryQueryParameterName, IdQueryParameterName);
+    private static readonly HashSet<string> BucketIntelligentTieringQueryParameters = CreateQueryParameterSet(IntelligentTieringQueryParameterName, IdQueryParameterName);
     private static readonly HashSet<string> BucketVersionListingQueryParameters = CreateQueryParameterSet(VersionsQueryParameterName, PrefixQueryParameterName, DelimiterQueryParameterName, MaxKeysQueryParameterName, KeyMarkerQueryParameterName, VersionIdMarkerQueryParameterName, EncodingTypeQueryParameterName);
     private static readonly HashSet<string> BucketMultipartUploadsQueryParameters = CreateQueryParameterSet(UploadsQueryParameterName, PrefixQueryParameterName, DelimiterQueryParameterName, MaxUploadsQueryParameterName, KeyMarkerQueryParameterName, UploadIdMarkerQueryParameterName, EncodingTypeQueryParameterName);
     private static readonly HashSet<string> BucketDeleteQueryParameters = CreateQueryParameterSet(DeleteQueryParameterName);
-    private static readonly HashSet<string> KnownBucketQueryParameters = CreateQueryParameterSet(ListTypeQueryParameterName, PrefixQueryParameterName, DelimiterQueryParameterName, MarkerQueryParameterName, StartAfterQueryParameterName, MaxKeysQueryParameterName, MaxUploadsQueryParameterName, ContinuationTokenQueryParameterName, EncodingTypeQueryParameterName, FetchOwnerQueryParameterName, LocationQueryParameterName, AclQueryParameterName, CorsQueryParameterName, PolicyQueryParameterName, VersioningQueryParameterName, EncryptionQueryParameterName, TaggingQueryParameterName, LoggingQueryParameterName, WebsiteQueryParameterName, RequestPaymentQueryParameterName, AccelerateQueryParameterName, LifecycleQueryParameterName, ReplicationQueryParameterName, NotificationQueryParameterName, ObjectLockQueryParameterName, AnalyticsQueryParameterName, MetricsQueryParameterName, InventoryQueryParameterName, IdQueryParameterName, VersionsQueryParameterName, KeyMarkerQueryParameterName, VersionIdMarkerQueryParameterName, UploadIdMarkerQueryParameterName, UploadsQueryParameterName, DeleteQueryParameterName);
+    private static readonly HashSet<string> KnownBucketQueryParameters = CreateQueryParameterSet(ListTypeQueryParameterName, PrefixQueryParameterName, DelimiterQueryParameterName, MarkerQueryParameterName, StartAfterQueryParameterName, MaxKeysQueryParameterName, MaxUploadsQueryParameterName, ContinuationTokenQueryParameterName, EncodingTypeQueryParameterName, FetchOwnerQueryParameterName, LocationQueryParameterName, AclQueryParameterName, CorsQueryParameterName, PolicyQueryParameterName, VersioningQueryParameterName, EncryptionQueryParameterName, TaggingQueryParameterName, LoggingQueryParameterName, WebsiteQueryParameterName, RequestPaymentQueryParameterName, AccelerateQueryParameterName, LifecycleQueryParameterName, ReplicationQueryParameterName, NotificationQueryParameterName, ObjectLockQueryParameterName, AnalyticsQueryParameterName, MetricsQueryParameterName, InventoryQueryParameterName, IntelligentTieringQueryParameterName, IdQueryParameterName, VersionsQueryParameterName, KeyMarkerQueryParameterName, VersionIdMarkerQueryParameterName, UploadIdMarkerQueryParameterName, UploadsQueryParameterName, DeleteQueryParameterName);
     private static readonly HashSet<string> ObjectVersionQueryParameters = CreateQueryParameterSet(VersionIdQueryParameterName);
     private static readonly HashSet<string> ObjectAclQueryParameters = CreateQueryParameterSet(AclQueryParameterName);
     private static readonly HashSet<string> ObjectTaggingQueryParameters = CreateQueryParameterSet(TaggingQueryParameterName, VersionIdQueryParameterName);
@@ -4940,6 +4941,7 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
         var isBucketAnalyticsRequest = queryKeys.Contains(AnalyticsQueryParameterName) && queryKeys.IsSubsetOf(BucketAnalyticsQueryParameters);
         var isBucketMetricsRequest = queryKeys.Contains(MetricsQueryParameterName) && queryKeys.IsSubsetOf(BucketMetricsQueryParameters);
         var isBucketInventoryRequest = queryKeys.Contains(InventoryQueryParameterName) && queryKeys.IsSubsetOf(BucketInventoryQueryParameters);
+        var isBucketIntelligentTieringRequest = queryKeys.Contains(IntelligentTieringQueryParameterName) && queryKeys.IsSubsetOf(BucketIntelligentTieringQueryParameters);
         var isListObjectVersionsRequest = queryKeys.Contains(VersionsQueryParameterName) && queryKeys.IsSubsetOf(BucketVersionListingQueryParameters);
         var isListMultipartUploadsRequest = queryKeys.Contains(UploadsQueryParameterName) && queryKeys.IsSubsetOf(BucketMultipartUploadsQueryParameters);
         var isDeleteObjectsRequest = queryKeys.SetEquals(BucketDeleteQueryParameters);
@@ -4980,6 +4982,7 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
                     || isBucketAnalyticsRequest
                     || isBucketMetricsRequest
                     || isBucketInventoryRequest
+                    || isBucketIntelligentTieringRequest
                     || isListObjectVersionsRequest
                     || isListMultipartUploadsRequest) {
                     break;
@@ -5022,7 +5025,8 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
                     || isBucketObjectLockRequest
                     || isBucketAnalyticsRequest
                     || isBucketMetricsRequest
-                    || isBucketInventoryRequest) {
+                    || isBucketInventoryRequest
+                    || isBucketIntelligentTieringRequest) {
                     break;
                 }
 
@@ -5039,7 +5043,8 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
                     || isBucketReplicationRequest
                     || isBucketAnalyticsRequest
                     || isBucketMetricsRequest
-                    || isBucketInventoryRequest) {
+                    || isBucketInventoryRequest
+                    || isBucketIntelligentTieringRequest) {
                     break;
                 }
 

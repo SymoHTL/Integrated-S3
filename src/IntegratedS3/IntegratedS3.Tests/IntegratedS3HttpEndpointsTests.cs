@@ -1505,6 +1505,9 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
     [InlineData("?analytics&id=report", "NoSuchConfiguration")]
     [InlineData("?metrics&id=report", "NoSuchConfiguration")]
     [InlineData("?inventory&id=report", "NoSuchConfiguration")]
+    // Regression for #153: ?intelligent-tiering was rejected by the request validator before dispatch,
+    // so the (existing) handler was unreachable. It must now route through and surface the mapped 404.
+    [InlineData("?intelligent-tiering&id=report", "NoSuchConfiguration")]
     public async Task S3CompatibleBucketSubresource_WhenConfigAbsent_ReturnsNoSuchCodeWithNotFoundStatus(string query, string expectedCode)
     {
         // Regression test for #152: absent bucket subresource configs must surface the specific
@@ -10208,6 +10211,7 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
             => ValueTask.FromResult(StorageResult<BucketInventoryConfiguration>.Failure(NotFound(StorageErrorCode.InventoryConfigurationNotFound, bucketName)));
 
         public IAsyncEnumerable<BucketInfo> ListBucketsAsync(CancellationToken cancellationToken = default) => throw Boom();
+        // Overridden below with a proper NotFound result so #153's intelligent-tiering routing regression can assert the mapped 404.
         public ValueTask<StorageResult<BucketInfo>> CreateBucketAsync(CreateBucketRequest request, CancellationToken cancellationToken = default) => throw Boom();
         public ValueTask<StorageResult<BucketLocationInfo>> GetBucketLocationAsync(string bucketName, CancellationToken cancellationToken = default) => throw Boom();
         public ValueTask<StorageResult<BucketVersioningInfo>> GetBucketVersioningAsync(string bucketName, CancellationToken cancellationToken = default) => throw Boom();
@@ -10266,7 +10270,8 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
         public ValueTask<StorageResult<BucketInventoryConfiguration>> PutBucketInventoryConfigurationAsync(PutBucketInventoryConfigurationRequest request, CancellationToken cancellationToken = default) => throw Boom();
         public ValueTask<StorageResult> DeleteBucketInventoryConfigurationAsync(DeleteBucketInventoryConfigurationRequest request, CancellationToken cancellationToken = default) => throw Boom();
         public ValueTask<StorageResult<IReadOnlyList<BucketInventoryConfiguration>>> ListBucketInventoryConfigurationsAsync(string bucketName, CancellationToken cancellationToken = default) => throw Boom();
-        public ValueTask<StorageResult<BucketIntelligentTieringConfiguration>> GetBucketIntelligentTieringConfigurationAsync(string bucketName, string id, CancellationToken cancellationToken = default) => throw Boom();
+        public ValueTask<StorageResult<BucketIntelligentTieringConfiguration>> GetBucketIntelligentTieringConfigurationAsync(string bucketName, string id, CancellationToken cancellationToken = default)
+            => ValueTask.FromResult(StorageResult<BucketIntelligentTieringConfiguration>.Failure(NotFound(StorageErrorCode.IntelligentTieringConfigurationNotFound, bucketName)));
         public ValueTask<StorageResult<BucketIntelligentTieringConfiguration>> PutBucketIntelligentTieringConfigurationAsync(PutBucketIntelligentTieringConfigurationRequest request, CancellationToken cancellationToken = default) => throw Boom();
         public ValueTask<StorageResult> DeleteBucketIntelligentTieringConfigurationAsync(DeleteBucketIntelligentTieringConfigurationRequest request, CancellationToken cancellationToken = default) => throw Boom();
         public ValueTask<StorageResult<IReadOnlyList<BucketIntelligentTieringConfiguration>>> ListBucketIntelligentTieringConfigurationsAsync(string bucketName, CancellationToken cancellationToken = default) => throw Boom();
