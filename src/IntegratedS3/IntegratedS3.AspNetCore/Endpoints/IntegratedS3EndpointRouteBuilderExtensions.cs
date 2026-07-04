@@ -8963,10 +8963,34 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
 
     private sealed class BucketCorsResult(string bucketName, IResult innerResult) : IResult
     {
-        public async Task ExecuteAsync(HttpContext httpContext)
+        public Task ExecuteAsync(HttpContext httpContext)
         {
             ArgumentNullException.ThrowIfNull(httpContext);
 
+            // The inner result may own an already-opened, disposable resource (e.g. a
+            // StreamObjectResult holding a live GetObjectResponse / upstream connection).
+            // The CORS pre-delegation work below performs backend I/O that can throw or be
+            // aborted; if it does so before we delegate, the inner result never executes and
+            // never disposes what it owns. Route both phases through a helper that guarantees
+            // the inner result is disposed if the pre-delegation work fails. See issue #128.
+            return ExecuteWithBucketCorsAsync(bucketName, innerResult, httpContext);
+        }
+    }
+
+    /// <summary>
+    /// Applies the actual (non-preflight) CORS headers for <paramref name="bucketName"/> and then
+    /// delegates to <paramref name="innerResult"/>. If the CORS pre-delegation work throws (or the
+    /// request is aborted) before <paramref name="innerResult"/> is executed, the inner result is
+    /// disposed first (when it implements <see cref="IAsyncDisposable"/>/<see cref="IDisposable"/>)
+    /// so that any resource it owns — such as an opened <c>GetObjectResponse</c> — is released
+    /// instead of leaked. See issue #128.
+    /// </summary>
+    internal static async Task ExecuteWithBucketCorsAsync(string bucketName, IResult innerResult, HttpContext httpContext)
+    {
+        ArgumentNullException.ThrowIfNull(innerResult);
+        ArgumentNullException.ThrowIfNull(httpContext);
+
+        try {
             var origin = httpContext.Request.Headers[OriginHeaderName].ToString();
             if (!string.IsNullOrWhiteSpace(origin)) {
                 AppendVaryHeader(httpContext.Response, OriginHeaderName);
@@ -8982,18 +9006,45 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
             if (response is not null) {
                 ApplyBucketCorsActualHeaders(httpContext.Response, response);
             }
+        }
+        catch {
+            // The inner result never ran, so it never disposed what it owns. Release it here
+            // before propagating so the opened response/connection is not leaked.
+            await DisposeResultAsync(innerResult);
+            throw;
+        }
 
-            await innerResult.ExecuteAsync(httpContext);
+        await innerResult.ExecuteAsync(httpContext);
+    }
+
+    private static async ValueTask DisposeResultAsync(IResult result)
+    {
+        switch (result) {
+            case IAsyncDisposable asyncDisposable:
+                await asyncDisposable.DisposeAsync();
+                break;
+            case IDisposable disposable:
+                disposable.Dispose();
+                break;
         }
     }
 
-    private sealed class StreamObjectResult(GetObjectResponse objectResponse) : IResult
+    private sealed class StreamObjectResult(GetObjectResponse objectResponse) : IResult, IAsyncDisposable
     {
+        private GetObjectResponse? _objectResponse = objectResponse;
+
         public async Task ExecuteAsync(HttpContext httpContext)
         {
             ArgumentNullException.ThrowIfNull(httpContext);
 
-            await using var response = objectResponse;
+            // Take ownership so a later DisposeAsync (e.g. from an outer wrapper) does not
+            // double-dispose the response we consume here.
+            var response = Interlocked.Exchange(ref _objectResponse, null);
+            if (response is null) {
+                return;
+            }
+
+            await using var owned = response;
 
             ApplyObjectHeaders(httpContext.Response, response.Object);
             ApplyObjectTaggingCountHeader(httpContext.Response, response.Object);
@@ -9017,6 +9068,16 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
 
             await response.Content.CopyToAsync(httpContext.Response.Body, httpContext.RequestAborted);
             IntegratedS3AspNetCoreTelemetry.RecordHttpBytesSent("GetObject", response.Object.ContentLength);
+        }
+
+        // Releases the opened response if this result is discarded without ever executing —
+        // e.g. an outer wrapper throws before delegating to it. Idempotent with ExecuteAsync.
+        public async ValueTask DisposeAsync()
+        {
+            var response = Interlocked.Exchange(ref _objectResponse, null);
+            if (response is not null) {
+                await response.DisposeAsync();
+            }
         }
     }
 
