@@ -35,6 +35,12 @@ public sealed class PutObjectRequest
     /// <summary>The date and time at which the object should expire, in UTC.</summary>
     public DateTimeOffset? ExpiresUtc { get; init; }
 
+    /// <summary>
+    /// The raw, verbatim <c>Expires</c> header value. AWS treats <c>Expires</c> as an opaque string
+    /// that is stored and returned unchanged; when set, this is preserved verbatim.
+    /// </summary>
+    public string? Expires { get; init; }
+
     /// <summary>User-defined metadata key-value pairs for the object.</summary>
     public IReadOnlyDictionary<string, string>? Metadata { get; init; }
 

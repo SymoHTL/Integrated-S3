@@ -66,6 +66,14 @@ public sealed class ObjectInfo
     public DateTimeOffset? ExpiresUtc { get; init; }
 
     /// <summary>
+    /// The raw, verbatim <c>Expires</c> header value exactly as it was supplied when the object was
+    /// stored, or <see langword="null"/> if none was supplied. AWS S3 treats <c>Expires</c> as an
+    /// opaque string and returns it unchanged (it is not parsed or reformatted); this preserves that
+    /// value so GET/HEAD can echo it back verbatim.
+    /// </summary>
+    public string? Expires { get; init; }
+
+    /// <summary>
     /// The entity tag (ETag) for the object, typically the MD5 hash of the content.
     /// </summary>
     public string? ETag { get; init; }

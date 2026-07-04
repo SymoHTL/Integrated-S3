@@ -120,6 +120,8 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
     private const string LegalHoldQueryParameterName = "legal-hold";
     private const string AttributesQueryParameterName = "attributes";
     private const string ObjectAttributesHeaderName = "x-amz-object-attributes";
+    // AWS S3 serves objects stored without a Content-Type as "binary/octet-stream".
+    private const string DefaultObjectContentType = "binary/octet-stream";
     private const string VersioningQueryParameterName = "versioning";
     private const string EncryptionQueryParameterName = "encryption";
     private const string VersionsQueryParameterName = "versions";
@@ -1357,7 +1359,8 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
                             ContentDisposition = metadataDirective == CopyObjectMetadataDirective.Replace ? GetOptionalHeaderValue(request.Headers[HeaderNames.ContentDisposition].ToString()) : null,
                             ContentEncoding = metadataDirective == CopyObjectMetadataDirective.Replace ? GetOptionalHeaderValue(request.Headers[HeaderNames.ContentEncoding].ToString()) : null,
                             ContentLanguage = metadataDirective == CopyObjectMetadataDirective.Replace ? GetOptionalHeaderValue(request.Headers[HeaderNames.ContentLanguage].ToString()) : null,
-                            ExpiresUtc = metadataDirective == CopyObjectMetadataDirective.Replace ? ParseOptionalHttpDateHeader(request.Headers[HeaderNames.Expires].ToString()) : null,
+                            ExpiresUtc = metadataDirective == CopyObjectMetadataDirective.Replace ? ParseOptionalExpiresTimestamp(request.Headers[HeaderNames.Expires].ToString()) : null,
+                            Expires = metadataDirective == CopyObjectMetadataDirective.Replace ? ReadOptionalExpiresHeader(request.Headers[HeaderNames.Expires].ToString()) : null,
                             Metadata = metadataDirective == CopyObjectMetadataDirective.Replace ? ParseObjectMetadataHeaders(request.Headers) : null,
                             TaggingDirective = taggingDirective,
                             Tags = taggingDirective == ObjectTaggingDirective.Replace ? copyTags : null,
@@ -1417,7 +1420,8 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
                         ContentDisposition = GetOptionalHeaderValue(request.Headers[HeaderNames.ContentDisposition].ToString()),
                         ContentEncoding = GetOptionalHeaderValue(request.Headers[HeaderNames.ContentEncoding].ToString()),
                         ContentLanguage = GetOptionalHeaderValue(request.Headers[HeaderNames.ContentLanguage].ToString()),
-                        ExpiresUtc = ParseOptionalHttpDateHeader(request.Headers[HeaderNames.Expires].ToString()),
+                        ExpiresUtc = ParseOptionalExpiresTimestamp(request.Headers[HeaderNames.Expires].ToString()),
+                        Expires = ReadOptionalExpiresHeader(request.Headers[HeaderNames.Expires].ToString()),
                         Metadata = metadata,
                         Tags = tags,
                         Checksums = requestedChecksums,
@@ -1579,7 +1583,7 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
                 var objectInfo = result.Value!;
                 var responseOverrides = ResponseHeaderOverrides.FromRequest(httpContext.Request);
                 ApplyObjectHeaders(httpContext.Response, objectInfo);
-                ApplyObjectTaggingCountHeader(httpContext.Response, objectInfo);
+                // AWS emits x-amz-tagging-count on GET responses only, not on HEAD.
                 httpContext.Response.Headers.AcceptRanges = "bytes";
                 responseOverrides.Apply(httpContext.Response);
 
@@ -1603,7 +1607,7 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
                     return TypedResults.StatusCode(StatusCodes.Status304NotModified);
                 }
 
-                httpContext.Response.ContentType = responseOverrides.ContentType ?? objectInfo.ContentType ?? "application/octet-stream";
+                httpContext.Response.ContentType = responseOverrides.ContentType ?? objectInfo.ContentType ?? DefaultObjectContentType;
 
                 // AWS honors the Range header on HEAD, mirroring GET: a satisfiable range yields 206
                 // with Content-Range and the ranged Content-Length (no body); an unsatisfiable range
@@ -2961,7 +2965,8 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
                     ContentDisposition = GetOptionalHeaderValue(httpContext.Request.Headers[HeaderNames.ContentDisposition].ToString()),
                     ContentEncoding = GetOptionalHeaderValue(httpContext.Request.Headers[HeaderNames.ContentEncoding].ToString()),
                     ContentLanguage = GetOptionalHeaderValue(httpContext.Request.Headers[HeaderNames.ContentLanguage].ToString()),
-                    ExpiresUtc = ParseOptionalHttpDateHeader(httpContext.Request.Headers[HeaderNames.Expires].ToString()),
+                    ExpiresUtc = ParseOptionalExpiresTimestamp(httpContext.Request.Headers[HeaderNames.Expires].ToString()),
+                    Expires = ReadOptionalExpiresHeader(httpContext.Request.Headers[HeaderNames.Expires].ToString()),
                     Metadata = metadata,
                     Tags = tags,
                     ChecksumAlgorithm = checksumAlgorithm,
@@ -8717,6 +8722,28 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
         return parsedValue;
     }
 
+    /// <summary>
+    /// Returns the verbatim <c>Expires</c> header value, or <see langword="null"/> when absent. AWS
+    /// treats <c>Expires</c> as an opaque string, so it is stored and returned unchanged rather than
+    /// parsed as an HTTP date (an unparseable value must not fail the request).
+    /// </summary>
+    private static string? ReadOptionalExpiresHeader(string? rawValue)
+    {
+        return string.IsNullOrEmpty(rawValue) ? null : rawValue;
+    }
+
+    /// <summary>
+    /// Best-effort parse of an opaque <c>Expires</c> value into a timestamp for stores that persist
+    /// only a <see cref="DateTimeOffset"/>. Unparseable values yield <see langword="null"/> (never a
+    /// <see cref="FormatException"/>), preserving the opaque round-trip carried by the raw string.
+    /// </summary>
+    private static DateTimeOffset? ParseOptionalExpiresTimestamp(string? rawValue)
+    {
+        return string.IsNullOrWhiteSpace(rawValue) || !DateTimeOffset.TryParse(rawValue, out var parsedValue)
+            ? null
+            : parsedValue;
+    }
+
     private static CopyObjectMetadataDirective ParseCopyObjectMetadataDirective(string? rawValue)
     {
         if (string.IsNullOrWhiteSpace(rawValue)
@@ -8960,7 +8987,14 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
             httpResponse.Headers[HeaderNames.ContentLanguage] = objectInfo.ContentLanguage;
         }
 
-        if (objectInfo.ExpiresUtc is { } expiresUtc) {
+        // AWS treats the object Expires metadata as an opaque string: it is stored and returned
+        // verbatim, never parsed or reformatted. Echo the raw value when we have it; fall back to the
+        // parsed timestamp only for objects persisted before the raw value was captured (or by stores
+        // that keep just the timestamp).
+        if (!string.IsNullOrEmpty(objectInfo.Expires)) {
+            httpResponse.Headers.Expires = objectInfo.Expires;
+        }
+        else if (objectInfo.ExpiresUtc is { } expiresUtc) {
             httpResponse.Headers.Expires = expiresUtc.ToString("R");
         }
     }
@@ -9432,7 +9466,7 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
                 return;
             }
 
-            httpContext.Response.ContentType = response.Object.ContentType ?? "application/octet-stream";
+            httpContext.Response.ContentType = response.Object.ContentType ?? DefaultObjectContentType;
             responseOverrides.Apply(httpContext.Response);
             httpContext.Response.ContentLength = response.Object.ContentLength;
 
@@ -9514,7 +9548,7 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
             }
 
             var totalLength = firstResponse.TotalContentLength;
-            var contentType = responseOverrides.ContentType ?? firstResponse.Object.ContentType ?? "application/octet-stream";
+            var contentType = responseOverrides.ContentType ?? firstResponse.Object.ContentType ?? DefaultObjectContentType;
 
             httpContext.Response.StatusCode = StatusCodes.Status206PartialContent;
             httpContext.Response.ContentType = $"multipart/byteranges; boundary={boundary}";

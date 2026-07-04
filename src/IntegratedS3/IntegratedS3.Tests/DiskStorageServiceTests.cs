@@ -91,6 +91,91 @@ public sealed class DiskStorageServiceTests
     }
 
     [Fact]
+    public async Task DiskStorage_RoundTripsOpaqueExpiresVerbatim()
+    {
+        await using var fixture = new DiskStorageFixture();
+        var storageService = fixture.Services.GetRequiredService<IStorageBackend>();
+
+        Assert.True((await storageService.CreateBucketAsync(new CreateBucketRequest { BucketName = "expires-bucket" })).IsSuccess);
+
+        // A value that is not an HTTP date; AWS stores and returns Expires as an opaque string.
+        const string opaqueExpires = "opaque-not-a-date";
+        await using var uploadStream = new MemoryStream(Encoding.UTF8.GetBytes("payload"));
+        var putResult = await storageService.PutObjectAsync(new PutObjectRequest
+        {
+            BucketName = "expires-bucket",
+            Key = "docs/opaque.txt",
+            Content = uploadStream,
+            Expires = opaqueExpires
+        });
+        Assert.True(putResult.IsSuccess);
+
+        var head = await storageService.HeadObjectAsync(new HeadObjectRequest
+        {
+            BucketName = "expires-bucket",
+            Key = "docs/opaque.txt"
+        });
+        Assert.True(head.IsSuccess);
+        Assert.Equal(opaqueExpires, head.Value!.Expires);
+    }
+
+    [Fact]
+    public async Task DiskStorage_GetObjectAttributes_PopulatesObjectPartsForMultipartObject()
+    {
+        await using var fixture = new DiskStorageFixture();
+        var storageService = fixture.Services.GetRequiredService<IStorageBackend>();
+
+        Assert.True((await storageService.CreateBucketAsync(new CreateBucketRequest { BucketName = "mpu-attrs-bucket" })).IsSuccess);
+
+        var initiate = await storageService.InitiateMultipartUploadAsync(new InitiateMultipartUploadRequest
+        {
+            BucketName = "mpu-attrs-bucket",
+            Key = "docs/mpu.bin"
+        });
+        Assert.True(initiate.IsSuccess);
+        var uploadId = initiate.Value!.UploadId;
+
+        var firstPart = new byte[5 * 1024 * 1024];
+        var secondPart = Encoding.UTF8.GetBytes("tail");
+        Random.Shared.NextBytes(firstPart);
+
+        var completedParts = new List<MultipartUploadPart>();
+        foreach (var (partNumber, body) in new[] { (1, firstPart), (2, secondPart) }) {
+            await using var partStream = new MemoryStream(body);
+            var uploadPart = await storageService.UploadMultipartPartAsync(new UploadMultipartPartRequest
+            {
+                BucketName = "mpu-attrs-bucket",
+                Key = "docs/mpu.bin",
+                UploadId = uploadId,
+                PartNumber = partNumber,
+                Content = partStream
+            });
+            Assert.True(uploadPart.IsSuccess);
+            completedParts.Add(new MultipartUploadPart { PartNumber = partNumber, ETag = uploadPart.Value!.ETag });
+        }
+
+        var complete = await storageService.CompleteMultipartUploadAsync(new CompleteMultipartUploadRequest
+        {
+            BucketName = "mpu-attrs-bucket",
+            Key = "docs/mpu.bin",
+            UploadId = uploadId,
+            Parts = completedParts
+        });
+        Assert.True(complete.IsSuccess);
+
+        var attributes = await storageService.GetObjectAttributesAsync(new GetObjectAttributesRequest
+        {
+            BucketName = "mpu-attrs-bucket",
+            Key = "docs/mpu.bin",
+            ObjectAttributes = ["ObjectParts", "ObjectSize"]
+        });
+        Assert.True(attributes.IsSuccess);
+        Assert.NotNull(attributes.Value!.ObjectParts);
+        Assert.Equal(2, attributes.Value.ObjectParts!.TotalPartsCount);
+        Assert.False(attributes.Value.ObjectParts.IsTruncated);
+    }
+
+    [Fact]
     public async Task DeleteBucketAsync_ReturnsBucketNotEmpty_WhenBucketContainsObjects()
     {
         await using var fixture = new DiskStorageFixture();
