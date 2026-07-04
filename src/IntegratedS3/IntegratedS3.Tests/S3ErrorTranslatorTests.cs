@@ -1,4 +1,6 @@
 using System.Net;
+using System.Net.Http;
+using System.Net.Sockets;
 using Amazon.Runtime;
 using Amazon.S3;
 using IntegratedS3.Abstractions.Errors;
@@ -116,5 +118,93 @@ public sealed class S3ErrorTranslatorTests
         var error = S3ErrorTranslator.Translate(ex, "test-provider", "my-bucket", "my-object.txt");
 
         Assert.Equal(StorageErrorCode.InvalidTag, error.Code);
+    }
+
+    // --- Transport / service-level failure translation (issue #129) ---
+
+    [Fact]
+    public void ServiceException_With503_MapsTo_ProviderUnavailable()
+    {
+        var ex = new AmazonServiceException("Service Unavailable")
+        {
+            StatusCode = HttpStatusCode.ServiceUnavailable
+        };
+
+        var error = S3ErrorTranslator.Translate(ex, "test-provider", "my-bucket");
+
+        Assert.Equal(StorageErrorCode.ProviderUnavailable, error.Code);
+        Assert.Equal(503, error.SuggestedHttpStatusCode);
+    }
+
+    [Fact]
+    public void ServiceException_WithGeneric500_MapsTo_ProviderUnavailable()
+    {
+        var ex = new AmazonServiceException("Internal Server Error")
+        {
+            StatusCode = HttpStatusCode.InternalServerError
+        };
+
+        var error = S3ErrorTranslator.Translate(ex, "test-provider", "my-bucket");
+
+        Assert.Equal(StorageErrorCode.ProviderUnavailable, error.Code);
+    }
+
+    [Fact]
+    public void ServiceException_WithNoHttpStatus_MapsTo_ProviderUnavailable()
+    {
+        // StatusCode defaults to 0 when the request never completed against the upstream.
+        var ex = new AmazonServiceException("The endpoint could not be reached.");
+
+        var error = S3ErrorTranslator.Translate(ex, "test-provider", "my-bucket");
+
+        Assert.Equal(StorageErrorCode.ProviderUnavailable, error.Code);
+        Assert.Equal(503, error.SuggestedHttpStatusCode);
+    }
+
+    [Fact]
+    public void TranslateTransport_MapsTo_ProviderUnavailable_AndPreservesMessage()
+    {
+        var ex = new HttpRequestException("Connection reset by peer.");
+
+        var error = S3ErrorTranslator.TranslateTransport(ex, "test-provider", "my-bucket", "my-object.txt");
+
+        Assert.Equal(StorageErrorCode.ProviderUnavailable, error.Code);
+        Assert.Equal(503, error.SuggestedHttpStatusCode);
+        Assert.Equal("my-bucket", error.BucketName);
+        Assert.Equal("my-object.txt", error.ObjectKey);
+        Assert.Contains("Connection reset by peer.", error.Message, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData(typeof(HttpRequestException))]
+    [InlineData(typeof(SocketException))]
+    [InlineData(typeof(IOException))]
+    [InlineData(typeof(TaskCanceledException))]
+    public void IsTransportFailure_ReturnsTrue_ForTransportExceptions(Type exceptionType)
+    {
+        var ex = exceptionType == typeof(SocketException)
+            ? new SocketException((int)SocketError.HostNotFound)
+            : (Exception)Activator.CreateInstance(exceptionType)!;
+
+        Assert.True(S3ErrorTranslator.IsTransportFailure(ex, CancellationToken.None));
+    }
+
+    [Fact]
+    public void IsTransportFailure_ReturnsFalse_ForCallerCancellation()
+    {
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+        var ex = new OperationCanceledException(cts.Token);
+
+        Assert.False(S3ErrorTranslator.IsTransportFailure(ex, cts.Token));
+    }
+
+    [Fact]
+    public void IsTransportFailure_ReturnsTrue_ForTimeoutTaskCanceled_WhenCallerDidNotCancel()
+    {
+        // HttpClient request timeout: a TaskCanceledException with no caller cancellation.
+        var ex = new TaskCanceledException("timeout");
+
+        Assert.True(S3ErrorTranslator.IsTransportFailure(ex, CancellationToken.None));
     }
 }
