@@ -149,6 +149,111 @@ public sealed class IntegratedS3SigV4aConformanceTests : IClassFixture<WebUiAppl
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
     }
 
+    // Regression for #113: the SigV4a header path shares the same symmetric clock-skew barrier as
+    // SigV4 (IsOutsideAllowedClockSkew) but had zero coverage. A request whose x-amz-date is too far
+    // in the PAST — a captured, replayed request — must be rejected with RequestTimeTooSkewed.
+    // Default AllowedSignatureClockSkewMinutes is 5, so a 6-minute-stale timestamp is outside it.
+    [Fact]
+    public async Task SigV4aHeaderAuthentication_StaleTimestampOutsideClockSkew_ReturnsRequestTimeTooSkewed()
+    {
+        const string accessKeyId = "sigv4a-header-stale-access";
+        const string secretAccessKey = "sigv4a-header-stale-secret";
+
+        await using var isolatedClient = await CreateAuthenticatedClientAsync(accessKeyId, secretAccessKey);
+        using var client = isolatedClient.Client;
+
+        using var request = CreateSigV4aHeaderSignedRequest(
+            HttpMethod.Get,
+            "/integrated-s3/",
+            accessKeyId,
+            secretAccessKey,
+            signedAtUtc: DateTimeOffset.UtcNow.AddMinutes(-6));
+        var response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+        Assert.Equal("application/xml", response.Content.Headers.ContentType?.MediaType);
+        var errorDocument = XDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal("RequestTimeTooSkewed", GetRequiredElementValue(errorDocument, "Code"));
+    }
+
+    // Regression for #113: the ".Duration()" symmetry of the skew barrier must reject a SigV4a header
+    // request whose x-amz-date is too far in the FUTURE as well. Guards against a future-only refactor.
+    [Fact]
+    public async Task SigV4aHeaderAuthentication_FutureTimestampOutsideClockSkew_ReturnsRequestTimeTooSkewed()
+    {
+        const string accessKeyId = "sigv4a-header-future-access";
+        const string secretAccessKey = "sigv4a-header-future-secret";
+
+        await using var isolatedClient = await CreateAuthenticatedClientAsync(accessKeyId, secretAccessKey);
+        using var client = isolatedClient.Client;
+
+        using var request = CreateSigV4aHeaderSignedRequest(
+            HttpMethod.Get,
+            "/integrated-s3/",
+            accessKeyId,
+            secretAccessKey,
+            signedAtUtc: DateTimeOffset.UtcNow.AddMinutes(6));
+        var response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+        Assert.Equal("application/xml", response.Content.Headers.ContentType?.MediaType);
+        var errorDocument = XDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal("RequestTimeTooSkewed", GetRequiredElementValue(errorDocument, "Code"));
+    }
+
+    // Regression for #113: proves the SigV4a skew barrier is a boundary and not a blanket rejection —
+    // a request timestamped inside the allowed window must still authenticate.
+    [Fact]
+    public async Task SigV4aHeaderAuthentication_TimestampWithinClockSkew_Succeeds()
+    {
+        const string accessKeyId = "sigv4a-header-within-skew-access";
+        const string secretAccessKey = "sigv4a-header-within-skew-secret";
+
+        await using var isolatedClient = await CreateAuthenticatedClientAsync(accessKeyId, secretAccessKey);
+        using var client = isolatedClient.Client;
+
+        using var request = CreateSigV4aHeaderSignedRequest(
+            HttpMethod.Get,
+            "/integrated-s3/",
+            accessKeyId,
+            secretAccessKey,
+            signedAtUtc: DateTimeOffset.UtcNow.AddMinutes(-2));
+        var response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+    }
+
+    // Regression for #113: the SigV4a header path must reject a request carrying neither x-amz-date
+    // nor a Date fallback (issue #133) with AccessDenied. The signed request is built normally, then
+    // x-amz-date is stripped so no valid request timestamp can be resolved. (The signature still lists
+    // x-amz-date in SignedHeaders, but the absent-timestamp check runs before canonical-request
+    // construction, so AccessDenied — not SignatureDoesNotMatch — is returned.)
+    [Fact]
+    public async Task SigV4aHeaderAuthentication_WithNeitherXAmzDateNorDate_ReturnsAccessDenied()
+    {
+        const string accessKeyId = "sigv4a-header-nodate-access";
+        const string secretAccessKey = "sigv4a-header-nodate-secret";
+
+        await using var isolatedClient = await CreateAuthenticatedClientAsync(accessKeyId, secretAccessKey);
+        using var client = isolatedClient.Client;
+
+        using var request = CreateSigV4aHeaderSignedRequest(
+            HttpMethod.Get,
+            "/integrated-s3/",
+            accessKeyId,
+            secretAccessKey);
+        request.Headers.Remove("x-amz-date");
+        Assert.False(request.Headers.Contains("x-amz-date"));
+        Assert.False(request.Headers.Contains("date"));
+
+        var response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+        Assert.Equal("application/xml", response.Content.Headers.ContentType?.MediaType);
+        var errorDocument = XDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal("AccessDenied", GetRequiredElementValue(errorDocument, "Code"));
+    }
+
     // ── Presigned-query SigV4a ──────────────────────────────────────────────
 
     [Fact]

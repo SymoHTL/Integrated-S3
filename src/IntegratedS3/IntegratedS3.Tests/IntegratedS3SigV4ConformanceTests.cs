@@ -1971,6 +1971,91 @@ public sealed class IntegratedS3SigV4ConformanceTests : IClassFixture<WebUiAppli
         Assert.Contains("future", GetRequiredElementValue(errorDocument, "Message"), StringComparison.OrdinalIgnoreCase);
     }
 
+    // Regression for #113: the primary (Authorization-header) SigV4 path must reject a request whose
+    // x-amz-date is too far in the PAST (a captured, replayed request). This freshness check is the
+    // only barrier against indefinite replay of a header-signed request, yet had zero coverage — the
+    // sole prior RequestTimeTooSkewed assertion drives the separate presigned-query future-only path.
+    [Fact]
+    public async Task SigV4HeaderAuthentication_StaleTimestampOutsideClockSkew_ReturnsRequestTimeTooSkewed()
+    {
+        const string accessKeyId = "sigv4-header-stale-access";
+        const string secretAccessKey = "sigv4-header-stale-secret";
+
+        await using var isolatedClient = await CreateAuthenticatedClientAsync(
+            accessKeyId,
+            secretAccessKey,
+            options => options.AllowedSignatureClockSkewMinutes = 1);
+        using var client = isolatedClient.Client;
+
+        using var request = CreateSigV4HeaderSignedRequest(
+            HttpMethod.Get,
+            "/integrated-s3/",
+            accessKeyId,
+            secretAccessKey,
+            signedAtUtc: DateTimeOffset.UtcNow.AddMinutes(-2));
+        var response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+        Assert.Equal("application/xml", response.Content.Headers.ContentType?.MediaType);
+        var errorDocument = XDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal("RequestTimeTooSkewed", GetRequiredElementValue(errorDocument, "Code"));
+    }
+
+    // Regression for #113: the symmetric ".Duration()" skew barrier must also reject a header request
+    // whose x-amz-date is too far in the FUTURE. A refactor that dropped ".Duration()" (checking only
+    // future skew) or inverted the comparison would be caught here but not by the stale-only case.
+    [Fact]
+    public async Task SigV4HeaderAuthentication_FutureTimestampOutsideClockSkew_ReturnsRequestTimeTooSkewed()
+    {
+        const string accessKeyId = "sigv4-header-future-access";
+        const string secretAccessKey = "sigv4-header-future-secret";
+
+        await using var isolatedClient = await CreateAuthenticatedClientAsync(
+            accessKeyId,
+            secretAccessKey,
+            options => options.AllowedSignatureClockSkewMinutes = 1);
+        using var client = isolatedClient.Client;
+
+        using var request = CreateSigV4HeaderSignedRequest(
+            HttpMethod.Get,
+            "/integrated-s3/",
+            accessKeyId,
+            secretAccessKey,
+            signedAtUtc: DateTimeOffset.UtcNow.AddMinutes(2));
+        var response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+        Assert.Equal("application/xml", response.Content.Headers.ContentType?.MediaType);
+        var errorDocument = XDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal("RequestTimeTooSkewed", GetRequiredElementValue(errorDocument, "Code"));
+    }
+
+    // Regression for #113: proves the skew barrier is a boundary and not a blanket rejection — a
+    // header request timestamped just INSIDE the allowed window must still authenticate successfully.
+    // Without this, the two rejection tests above could pass against code that rejects everything.
+    [Fact]
+    public async Task SigV4HeaderAuthentication_TimestampWithinClockSkew_Succeeds()
+    {
+        const string accessKeyId = "sigv4-header-within-skew-access";
+        const string secretAccessKey = "sigv4-header-within-skew-secret";
+
+        await using var isolatedClient = await CreateAuthenticatedClientAsync(
+            accessKeyId,
+            secretAccessKey,
+            options => options.AllowedSignatureClockSkewMinutes = 5);
+        using var client = isolatedClient.Client;
+
+        using var request = CreateSigV4HeaderSignedRequest(
+            HttpMethod.Get,
+            "/integrated-s3/",
+            accessKeyId,
+            secretAccessKey,
+            signedAtUtc: DateTimeOffset.UtcNow.AddMinutes(-2));
+        var response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+    }
+
     [Fact]
     public async Task SigV4HeaderAuthentication_DeleteMarkerAndHistoricalVersionOperations_ReturnExpectedResponses()
     {
