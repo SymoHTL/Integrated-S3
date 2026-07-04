@@ -824,10 +824,20 @@ public static class IntegratedS3ClientTransferExtensions
     {
         var validation = IntegratedS3ClientTransferChecksumHelper.CreateDownloadValidation(response);
         if (validation is not null) {
-            await IntegratedS3ClientTransferChecksumHelper.SeedExistingBytesAsync(
-                validation,
-                filePath,
-                cancellationToken);
+            try {
+                await IntegratedS3ClientTransferChecksumHelper.SeedExistingBytesAsync(
+                    validation,
+                    filePath,
+                    cancellationToken);
+            }
+            catch {
+                // CopyToAsync takes ownership of disposing the validation object, but it is
+                // never reached if seeding throws (e.g. the partial file is locked or removed
+                // after the length probe). Dispose here to avoid leaking the IncrementalHash
+                // native handles the SHA1/SHA256 validators hold.
+                validation.Dispose();
+                throw;
+            }
         }
 
         await using var fileStream = new FileStream(
