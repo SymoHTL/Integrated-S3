@@ -81,15 +81,16 @@ internal sealed class StorageBackendHealthMonitor
     {
         ArgumentNullException.ThrowIfNull(backend);
 
-        var status = error?.Code is StorageErrorCode.ProviderUnavailable or StorageErrorCode.Throttled
-            ? StorageBackendHealthStatus.Unhealthy
-            : StorageBackendHealthStatus.Healthy;
-        var ttl = status == StorageBackendHealthStatus.Unhealthy
-            ? _options.Value.BackendHealth.UnhealthySnapshotTtl
-            : _options.Value.BackendHealth.HealthySnapshotTtl;
+        // A failed operation is never a positive success signal, so it must not stamp the backend
+        // Healthy. Only genuine transport-level failures demote the backend to Unhealthy; every
+        // other (per-request/semantic) error code leaves the existing snapshot untouched, so a
+        // failing operation can never re-mark a backend green or clobber a probe-set Unhealthy state.
+        if (error?.Code is not (StorageErrorCode.ProviderUnavailable or StorageErrorCode.Throttled)) {
+            return;
+        }
 
-        UpdateSnapshot(backend.Name, status, ttl);
-        TrackStatus(backend, status, "operation");
+        UpdateSnapshot(backend.Name, StorageBackendHealthStatus.Unhealthy, _options.Value.BackendHealth.UnhealthySnapshotTtl);
+        TrackStatus(backend, StorageBackendHealthStatus.Unhealthy, "operation");
     }
 
     private async ValueTask<StorageBackendHealthStatus> ProbeAsync(IStorageBackend backend, StorageBackendHealthOptions healthOptions, CancellationToken cancellationToken)

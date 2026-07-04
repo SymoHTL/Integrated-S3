@@ -3735,6 +3735,51 @@ public sealed class IntegratedS3CoreOrchestrationTests
         }
     }
 
+    [Fact]
+    public async Task StorageBackendHealthMonitor_ReportFailureWithNonTransportError_DoesNotResetProbeSetUnhealthy()
+    {
+        // Regression for #127: a probe marks the backend Unhealthy; a subsequent operation that fails
+        // with a non-transport error code (e.g. Unknown) must NOT overwrite that snapshot with Healthy.
+        var backend = new InMemoryStorageBackend("failing-memory");
+        var evaluator = new ConfigurableStorageBackendHealthEvaluator(
+            new Dictionary<string, StorageBackendHealthStatus>(StringComparer.Ordinal));
+        var probe = new ConfigurableStorageBackendHealthProbe(
+            new Dictionary<string, StorageBackendHealthStatus>(StringComparer.Ordinal)
+            {
+                [backend.Name] = StorageBackendHealthStatus.Unhealthy
+            });
+        var timeProvider = new ManualTimeProvider(new DateTimeOffset(2024, 1, 1, 0, 0, 0, TimeSpan.Zero));
+        var options = Microsoft.Extensions.Options.Options.Create(new IntegratedS3CoreOptions
+        {
+            BackendHealth =
+            {
+                EnableDynamicSnapshots = true,
+                EnableActiveProbing = true,
+                HealthySnapshotTtl = TimeSpan.FromMinutes(5),
+                UnhealthySnapshotTtl = TimeSpan.FromMinutes(5)
+            }
+        });
+
+        var monitor = new StorageBackendHealthMonitor(
+            evaluator,
+            probe,
+            options,
+            timeProvider,
+            Microsoft.Extensions.Logging.Abstractions.NullLogger<StorageBackendHealthMonitor>.Instance);
+
+        // Active probe stamps an Unhealthy snapshot.
+        Assert.Equal(StorageBackendHealthStatus.Unhealthy, await monitor.GetStatusAsync(backend));
+
+        // A failed operation with a non-transport error code must leave the Unhealthy snapshot intact.
+        monitor.ReportFailure(backend, new StorageError
+        {
+            Code = StorageErrorCode.Unknown,
+            Message = "degraded endpoint returned an unclassified error"
+        });
+
+        Assert.Equal(StorageBackendHealthStatus.Unhealthy, await monitor.GetStatusAsync(backend));
+    }
+
     private sealed class ConfigurableStorageBackendHealthEvaluator(IReadOnlyDictionary<string, StorageBackendHealthStatus> statuses) : IStorageBackendHealthEvaluator
     {
         public ValueTask<StorageBackendHealthStatus> GetStatusAsync(IStorageBackend backend, CancellationToken cancellationToken = default)
