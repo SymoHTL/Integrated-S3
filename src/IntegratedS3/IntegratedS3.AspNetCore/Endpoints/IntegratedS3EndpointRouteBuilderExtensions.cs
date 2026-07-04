@@ -17,6 +17,7 @@ using IntegratedS3.Abstractions.Services;
 using IntegratedS3.AspNetCore.DependencyInjection;
 using IntegratedS3.AspNetCore.Services;
 using IntegratedS3.Protocol;
+using IntegratedS3.Protocol.Internal;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Http.Features;
@@ -10883,7 +10884,7 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
         }
 
         try {
-            var document = XDocument.Parse(xml, LoadOptions.None);
+            var document = HardenedXml.Parse(xml);
             var root = document.Root;
             if (root is null || !string.Equals(root.Name.LocalName, "SelectObjectContentRequest", StringComparison.Ordinal)) {
                 throw new FormatException("The select object content request body must contain a root 'SelectObjectContentRequest' element.");
