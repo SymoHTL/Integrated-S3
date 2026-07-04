@@ -137,6 +137,60 @@ public sealed class IntegratedS3SigV4ConformanceTests : IClassFixture<WebUiAppli
     }
 
     [Fact]
+    public async Task SigV4HeaderAuthentication_WithDateHeaderInsteadOfXAmzDate_AllowsRequests()
+    {
+        const string accessKeyId = "sigv4-date-header-access";
+        const string secretAccessKey = "sigv4-date-header-secret";
+        const string bucketName = "sigv4-date-header-bucket";
+
+        await using var isolatedClient = await CreateAuthenticatedClientAsync(accessKeyId, secretAccessKey);
+        using var client = isolatedClient.Client;
+
+        using var createBucketRequest = CreateSigV4DateHeaderSignedRequest(
+            HttpMethod.Put,
+            $"/integrated-s3/buckets/{bucketName}",
+            accessKeyId,
+            secretAccessKey);
+        Assert.False(createBucketRequest.Headers.Contains("x-amz-date"));
+        Assert.True(createBucketRequest.Headers.Contains("date"));
+        Assert.Equal(HttpStatusCode.Created, (await client.SendAsync(createBucketRequest)).StatusCode);
+
+        using var listBucketsRequest = CreateSigV4DateHeaderSignedRequest(
+            HttpMethod.Get,
+            "/integrated-s3/",
+            accessKeyId,
+            secretAccessKey);
+        Assert.Equal(HttpStatusCode.OK, (await client.SendAsync(listBucketsRequest)).StatusCode);
+    }
+
+    [Fact]
+    public async Task SigV4HeaderAuthentication_WithNeitherXAmzDateNorDate_ReturnsXmlError()
+    {
+        const string accessKeyId = "sigv4-nodate-header-access";
+        const string secretAccessKey = "sigv4-nodate-header-secret";
+
+        await using var isolatedClient = await CreateAuthenticatedClientAsync(accessKeyId, secretAccessKey);
+        using var client = isolatedClient.Client;
+
+        // Sign the standard Date header, then strip it so the request carries neither timestamp header.
+        using var request = CreateSigV4DateHeaderSignedRequest(
+            HttpMethod.Put,
+            "/integrated-s3/buckets/sigv4-nodate-header-bucket",
+            accessKeyId,
+            secretAccessKey);
+        request.Headers.Remove("date");
+        Assert.False(request.Headers.Contains("x-amz-date"));
+        Assert.False(request.Headers.Contains("date"));
+
+        var response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+        Assert.Equal("application/xml", response.Content.Headers.ContentType?.MediaType);
+        var errorDocument = XDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal("AccessDenied", GetRequiredElementValue(errorDocument, "Code"));
+    }
+
+    [Fact]
     public async Task SigV4HeaderAuthentication_MissingRequiredSessionToken_ReturnsXmlError()
     {
         const string accessKeyId = "sigv4-session-missing-access";
@@ -3145,6 +3199,69 @@ public sealed class IntegratedS3SigV4ConformanceTests : IClassFixture<WebUiAppli
         var authorizationHeader = $"AWS4-HMAC-SHA256 Credential={accessKeyId}/{credentialScope.Scope}, SignedHeaders={string.Join(';', normalizedSignedHeaders)}, Signature={signature}";
         request.Headers.Remove("Authorization");
         request.Headers.TryAddWithoutValidation("Authorization", authorizationHeader);
+    }
+
+    // Signs the standard HTTP `Date` header (RFC 1123) instead of `x-amz-date`, matching SigV4 clients
+    // that rely on the AWS fallback from x-amz-date to Date (issue #133). No `x-amz-date` header is sent.
+    private static HttpRequestMessage CreateSigV4DateHeaderSignedRequest(
+        HttpMethod method,
+        string pathAndQuery,
+        string accessKeyId,
+        string secretAccessKey,
+        string? body = null,
+        string? contentType = null,
+        string host = "localhost",
+        DateTimeOffset? signedAtUtc = null)
+    {
+        var request = new HttpRequestMessage(method, pathAndQuery);
+        if (body is not null) {
+            request.Content = new StringContent(body, Encoding.UTF8, contentType ?? "text/plain");
+        }
+
+        var timestampUtc = signedAtUtc ?? DateTimeOffset.UtcNow;
+        var dateHeaderValue = timestampUtc.ToUniversalTime().ToString("R", CultureInfo.InvariantCulture);
+        var payloadBytes = body is null ? Array.Empty<byte>() : Encoding.UTF8.GetBytes(body);
+        var payloadHash = Convert.ToHexStringLower(SHA256.HashData(payloadBytes));
+
+        request.Headers.Host = host;
+        request.Headers.TryAddWithoutValidation("date", dateHeaderValue);
+        request.Headers.TryAddWithoutValidation("x-amz-content-sha256", payloadHash);
+
+        var credentialScope = new S3SigV4CredentialScope
+        {
+            AccessKeyId = accessKeyId,
+            DateStamp = timestampUtc.ToUniversalTime().ToString("yyyyMMdd"),
+            Region = "us-east-1",
+            Service = "s3",
+            Terminator = "aws4_request"
+        };
+
+        var signedHeaders = new List<string> { "date", "host", "x-amz-content-sha256" };
+        var canonicalHeaders = signedHeaders
+            .Select(header => new KeyValuePair<string, string?>(header, header switch
+            {
+                "host" => host,
+                "date" => dateHeaderValue,
+                "x-amz-content-sha256" => payloadHash,
+                _ => throw new InvalidOperationException($"Unknown header: {header}")
+            }))
+            .ToList();
+
+        var requestUri = CreateUri(pathAndQuery, host);
+        var canonicalRequest = S3SigV4Signer.BuildCanonicalRequest(
+            method.Method,
+            requestUri.AbsolutePath,
+            EnumerateQueryParameters(requestUri),
+            canonicalHeaders,
+            signedHeaders,
+            payloadHash);
+
+        var stringToSign = S3SigV4Signer.BuildStringToSign("AWS4-HMAC-SHA256", timestampUtc, credentialScope, canonicalRequest.CanonicalRequestHashHex);
+        var signature = S3SigV4Signer.ComputeSignature(secretAccessKey, credentialScope, stringToSign);
+        var authorizationHeader = $"AWS4-HMAC-SHA256 Credential={accessKeyId}/{credentialScope.Scope}, SignedHeaders={string.Join(';', signedHeaders)}, Signature={signature}";
+        request.Headers.TryAddWithoutValidation("Authorization", authorizationHeader);
+
+        return request;
     }
 
     private static string GetHeaderValue(HttpRequestMessage request, string headerName, string host)

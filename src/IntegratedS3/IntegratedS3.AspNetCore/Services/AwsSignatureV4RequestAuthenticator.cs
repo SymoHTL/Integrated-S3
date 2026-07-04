@@ -20,6 +20,7 @@ internal sealed class AwsSignatureV4RequestAuthenticator(
     private const string SigV4aAlgorithm = "AWS4-ECDSA-P256-SHA256";
     private const string AwsContentSha256HeaderName = "x-amz-content-sha256";
     private const string AwsDateHeaderName = "x-amz-date";
+    private const string HttpDateHeaderName = "Date";
     private const string AwsSecurityTokenHeaderName = "x-amz-security-token";
     private const string AwsSecurityTokenQueryKey = "X-Amz-Security-Token";
     private const string AwsTrailerHeaderName = "x-amz-trailer";
@@ -147,8 +148,8 @@ internal sealed class AwsSignatureV4RequestAuthenticator(
             return IntegratedS3RequestAuthenticationResult.Failure(securityTokenErrorCode!, securityTokenError!, statusCode);
         }
 
-        if (!TryParseHeaderTimestamp(httpContext.Request.Headers[AwsDateHeaderName].ToString(), out var requestTimestampUtc)) {
-            return IntegratedS3RequestAuthenticationResult.Failure("AccessDenied", "The request must include a valid x-amz-date header.");
+        if (!TryResolveRequestTimestamp(httpContext.Request, out var requestTimestampUtc)) {
+            return IntegratedS3RequestAuthenticationResult.Failure("AccessDenied", "The request must include a valid x-amz-date or Date header.");
         }
 
         if (IsOutsideAllowedClockSkew(requestTimestampUtc, settings)) {
@@ -396,8 +397,8 @@ internal sealed class AwsSignatureV4RequestAuthenticator(
             return IntegratedS3RequestAuthenticationResult.Failure(securityTokenErrorCode!, securityTokenError!, statusCode);
         }
 
-        if (!TryParseHeaderTimestamp(httpContext.Request.Headers[AwsDateHeaderName].ToString(), out var requestTimestampUtc)) {
-            return IntegratedS3RequestAuthenticationResult.Failure("AccessDenied", "The request must include a valid x-amz-date header.");
+        if (!TryResolveRequestTimestamp(httpContext.Request, out var requestTimestampUtc)) {
+            return IntegratedS3RequestAuthenticationResult.Failure("AccessDenied", "The request must include a valid x-amz-date or Date header.");
         }
 
         if (IsOutsideAllowedClockSkew(requestTimestampUtc, settings)) {
@@ -611,9 +612,44 @@ internal sealed class AwsSignatureV4RequestAuthenticator(
         return true;
     }
 
+    // Per AWS SigV4 ("Elements of an AWS API request signature"): when x-amz-date is absent, fall
+    // back to the standard HTTP Date header for the request timestamp. x-amz-date takes precedence
+    // when both are present. See https://docs.aws.amazon.com/IAM/latest/UserGuide/signing-elements.html
+    private static bool TryResolveRequestTimestamp(HttpRequest request, out DateTimeOffset requestTimestampUtc)
+    {
+        var amzDate = request.Headers[AwsDateHeaderName].ToString();
+        if (!string.IsNullOrWhiteSpace(amzDate)) {
+            return TryParseHeaderTimestamp(amzDate, out requestTimestampUtc);
+        }
+
+        return TryParseDateHeaderTimestamp(request.Headers[HttpDateHeaderName].ToString(), out requestTimestampUtc);
+    }
+
     private static bool TryParseHeaderTimestamp(string? rawValue, out DateTimeOffset requestTimestampUtc)
     {
         return DateTimeOffset.TryParseExact(rawValue, "yyyyMMdd'T'HHmmss'Z'", CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal, out requestTimestampUtc);
+    }
+
+    // The standard HTTP Date header is typically RFC 1123 ("R") when signed by SigV4 clients, but the
+    // SigV4 spec also permits the ISO 8601 basic form; accept both. The resolved instant is re-serialized
+    // to the canonical yyyyMMddTHHmmssZ form by BuildStringToSign, so either format yields the same signature.
+    private static bool TryParseDateHeaderTimestamp(string? rawValue, out DateTimeOffset requestTimestampUtc)
+    {
+        if (string.IsNullOrWhiteSpace(rawValue)) {
+            requestTimestampUtc = default;
+            return false;
+        }
+
+        if (TryParseHeaderTimestamp(rawValue, out requestTimestampUtc)) {
+            return true;
+        }
+
+        if (DateTimeOffset.TryParseExact(rawValue, "R", CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal, out requestTimestampUtc)) {
+            return true;
+        }
+
+        requestTimestampUtc = default;
+        return false;
     }
 
     private static bool IsOutsideAllowedClockSkew(DateTimeOffset requestTimestampUtc, IntegratedS3Options settings)
