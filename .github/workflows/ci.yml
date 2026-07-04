@@ -1,16 +1,30 @@
 name: CI
 
+# Free-tier strategy: the automatic gate does only fast, deterministic, offline correctness checks
+# (restore/build + unit/integration tests + the fast E2E smoke subset). Heavier work — the full E2E
+# suite, AOT publish validation, coverage, and multi-OS runs — is opt-in via workflow_dispatch. Perf
+# benchmarks are NEVER run on GitHub-hosted runners (no CPU isolation → noise); run them locally with
+# scripts/bench.sh, or on a self-hosted runner (see benchmarks/baseline/README.md).
+
 on:
   push:
     branches: [ main ]
   pull_request:
     branches: [ main ]
   workflow_dispatch:
+    inputs:
+      run-heavy:
+        description: 'Run the heavy suite (full E2E + AOT + coverage, ubuntu + windows).'
+        type: boolean
+        default: false
+      run-benchmarks:
+        description: 'Run BenchmarkDotNet + regression gate. Requires a self-hosted runner labelled "benchmarks".'
+        type: boolean
+        default: false
 
 permissions:
   contents: read
 
-# Cancel superseded runs of the same branch/PR.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -25,8 +39,53 @@ defaults:
     shell: bash
 
 jobs:
-  build-and-test:
-    name: Build & Test (${{ matrix.os }})
+  # ── FREE-TIER GATE (automatic on push/PR) ─────────────────────────────────
+  # restore + build + unit/integration tests + fast E2E smoke. All offline & deterministic.
+  build-test-smoke:
+    name: Build, Unit & E2E Smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+          cache: true
+          cache-dependency-path: src/IntegratedS3/Directory.Packages.props
+
+      - name: Restore
+        run: dotnet restore src/IntegratedS3/IntegratedS3.slnx
+
+      - name: Build
+        run: dotnet build src/IntegratedS3/IntegratedS3.slnx --no-restore --configuration Release
+
+      - name: Unit & integration tests
+        run: >-
+          dotnet test src/IntegratedS3/IntegratedS3.Tests/IntegratedS3.Tests.csproj
+          --no-build --configuration Release
+          --logger "trx;LogFileName=unit.trx" --results-directory ./artifacts/test-results
+
+      - name: E2E smoke (offline, Disk provider)
+        run: >-
+          dotnet test src/IntegratedS3/IntegratedS3.E2E.Tests/IntegratedS3.E2E.Tests.csproj
+          --no-build --configuration Release --filter "Suite=Smoke"
+          --logger "trx;LogFileName=e2e-smoke.trx" --results-directory ./artifacts/test-results
+
+      - name: Upload test results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-results
+          path: ./artifacts/test-results/**/*.trx
+          retention-days: 7
+
+  # ── OPT-IN HEAVY SUITE (workflow_dispatch only) ───────────────────────────
+  # Full E2E (Smoke + Full), AOT publish validation, coverage, across ubuntu + windows.
+  # Offline, so it can run on hosted runners — but it is opt-in to keep the free tier lean.
+  heavy:
+    name: Heavy Suite (${{ matrix.os }})
+    if: github.event_name == 'workflow_dispatch' && inputs.run-heavy
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -48,82 +107,41 @@ jobs:
       - name: Build
         run: dotnet build src/IntegratedS3/IntegratedS3.slnx --no-restore --configuration Release
 
-      - name: Test
+      - name: Full test suite (incl. E2E Full) + coverage
         run: >-
           dotnet test src/IntegratedS3/IntegratedS3.slnx
-          --no-build --configuration Release --verbosity normal
-          --logger "trx;LogFileName=test-results.trx"
+          --no-build --configuration Release
           --collect:"XPlat Code Coverage"
-          --results-directory ./artifacts/test-results
+          --logger "trx;LogFileName=full.trx" --results-directory ./artifacts/test-results
 
-      - name: Upload test results
+      - name: Validate AOT publish
+        run: pwsh -File eng/Invoke-AotPublishValidation.ps1
+
+      - name: Upload results
         uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: test-results-${{ matrix.os }}
-          path: ./artifacts/test-results/**/*.trx
-          retention-days: 7
+          name: heavy-results-${{ matrix.os }}
+          path: ./artifacts/test-results/**/*
+          retention-days: 14
 
-      - name: Generate coverage report
-        if: matrix.os == 'ubuntu-latest'
-        run: |
-          dotnet tool install --global dotnet-reportgenerator-globaltool
-          reportgenerator \
-            -reports:"artifacts/test-results/**/coverage.cobertura.xml" \
-            -targetdir:"artifacts/coverage-report" \
-            -reporttypes:"MarkdownSummaryGithub;Cobertura;HtmlInline"
-          cat artifacts/coverage-report/SummaryGithub.md >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Upload coverage report
-        uses: actions/upload-artifact@v4
-        if: matrix.os == 'ubuntu-latest'
-        with:
-          name: coverage-report
-          path: |
-            ./artifacts/coverage-report
-            ./artifacts/test-results/**/coverage.cobertura.xml
-          retention-days: 30
-
-  aot-validation:
-    name: AOT Publish Validation (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ ubuntu-latest, windows-latest ]
+  # ── OPT-IN BENCHMARKS (self-hosted only) ──────────────────────────────────
+  # BenchmarkDotNet needs CPU isolation that GitHub-hosted runners do not provide. This job only runs
+  # when explicitly requested AND a self-hosted runner labelled "benchmarks" is registered; otherwise it
+  # simply does not start. To wire one up, register a self-hosted runner on a quiet machine with labels
+  # [self-hosted, benchmarks] (Settings → Actions → Runners), commit a baseline generated on that box
+  # (scripts/bench.sh + scripts/bench-compare.sh --update-baseline), then dispatch with run-benchmarks=true.
+  benchmarks:
+    name: Benchmarks + regression gate (self-hosted)
+    if: github.event_name == 'workflow_dispatch' && inputs.run-benchmarks
+    runs-on: [ self-hosted, benchmarks ]
     steps:
       - uses: actions/checkout@v4
-
       - name: Setup .NET
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '10.0.x'
-          cache: true
-          cache-dependency-path: src/IntegratedS3/Directory.Packages.props
-
-      - name: Validate AOT Publish
-        run: pwsh -File eng/Invoke-AotPublishValidation.ps1
-
-  pack:
-    name: Pack NuGet Packages
-    runs-on: ubuntu-latest
-    needs: [build-and-test, aot-validation]
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Setup .NET
-        uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: '10.0.x'
-          cache: true
-          cache-dependency-path: src/IntegratedS3/Directory.Packages.props
-
-      - name: Pack
-        run: dotnet pack src/IntegratedS3/IntegratedS3.slnx --configuration Release --output ./artifacts/packages
-
-      - name: Upload packages
-        uses: actions/upload-artifact@v4
-        with:
-          name: nuget-packages
-          path: ./artifacts/packages
-          retention-days: 30
+      - name: Run benchmarks
+        run: bash scripts/bench.sh '*'
+      - name: Regression gate vs committed baseline
+        run: bash scripts/bench-compare.sh

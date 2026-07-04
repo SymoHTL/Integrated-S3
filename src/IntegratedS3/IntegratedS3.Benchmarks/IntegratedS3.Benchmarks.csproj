@@ -1,24 +1,22 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <OutputType>Exe</OutputType>
-    <Description>Hot-path benchmark harness and baseline reporting for IntegratedS3.</Description>
+    <Description>BenchmarkDotNet hot-path micro-benchmarks for IntegratedS3 (SigV4/SigV4a, S3 XML, checksums, Disk provider).</Description>
     <IsPackable>false</IsPackable>
-    <NoWarn>$(NoWarn);CS1591</NoWarn>
+    <!-- BenchmarkDotNet requires public types/methods and public [Params] members, and benchmark
+         method names conventionally use underscores. Relax the doc/naming/field analyzers accordingly. -->
+    <NoWarn>$(NoWarn);CS1591;CA1707;CA1822;CA1051;CA5394;CA1002;CA1819</NoWarn>
   </PropertyGroup>
 
   <ItemGroup>
-    <FrameworkReference Include="Microsoft.AspNetCore.App" />
-  </ItemGroup>
-
-  <ItemGroup>
-    <PackageReference Include="AWSSDK.S3" />
+    <PackageReference Include="BenchmarkDotNet" />
   </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\IntegratedS3.Abstractions\IntegratedS3.Abstractions.csproj" />
     <ProjectReference Include="..\IntegratedS3.Protocol\IntegratedS3.Protocol.csproj" />
     <ProjectReference Include="..\IntegratedS3.Core\IntegratedS3.Core.csproj" />
-    <ProjectReference Include="..\IntegratedS3.AspNetCore\IntegratedS3.AspNetCore.csproj" />
     <ProjectReference Include="..\IntegratedS3.Provider.Disk\IntegratedS3.Provider.Disk.csproj" />
+    <ProjectReference Include="..\IntegratedS3.Testing\IntegratedS3.Testing.csproj" />
   </ItemGroup>
 </Project>
