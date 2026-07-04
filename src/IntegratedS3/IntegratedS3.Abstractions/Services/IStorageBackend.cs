@@ -214,6 +214,36 @@ public interface IStorageBackend
         => ValueTask.FromResult(StorageResult.Failure(StorageError.Unsupported("Bucket public access block is not implemented by this storage backend.", request.BucketName)));
 
     /// <summary>
+    /// Retrieves the ownership controls configuration for the specified bucket. The default implementation returns
+    /// <see cref="StorageErrorCode.UnsupportedCapability"/>.
+    /// </summary>
+    /// <param name="bucketName">The name of the bucket.</param>
+    /// <param name="cancellationToken">A token to cancel the operation.</param>
+    /// <returns>A <see cref="StorageResult{T}"/> containing the <see cref="BucketOwnershipControlsConfiguration"/> on success.</returns>
+    ValueTask<StorageResult<BucketOwnershipControlsConfiguration>> GetBucketOwnershipControlsAsync(string bucketName, CancellationToken cancellationToken = default)
+        => ValueTask.FromResult(StorageResult<BucketOwnershipControlsConfiguration>.Failure(StorageError.Unsupported("Bucket ownership controls are not implemented by this storage backend.", bucketName)));
+
+    /// <summary>
+    /// Sets the ownership controls configuration for the specified bucket. The default implementation returns
+    /// <see cref="StorageErrorCode.UnsupportedCapability"/>.
+    /// </summary>
+    /// <param name="request">The ownership controls configuration to apply.</param>
+    /// <param name="cancellationToken">A token to cancel the operation.</param>
+    /// <returns>A <see cref="StorageResult{T}"/> containing the applied <see cref="BucketOwnershipControlsConfiguration"/> on success.</returns>
+    ValueTask<StorageResult<BucketOwnershipControlsConfiguration>> PutBucketOwnershipControlsAsync(PutBucketOwnershipControlsRequest request, CancellationToken cancellationToken = default)
+        => ValueTask.FromResult(StorageResult<BucketOwnershipControlsConfiguration>.Failure(StorageError.Unsupported("Bucket ownership controls are not implemented by this storage backend.", request.BucketName)));
+
+    /// <summary>
+    /// Deletes the ownership controls configuration from the specified bucket. The default implementation returns
+    /// <see cref="StorageErrorCode.UnsupportedCapability"/>.
+    /// </summary>
+    /// <param name="request">The delete ownership controls request.</param>
+    /// <param name="cancellationToken">A token to cancel the operation.</param>
+    /// <returns>A <see cref="StorageResult"/> indicating success or failure.</returns>
+    ValueTask<StorageResult> DeleteBucketOwnershipControlsAsync(DeleteBucketOwnershipControlsRequest request, CancellationToken cancellationToken = default)
+        => ValueTask.FromResult(StorageResult.Failure(StorageError.Unsupported("Bucket ownership controls are not implemented by this storage backend.", request.BucketName)));
+
+    /// <summary>
     /// Checks whether the specified bucket exists and is accessible.
     /// </summary>
     /// <param name="bucketName">The name of the bucket.</param>

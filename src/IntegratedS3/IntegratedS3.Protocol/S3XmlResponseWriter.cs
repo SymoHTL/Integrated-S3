@@ -128,6 +128,54 @@ public static class S3XmlResponseWriter
         return builder.ToString();
     }
 
+    /// <summary>Writes an OwnershipControls configuration as an XML response body.</summary>
+    /// <param name="response">The <see cref="S3OwnershipControlsConfiguration"/> to serialize.</param>
+    /// <returns>The XML string.</returns>
+    public static string WriteOwnershipControlsConfiguration(S3OwnershipControlsConfiguration response)
+    {
+        ArgumentNullException.ThrowIfNull(response);
+
+        var builder = new StringBuilder(256);
+        using var stringWriter = new Utf8StringWriter(builder, CultureInfo.InvariantCulture);
+        using var xmlWriter = XmlWriter.Create(stringWriter, CreateSettings());
+
+        xmlWriter.WriteStartDocument();
+        WriteStartRootElement(xmlWriter, "OwnershipControls");
+
+        xmlWriter.WriteStartElement("Rule");
+        xmlWriter.WriteElementString("ObjectOwnership", response.ObjectOwnership);
+        xmlWriter.WriteEndElement();
+
+        xmlWriter.WriteEndElement();
+        xmlWriter.WriteEndDocument();
+        xmlWriter.Flush();
+
+        return builder.ToString();
+    }
+
+    /// <summary>Writes a PolicyStatus (GetBucketPolicyStatus) as an XML response body.</summary>
+    /// <param name="response">The <see cref="S3PolicyStatus"/> to serialize.</param>
+    /// <returns>The XML string.</returns>
+    public static string WritePolicyStatus(S3PolicyStatus response)
+    {
+        ArgumentNullException.ThrowIfNull(response);
+
+        var builder = new StringBuilder(256);
+        using var stringWriter = new Utf8StringWriter(builder, CultureInfo.InvariantCulture);
+        using var xmlWriter = XmlWriter.Create(stringWriter, CreateSettings());
+
+        xmlWriter.WriteStartDocument();
+        WriteStartRootElement(xmlWriter, "PolicyStatus");
+
+        xmlWriter.WriteElementString("IsPublic", XmlConvert.ToString(response.IsPublic));
+
+        xmlWriter.WriteEndElement();
+        xmlWriter.WriteEndDocument();
+        xmlWriter.Flush();
+
+        return builder.ToString();
+    }
+
     /// <summary>Writes a CorsConfiguration as an XML response body.</summary>
     /// <param name="response">The <see cref="S3CorsConfiguration"/> to serialize.</param>
     /// <returns>The XML string.</returns>

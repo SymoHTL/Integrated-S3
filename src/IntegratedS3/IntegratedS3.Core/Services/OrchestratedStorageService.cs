@@ -814,6 +814,71 @@ internal sealed class OrchestratedStorageService(
         return result;
     }
 
+    // ── Bucket Ownership Controls ────────────────────────────────────────
+
+    public async ValueTask<StorageResult<BucketOwnershipControlsConfiguration>> GetBucketOwnershipControlsAsync(string bucketName, CancellationToken cancellationToken = default)
+    {
+        return await ExecuteReadAsync(
+            StorageOperationType.GetBucketOwnershipControls,
+            (backend, ct) => backend.GetBucketOwnershipControlsAsync(bucketName, ct),
+            onSuccess: null,
+            cancellationToken);
+    }
+
+    public async ValueTask<StorageResult<BucketOwnershipControlsConfiguration>> PutBucketOwnershipControlsAsync(PutBucketOwnershipControlsRequest request, CancellationToken cancellationToken = default)
+    {
+        var backend = GetPrimaryBackend();
+        var strictReplicationError = await GetStrictReplicaWritePreflightErrorAsync(backend, request.BucketName, objectKey: null, versionId: null, cancellationToken: cancellationToken);
+        if (strictReplicationError is not null) {
+            return StorageResult<BucketOwnershipControlsConfiguration>.Failure(strictReplicationError);
+        }
+
+        var result = await backend.PutBucketOwnershipControlsAsync(request, cancellationToken);
+        ObserveResult(backend, result);
+        if (result.IsSuccess && result.Value is not null) {
+            var replicationError = await ApplyReplicaWritePolicyAsync(
+                StorageOperationType.PutBucketOwnershipControls,
+                backend,
+                request.BucketName,
+                objectKey: null,
+                versionId: null,
+                writeThroughOperation: (replicaBackend, ct) => WriteReplicaPutBucketOwnershipControlsAsync(replicaBackend, request, ct),
+                cancellationToken: CancellationToken.None);
+            if (replicationError is not null) {
+                return StorageResult<BucketOwnershipControlsConfiguration>.Failure(replicationError);
+            }
+        }
+
+        return result;
+    }
+
+    public async ValueTask<StorageResult> DeleteBucketOwnershipControlsAsync(DeleteBucketOwnershipControlsRequest request, CancellationToken cancellationToken = default)
+    {
+        var backend = GetPrimaryBackend();
+        var strictReplicationError = await GetStrictReplicaWritePreflightErrorAsync(backend, request.BucketName, objectKey: null, versionId: null, cancellationToken: cancellationToken);
+        if (strictReplicationError is not null) {
+            return StorageResult.Failure(strictReplicationError);
+        }
+
+        var result = await backend.DeleteBucketOwnershipControlsAsync(request, cancellationToken);
+        ObserveResult(backend, result);
+        if (result.IsSuccess) {
+            var replicationError = await ApplyReplicaWritePolicyAsync(
+                StorageOperationType.DeleteBucketOwnershipControls,
+                backend,
+                request.BucketName,
+                objectKey: null,
+                versionId: null,
+                writeThroughOperation: (replicaBackend, ct) => WriteReplicaDeleteBucketOwnershipControlsAsync(replicaBackend, request, ct),
+                cancellationToken: CancellationToken.None);
+            if (replicationError is not null) {
+                return StorageResult.Failure(replicationError);
+            }
+        }
+
+        return result;
+    }
+
     // ── Bucket Logging ──────────────────────────────────────────────────
 
     public async ValueTask<StorageResult<BucketLoggingConfiguration>> GetBucketLoggingAsync(string bucketName, CancellationToken cancellationToken = default)
@@ -2543,6 +2608,28 @@ internal sealed class OrchestratedStorageService(
         ObserveResult(replicaBackend, replicaResult);
         if (!replicaResult.IsSuccess && replicaResult.Error?.Code is not (StorageErrorCode.PublicAccessBlockConfigurationNotFound or StorageErrorCode.BucketNotFound)) {
             return replicaResult.Error ?? CreateReplicaOperationError(replicaBackend, request.BucketName, objectKey: null, versionId: null, message: "Replica bucket public access block delete did not succeed.");
+        }
+
+        return null;
+    }
+
+    private async ValueTask<StorageError?> WriteReplicaPutBucketOwnershipControlsAsync(IStorageBackend replicaBackend, PutBucketOwnershipControlsRequest request, CancellationToken cancellationToken)
+    {
+        var replicaResult = await replicaBackend.PutBucketOwnershipControlsAsync(request, cancellationToken);
+        ObserveResult(replicaBackend, replicaResult);
+        if (!replicaResult.IsSuccess || replicaResult.Value is null) {
+            return replicaResult.Error ?? CreateReplicaOperationError(replicaBackend, request.BucketName, objectKey: null, versionId: null, message: "Replica bucket ownership controls update did not return configuration metadata.");
+        }
+
+        return null;
+    }
+
+    private async ValueTask<StorageError?> WriteReplicaDeleteBucketOwnershipControlsAsync(IStorageBackend replicaBackend, DeleteBucketOwnershipControlsRequest request, CancellationToken cancellationToken)
+    {
+        var replicaResult = await replicaBackend.DeleteBucketOwnershipControlsAsync(request, cancellationToken);
+        ObserveResult(replicaBackend, replicaResult);
+        if (!replicaResult.IsSuccess && replicaResult.Error?.Code is not (StorageErrorCode.OwnershipControlsNotFound or StorageErrorCode.BucketNotFound)) {
+            return replicaResult.Error ?? CreateReplicaOperationError(replicaBackend, request.BucketName, objectKey: null, versionId: null, message: "Replica bucket ownership controls delete did not succeed.");
         }
 
         return null;

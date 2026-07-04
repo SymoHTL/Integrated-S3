@@ -11,6 +11,7 @@ using PutBucketDefaultEncryptionStorageRequest = IntegratedS3.Abstractions.Reque
 using UploadPartCopyStorageRequest = IntegratedS3.Abstractions.Requests.UploadPartCopyRequest;
 using PutBucketTaggingStorageRequest = IntegratedS3.Abstractions.Requests.PutBucketTaggingRequest;
 using PutBucketPublicAccessBlockStorageRequest = IntegratedS3.Abstractions.Requests.PutBucketPublicAccessBlockRequest;
+using PutBucketOwnershipControlsStorageRequest = IntegratedS3.Abstractions.Requests.PutBucketOwnershipControlsRequest;
 using PutBucketLoggingStorageRequest = IntegratedS3.Abstractions.Requests.PutBucketLoggingRequest;
 using PutBucketWebsiteStorageRequest = IntegratedS3.Abstractions.Requests.PutBucketWebsiteRequest;
 using PutBucketRequestPaymentStorageRequest = IntegratedS3.Abstractions.Requests.PutBucketRequestPaymentRequest;
@@ -387,6 +388,63 @@ internal sealed class AwsS3StorageClient : IS3StorageClient
         };
 
         await _s3.DeletePublicAccessBlockAsync(request, cancellationToken).ConfigureAwait(false);
+    }
+
+    // -------------------------------------------------------------------------
+    // Bucket Ownership Controls
+    // -------------------------------------------------------------------------
+
+    public async Task<BucketOwnershipControlsConfiguration> GetBucketOwnershipControlsAsync(string bucketName, CancellationToken cancellationToken = default)
+    {
+        var request = new GetBucketOwnershipControlsRequest
+        {
+            BucketName = bucketName
+        };
+
+        var response = await _s3.GetBucketOwnershipControlsAsync(request, cancellationToken).ConfigureAwait(false);
+        var rule = response.OwnershipControls?.Rules?.FirstOrDefault();
+        return new BucketOwnershipControlsConfiguration
+        {
+            BucketName = bucketName,
+            ObjectOwnership = rule?.ObjectOwnership?.Value ?? string.Empty
+        };
+    }
+
+    public async Task<BucketOwnershipControlsConfiguration> SetBucketOwnershipControlsAsync(PutBucketOwnershipControlsStorageRequest request, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+
+        var putRequest = new PutBucketOwnershipControlsRequest
+        {
+            BucketName = request.BucketName,
+            OwnershipControls = new Amazon.S3.Model.OwnershipControls
+            {
+                Rules =
+                [
+                    new OwnershipControlsRule
+                    {
+                        ObjectOwnership = ObjectOwnership.FindValue(request.ObjectOwnership)
+                    }
+                ]
+            }
+        };
+
+        await _s3.PutBucketOwnershipControlsAsync(putRequest, cancellationToken).ConfigureAwait(false);
+        return new BucketOwnershipControlsConfiguration
+        {
+            BucketName = request.BucketName,
+            ObjectOwnership = request.ObjectOwnership
+        };
+    }
+
+    public async Task DeleteBucketOwnershipControlsAsync(string bucketName, CancellationToken cancellationToken = default)
+    {
+        var request = new DeleteBucketOwnershipControlsRequest
+        {
+            BucketName = bucketName
+        };
+
+        await _s3.DeleteBucketOwnershipControlsAsync(request, cancellationToken).ConfigureAwait(false);
     }
 
     // -------------------------------------------------------------------------
