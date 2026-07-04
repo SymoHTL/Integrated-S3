@@ -20,7 +20,6 @@ on:
 
 permissions:
   contents: read
-  packages: write
 
 # Serialize publish runs: never cancel an in-flight publish (a half-pushed package set is
 # worse than a queued run), but make sure two dispatches cannot race each other.
@@ -66,7 +65,6 @@ jobs:
     # contents: write is required to push the release tag and create the GitHub Release.
     permissions:
       contents: write
-      packages: write
     steps:
       - uses: actions/checkout@v4
         with:
