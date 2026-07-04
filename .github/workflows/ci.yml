@@ -45,10 +45,10 @@ jobs:
     name: Build, Unit & E2E Smoke
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Setup .NET
-        uses: actions/setup-dotnet@v4
+        uses: actions/setup-dotnet@v5
         with:
           dotnet-version: '10.0.x'
           cache: true
@@ -73,7 +73,7 @@ jobs:
           --logger "trx;LogFileName=e2e-smoke.trx" --results-directory ./artifacts/test-results
 
       - name: Upload test results
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         if: always()
         with:
           name: test-results
@@ -92,10 +92,10 @@ jobs:
       matrix:
         os: [ ubuntu-latest, windows-latest ]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Setup .NET
-        uses: actions/setup-dotnet@v4
+        uses: actions/setup-dotnet@v5
         with:
           dotnet-version: '10.0.x'
           cache: true
@@ -118,7 +118,7 @@ jobs:
         run: pwsh -File eng/Invoke-AotPublishValidation.ps1
 
       - name: Upload results
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         if: always()
         with:
           name: heavy-results-${{ matrix.os }}
@@ -136,9 +136,9 @@ jobs:
     if: github.event_name == 'workflow_dispatch' && inputs.run-benchmarks
     runs-on: [ self-hosted, benchmarks ]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Setup .NET
-        uses: actions/setup-dotnet@v4
+        uses: actions/setup-dotnet@v5
         with:
           dotnet-version: '10.0.x'
       - name: Run benchmarks
