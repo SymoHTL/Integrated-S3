@@ -68,6 +68,10 @@ internal static class S3ErrorTranslator
                 (StorageErrorCode.BucketNotEmpty,
                  $"Bucket '{bucketName}' is not empty and cannot be deleted."),
 
+            "OperationAborted" =>
+                (StorageErrorCode.VersionConflict,
+                 $"A conflicting operation prevented the request on bucket '{bucketName}' from completing: {ex.Message}"),
+
             "PreconditionFailed" =>
                 (StorageErrorCode.PreconditionFailed,
                  !string.IsNullOrEmpty(objectKey)
@@ -134,9 +138,14 @@ internal static class S3ErrorTranslator
                 (StorageErrorCode.MultipartConflict,
                  $"A conflicting operation prevented the request for object '{objectKey}' in bucket '{bucketName}' from completing: {ex.Message}"),
 
+            // A bare 409 with no recognized S3 error code is a generic conflict — most commonly an
+            // aborted/conflicting operation on the bucket. It is NOT a bucket-name collision (those
+            // arrive as the named "BucketAlreadyExists"/"BucketAlreadyOwnedByYou" arms above), so it
+            // must not be relabeled as one. Route it to a neutral conflict code (surfaced on the wire
+            // as "OperationAborted") to keep the S3 code, message, and metrics accurate.
             _ when (int)ex.StatusCode == 409 =>
-                (StorageErrorCode.BucketAlreadyExists,
-                 $"Bucket '{bucketName}' already exists."),
+                (StorageErrorCode.VersionConflict,
+                 $"A conflicting operation prevented the request on bucket '{bucketName}' from completing: {ex.Message}"),
 
             _ when (int)ex.StatusCode == 503 =>
                 (StorageErrorCode.ProviderUnavailable,
