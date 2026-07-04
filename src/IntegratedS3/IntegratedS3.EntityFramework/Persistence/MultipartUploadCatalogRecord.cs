@@ -50,6 +50,9 @@ public sealed class MultipartUploadCatalogRecord
     /// <summary>Gets or sets the checksum algorithm used for part-level integrity verification.</summary>
     public string? ChecksumAlgorithm { get; set; }
 
+    /// <summary>Gets or sets the S3 storage class supplied at initiation, applied to the completed object.</summary>
+    public string? StorageClass { get; set; }
+
     /// <summary>Gets or sets the UTC timestamp of the last catalog synchronization for this upload.</summary>
     public DateTimeOffset LastSyncedAtUtc { get; set; }
 }

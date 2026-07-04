@@ -2782,6 +2782,73 @@ public sealed class IntegratedS3CoreOrchestrationTests
     }
 
     [Fact]
+    public async Task StorageReplicaRepairService_RepairReplicaObject_PreservesPrimaryObjectTags()
+    {
+        var primaryBackend = new InMemoryStorageBackend("primary-memory", isPrimary: true);
+        var replicaBackend = new InMemoryStorageBackend("replica-memory");
+
+        await using var fixture = new CoreStorageFixture(overrideCatalogStore: true, addDefaultDiskStorage: false, configureServices: services => {
+            services.AddSingleton<IStorageBackend>(primaryBackend);
+            services.AddSingleton<IStorageBackend>(replicaBackend);
+        });
+
+        var repairService = fixture.Services.GetRequiredService<IStorageReplicaRepairService>();
+
+        Assert.True((await primaryBackend.CreateBucketAsync(new CreateBucketRequest { BucketName = "tagged-bucket" })).IsSuccess);
+        Assert.True((await replicaBackend.CreateBucketAsync(new CreateBucketRequest { BucketName = "tagged-bucket" })).IsSuccess);
+
+        // Primary carries an object with a non-empty tag set.
+        primaryBackend.AddObject("tagged-bucket", "docs/tagged.txt", "primary payload");
+        Assert.True((await primaryBackend.PutObjectTagsAsync(new PutObjectTagsRequest
+        {
+            BucketName = "tagged-bucket",
+            Key = "docs/tagged.txt",
+            Tags = new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["environment"] = "production",
+                ["owner"] = "copilot"
+            }
+        })).IsSuccess);
+
+        // Replica holds a stale, tagless copy of the same key that must be healed.
+        replicaBackend.AddObject("tagged-bucket", "docs/tagged.txt", "stale payload");
+
+        var repair = CreateRepairEntry(
+            StorageReplicaRepairOrigin.Reconciliation,
+            StorageReplicaRepairStatus.Pending,
+            StorageOperationType.PutObject,
+            primaryBackend.Name,
+            replicaBackend.Name,
+            "tagged-bucket",
+            "docs/tagged.txt");
+
+        var repairError = await repairService.RepairAsync(repair);
+        Assert.Null(repairError);
+
+        // Content is healed to the primary copy.
+        var repairedObject = await replicaBackend.GetObjectAsync(new GetObjectRequest
+        {
+            BucketName = "tagged-bucket",
+            Key = "docs/tagged.txt"
+        });
+        Assert.True(repairedObject.IsSuccess);
+        await using (var repairedContent = repairedObject.Value!) {
+            Assert.Equal("primary payload", await ReadContentAsStringAsync(repairedContent.Content));
+        }
+
+        // Regression: the repaired replica must carry the primary's tag set, not an empty one.
+        var repairedTags = await replicaBackend.GetObjectTagsAsync(new GetObjectTagsRequest
+        {
+            BucketName = "tagged-bucket",
+            Key = "docs/tagged.txt"
+        });
+        Assert.True(repairedTags.IsSuccess);
+        Assert.Equal(2, repairedTags.Value!.Tags.Count);
+        Assert.Equal("production", repairedTags.Value.Tags["environment"]);
+        Assert.Equal("copilot", repairedTags.Value.Tags["owner"]);
+    }
+
+    [Fact]
     public async Task OrchestratedStorageService_WriteThroughAll_ReplicatesBucketsAndObjects()
     {
         await using var fixture = new CoreStorageFixture(configureServices: services => {
@@ -3283,6 +3350,126 @@ public sealed class IntegratedS3CoreOrchestrationTests
     }
 
     [Fact]
+    public async Task OrchestratedStorageService_WriteThroughAll_PutObject_DoesNotOrphanBufferedTempFile_WhenBodyCopyFails()
+    {
+        var primaryBackend = new InMemoryStorageBackend("primary-memory", isPrimary: true);
+        var replicaBackend = new InMemoryStorageBackend("replica-memory");
+
+        await using var fixture = new CoreStorageFixture(overrideCatalogStore: true, addDefaultDiskStorage: false, configureServices: services => {
+            services.Configure<IntegratedS3CoreOptions>(options => {
+                options.ConsistencyMode = StorageConsistencyMode.WriteThroughAll;
+            });
+            services.AddSingleton<IStorageBackend>(primaryBackend);
+            services.AddSingleton<IStorageBackend>(replicaBackend);
+        });
+
+        var storageService = fixture.Services.GetRequiredService<IStorageService>();
+        Assert.True((await storageService.CreateBucketAsync(new CreateBucketRequest
+        {
+            BucketName = "leak-bucket"
+        })).IsSuccess);
+
+        var tempFilesBefore = SnapshotOrchestrationTempFiles();
+
+        // The write-through PutObject path buffers request.Content into a temp file before fanning it
+        // out to the replica. If that copy throws, the temp file must not be left behind.
+        await using var throwingContent = new ThrowOnReadStream(new IOException("simulated request-body reset"));
+        await Assert.ThrowsAsync<IOException>(async () => await storageService.PutObjectAsync(new PutObjectRequest
+        {
+            BucketName = "leak-bucket",
+            Key = "docs/leak.txt",
+            Content = throwingContent,
+            ContentType = "text/plain"
+        }));
+
+        Assert.Empty(NewOrchestrationTempFiles(tempFilesBefore));
+    }
+
+    [Fact]
+    public async Task OrchestratedStorageService_WriteThroughAll_PutObject_DoesNotOrphanBufferedTempFile_WhenBodyCopyIsCancelled()
+    {
+        var primaryBackend = new InMemoryStorageBackend("primary-memory", isPrimary: true);
+        var replicaBackend = new InMemoryStorageBackend("replica-memory");
+
+        await using var fixture = new CoreStorageFixture(overrideCatalogStore: true, addDefaultDiskStorage: false, configureServices: services => {
+            services.Configure<IntegratedS3CoreOptions>(options => {
+                options.ConsistencyMode = StorageConsistencyMode.WriteThroughAll;
+            });
+            services.AddSingleton<IStorageBackend>(primaryBackend);
+            services.AddSingleton<IStorageBackend>(replicaBackend);
+        });
+
+        var storageService = fixture.Services.GetRequiredService<IStorageService>();
+        Assert.True((await storageService.CreateBucketAsync(new CreateBucketRequest
+        {
+            BucketName = "cancel-bucket"
+        })).IsSuccess);
+
+        var tempFilesBefore = SnapshotOrchestrationTempFiles();
+
+        using var cancellation = new CancellationTokenSource();
+        await using var cancellingContent = new ThrowOnReadStream(new OperationCanceledException(cancellation.Token), cancellation);
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => await storageService.PutObjectAsync(new PutObjectRequest
+        {
+            BucketName = "cancel-bucket",
+            Key = "docs/cancel.txt",
+            Content = cancellingContent,
+            ContentType = "text/plain"
+        }, cancellation.Token));
+
+        Assert.Empty(NewOrchestrationTempFiles(tempFilesBefore));
+    }
+
+    private static HashSet<string> SnapshotOrchestrationTempFiles()
+    {
+        return new HashSet<string>(
+            Directory.EnumerateFiles(Path.GetTempPath(), "integrateds3-orchestration-*.tmp"),
+            StringComparer.OrdinalIgnoreCase);
+    }
+
+    private static string[] NewOrchestrationTempFiles(HashSet<string> before)
+    {
+        return Directory.EnumerateFiles(Path.GetTempPath(), "integrateds3-orchestration-*.tmp")
+            .Where(path => !before.Contains(path))
+            .ToArray();
+    }
+
+    // A stream that throws on the first read attempt, simulating a client aborting the upload
+    // (cancellation) or the request body being reset mid-copy (IOException) while the write-through
+    // PutObject path is buffering request.Content into its temp file.
+    private sealed class ThrowOnReadStream(Exception failure, CancellationTokenSource? cancelBeforeThrow = null) : Stream
+    {
+        public override bool CanRead => true;
+        public override bool CanSeek => false;
+        public override bool CanWrite => false;
+        public override long Length => throw new NotSupportedException();
+        public override long Position { get => 0; set => throw new NotSupportedException(); }
+
+        public override int Read(byte[] buffer, int offset, int count)
+        {
+            cancelBeforeThrow?.Cancel();
+            throw failure;
+        }
+
+        public override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
+        {
+            cancelBeforeThrow?.Cancel();
+            return ValueTask.FromException<int>(failure);
+        }
+
+        public override Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
+        {
+            cancelBeforeThrow?.Cancel();
+            return Task.FromException<int>(failure);
+        }
+
+        public override void Flush() { }
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+        public override void SetLength(long value) => throw new NotSupportedException();
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+    }
+
+    [Fact]
     public async Task StorageOperations_EmitActivitiesAndMetricsWithProviderAndCorrelationTags()
     {
         using var observability = new TestObservabilityCollector();
@@ -3666,6 +3853,51 @@ public sealed class IntegratedS3CoreOrchestrationTests
                 SuggestedHttpStatusCode = 403
             }));
         }
+    }
+
+    [Fact]
+    public async Task StorageBackendHealthMonitor_ReportFailureWithNonTransportError_DoesNotResetProbeSetUnhealthy()
+    {
+        // Regression for #127: a probe marks the backend Unhealthy; a subsequent operation that fails
+        // with a non-transport error code (e.g. Unknown) must NOT overwrite that snapshot with Healthy.
+        var backend = new InMemoryStorageBackend("failing-memory");
+        var evaluator = new ConfigurableStorageBackendHealthEvaluator(
+            new Dictionary<string, StorageBackendHealthStatus>(StringComparer.Ordinal));
+        var probe = new ConfigurableStorageBackendHealthProbe(
+            new Dictionary<string, StorageBackendHealthStatus>(StringComparer.Ordinal)
+            {
+                [backend.Name] = StorageBackendHealthStatus.Unhealthy
+            });
+        var timeProvider = new ManualTimeProvider(new DateTimeOffset(2024, 1, 1, 0, 0, 0, TimeSpan.Zero));
+        var options = Microsoft.Extensions.Options.Options.Create(new IntegratedS3CoreOptions
+        {
+            BackendHealth =
+            {
+                EnableDynamicSnapshots = true,
+                EnableActiveProbing = true,
+                HealthySnapshotTtl = TimeSpan.FromMinutes(5),
+                UnhealthySnapshotTtl = TimeSpan.FromMinutes(5)
+            }
+        });
+
+        var monitor = new StorageBackendHealthMonitor(
+            evaluator,
+            probe,
+            options,
+            timeProvider,
+            Microsoft.Extensions.Logging.Abstractions.NullLogger<StorageBackendHealthMonitor>.Instance);
+
+        // Active probe stamps an Unhealthy snapshot.
+        Assert.Equal(StorageBackendHealthStatus.Unhealthy, await monitor.GetStatusAsync(backend));
+
+        // A failed operation with a non-transport error code must leave the Unhealthy snapshot intact.
+        monitor.ReportFailure(backend, new StorageError
+        {
+            Code = StorageErrorCode.Unknown,
+            Message = "degraded endpoint returned an unclassified error"
+        });
+
+        Assert.Equal(StorageBackendHealthStatus.Unhealthy, await monitor.GetStatusAsync(backend));
     }
 
     private sealed class ConfigurableStorageBackendHealthEvaluator(IReadOnlyDictionary<string, StorageBackendHealthStatus> statuses) : IStorageBackendHealthEvaluator
@@ -4654,7 +4886,9 @@ public sealed class IntegratedS3CoreOrchestrationTests
                 ETag = $"{request.BucketName}:{request.Key}:{bytes.Length}",
                 LastModifiedUtc = DateTimeOffset.UtcNow,
                 Metadata = request.Metadata,
-                Tags = null,
+                Tags = request.Tags is null || request.Tags.Count == 0
+                    ? null
+                    : new Dictionary<string, string>(request.Tags, StringComparer.Ordinal),
                 Checksums = request.Checksums
             };
             _objects[(request.BucketName, request.Key)] = new StoredObject
@@ -5035,7 +5269,21 @@ public sealed class IntegratedS3CoreOrchestrationTests
             return ValueTask.CompletedTask;
         }
 
-        public ValueTask<IReadOnlyList<StoredObjectEntry>> ListObjectsAsync(string? providerName = null, string? bucketName = null, CancellationToken cancellationToken = default)
+        public ValueTask<StoredObjectEntry?> GetObjectAsync(string providerName, string bucketName, string key, string? versionId = null, CancellationToken cancellationToken = default)
+        {
+            var entry = string.IsNullOrWhiteSpace(versionId)
+                ? Objects.FirstOrDefault(existing => existing.ProviderName == providerName
+                    && existing.BucketName == bucketName
+                    && string.Equals(existing.Key, key, StringComparison.Ordinal)
+                    && existing.IsLatest)
+                : Objects.FirstOrDefault(existing => existing.ProviderName == providerName
+                    && existing.BucketName == bucketName
+                    && string.Equals(existing.Key, key, StringComparison.Ordinal)
+                    && string.Equals(existing.VersionId, versionId, StringComparison.Ordinal));
+            return ValueTask.FromResult(entry);
+        }
+
+        public ValueTask<IReadOnlyList<StoredObjectEntry>> ListObjectsAsync(string? providerName = null, string? bucketName = null, string? keyPrefix = null, CancellationToken cancellationToken = default)
         {
             IEnumerable<StoredObjectEntry> result = Objects;
             if (!string.IsNullOrWhiteSpace(providerName)) {
@@ -5044,6 +5292,10 @@ public sealed class IntegratedS3CoreOrchestrationTests
 
             if (!string.IsNullOrWhiteSpace(bucketName)) {
                 result = result.Where(existing => existing.BucketName == bucketName);
+            }
+
+            if (!string.IsNullOrWhiteSpace(keyPrefix)) {
+                result = result.Where(existing => existing.Key.StartsWith(keyPrefix, StringComparison.Ordinal));
             }
 
             return ValueTask.FromResult<IReadOnlyList<StoredObjectEntry>>(result.ToArray());

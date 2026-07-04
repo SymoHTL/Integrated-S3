@@ -159,11 +159,528 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
     }
 
     [Fact]
+    public async Task PutObject_WithNonStandardStorageClass_PersistsAndEchoesOnGetHeadAndList()
+    {
+        using var client = await _factory.CreateClientAsync();
+        const string bucketName = "storage-class-bucket";
+        const string objectKey = "docs/cold.txt";
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync($"/integrated-s3/buckets/{bucketName}", content: null)).StatusCode);
+
+        using (var putRequest = new HttpRequestMessage(HttpMethod.Put, $"/integrated-s3/{bucketName}/{objectKey}")
+        {
+            Content = new StringContent("cold payload", Encoding.UTF8, "text/plain")
+        }) {
+            putRequest.Headers.TryAddWithoutValidation("x-amz-storage-class", "STANDARD_IA");
+            Assert.Equal(HttpStatusCode.OK, (await client.SendAsync(putRequest)).StatusCode);
+        }
+
+        // AWS emits x-amz-storage-class on GET/HEAD only for non-STANDARD classes.
+        var getResponse = await client.GetAsync($"/integrated-s3/{bucketName}/{objectKey}");
+        Assert.Equal(HttpStatusCode.OK, getResponse.StatusCode);
+        Assert.Equal("STANDARD_IA", Assert.Single(getResponse.Headers.GetValues("x-amz-storage-class")));
+
+        using var headRequest = new HttpRequestMessage(HttpMethod.Head, $"/integrated-s3/{bucketName}/{objectKey}");
+        var headResponse = await client.SendAsync(headRequest);
+        Assert.Equal(HttpStatusCode.OK, headResponse.StatusCode);
+        Assert.Equal("STANDARD_IA", Assert.Single(headResponse.Headers.GetValues("x-amz-storage-class")));
+
+        // ListObjects V2 always reports <StorageClass> for each entry.
+        var listResponse = await client.GetAsync($"/integrated-s3/{bucketName}?list-type=2");
+        Assert.Equal(HttpStatusCode.OK, listResponse.StatusCode);
+        var listDocument = XDocument.Parse(await listResponse.Content.ReadAsStringAsync());
+        var listedObject = Assert.Single(listDocument.Root!.S3Elements("Contents"));
+        Assert.Equal("STANDARD_IA", listedObject.S3Element("StorageClass")?.Value);
+
+        // ListObjects V1 too.
+        var listV1Response = await client.GetAsync($"/integrated-s3/{bucketName}");
+        Assert.Equal(HttpStatusCode.OK, listV1Response.StatusCode);
+        var listV1Document = XDocument.Parse(await listV1Response.Content.ReadAsStringAsync());
+        Assert.Equal("STANDARD_IA", Assert.Single(listV1Document.Root!.S3Elements("Contents")).S3Element("StorageClass")?.Value);
+
+        // GetObjectAttributes reports the persisted storage class rather than a hard-coded STANDARD.
+        using var attributesRequest = new HttpRequestMessage(HttpMethod.Get, $"/integrated-s3/{bucketName}/{objectKey}?attributes");
+        attributesRequest.Headers.TryAddWithoutValidation("x-amz-object-attributes", "StorageClass");
+        var attributesResponse = await client.SendAsync(attributesRequest);
+        Assert.Equal(HttpStatusCode.OK, attributesResponse.StatusCode);
+        var attributesDocument = XDocument.Parse(await attributesResponse.Content.ReadAsStringAsync());
+        Assert.Equal("STANDARD_IA", attributesDocument.Root!.S3Element("StorageClass")?.Value);
+    }
+
+    [Fact]
+    public async Task PutObject_WithStandardStorageClass_OmitsHeaderOnGetAndListsStandard()
+    {
+        using var client = await _factory.CreateClientAsync();
+        const string bucketName = "storage-class-standard-bucket";
+        const string objectKey = "docs/warm.txt";
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync($"/integrated-s3/buckets/{bucketName}", content: null)).StatusCode);
+
+        // PUT with no storage-class header at all -> defaults to STANDARD.
+        using (var putRequest = new HttpRequestMessage(HttpMethod.Put, $"/integrated-s3/{bucketName}/{objectKey}")
+        {
+            Content = new StringContent("warm payload", Encoding.UTF8, "text/plain")
+        }) {
+            Assert.Equal(HttpStatusCode.OK, (await client.SendAsync(putRequest)).StatusCode);
+        }
+
+        // AWS omits the header entirely for STANDARD objects.
+        var getResponse = await client.GetAsync($"/integrated-s3/{bucketName}/{objectKey}");
+        Assert.Equal(HttpStatusCode.OK, getResponse.StatusCode);
+        Assert.False(getResponse.Headers.Contains("x-amz-storage-class"));
+
+        using var headRequest = new HttpRequestMessage(HttpMethod.Head, $"/integrated-s3/{bucketName}/{objectKey}");
+        var headResponse = await client.SendAsync(headRequest);
+        Assert.Equal(HttpStatusCode.OK, headResponse.StatusCode);
+        Assert.False(headResponse.Headers.Contains("x-amz-storage-class"));
+
+        // List entries still report STANDARD explicitly (AWS always includes <StorageClass>).
+        var listResponse = await client.GetAsync($"/integrated-s3/{bucketName}?list-type=2");
+        Assert.Equal(HttpStatusCode.OK, listResponse.StatusCode);
+        var listDocument = XDocument.Parse(await listResponse.Content.ReadAsStringAsync());
+        Assert.Equal("STANDARD", Assert.Single(listDocument.Root!.S3Elements("Contents")).S3Element("StorageClass")?.Value);
+    }
+
+    [Fact]
+    public async Task PutObject_WithUnknownStorageClass_ReturnsInvalidStorageClass()
+    {
+        using var client = await _factory.CreateClientAsync();
+        const string bucketName = "storage-class-invalid-bucket";
+        const string objectKey = "docs/bogus.txt";
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync($"/integrated-s3/buckets/{bucketName}", content: null)).StatusCode);
+
+        using var putRequest = new HttpRequestMessage(HttpMethod.Put, $"/integrated-s3/{bucketName}/{objectKey}")
+        {
+            Content = new StringContent("bogus payload", Encoding.UTF8, "text/plain")
+        };
+        putRequest.Headers.TryAddWithoutValidation("x-amz-storage-class", "TOTALLY_BOGUS");
+
+        var response = await client.SendAsync(putRequest);
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal("InvalidStorageClass", GetRequiredElementValue(XDocument.Parse(await response.Content.ReadAsStringAsync()), "Code"));
+    }
+
+    [Fact]
+    public async Task ListObjectVersions_ReportsPersistedStorageClass()
+    {
+        using var client = await _factory.CreateClientAsync();
+        const string bucketName = "storage-class-versions-bucket";
+        const string objectKey = "docs/versioned.txt";
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync($"/integrated-s3/buckets/{bucketName}", content: null)).StatusCode);
+
+        using (var putRequest = new HttpRequestMessage(HttpMethod.Put, $"/integrated-s3/{bucketName}/{objectKey}")
+        {
+            Content = new StringContent("glacier payload", Encoding.UTF8, "text/plain")
+        }) {
+            putRequest.Headers.TryAddWithoutValidation("x-amz-storage-class", "GLACIER");
+            Assert.Equal(HttpStatusCode.OK, (await client.SendAsync(putRequest)).StatusCode);
+        }
+
+        var response = await client.GetAsync($"/integrated-s3/{bucketName}?versions");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var document = XDocument.Parse(await response.Content.ReadAsStringAsync());
+        var version = Assert.Single(document.Root!.S3Elements("Version"));
+        Assert.Equal("GLACIER", version.S3Element("StorageClass")?.Value);
+    }
+
+    [Fact]
+    public async Task MultipartUpload_WithNonStandardStorageClass_EchoesOnGetAndList()
+    {
+        using var client = await _factory.CreateClientAsync();
+        const string bucketName = "storage-class-multipart-bucket";
+        const string objectKey = "docs/multipart-cold.txt";
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync($"/integrated-s3/buckets/{bucketName}", content: null)).StatusCode);
+
+        using var initiateRequest = new HttpRequestMessage(HttpMethod.Post, $"/integrated-s3/{bucketName}/{objectKey}?uploads")
+        {
+            Content = new ByteArrayContent([])
+        };
+        initiateRequest.Headers.TryAddWithoutValidation("x-amz-storage-class", "ONEZONE_IA");
+        initiateRequest.Content.Headers.ContentType = new MediaTypeHeaderValue("text/plain");
+        var initiateResponse = await client.SendAsync(initiateRequest);
+        Assert.Equal(HttpStatusCode.OK, initiateResponse.StatusCode);
+        var uploadId = GetRequiredElementValue(XDocument.Parse(await initiateResponse.Content.ReadAsStringAsync()), "UploadId");
+
+        string partETag;
+        using (var partRequest = new HttpRequestMessage(HttpMethod.Put, $"/integrated-s3/{bucketName}/{objectKey}?partNumber=1&uploadId={Uri.EscapeDataString(uploadId)}")
+        {
+            Content = new StringContent("multipart cold body", Encoding.UTF8, "text/plain")
+        }) {
+            var partResponse = await client.SendAsync(partRequest);
+            Assert.Equal(HttpStatusCode.OK, partResponse.StatusCode);
+            partETag = partResponse.Headers.ETag?.Tag ?? throw new Xunit.Sdk.XunitException("Expected multipart part ETag header.");
+        }
+
+        var completeBody = $"<CompleteMultipartUpload><Part><PartNumber>1</PartNumber><ETag>{partETag}</ETag></Part></CompleteMultipartUpload>";
+        using (var completeRequest = new HttpRequestMessage(HttpMethod.Post, $"/integrated-s3/{bucketName}/{objectKey}?uploadId={Uri.EscapeDataString(uploadId)}")
+        {
+            Content = new StringContent(completeBody, Encoding.UTF8, "application/xml")
+        }) {
+            var completeResponse = await client.SendAsync(completeRequest);
+            Assert.Equal(HttpStatusCode.OK, completeResponse.StatusCode);
+        }
+
+        var getResponse = await client.GetAsync($"/integrated-s3/{bucketName}/{objectKey}");
+        Assert.Equal(HttpStatusCode.OK, getResponse.StatusCode);
+        Assert.Equal("ONEZONE_IA", Assert.Single(getResponse.Headers.GetValues("x-amz-storage-class")));
+
+        var listResponse = await client.GetAsync($"/integrated-s3/{bucketName}?list-type=2");
+        Assert.Equal(HttpStatusCode.OK, listResponse.StatusCode);
+        var listDocument = XDocument.Parse(await listResponse.Content.ReadAsStringAsync());
+        Assert.Equal("ONEZONE_IA", Assert.Single(listDocument.Root!.S3Elements("Contents")).S3Element("StorageClass")?.Value);
+    }
+
+    [Fact]
+    public async Task PutObject_WithoutContentType_DefaultsToBinaryOctetStreamOnGetAndHead()
+    {
+        using var client = await _factory.CreateClientAsync();
+        const string bucketName = "default-content-type-bucket";
+        const string objectKey = "docs/no-type.bin";
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync($"/integrated-s3/buckets/{bucketName}", content: null)).StatusCode);
+
+        // PUT with no Content-Type header at all.
+        using (var putRequest = new HttpRequestMessage(HttpMethod.Put, $"/integrated-s3/{bucketName}/{objectKey}")
+        {
+            Content = new ByteArrayContent(Encoding.UTF8.GetBytes("untyped payload"))
+        }) {
+            Assert.Equal(HttpStatusCode.OK, (await client.SendAsync(putRequest)).StatusCode);
+        }
+
+        // AWS S3 serves objects stored without a Content-Type as "binary/octet-stream" (not
+        // "application/octet-stream").
+        var getResponse = await client.GetAsync($"/integrated-s3/{bucketName}/{objectKey}");
+        Assert.Equal(HttpStatusCode.OK, getResponse.StatusCode);
+        Assert.Equal("binary/octet-stream", getResponse.Content.Headers.ContentType?.MediaType);
+
+        using var headRequest = new HttpRequestMessage(HttpMethod.Head, $"/integrated-s3/{bucketName}/{objectKey}");
+        var headResponse = await client.SendAsync(headRequest);
+        Assert.Equal(HttpStatusCode.OK, headResponse.StatusCode);
+        Assert.Equal("binary/octet-stream", headResponse.Content.Headers.ContentType?.MediaType);
+    }
+
+    [Fact]
+    public async Task PutObject_WithNonDateExpires_RoundTripsOpaqueValueVerbatim()
+    {
+        using var client = await _factory.CreateClientAsync();
+        const string bucketName = "opaque-expires-bucket";
+        const string objectKey = "docs/opaque-expires.txt";
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync($"/integrated-s3/buckets/{bucketName}", content: null)).StatusCode);
+
+        // AWS treats Expires as an opaque string: an unparseable value must not fail the PUT, and it
+        // must be echoed back verbatim on GET/HEAD (not reformatted).
+        const string opaqueExpires = "not-a-date-just-opaque";
+        using (var putRequest = new HttpRequestMessage(HttpMethod.Put, $"/integrated-s3/{bucketName}/{objectKey}")
+        {
+            Content = new StringContent("opaque expires payload", Encoding.UTF8, "text/plain")
+        }) {
+            // Expires is an entity header; set it on the content so HttpClient transmits it.
+            putRequest.Content.Headers.TryAddWithoutValidation("Expires", opaqueExpires);
+            Assert.Equal(HttpStatusCode.OK, (await client.SendAsync(putRequest)).StatusCode);
+        }
+
+        var getResponse = await client.GetAsync($"/integrated-s3/{bucketName}/{objectKey}");
+        Assert.Equal(HttpStatusCode.OK, getResponse.StatusCode);
+        Assert.Equal(opaqueExpires, GetExpiresHeaderValue(getResponse));
+
+        using var headRequest = new HttpRequestMessage(HttpMethod.Head, $"/integrated-s3/{bucketName}/{objectKey}");
+        var headResponse = await client.SendAsync(headRequest);
+        Assert.Equal(HttpStatusCode.OK, headResponse.StatusCode);
+        Assert.Equal(opaqueExpires, GetExpiresHeaderValue(headResponse));
+    }
+
+    [Fact]
+    public async Task PutObject_WithNonRfc1123Expires_RoundTripsVerbatimWithoutReformatting()
+    {
+        using var client = await _factory.CreateClientAsync();
+        const string bucketName = "verbatim-expires-bucket";
+        const string objectKey = "docs/iso-expires.txt";
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync($"/integrated-s3/buckets/{bucketName}", content: null)).StatusCode);
+
+        // An ISO-8601 value parses as a date but is NOT RFC1123; AWS returns it exactly as supplied
+        // rather than reformatting to RFC1123 ("Fri, 01 Jan 2027 ...").
+        const string isoExpires = "2027-01-01T00:00:00Z";
+        using (var putRequest = new HttpRequestMessage(HttpMethod.Put, $"/integrated-s3/{bucketName}/{objectKey}")
+        {
+            Content = new StringContent("verbatim expires payload", Encoding.UTF8, "text/plain")
+        }) {
+            // Expires is an entity header; set it on the content so HttpClient transmits it.
+            putRequest.Content.Headers.TryAddWithoutValidation("Expires", isoExpires);
+            Assert.Equal(HttpStatusCode.OK, (await client.SendAsync(putRequest)).StatusCode);
+        }
+
+        var getResponse = await client.GetAsync($"/integrated-s3/{bucketName}/{objectKey}");
+        Assert.Equal(HttpStatusCode.OK, getResponse.StatusCode);
+        Assert.Equal(isoExpires, GetExpiresHeaderValue(getResponse));
+    }
+
+    // The Expires response header may surface on either the content or the message header collection
+    // depending on how HttpClient classifies a non-RFC1123 value; read it from whichever holds it.
+    private static string GetExpiresHeaderValue(HttpResponseMessage response)
+    {
+        if (response.Content.Headers.TryGetValues("Expires", out var contentValues)) {
+            return Assert.Single(contentValues);
+        }
+
+        Assert.True(response.Headers.TryGetValues("Expires", out var messageValues), "Expected an Expires header on the response.");
+        return Assert.Single(messageValues!);
+    }
+
+    [Fact]
+    public async Task GetAndHeadObject_TaggingCountHeaderEmittedOnGetOnly()
+    {
+        using var client = await _factory.CreateClientAsync();
+        const string bucketName = "tagging-count-head-bucket";
+        const string objectKey = "docs/tagged.txt";
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync($"/integrated-s3/buckets/{bucketName}", content: null)).StatusCode);
+
+        using (var putRequest = new HttpRequestMessage(HttpMethod.Put, $"/integrated-s3/{bucketName}/{objectKey}")
+        {
+            Content = new StringContent("tagged payload", Encoding.UTF8, "text/plain")
+        }) {
+            putRequest.Headers.TryAddWithoutValidation("x-amz-tagging", "owner=copilot&team=storage");
+            Assert.Equal(HttpStatusCode.OK, (await client.SendAsync(putRequest)).StatusCode);
+        }
+
+        // AWS emits x-amz-tagging-count on GET responses...
+        var getResponse = await client.GetAsync($"/integrated-s3/{bucketName}/{objectKey}");
+        Assert.Equal(HttpStatusCode.OK, getResponse.StatusCode);
+        Assert.Equal("2", Assert.Single(getResponse.Headers.GetValues("x-amz-tagging-count")));
+
+        // ...but never on HEAD.
+        using var headRequest = new HttpRequestMessage(HttpMethod.Head, $"/integrated-s3/{bucketName}/{objectKey}");
+        var headResponse = await client.SendAsync(headRequest);
+        Assert.Equal(HttpStatusCode.OK, headResponse.StatusCode);
+        Assert.False(headResponse.Headers.Contains("x-amz-tagging-count"));
+    }
+
+    [Fact]
+    public async Task GetObjectAttributes_ForMultipartObject_ReportsObjectPartsTotalCount()
+    {
+        using var client = await _factory.CreateClientAsync();
+        const string bucketName = "attributes-object-parts-bucket";
+        const string objectKey = "docs/multipart.bin";
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync($"/integrated-s3/buckets/{bucketName}", content: null)).StatusCode);
+
+        // Two parts of >= 5 MiB (all but the last must meet the minimum) so completion yields a
+        // composite ETag "<md5>-2".
+        var firstPart = new byte[5 * 1024 * 1024];
+        var secondPart = new byte[1024];
+        Random.Shared.NextBytes(firstPart);
+        Random.Shared.NextBytes(secondPart);
+
+        using var initiateRequest = new HttpRequestMessage(HttpMethod.Post, $"/integrated-s3/{bucketName}/{objectKey}?uploads")
+        {
+            Content = new ByteArrayContent([])
+        };
+        initiateRequest.Content.Headers.ContentType = new MediaTypeHeaderValue("application/octet-stream");
+        var initiateResponse = await client.SendAsync(initiateRequest);
+        Assert.Equal(HttpStatusCode.OK, initiateResponse.StatusCode);
+        var uploadId = GetRequiredElementValue(XDocument.Parse(await initiateResponse.Content.ReadAsStringAsync()), "UploadId");
+
+        var partETags = new string[2];
+        var partBodies = new[] { firstPart, secondPart };
+        for (var partNumber = 1; partNumber <= 2; partNumber++) {
+            using var partRequest = new HttpRequestMessage(HttpMethod.Put, $"/integrated-s3/{bucketName}/{objectKey}?partNumber={partNumber}&uploadId={Uri.EscapeDataString(uploadId)}")
+            {
+                Content = new ByteArrayContent(partBodies[partNumber - 1])
+            };
+            var partResponse = await client.SendAsync(partRequest);
+            Assert.Equal(HttpStatusCode.OK, partResponse.StatusCode);
+            partETags[partNumber - 1] = partResponse.Headers.ETag?.Tag ?? throw new Xunit.Sdk.XunitException("Expected multipart part ETag header.");
+        }
+
+        using var completeRequest = new HttpRequestMessage(HttpMethod.Post, $"/integrated-s3/{bucketName}/{objectKey}?uploadId={Uri.EscapeDataString(uploadId)}")
+        {
+            Content = new StringContent($"""
+<CompleteMultipartUpload>
+  <Part>
+    <PartNumber>1</PartNumber>
+    <ETag>{partETags[0]}</ETag>
+  </Part>
+  <Part>
+    <PartNumber>2</PartNumber>
+    <ETag>{partETags[1]}</ETag>
+  </Part>
+</CompleteMultipartUpload>
+""", Encoding.UTF8, "application/xml")
+        };
+        Assert.Equal(HttpStatusCode.OK, (await client.SendAsync(completeRequest)).StatusCode);
+
+        // GetObjectAttributes(ObjectParts) must report the multipart part count for the completed
+        // object rather than an empty result.
+        using var attributesRequest = new HttpRequestMessage(HttpMethod.Get, $"/integrated-s3/{bucketName}/{objectKey}?attributes");
+        attributesRequest.Headers.TryAddWithoutValidation("x-amz-object-attributes", "ObjectParts,ObjectSize");
+        var attributesResponse = await client.SendAsync(attributesRequest);
+        Assert.Equal(HttpStatusCode.OK, attributesResponse.StatusCode);
+
+        var attributesDocument = XDocument.Parse(await attributesResponse.Content.ReadAsStringAsync());
+        var objectPartsElement = attributesDocument.Root!.S3Element("ObjectParts");
+        Assert.NotNull(objectPartsElement);
+        Assert.Equal("2", objectPartsElement!.S3Element("TotalPartsCount")?.Value);
+        Assert.Equal("false", objectPartsElement.S3Element("IsTruncated")?.Value);
+    }
+
+    [Fact]
+    public async Task GetObjectAttributes_ForSinglePartObject_OmitsObjectParts()
+    {
+        using var client = await _factory.CreateClientAsync();
+        const string bucketName = "attributes-single-part-bucket";
+        const string objectKey = "docs/single.txt";
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync($"/integrated-s3/buckets/{bucketName}", content: null)).StatusCode);
+
+        using (var putRequest = new HttpRequestMessage(HttpMethod.Put, $"/integrated-s3/{bucketName}/{objectKey}")
+        {
+            Content = new StringContent("single part payload", Encoding.UTF8, "text/plain")
+        }) {
+            Assert.Equal(HttpStatusCode.OK, (await client.SendAsync(putRequest)).StatusCode);
+        }
+
+        // A non-multipart object carries a plain hex-MD5 ETag with no "-<count>" suffix, so AWS does
+        // not return an ObjectParts element even when it is requested.
+        using var attributesRequest = new HttpRequestMessage(HttpMethod.Get, $"/integrated-s3/{bucketName}/{objectKey}?attributes");
+        attributesRequest.Headers.TryAddWithoutValidation("x-amz-object-attributes", "ObjectParts,ObjectSize");
+        var attributesResponse = await client.SendAsync(attributesRequest);
+        Assert.Equal(HttpStatusCode.OK, attributesResponse.StatusCode);
+
+        var attributesDocument = XDocument.Parse(await attributesResponse.Content.ReadAsStringAsync());
+        Assert.Null(attributesDocument.Root!.S3Element("ObjectParts"));
+    }
+
+    [Fact]
+    public async Task GetObject_WithResponseHeaderOverrideQueryParams_OverridesResponseHeaders()
+    {
+        using var client = await _factory.CreateClientAsync();
+        const string bucketName = "response-override-get-bucket";
+        const string objectKey = "docs/override.txt";
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync($"/integrated-s3/buckets/{bucketName}", content: null)).StatusCode);
+
+        using var uploadRequest = new HttpRequestMessage(HttpMethod.Put, $"/integrated-s3/{bucketName}/{objectKey}")
+        {
+            Content = new StringContent("response override payload", Encoding.UTF8, "text/plain")
+        };
+        Assert.Equal(HttpStatusCode.OK, (await client.SendAsync(uploadRequest)).StatusCode);
+
+        const string expiresValue = "Wed, 21 Oct 2026 07:28:00 GMT";
+        var query =
+            "?response-content-type=application%2Fpdf" +
+            "&response-content-language=de-AT" +
+            "&response-expires=" + Uri.EscapeDataString(expiresValue) +
+            "&response-cache-control=" + Uri.EscapeDataString("max-age=42, private") +
+            "&response-content-disposition=" + Uri.EscapeDataString("attachment; filename=\"renamed.pdf\"") +
+            "&response-content-encoding=gzip";
+
+        var downloadResponse = await client.GetAsync($"/integrated-s3/{bucketName}/{objectKey}{query}");
+
+        Assert.Equal(HttpStatusCode.OK, downloadResponse.StatusCode);
+        Assert.Equal("application/pdf", downloadResponse.Content.Headers.ContentType?.MediaType);
+        Assert.Contains("de-AT", downloadResponse.Content.Headers.ContentLanguage);
+        Assert.Equal(expiresValue, Assert.Single(downloadResponse.Content.Headers.GetValues("Expires")));
+        Assert.Equal("max-age=42, private", downloadResponse.Headers.CacheControl?.ToString());
+        Assert.Equal("attachment", downloadResponse.Content.Headers.ContentDisposition?.DispositionType);
+        Assert.Equal("renamed.pdf", downloadResponse.Content.Headers.ContentDisposition?.FileName?.Trim('"'));
+        Assert.Contains("gzip", downloadResponse.Content.Headers.ContentEncoding);
+        Assert.Equal("response override payload", await downloadResponse.Content.ReadAsStringAsync());
+    }
+
+    [Fact]
+    public async Task HeadObject_WithResponseHeaderOverrideQueryParams_OverridesResponseHeaders()
+    {
+        using var client = await _factory.CreateClientAsync();
+        const string bucketName = "response-override-head-bucket";
+        const string objectKey = "docs/override.txt";
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync($"/integrated-s3/buckets/{bucketName}", content: null)).StatusCode);
+
+        using var uploadRequest = new HttpRequestMessage(HttpMethod.Put, $"/integrated-s3/{bucketName}/{objectKey}")
+        {
+            Content = new StringContent("response override payload", Encoding.UTF8, "text/plain")
+        };
+        Assert.Equal(HttpStatusCode.OK, (await client.SendAsync(uploadRequest)).StatusCode);
+
+        const string expiresValue = "Wed, 21 Oct 2026 07:28:00 GMT";
+        var query =
+            "?response-content-type=application%2Fpdf" +
+            "&response-content-language=de-AT" +
+            "&response-expires=" + Uri.EscapeDataString(expiresValue) +
+            "&response-cache-control=" + Uri.EscapeDataString("max-age=42, private") +
+            "&response-content-disposition=" + Uri.EscapeDataString("attachment; filename=\"renamed.pdf\"") +
+            "&response-content-encoding=gzip";
+
+        using var headRequest = new HttpRequestMessage(HttpMethod.Head, $"/integrated-s3/{bucketName}/{objectKey}{query}");
+        var headResponse = await client.SendAsync(headRequest);
+
+        Assert.Equal(HttpStatusCode.OK, headResponse.StatusCode);
+        Assert.Equal("application/pdf", headResponse.Content.Headers.ContentType?.MediaType);
+        Assert.Contains("de-AT", headResponse.Content.Headers.ContentLanguage);
+        Assert.Equal(expiresValue, Assert.Single(headResponse.Content.Headers.GetValues("Expires")));
+        Assert.Equal("max-age=42, private", headResponse.Headers.CacheControl?.ToString());
+        Assert.Equal("attachment", headResponse.Content.Headers.ContentDisposition?.DispositionType);
+        Assert.Equal("renamed.pdf", headResponse.Content.Headers.ContentDisposition?.FileName?.Trim('"'));
+        Assert.Contains("gzip", headResponse.Content.Headers.ContentEncoding);
+    }
+
+    [Theory]
+    [InlineData("response-content-type=text%2Fcsv")]
+    [InlineData("response-content-language=fr-FR")]
+    [InlineData("response-expires=Wed%2C%2021%20Oct%202026%2007%3A28%3A00%20GMT")]
+    [InlineData("response-cache-control=no-cache")]
+    [InlineData("response-content-disposition=inline")]
+    [InlineData("response-content-encoding=identity")]
+    public async Task GetObject_WithSingleResponseOverrideParam_DoesNotReturn501(string overrideQuery)
+    {
+        using var client = await _factory.CreateClientAsync();
+        const string bucketName = "response-override-single-bucket";
+        var objectKey = $"docs/{Guid.NewGuid():N}.txt";
+
+        // Theory cases share the bucket; the first creates it, later runs see it already exists.
+        var createBucketStatus = (await client.PutAsync($"/integrated-s3/buckets/{bucketName}", content: null)).StatusCode;
+        Assert.True(createBucketStatus is HttpStatusCode.Created or HttpStatusCode.Conflict, $"Unexpected bucket create status: {createBucketStatus}");
+
+        using var uploadRequest = new HttpRequestMessage(HttpMethod.Put, $"/integrated-s3/{bucketName}/{objectKey}")
+        {
+            Content = new StringContent("single override payload", Encoding.UTF8, "text/plain")
+        };
+        Assert.Equal(HttpStatusCode.OK, (await client.SendAsync(uploadRequest)).StatusCode);
+
+        var getResponse = await client.GetAsync($"/integrated-s3/{bucketName}/{objectKey}?{overrideQuery}");
+        Assert.NotEqual(HttpStatusCode.NotImplemented, getResponse.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, getResponse.StatusCode);
+
+        using var headRequest = new HttpRequestMessage(HttpMethod.Head, $"/integrated-s3/{bucketName}/{objectKey}?{overrideQuery}");
+        var headResponse = await client.SendAsync(headRequest);
+        Assert.NotEqual(HttpStatusCode.NotImplemented, headResponse.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, headResponse.StatusCode);
+    }
+
+    [Fact]
     public async Task PutObject_WithChecksumHeaders_ValidatesPayloadAndEmitsCurrentVersionHeaders()
     {
         using var client = await _factory.CreateClientAsync();
 
         Assert.Equal(HttpStatusCode.Created, (await client.PutAsync("/integrated-s3/buckets/versioned-bucket", content: null)).StatusCode);
+
+        // Versioning must be enabled for the object PUT to emit a minted x-amz-version-id header
+        // (issue #151: unversioned buckets use the null version and emit no version-id header).
+        using (var enableVersioningRequest = new HttpRequestMessage(HttpMethod.Put, "/integrated-s3/versioned-bucket?versioning")
+        {
+            Content = new StringContent("""
+<VersioningConfiguration>
+  <Status>Enabled</Status>
+</VersioningConfiguration>
+""", Encoding.UTF8, "application/xml")
+        }) {
+            Assert.Equal(HttpStatusCode.OK, (await client.SendAsync(enableVersioningRequest)).StatusCode);
+        }
 
         const string payload = "hello versioned checksum";
         var checksum = Convert.ToBase64String(SHA256.HashData(Encoding.UTF8.GetBytes(payload)));
@@ -207,7 +724,8 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
         var headVersionedObjectResponse = await client.SendAsync(headVersionedObjectRequest);
         Assert.Equal(HttpStatusCode.OK, headVersionedObjectResponse.StatusCode);
         Assert.Equal(checksum, Assert.Single(headVersionedObjectResponse.Headers.GetValues("x-amz-checksum-sha256")));
-        Assert.Equal("1", Assert.Single(headVersionedObjectResponse.Headers.GetValues("x-amz-tagging-count")));
+        // AWS emits x-amz-tagging-count on GET only, never on HEAD.
+        Assert.False(headVersionedObjectResponse.Headers.Contains("x-amz-tagging-count"));
         Assert.Equal(versionId, Assert.Single(headVersionedObjectResponse.Headers.GetValues("x-amz-version-id")));
 
         var getTaggingResponse = await client.GetAsync($"/integrated-s3/versioned-bucket/docs/versioned.txt?tagging&versionId={Uri.EscapeDataString(versionId)}");
@@ -422,6 +940,41 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
     }
 
     [Fact]
+    public async Task PutObject_WithAwsChunkedLineExceedingLengthCap_ReturnsBadRequestWithoutUnboundedBuffering()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        const string bucketName = "aws-chunked-oversized-line-bucket";
+        const string objectKey = "docs/oversized-line.txt";
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync($"/integrated-s3/buckets/{bucketName}", content: null)).StatusCode);
+
+        // A chunk-size line that never contains a CRLF. Before the fix, ReadLineAsync doubled its
+        // rented buffer without any cap, so this run of bytes forced unbounded managed-heap growth.
+        // The fix caps a single aws-chunked line at 16 KiB and rejects longer lines with a 400.
+        var oversizedLine = new byte[64 * 1024];
+        Array.Fill(oversizedLine, (byte)'0');
+
+        using var putRequest = new HttpRequestMessage(HttpMethod.Put, $"/integrated-s3/{bucketName}/{objectKey}")
+        {
+            Content = new ByteArrayContent(oversizedLine)
+        };
+        putRequest.Content.Headers.ContentType = new MediaTypeHeaderValue("text/plain");
+        putRequest.Content.Headers.ContentEncoding.Add("aws-chunked");
+        putRequest.Headers.TryAddWithoutValidation("x-amz-decoded-content-length", "0");
+        putRequest.Headers.TryAddWithoutValidation("x-amz-content-sha256", "STREAMING-UNSIGNED-PAYLOAD-TRAILER");
+
+        var response = await client.SendAsync(putRequest);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal("application/xml", response.Content.Headers.ContentType?.MediaType);
+
+        var document = XDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal("InvalidArgument", GetRequiredElementValue(document, "Code"));
+        Assert.Contains("16384-byte limit", GetRequiredElementValue(document, "Message"));
+    }
+
+    [Fact]
     public async Task PutObject_WithUnsignedTrailerBackedPayloadHashWithoutTrailerSignature_Succeeds()
     {
         using var client = await _factory.CreateClientAsync();
@@ -458,6 +1011,41 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
         Assert.Equal(HttpStatusCode.OK, getResponse.StatusCode);
         Assert.Equal(checksum, Assert.Single(getResponse.Headers.GetValues("x-amz-checksum-sha256")));
         Assert.Equal(payload, await getResponse.Content.ReadAsStringAsync());
+    }
+
+    [Fact]
+    public async Task PutObject_WithMultiChunkAwsChunkedFraming_RoundTripsDecodedPayload()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        const string bucketName = "aws-chunked-multi-chunk-bucket";
+        const string objectKey = "docs/multi-chunk.txt";
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync($"/integrated-s3/buckets/{bucketName}", content: null)).StatusCode);
+
+        // Realistic multi-chunk framing: several data chunks (of differing, mostly-odd sizes) followed
+        // by the zero-length terminating chunk. This forces the buffered framing reader to hand bytes it
+        // read ahead while scanning each chunk-size line back to the payload copy, and to re-scan the
+        // next chunk-size line from bytes that may already sit in the read-ahead buffer. A regression in
+        // the buffered reader would corrupt or truncate the decoded object here.
+        var expectedPayload = string.Concat(Enumerable.Range(0, 4096).Select(static i => (char)('a' + (i % 26))));
+        var payloadBytes = Encoding.UTF8.GetBytes(expectedPayload);
+        var body = BuildMultiChunkAwsChunkedPayload(payloadBytes, [1, 17, 200, 1, 1000, 2877]);
+
+        using var putRequest = new HttpRequestMessage(HttpMethod.Put, $"/integrated-s3/{bucketName}/{objectKey}")
+        {
+            Content = new ByteArrayContent(body)
+        };
+        putRequest.Content.Headers.ContentType = new MediaTypeHeaderValue("text/plain");
+        putRequest.Content.Headers.ContentEncoding.Add("aws-chunked");
+        putRequest.Headers.TryAddWithoutValidation("x-amz-decoded-content-length", payloadBytes.Length.ToString(CultureInfo.InvariantCulture));
+
+        var putResponse = await client.SendAsync(putRequest);
+        Assert.Equal(HttpStatusCode.OK, putResponse.StatusCode);
+
+        var getResponse = await client.GetAsync($"/integrated-s3/{bucketName}/{objectKey}");
+        Assert.Equal(HttpStatusCode.OK, getResponse.StatusCode);
+        Assert.Equal(expectedPayload, await getResponse.Content.ReadAsStringAsync());
     }
 
     [Fact]
@@ -770,6 +1358,51 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
         Assert.Contains("x-amz-trailer-signature", GetRequiredElementValue(document, "Message"), StringComparison.Ordinal);
     }
 
+    [Fact]
+    public async Task PutObject_WithTrailerBackedPayloadHashAndTrailerSignatureButNoSigningContext_ReturnsAccessDenied()
+    {
+        // Regression for #114: a request that declares a signed-trailer streaming payload hash
+        // (STREAMING-AWS4-HMAC-SHA256-PAYLOAD-TRAILER) and supplies an 'x-amz-trailer-signature'
+        // trailer, but is not authenticated with SigV4 (the default test host does not enable
+        // AWS Signature V4 authentication), previously failed open: the trailer signature was
+        // never checked and the object was accepted. It must now be rejected because there is
+        // no signing context to verify the trailer signature against.
+        using var client = await _factory.CreateClientAsync();
+
+        const string bucketName = "aws-chunked-trailer-signature-no-context-bucket";
+        const string objectKey = "docs/trailer-signature-no-context.txt";
+        const string payload = "hello from signed aws chunked trailer without signing context";
+        var checksum = ComputeSha256Base64(payload);
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync($"/integrated-s3/buckets/{bucketName}", content: null)).StatusCode);
+
+        using var putRequest = CreateAwsChunkedPutObjectRequest(
+            $"/integrated-s3/{bucketName}/{objectKey}",
+            payload,
+            sdkChecksumAlgorithm: "SHA256",
+            declaredTrailerHeaderNames: ["x-amz-checksum-sha256"],
+            trailerHeaderEntries:
+            [
+                new KeyValuePair<string, string>("x-amz-checksum-sha256", checksum),
+                // An arbitrary, unverifiable trailer signature. There is no authenticated secret
+                // key to validate it against, so the request must be rejected rather than accepted.
+                new KeyValuePair<string, string>("x-amz-trailer-signature", new string('0', 64))
+            ]);
+        putRequest.Headers.TryAddWithoutValidation("x-amz-content-sha256", "STREAMING-AWS4-HMAC-SHA256-PAYLOAD-TRAILER");
+
+        var response = await client.SendAsync(putRequest);
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+        Assert.Equal("application/xml", response.Content.Headers.ContentType?.MediaType);
+
+        var document = XDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal("AccessDenied", GetRequiredElementValue(document, "Code"));
+
+        // The object must not have been written by the fail-open path.
+        var getResponse = await client.GetAsync($"/integrated-s3/{bucketName}/{objectKey}");
+        Assert.Equal(HttpStatusCode.NotFound, getResponse.StatusCode);
+    }
+
     [Theory]
     [InlineData("SHA1", "x-amz-checksum-sha1", "aws-chunked-signed-trailer-sha1-valid-bucket", "docs/signed-trailer-sha1.txt", "hello from signed aws chunked sha1 trailer")]
     [InlineData("CRC32", "x-amz-checksum-crc32", "aws-chunked-signed-trailer-crc32-valid-bucket", "docs/signed-trailer-crc32.txt", "hello from signed aws chunked crc32 trailer")]
@@ -864,6 +1497,115 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
         var message = GetRequiredElementValue(document, "Message");
         Assert.Contains(sdkChecksumAlgorithm, message, StringComparison.Ordinal);
         Assert.Contains(objectKey, message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task PutObject_WithSignedContentSha256MatchingBody_Persists()
+    {
+        const string accessKeyId = "sigv4-content-sha256-match-access";
+        const string secretAccessKey = "sigv4-content-sha256-match-secret";
+        const string bucketName = "content-sha256-match-bucket";
+        const string objectKey = "docs/content-sha256-match.txt";
+        var payloadBytes = Encoding.UTF8.GetBytes("hello from a correctly hashed payload");
+
+        await using var isolatedClient = await CreateSigV4AuthenticatedClientAsync(accessKeyId, secretAccessKey);
+        using var client = isolatedClient.Client;
+
+        using var createBucketRequest = CreateSigV4HeaderSignedRequest(HttpMethod.Put, $"/integrated-s3/buckets/{bucketName}", accessKeyId, secretAccessKey);
+        Assert.Equal(HttpStatusCode.Created, (await client.SendAsync(createBucketRequest)).StatusCode);
+
+        var correctHash = Convert.ToHexStringLower(SHA256.HashData(payloadBytes));
+        using var putRequest = CreateSigV4BodySignedRequestWithContentSha256(
+            $"/integrated-s3/{bucketName}/{objectKey}", accessKeyId, secretAccessKey, payloadBytes, correctHash);
+
+        var putResponse = await client.SendAsync(putRequest);
+        Assert.Equal(HttpStatusCode.OK, putResponse.StatusCode);
+
+        using var getRequest = CreateSigV4HeaderSignedRequest(HttpMethod.Get, $"/integrated-s3/{bucketName}/{objectKey}", accessKeyId, secretAccessKey);
+        var getResponse = await client.SendAsync(getRequest);
+        Assert.Equal(HttpStatusCode.OK, getResponse.StatusCode);
+        Assert.Equal(payloadBytes, await getResponse.Content.ReadAsByteArrayAsync());
+    }
+
+    [Fact]
+    public async Task PutObject_WithSignedContentSha256NotMatchingBody_ReturnsXAmzContentSHA256Mismatch()
+    {
+        const string accessKeyId = "sigv4-content-sha256-mismatch-access";
+        const string secretAccessKey = "sigv4-content-sha256-mismatch-secret";
+        const string bucketName = "content-sha256-mismatch-bucket";
+        const string objectKey = "docs/content-sha256-mismatch.txt";
+        var payloadBytes = Encoding.UTF8.GetBytes("this is the body that will actually be sent");
+
+        await using var isolatedClient = await CreateSigV4AuthenticatedClientAsync(accessKeyId, secretAccessKey);
+        using var client = isolatedClient.Client;
+
+        using var createBucketRequest = CreateSigV4HeaderSignedRequest(HttpMethod.Put, $"/integrated-s3/buckets/{bucketName}", accessKeyId, secretAccessKey);
+        Assert.Equal(HttpStatusCode.Created, (await client.SendAsync(createBucketRequest)).StatusCode);
+
+        // Sign the request with a concrete SHA256 of a *different* payload. The signature is
+        // internally consistent (it covers the wrong hash), so only recomputing the body digest
+        // detects the divergence — exactly the XAmzContentSHA256Mismatch case.
+        var wrongHash = Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes("a different payload")));
+        using var putRequest = CreateSigV4BodySignedRequestWithContentSha256(
+            $"/integrated-s3/{bucketName}/{objectKey}", accessKeyId, secretAccessKey, payloadBytes, wrongHash);
+
+        var response = await client.SendAsync(putRequest);
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal("application/xml", response.Content.Headers.ContentType?.MediaType);
+
+        var document = XDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal("XAmzContentSHA256Mismatch", GetRequiredElementValue(document, "Code"));
+
+        // The object must not have been persisted.
+        using var getRequest = CreateSigV4HeaderSignedRequest(HttpMethod.Get, $"/integrated-s3/{bucketName}/{objectKey}", accessKeyId, secretAccessKey);
+        Assert.Equal(HttpStatusCode.NotFound, (await client.SendAsync(getRequest)).StatusCode);
+    }
+
+    [Fact]
+    public async Task PutObject_WithUnsignedPayloadSentinel_SkipsContentSha256Verification()
+    {
+        const string accessKeyId = "sigv4-content-sha256-unsigned-access";
+        const string secretAccessKey = "sigv4-content-sha256-unsigned-secret";
+        const string bucketName = "content-sha256-unsigned-bucket";
+        const string objectKey = "docs/content-sha256-unsigned.txt";
+        var payloadBytes = Encoding.UTF8.GetBytes("body sent under UNSIGNED-PAYLOAD sentinel");
+
+        await using var isolatedClient = await CreateSigV4AuthenticatedClientAsync(accessKeyId, secretAccessKey);
+        using var client = isolatedClient.Client;
+
+        using var createBucketRequest = CreateSigV4HeaderSignedRequest(HttpMethod.Put, $"/integrated-s3/buckets/{bucketName}", accessKeyId, secretAccessKey);
+        Assert.Equal(HttpStatusCode.Created, (await client.SendAsync(createBucketRequest)).StatusCode);
+
+        // UNSIGNED-PAYLOAD is a sentinel, not a concrete digest, so the body is stored without a
+        // digest comparison even though the bytes obviously do not hash to that literal string.
+        using var putRequest = CreateSigV4BodySignedRequestWithContentSha256(
+            $"/integrated-s3/{bucketName}/{objectKey}", accessKeyId, secretAccessKey, payloadBytes, "UNSIGNED-PAYLOAD");
+
+        var putResponse = await client.SendAsync(putRequest);
+        Assert.Equal(HttpStatusCode.OK, putResponse.StatusCode);
+
+        using var getRequest = CreateSigV4HeaderSignedRequest(HttpMethod.Get, $"/integrated-s3/{bucketName}/{objectKey}", accessKeyId, secretAccessKey);
+        var getResponse = await client.SendAsync(getRequest);
+        Assert.Equal(HttpStatusCode.OK, getResponse.StatusCode);
+        Assert.Equal(payloadBytes, await getResponse.Content.ReadAsByteArrayAsync());
+    }
+
+    private static HttpRequestMessage CreateSigV4BodySignedRequestWithContentSha256(
+        string pathAndQuery,
+        string accessKeyId,
+        string secretAccessKey,
+        byte[] payloadBytes,
+        string contentSha256HeaderValue,
+        string host = "localhost")
+    {
+        var request = new HttpRequestMessage(HttpMethod.Put, pathAndQuery)
+        {
+            Content = new ByteArrayContent(payloadBytes)
+        };
+        request.Content.Headers.TryAddWithoutValidation("Content-Type", "text/plain");
+
+        SignSigV4HeaderRequest(request, pathAndQuery, accessKeyId, secretAccessKey, contentSha256HeaderValue, host: host);
+        return request;
     }
 
     [Fact]
@@ -1198,6 +1940,252 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
 
         var missingResponse = await client.GetAsync("/integrated-s3/encryption-config-bucket?encryption");
         await AssertErrorResponseAsync(missingResponse, HttpStatusCode.NotFound, "ServerSideEncryptionConfigurationNotFoundError");
+    }
+
+    [Fact]
+    public async Task S3CompatibleBucketPublicAccessBlock_RoundTripsXmlPayload()
+    {
+        var storageService = new RecordingStorageService();
+        await using var isolatedClient = await CreateStorageServiceIsolatedClientAsync(storageService);
+        using var client = isolatedClient.Client;
+
+        using var putRequest = new HttpRequestMessage(HttpMethod.Put, "/integrated-s3/public-access-block-bucket?publicAccessBlock")
+        {
+            Content = new StringContent("""
+<PublicAccessBlockConfiguration>
+  <BlockPublicAcls>true</BlockPublicAcls>
+  <IgnorePublicAcls>false</IgnorePublicAcls>
+  <BlockPublicPolicy>true</BlockPublicPolicy>
+  <RestrictPublicBuckets>false</RestrictPublicBuckets>
+</PublicAccessBlockConfiguration>
+""", Encoding.UTF8, "application/xml")
+        };
+
+        var putResponse = await client.SendAsync(putRequest);
+        Assert.Equal(HttpStatusCode.OK, putResponse.StatusCode);
+
+        var putPublicAccessBlock = storageService.LastPutBucketPublicAccessBlockRequest
+            ?? throw new Xunit.Sdk.XunitException("Expected bucket public access block request to reach the storage service.");
+        Assert.True(putPublicAccessBlock.BlockPublicAcls);
+        Assert.False(putPublicAccessBlock.IgnorePublicAcls);
+        Assert.True(putPublicAccessBlock.BlockPublicPolicy);
+        Assert.False(putPublicAccessBlock.RestrictPublicBuckets);
+
+        var getResponse = await client.GetAsync("/integrated-s3/public-access-block-bucket?publicAccessBlock");
+        Assert.Equal(HttpStatusCode.OK, getResponse.StatusCode);
+        Assert.Equal("application/xml", getResponse.Content.Headers.ContentType?.MediaType);
+
+        var document = XDocument.Parse(await getResponse.Content.ReadAsStringAsync());
+        Assert.Equal("PublicAccessBlockConfiguration", document.Root?.Name.LocalName);
+        Assert.Equal("true", document.Root!.Element(S3Ns + "BlockPublicAcls")?.Value);
+        Assert.Equal("false", document.Root!.Element(S3Ns + "IgnorePublicAcls")?.Value);
+        Assert.Equal("true", document.Root!.Element(S3Ns + "BlockPublicPolicy")?.Value);
+        Assert.Equal("false", document.Root!.Element(S3Ns + "RestrictPublicBuckets")?.Value);
+
+        var deleteResponse = await client.DeleteAsync("/integrated-s3/public-access-block-bucket?publicAccessBlock");
+        Assert.Equal(HttpStatusCode.NoContent, deleteResponse.StatusCode);
+
+        var missingResponse = await client.GetAsync("/integrated-s3/public-access-block-bucket?publicAccessBlock");
+        await AssertErrorResponseAsync(missingResponse, HttpStatusCode.NotFound, "NoSuchPublicAccessBlockConfiguration");
+    }
+
+    [Fact]
+    public async Task S3CompatibleBucketPublicAccessBlock_PersistsThroughDiskProvider()
+    {
+        using var client = await _factory.CreateClientAsync();
+        const string bucketName = "public-access-block-disk-bucket";
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync($"/integrated-s3/buckets/{bucketName}", content: null)).StatusCode);
+
+        // GET before any config is set surfaces the specific NoSuch* 404.
+        var missingBefore = await client.GetAsync($"/integrated-s3/{bucketName}?publicAccessBlock");
+        await AssertErrorResponseAsync(missingBefore, HttpStatusCode.NotFound, "NoSuchPublicAccessBlockConfiguration");
+
+        using var putRequest = new HttpRequestMessage(HttpMethod.Put, $"/integrated-s3/{bucketName}?publicAccessBlock")
+        {
+            Content = new StringContent("""
+<PublicAccessBlockConfiguration>
+  <BlockPublicAcls>true</BlockPublicAcls>
+  <IgnorePublicAcls>true</IgnorePublicAcls>
+  <BlockPublicPolicy>false</BlockPublicPolicy>
+  <RestrictPublicBuckets>true</RestrictPublicBuckets>
+</PublicAccessBlockConfiguration>
+""", Encoding.UTF8, "application/xml")
+        };
+        Assert.Equal(HttpStatusCode.OK, (await client.SendAsync(putRequest)).StatusCode);
+
+        var getResponse = await client.GetAsync($"/integrated-s3/{bucketName}?publicAccessBlock");
+        Assert.Equal(HttpStatusCode.OK, getResponse.StatusCode);
+        var document = XDocument.Parse(await getResponse.Content.ReadAsStringAsync());
+        Assert.Equal("PublicAccessBlockConfiguration", document.Root?.Name.LocalName);
+        Assert.Equal("true", document.Root!.Element(S3Ns + "BlockPublicAcls")?.Value);
+        Assert.Equal("true", document.Root!.Element(S3Ns + "IgnorePublicAcls")?.Value);
+        Assert.Equal("false", document.Root!.Element(S3Ns + "BlockPublicPolicy")?.Value);
+        Assert.Equal("true", document.Root!.Element(S3Ns + "RestrictPublicBuckets")?.Value);
+
+        Assert.Equal(HttpStatusCode.NoContent, (await client.DeleteAsync($"/integrated-s3/{bucketName}?publicAccessBlock")).StatusCode);
+
+        var missingAfter = await client.GetAsync($"/integrated-s3/{bucketName}?publicAccessBlock");
+        await AssertErrorResponseAsync(missingAfter, HttpStatusCode.NotFound, "NoSuchPublicAccessBlockConfiguration");
+    }
+
+    [Theory]
+    [InlineData("?tagging", "NoSuchTagSet")]
+    [InlineData("?website", "NoSuchWebsiteConfiguration")]
+    [InlineData("?lifecycle", "NoSuchLifecycleConfiguration")]
+    [InlineData("?replication", "ReplicationConfigurationNotFoundError")]
+    [InlineData("?object-lock", "ObjectLockConfigurationNotFoundError")]
+    [InlineData("?analytics&id=report", "NoSuchConfiguration")]
+    [InlineData("?metrics&id=report", "NoSuchConfiguration")]
+    [InlineData("?inventory&id=report", "NoSuchConfiguration")]
+    // Regression for #153: ?intelligent-tiering was rejected by the request validator before dispatch,
+    // so the (existing) handler was unreachable. It must now route through and surface the mapped 404.
+    [InlineData("?intelligent-tiering&id=report", "NoSuchConfiguration")]
+    [InlineData("?publicAccessBlock", "NoSuchPublicAccessBlockConfiguration")]
+    [InlineData("?ownershipControls", "OwnershipControlsNotFoundError")]
+    public async Task S3CompatibleBucketSubresource_WhenConfigAbsent_ReturnsNoSuchCodeWithNotFoundStatus(string query, string expectedCode)
+    {
+        // Regression test for #152: absent bucket subresource configs must surface the specific
+        // AWS NoSuch* error code with a 404 status, not the generic Code=InternalError fallthrough.
+        await using var isolatedClient = await CreateStorageServiceIsolatedClientAsync(new AbsentBucketConfigStorageService());
+        using var client = isolatedClient.Client;
+
+        var response = await client.GetAsync($"/integrated-s3/absent-config-bucket{query}");
+
+        await AssertErrorResponseAsync(response, HttpStatusCode.NotFound, expectedCode);
+    }
+
+    [Fact]
+    public async Task S3CompatibleBucketOwnershipControls_RoundTripsXmlPayload()
+    {
+        var storageService = new RecordingStorageService();
+        await using var isolatedClient = await CreateStorageServiceIsolatedClientAsync(storageService);
+        using var client = isolatedClient.Client;
+
+        using var putRequest = new HttpRequestMessage(HttpMethod.Put, "/integrated-s3/ownership-controls-bucket?ownershipControls")
+        {
+            Content = new StringContent("""
+<OwnershipControls>
+  <Rule>
+    <ObjectOwnership>BucketOwnerEnforced</ObjectOwnership>
+  </Rule>
+</OwnershipControls>
+""", Encoding.UTF8, "application/xml")
+        };
+
+        var putResponse = await client.SendAsync(putRequest);
+        Assert.Equal(HttpStatusCode.OK, putResponse.StatusCode);
+
+        var putOwnershipControls = storageService.LastPutBucketOwnershipControlsRequest
+            ?? throw new Xunit.Sdk.XunitException("Expected bucket ownership controls request to reach the storage service.");
+        Assert.Equal("BucketOwnerEnforced", putOwnershipControls.ObjectOwnership);
+
+        var getResponse = await client.GetAsync("/integrated-s3/ownership-controls-bucket?ownershipControls");
+        Assert.Equal(HttpStatusCode.OK, getResponse.StatusCode);
+        Assert.Equal("application/xml", getResponse.Content.Headers.ContentType?.MediaType);
+
+        var document = XDocument.Parse(await getResponse.Content.ReadAsStringAsync());
+        Assert.Equal("OwnershipControls", document.Root?.Name.LocalName);
+        var rule = document.Root!.Element(S3Ns + "Rule");
+        Assert.NotNull(rule);
+        Assert.Equal("BucketOwnerEnforced", rule!.Element(S3Ns + "ObjectOwnership")?.Value);
+
+        var deleteResponse = await client.DeleteAsync("/integrated-s3/ownership-controls-bucket?ownershipControls");
+        Assert.Equal(HttpStatusCode.NoContent, deleteResponse.StatusCode);
+
+        var missingResponse = await client.GetAsync("/integrated-s3/ownership-controls-bucket?ownershipControls");
+        await AssertErrorResponseAsync(missingResponse, HttpStatusCode.NotFound, "OwnershipControlsNotFoundError");
+    }
+
+    [Fact]
+    public async Task S3CompatibleBucketOwnershipControls_PersistsThroughDiskProvider()
+    {
+        using var client = await _factory.CreateClientAsync();
+        const string bucketName = "ownership-controls-disk-bucket";
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync($"/integrated-s3/buckets/{bucketName}", content: null)).StatusCode);
+
+        // GET before any config is set surfaces the specific NotFound error.
+        var missingBefore = await client.GetAsync($"/integrated-s3/{bucketName}?ownershipControls");
+        await AssertErrorResponseAsync(missingBefore, HttpStatusCode.NotFound, "OwnershipControlsNotFoundError");
+
+        using var putRequest = new HttpRequestMessage(HttpMethod.Put, $"/integrated-s3/{bucketName}?ownershipControls")
+        {
+            Content = new StringContent("""
+<OwnershipControls>
+  <Rule>
+    <ObjectOwnership>BucketOwnerPreferred</ObjectOwnership>
+  </Rule>
+</OwnershipControls>
+""", Encoding.UTF8, "application/xml")
+        };
+        Assert.Equal(HttpStatusCode.OK, (await client.SendAsync(putRequest)).StatusCode);
+
+        var getResponse = await client.GetAsync($"/integrated-s3/{bucketName}?ownershipControls");
+        Assert.Equal(HttpStatusCode.OK, getResponse.StatusCode);
+        var document = XDocument.Parse(await getResponse.Content.ReadAsStringAsync());
+        Assert.Equal("OwnershipControls", document.Root?.Name.LocalName);
+        Assert.Equal("BucketOwnerPreferred", document.Root!.Element(S3Ns + "Rule")?.Element(S3Ns + "ObjectOwnership")?.Value);
+
+        Assert.Equal(HttpStatusCode.NoContent, (await client.DeleteAsync($"/integrated-s3/{bucketName}?ownershipControls")).StatusCode);
+
+        var missingAfter = await client.GetAsync($"/integrated-s3/{bucketName}?ownershipControls");
+        await AssertErrorResponseAsync(missingAfter, HttpStatusCode.NotFound, "OwnershipControlsNotFoundError");
+    }
+
+    [Fact]
+    public async Task S3CompatibleBucketOwnershipControls_WithInvalidObjectOwnership_ReturnsMalformedXml()
+    {
+        var storageService = new RecordingStorageService();
+        await using var isolatedClient = await CreateStorageServiceIsolatedClientAsync(storageService);
+        using var client = isolatedClient.Client;
+
+        using var putRequest = new HttpRequestMessage(HttpMethod.Put, "/integrated-s3/ownership-controls-invalid-bucket?ownershipControls")
+        {
+            Content = new StringContent("""
+<OwnershipControls>
+  <Rule>
+    <ObjectOwnership>NotAValidValue</ObjectOwnership>
+  </Rule>
+</OwnershipControls>
+""", Encoding.UTF8, "application/xml")
+        };
+
+        var response = await client.SendAsync(putRequest);
+        await AssertErrorResponseAsync(response, HttpStatusCode.BadRequest, "MalformedXML");
+        Assert.Null(storageService.LastPutBucketOwnershipControlsRequest);
+    }
+
+    [Fact]
+    public async Task S3CompatibleBucketPolicyStatus_WhenNoPolicy_ReturnsIsPublicFalse()
+    {
+        using var client = await _factory.CreateClientAsync();
+        const string bucketName = "policy-status-bucket";
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync($"/integrated-s3/buckets/{bucketName}", content: null)).StatusCode);
+
+        var response = await client.GetAsync($"/integrated-s3/{bucketName}?policyStatus");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal("application/xml", response.Content.Headers.ContentType?.MediaType);
+
+        var document = XDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal("PolicyStatus", document.Root?.Name.LocalName);
+        Assert.Equal("false", document.Root!.Element(S3Ns + "IsPublic")?.Value);
+    }
+
+    [Fact]
+    public async Task S3CompatibleObjectTorrent_ReturnsNotImplemented()
+    {
+        using var client = await _factory.CreateClientAsync();
+        const string bucketName = "torrent-bucket";
+        const string objectKey = "torrent-object.txt";
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync($"/integrated-s3/buckets/{bucketName}", content: null)).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await client.PutAsync($"/integrated-s3/{bucketName}/{objectKey}", new StringContent("payload", Encoding.UTF8, "text/plain"))).StatusCode);
+
+        var response = await client.GetAsync($"/integrated-s3/{bucketName}/{objectKey}?torrent");
+
+        await AssertNotImplementedResponseAsync(response);
     }
 
     [Fact]
@@ -2408,8 +3396,11 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
 
         var errorDocument = XDocument.Parse(await secondResponse.Content.ReadAsStringAsync());
         S3XmlTestHelper.AssertRoot(errorDocument, "Error");
-        Assert.Equal("BucketAlreadyExists", GetRequiredElementValue(errorDocument, "Code"));
-        Assert.Contains("already exists", GetRequiredElementValue(errorDocument, "Message"), StringComparison.OrdinalIgnoreCase);
+        // The disk backend is single-tenant, so re-creating an existing bucket is an idempotent
+        // owner re-create. AWS reports this as BucketAlreadyOwnedByYou, not BucketAlreadyExists
+        // (which is reserved for names owned by a different account).
+        Assert.Equal("BucketAlreadyOwnedByYou", GetRequiredElementValue(errorDocument, "Code"));
+        Assert.Contains("you already own it", GetRequiredElementValue(errorDocument, "Message"), StringComparison.OrdinalIgnoreCase);
         Assert.Equal("/conflict-bucket", GetRequiredElementValue(errorDocument, "Resource"));
     }
 
@@ -2490,6 +3481,136 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
         Assert.Equal(HttpStatusCode.PartialContent, response.StatusCode);
         Assert.Equal("bytes 6-15/19", response.Content.Headers.ContentRange?.ToString());
         Assert.Equal("integrated", await response.Content.ReadAsStringAsync());
+    }
+
+    // Regression for issue #233: a whole-object x-amz-checksum-* header must not accompany a partial
+    // 206 body. The stored checksum covers the full object, so a validating client (AWS SDK for .NET
+    // v4, default) recomputes it over the returned slice and fails. A full 200 (and a range covering
+    // the whole object) must still carry the checksum.
+    [Fact]
+    public async Task GetObject_PartialRange_OmitsWholeObjectChecksumHeader_ButFullResponseKeepsIt()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        const string payload = "hello integrated s3"; // 19 bytes
+        var expectedChecksumCrc32c = ChecksumTestAlgorithms.ComputeCrc32cBase64(payload);
+
+        await client.PutAsync("/integrated-s3/buckets/range-checksum-bucket", content: null);
+        await client.PutAsync(
+            "/integrated-s3/buckets/range-checksum-bucket/objects/docs/range.txt",
+            new StringContent(payload, Encoding.UTF8, "text/plain"));
+
+        // Full GET (200): the whole-object checksum is present, as before.
+        var fullResponse = await client.GetAsync("/integrated-s3/buckets/range-checksum-bucket/objects/docs/range.txt");
+        Assert.Equal(HttpStatusCode.OK, fullResponse.StatusCode);
+        Assert.Equal(expectedChecksumCrc32c, Assert.Single(fullResponse.Headers.GetValues("x-amz-checksum-crc32c")));
+
+        // Partial GET (206): no whole-object checksum header of any algorithm.
+        using var partialRequest = new HttpRequestMessage(HttpMethod.Get, "/integrated-s3/buckets/range-checksum-bucket/objects/docs/range.txt");
+        partialRequest.Headers.Range = new RangeHeaderValue(6, 15);
+        var partialResponse = await client.SendAsync(partialRequest);
+        Assert.Equal(HttpStatusCode.PartialContent, partialResponse.StatusCode);
+        Assert.False(partialResponse.Headers.Contains("x-amz-checksum-crc32"));
+        Assert.False(partialResponse.Headers.Contains("x-amz-checksum-crc32c"));
+        Assert.False(partialResponse.Headers.Contains("x-amz-checksum-crc64nvme"));
+        Assert.False(partialResponse.Headers.Contains("x-amz-checksum-sha1"));
+        Assert.False(partialResponse.Headers.Contains("x-amz-checksum-sha256"));
+        Assert.False(partialResponse.Headers.Contains("x-amz-checksum-type"));
+
+        // A range covering the whole object [0, size) is a full response and keeps the checksum.
+        using var fullRangeRequest = new HttpRequestMessage(HttpMethod.Get, "/integrated-s3/buckets/range-checksum-bucket/objects/docs/range.txt");
+        fullRangeRequest.Headers.Range = new RangeHeaderValue(0, 18);
+        var fullRangeResponse = await client.SendAsync(fullRangeRequest);
+        Assert.Equal(HttpStatusCode.PartialContent, fullRangeResponse.StatusCode);
+        Assert.Equal(expectedChecksumCrc32c, Assert.Single(fullRangeResponse.Headers.GetValues("x-amz-checksum-crc32c")));
+    }
+
+    // Regression for issue #233: HEAD mirrors GET — a partial 206 must not carry the whole-object
+    // checksum, but a full HEAD (200) still does.
+    [Fact]
+    public async Task HeadObject_PartialRange_OmitsWholeObjectChecksumHeader_ButFullResponseKeepsIt()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        const string payload = "hello integrated s3"; // 19 bytes
+        var expectedChecksumCrc32c = ChecksumTestAlgorithms.ComputeCrc32cBase64(payload);
+
+        await client.PutAsync("/integrated-s3/buckets/head-range-checksum-bucket", content: null);
+        await client.PutAsync(
+            "/integrated-s3/buckets/head-range-checksum-bucket/objects/docs/range.txt",
+            new StringContent(payload, Encoding.UTF8, "text/plain"));
+
+        using var fullHeadRequest = new HttpRequestMessage(HttpMethod.Head, "/integrated-s3/buckets/head-range-checksum-bucket/objects/docs/range.txt");
+        var fullHeadResponse = await client.SendAsync(fullHeadRequest);
+        Assert.Equal(HttpStatusCode.OK, fullHeadResponse.StatusCode);
+        Assert.Equal(expectedChecksumCrc32c, Assert.Single(fullHeadResponse.Headers.GetValues("x-amz-checksum-crc32c")));
+
+        using var partialHeadRequest = new HttpRequestMessage(HttpMethod.Head, "/integrated-s3/buckets/head-range-checksum-bucket/objects/docs/range.txt");
+        partialHeadRequest.Headers.Range = new RangeHeaderValue(6, 15);
+        var partialHeadResponse = await client.SendAsync(partialHeadRequest);
+        Assert.Equal(HttpStatusCode.PartialContent, partialHeadResponse.StatusCode);
+        Assert.False(partialHeadResponse.Headers.Contains("x-amz-checksum-crc32c"));
+        Assert.False(partialHeadResponse.Headers.Contains("x-amz-checksum-type"));
+    }
+
+    [Fact]
+    public async Task GetObject_WithUnsatisfiableRange_Returns416WithContentRange()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        await client.PutAsync("/integrated-s3/buckets/range-416-bucket", content: null);
+        await client.PutAsync(
+            "/integrated-s3/buckets/range-416-bucket/objects/docs/range.txt",
+            new StringContent("hello integrated s3", Encoding.UTF8, "text/plain")); // 19 bytes
+
+        using var request = new HttpRequestMessage(HttpMethod.Get, "/integrated-s3/buckets/range-416-bucket/objects/docs/range.txt");
+        request.Headers.TryAddWithoutValidation("Range", "bytes=100-200");
+
+        var response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.RequestedRangeNotSatisfiable, response.StatusCode);
+        Assert.Equal("bytes */19", response.Content.Headers.ContentRange?.ToString());
+    }
+
+    [Fact]
+    public async Task HeadObject_WithUnsatisfiableRange_Returns416WithContentRange()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        await client.PutAsync("/integrated-s3/buckets/head-range-416-bucket", content: null);
+        await client.PutAsync(
+            "/integrated-s3/buckets/head-range-416-bucket/objects/docs/range.txt",
+            new StringContent("hello integrated s3", Encoding.UTF8, "text/plain")); // 19 bytes
+
+        using var request = new HttpRequestMessage(HttpMethod.Head, "/integrated-s3/buckets/head-range-416-bucket/objects/docs/range.txt");
+        request.Headers.TryAddWithoutValidation("Range", "bytes=100-200");
+
+        var response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.RequestedRangeNotSatisfiable, response.StatusCode);
+        Assert.Equal("bytes */19", response.Content.Headers.ContentRange?.ToString());
+        Assert.Empty(await response.Content.ReadAsByteArrayAsync());
+    }
+
+    [Fact]
+    public async Task HeadObject_WithSatisfiableRange_Returns206WithContentRangeAndRangedLengthAndEmptyBody()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        await client.PutAsync("/integrated-s3/buckets/head-range-206-bucket", content: null);
+        await client.PutAsync(
+            "/integrated-s3/buckets/head-range-206-bucket/objects/docs/range.txt",
+            new StringContent("hello integrated s3", Encoding.UTF8, "text/plain")); // 19 bytes
+
+        using var request = new HttpRequestMessage(HttpMethod.Head, "/integrated-s3/buckets/head-range-206-bucket/objects/docs/range.txt");
+        request.Headers.Range = new System.Net.Http.Headers.RangeHeaderValue(6, 15);
+
+        var response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.PartialContent, response.StatusCode);
+        Assert.Equal("bytes 6-15/19", response.Content.Headers.ContentRange?.ToString());
+        Assert.Equal(10, response.Content.Headers.ContentLength);
+        Assert.Empty(await response.Content.ReadAsByteArrayAsync());
     }
 
     [Fact]
@@ -2928,6 +4049,80 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
     }
 
     [Fact]
+    public async Task PutObject_WithInvalidCopySourceConditionalDate_IgnoresConditionInsteadOf400()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        await client.PutAsync("/integrated-s3/buckets/copy-invalid-date-source", content: null);
+        await client.PutAsync("/integrated-s3/buckets/copy-invalid-date-target", content: null);
+
+        var uploadResponse = await client.PutAsync(
+            "/integrated-s3/buckets/copy-invalid-date-source/objects/docs/source.txt",
+            new StringContent("invalid-date payload", Encoding.UTF8, "text/plain"));
+        Assert.Equal(HttpStatusCode.OK, uploadResponse.StatusCode);
+        var sourceObject = await uploadResponse.Content.ReadFromJsonAsync<ObjectInfo>(JsonOptions);
+        Assert.NotNull(sourceObject);
+
+        // AWS/RFC 7232: an unparseable conditional date header is treated as ABSENT (the precondition
+        // simply does not apply) rather than failing the request with 400 InvalidArgument.
+        using var invalidUnmodifiedCopyRequest = new HttpRequestMessage(HttpMethod.Put, "/integrated-s3/buckets/copy-invalid-date-target/objects/docs/invalid-unmodified.txt");
+        invalidUnmodifiedCopyRequest.Headers.TryAddWithoutValidation("x-amz-copy-source", "/copy-invalid-date-source/docs/source.txt");
+        invalidUnmodifiedCopyRequest.Headers.TryAddWithoutValidation("x-amz-copy-source-if-unmodified-since", "not-a-valid-http-date");
+
+        var invalidUnmodifiedCopyResponse = await client.SendAsync(invalidUnmodifiedCopyRequest);
+        Assert.Equal(HttpStatusCode.OK, invalidUnmodifiedCopyResponse.StatusCode);
+        var invalidUnmodifiedCopyDocument = XDocument.Parse(await invalidUnmodifiedCopyResponse.Content.ReadAsStringAsync());
+        Assert.Equal("CopyObjectResult", invalidUnmodifiedCopyDocument.Root?.Name.LocalName);
+
+        var invalidUnmodifiedCopiedObject = await client.GetAsync("/integrated-s3/buckets/copy-invalid-date-target/objects/docs/invalid-unmodified.txt");
+        Assert.Equal(HttpStatusCode.OK, invalidUnmodifiedCopiedObject.StatusCode);
+        Assert.Equal("invalid-date payload", await invalidUnmodifiedCopiedObject.Content.ReadAsStringAsync());
+
+        // An invalid If-Modified-Since is likewise ignored: the copy still succeeds.
+        using var invalidModifiedCopyRequest = new HttpRequestMessage(HttpMethod.Put, "/integrated-s3/buckets/copy-invalid-date-target/objects/docs/invalid-modified.txt");
+        invalidModifiedCopyRequest.Headers.TryAddWithoutValidation("x-amz-copy-source", "/copy-invalid-date-source/docs/source.txt");
+        invalidModifiedCopyRequest.Headers.TryAddWithoutValidation("x-amz-copy-source-if-modified-since", "garbage date value");
+
+        var invalidModifiedCopyResponse = await client.SendAsync(invalidModifiedCopyRequest);
+        Assert.Equal(HttpStatusCode.OK, invalidModifiedCopyResponse.StatusCode);
+
+        // A VALID conditional date still applies: an If-Unmodified-Since strictly before the source's
+        // LastModified means the source was modified after it → 412 PreconditionFailed.
+        using var validUnmodifiedCopyRequest = new HttpRequestMessage(HttpMethod.Put, "/integrated-s3/buckets/copy-invalid-date-target/objects/docs/valid-unmodified.txt");
+        validUnmodifiedCopyRequest.Headers.TryAddWithoutValidation("x-amz-copy-source", "/copy-invalid-date-source/docs/source.txt");
+        validUnmodifiedCopyRequest.Headers.TryAddWithoutValidation("x-amz-copy-source-if-unmodified-since", sourceObject!.LastModifiedUtc.AddMinutes(-5).ToString("R"));
+
+        var validUnmodifiedCopyResponse = await client.SendAsync(validUnmodifiedCopyRequest);
+        Assert.Equal(HttpStatusCode.PreconditionFailed, validUnmodifiedCopyResponse.StatusCode);
+        var validUnmodifiedCopyError = XDocument.Parse(await validUnmodifiedCopyResponse.Content.ReadAsStringAsync());
+        Assert.Equal("PreconditionFailed", GetRequiredElementValue(validUnmodifiedCopyError, "Code"));
+
+        var blockedHead = await client.SendAsync(new HttpRequestMessage(HttpMethod.Head, "/integrated-s3/buckets/copy-invalid-date-target/objects/docs/valid-unmodified.txt"));
+        Assert.Equal(HttpStatusCode.NotFound, blockedHead.StatusCode);
+    }
+
+    [Fact]
+    public async Task PutObject_WithInvalidExpiresRequestValue_IgnoresItInsteadOf400()
+    {
+        using var client = await _factory.CreateClientAsync();
+        const string bucketName = "invalid-expires-bucket";
+        const string objectKey = "docs/invalid-expires.txt";
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync($"/integrated-s3/buckets/{bucketName}", content: null)).StatusCode);
+
+        // An unparseable Expires request value must not fail the PUT with 400 (it is stored opaquely).
+        using var putRequest = new HttpRequestMessage(HttpMethod.Put, $"/integrated-s3/{bucketName}/{objectKey}")
+        {
+            Content = new StringContent("invalid expires payload", Encoding.UTF8, "text/plain")
+        };
+        putRequest.Content.Headers.TryAddWithoutValidation("Expires", "definitely-not-a-date");
+
+        var putResponse = await client.SendAsync(putRequest);
+        Assert.Equal(HttpStatusCode.OK, putResponse.StatusCode);
+        Assert.Equal("definitely-not-a-date", GetExpiresHeaderValue(await client.GetAsync($"/integrated-s3/{bucketName}/{objectKey}")));
+    }
+
+    [Fact]
     public async Task S3CompatibleBucketRoute_ListObjectsV1_WithMarkerAndEncodingType_ReturnsLegacyXmlPayload()
     {
         using var client = await _factory.CreateClientAsync();
@@ -3107,6 +4302,258 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
     }
 
     [Fact]
+    public async Task S3CompatibleBucketRoute_ListType2_WithMaxKeysAbove1000_ClampsMaxKeysToLimit()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        await client.PutAsync("/integrated-s3/buckets/maxkeys-clamp-v2-bucket", content: null);
+        await client.PutAsync("/integrated-s3/buckets/maxkeys-clamp-v2-bucket/objects/a.txt", new StringContent("A", Encoding.UTF8, "text/plain"));
+        await client.PutAsync("/integrated-s3/buckets/maxkeys-clamp-v2-bucket/objects/b.txt", new StringContent("B", Encoding.UTF8, "text/plain"));
+
+        var response = await client.GetAsync("/integrated-s3/maxkeys-clamp-v2-bucket?list-type=2&max-keys=5000");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var document = XDocument.Parse(await response.Content.ReadAsStringAsync());
+        S3XmlTestHelper.AssertRoot(document, "ListBucketResult");
+        Assert.Equal("1000", GetRequiredElementValue(document, "MaxKeys"));
+        Assert.Equal("false", GetRequiredElementValue(document, "IsTruncated"));
+        Assert.Equal("2", GetRequiredElementValue(document, "KeyCount"));
+    }
+
+    [Fact]
+    public async Task S3CompatibleBucketRoute_ListObjectsV1_WithMaxKeysAbove1000_ClampsMaxKeysToLimit()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        await client.PutAsync("/integrated-s3/buckets/maxkeys-clamp-v1-bucket", content: null);
+        await client.PutAsync("/integrated-s3/buckets/maxkeys-clamp-v1-bucket/objects/a.txt", new StringContent("A", Encoding.UTF8, "text/plain"));
+
+        var response = await client.GetAsync("/integrated-s3/maxkeys-clamp-v1-bucket?max-keys=5000");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var document = XDocument.Parse(await response.Content.ReadAsStringAsync());
+        S3XmlTestHelper.AssertRoot(document, "ListBucketResult");
+        Assert.Equal("1000", GetRequiredElementValue(document, "MaxKeys"));
+        Assert.Equal("false", GetRequiredElementValue(document, "IsTruncated"));
+    }
+
+    [Fact]
+    public async Task S3CompatibleBucketRoute_ListType2_WithMaxKeysZero_ReturnsEmptyPageWithOk()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        await client.PutAsync("/integrated-s3/buckets/maxkeys-zero-v2-bucket", content: null);
+        await client.PutAsync("/integrated-s3/buckets/maxkeys-zero-v2-bucket/objects/a.txt", new StringContent("A", Encoding.UTF8, "text/plain"));
+        await client.PutAsync("/integrated-s3/buckets/maxkeys-zero-v2-bucket/objects/b.txt", new StringContent("B", Encoding.UTF8, "text/plain"));
+
+        var response = await client.GetAsync("/integrated-s3/maxkeys-zero-v2-bucket?list-type=2&max-keys=0");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var document = XDocument.Parse(await response.Content.ReadAsStringAsync());
+        S3XmlTestHelper.AssertRoot(document, "ListBucketResult");
+        Assert.Equal("0", GetRequiredElementValue(document, "MaxKeys"));
+        Assert.Equal("0", GetRequiredElementValue(document, "KeyCount"));
+        Assert.Equal("true", GetRequiredElementValue(document, "IsTruncated"));
+        Assert.Empty(document.Root!.S3Elements("Contents"));
+    }
+
+    [Fact]
+    public async Task S3CompatibleBucketRoute_ListObjectsV1_WithMaxKeysZero_ReturnsEmptyPageWithOk()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        await client.PutAsync("/integrated-s3/buckets/maxkeys-zero-v1-bucket", content: null);
+        await client.PutAsync("/integrated-s3/buckets/maxkeys-zero-v1-bucket/objects/a.txt", new StringContent("A", Encoding.UTF8, "text/plain"));
+
+        var response = await client.GetAsync("/integrated-s3/maxkeys-zero-v1-bucket?max-keys=0");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var document = XDocument.Parse(await response.Content.ReadAsStringAsync());
+        S3XmlTestHelper.AssertRoot(document, "ListBucketResult");
+        Assert.Equal("0", GetRequiredElementValue(document, "MaxKeys"));
+        Assert.Equal("true", GetRequiredElementValue(document, "IsTruncated"));
+        Assert.Empty(document.Root!.S3Elements("Contents"));
+    }
+
+    [Fact]
+    public async Task S3CompatibleBucketRoute_ListObjectVersions_WithMaxKeysZero_ReturnsEmptyPageWithOk()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        await client.PutAsync("/integrated-s3/buckets/maxkeys-zero-versions-bucket", content: null);
+        await client.PutAsync("/integrated-s3/buckets/maxkeys-zero-versions-bucket/objects/a.txt", new StringContent("A", Encoding.UTF8, "text/plain"));
+
+        var response = await client.GetAsync("/integrated-s3/maxkeys-zero-versions-bucket?versions&max-keys=0");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var document = XDocument.Parse(await response.Content.ReadAsStringAsync());
+        S3XmlTestHelper.AssertRoot(document, "ListVersionsResult");
+        Assert.Equal("0", GetRequiredElementValue(document, "MaxKeys"));
+        Assert.Equal("true", GetRequiredElementValue(document, "IsTruncated"));
+        Assert.Empty(document.Root!.S3Elements("Version"));
+    }
+
+    [Fact]
+    public async Task S3CompatibleBucketRoute_ListObjectsV1_WithNonIntegerMaxKeys_ReturnsInvalidArgument()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        await client.PutAsync("/integrated-s3/buckets/invalid-maxkeys-v1-bucket", content: null);
+
+        var response = await client.GetAsync("/integrated-s3/invalid-maxkeys-v1-bucket?max-keys=abc");
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal("application/xml", response.Content.Headers.ContentType?.MediaType);
+        var errorDocument = XDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal("InvalidArgument", GetRequiredElementValue(errorDocument, "Code"));
+        Assert.Contains("max-keys", GetRequiredElementValue(errorDocument, "Message"), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task S3CompatibleBucketRoute_ListType2_WithNonIntegerMaxKeys_ReturnsInvalidArgument()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        await client.PutAsync("/integrated-s3/buckets/invalid-maxkeys-v2-bucket", content: null);
+
+        var response = await client.GetAsync("/integrated-s3/invalid-maxkeys-v2-bucket?list-type=2&max-keys=abc");
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal("application/xml", response.Content.Headers.ContentType?.MediaType);
+        var errorDocument = XDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal("InvalidArgument", GetRequiredElementValue(errorDocument, "Code"));
+        Assert.Contains("max-keys", GetRequiredElementValue(errorDocument, "Message"), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task S3CompatibleBucketRoute_ListObjectVersions_WithNonIntegerMaxKeys_ReturnsInvalidArgument()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        await client.PutAsync("/integrated-s3/buckets/invalid-maxkeys-versions-bucket", content: null);
+
+        var response = await client.GetAsync("/integrated-s3/invalid-maxkeys-versions-bucket?versions&max-keys=abc");
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal("application/xml", response.Content.Headers.ContentType?.MediaType);
+        var errorDocument = XDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal("InvalidArgument", GetRequiredElementValue(errorDocument, "Code"));
+        Assert.Contains("max-keys", GetRequiredElementValue(errorDocument, "Message"), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task S3CompatibleBucketRoute_ListObjectsV1_WithNegativeMaxKeys_ReturnsInvalidArgument()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        await client.PutAsync("/integrated-s3/buckets/negative-maxkeys-v1-bucket", content: null);
+
+        var response = await client.GetAsync("/integrated-s3/negative-maxkeys-v1-bucket?max-keys=-1");
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal("application/xml", response.Content.Headers.ContentType?.MediaType);
+        var errorDocument = XDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal("InvalidArgument", GetRequiredElementValue(errorDocument, "Code"));
+        Assert.Contains("max-keys", GetRequiredElementValue(errorDocument, "Message"), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task S3CompatibleBucketRoute_ListType2_WithNegativeMaxKeys_ReturnsInvalidArgument()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        await client.PutAsync("/integrated-s3/buckets/negative-maxkeys-v2-bucket", content: null);
+
+        var response = await client.GetAsync("/integrated-s3/negative-maxkeys-v2-bucket?list-type=2&max-keys=-1");
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal("application/xml", response.Content.Headers.ContentType?.MediaType);
+        var errorDocument = XDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal("InvalidArgument", GetRequiredElementValue(errorDocument, "Code"));
+        Assert.Contains("max-keys", GetRequiredElementValue(errorDocument, "Message"), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task S3CompatibleBucketRoute_ListObjectVersions_WithNegativeMaxKeys_ReturnsInvalidArgument()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        await client.PutAsync("/integrated-s3/buckets/negative-maxkeys-versions-bucket", content: null);
+
+        var response = await client.GetAsync("/integrated-s3/negative-maxkeys-versions-bucket?versions&max-keys=-1");
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal("application/xml", response.Content.Headers.ContentType?.MediaType);
+        var errorDocument = XDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal("InvalidArgument", GetRequiredElementValue(errorDocument, "Code"));
+        Assert.Contains("max-keys", GetRequiredElementValue(errorDocument, "Message"), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task S3CompatibleBucketRoute_ListObjectsV1_WithUnsupportedEncodingType_ReturnsInvalidArgument()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        await client.PutAsync("/integrated-s3/buckets/invalid-encoding-v1-bucket", content: null);
+
+        var response = await client.GetAsync("/integrated-s3/invalid-encoding-v1-bucket?encoding-type=bogus");
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal("application/xml", response.Content.Headers.ContentType?.MediaType);
+        var errorDocument = XDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal("InvalidArgument", GetRequiredElementValue(errorDocument, "Code"));
+        Assert.Contains("encoding-type", GetRequiredElementValue(errorDocument, "Message"), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task S3CompatibleBucketRoute_ListType2_WithUnsupportedEncodingType_ReturnsInvalidArgument()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        await client.PutAsync("/integrated-s3/buckets/invalid-encoding-v2-bucket", content: null);
+
+        var response = await client.GetAsync("/integrated-s3/invalid-encoding-v2-bucket?list-type=2&encoding-type=bogus");
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal("application/xml", response.Content.Headers.ContentType?.MediaType);
+        var errorDocument = XDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal("InvalidArgument", GetRequiredElementValue(errorDocument, "Code"));
+        Assert.Contains("encoding-type", GetRequiredElementValue(errorDocument, "Message"), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task S3CompatibleBucketRoute_ListObjectVersions_WithUnsupportedEncodingType_ReturnsInvalidArgument()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        await client.PutAsync("/integrated-s3/buckets/invalid-encoding-versions-bucket", content: null);
+
+        var response = await client.GetAsync("/integrated-s3/invalid-encoding-versions-bucket?versions&encoding-type=bogus");
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal("application/xml", response.Content.Headers.ContentType?.MediaType);
+        var errorDocument = XDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal("InvalidArgument", GetRequiredElementValue(errorDocument, "Code"));
+        Assert.Contains("encoding-type", GetRequiredElementValue(errorDocument, "Message"), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task S3CompatibleBucketRoute_ListType2_WithNonBooleanFetchOwner_ReturnsInvalidArgument()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        await client.PutAsync("/integrated-s3/buckets/invalid-fetch-owner-v2-bucket", content: null);
+
+        var response = await client.GetAsync("/integrated-s3/invalid-fetch-owner-v2-bucket?list-type=2&fetch-owner=maybe");
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal("application/xml", response.Content.Headers.ContentType?.MediaType);
+        var errorDocument = XDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal("InvalidArgument", GetRequiredElementValue(errorDocument, "Code"));
+        Assert.Contains("fetch-owner", GetRequiredElementValue(errorDocument, "Message"), StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task S3CompatibleBucketRoute_ListType2_WithFetchOwnerAndEncodingType_ReturnsOwnerMetadata()
     {
         using var client = await _factory.CreateClientAsync();
@@ -3199,6 +4646,111 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
         Assert.Collection(keys,
             static key => Assert.Equal("b.txt", key),
             static key => Assert.Equal("c.txt", key));
+    }
+
+    // Regression tests for issue #167.
+
+    [Fact]
+    public async Task S3CompatibleBucketRoute_ListType2_SortsAstralPlaneKeys_InUtf8ByteOrder()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        // "k\u{1F600}" (astral) and "k豈" (BMP) sort in OPPOSITE orders under UTF-16 ordinal vs
+        // UTF-8 bytes. AWS uses UTF-8 bytes: "k" then "k豈" (3-byte) then "k\u{1F600}" (4-byte).
+        const string astralKey = "k\U0001F600";
+        const string bmpKey = "k豈";
+
+        await client.PutAsync("/integrated-s3/buckets/utf8-sort-bucket", content: null);
+        foreach (var key in new[] { astralKey, bmpKey, "k" }) {
+            var putResponse = await client.PutAsync(
+                $"/integrated-s3/buckets/utf8-sort-bucket/objects/{Uri.EscapeDataString(key)}",
+                new StringContent("x", Encoding.UTF8, "text/plain"));
+            Assert.Equal(HttpStatusCode.OK, putResponse.StatusCode);
+        }
+
+        var response = await client.GetAsync("/integrated-s3/utf8-sort-bucket?list-type=2");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        var document = XDocument.Parse(await response.Content.ReadAsStringAsync());
+        var keys = document.Root!.S3Elements("Contents")
+            .Select(static content => content.S3Element("Key")?.Value)
+            .ToArray();
+
+        // UTF-8 byte order — the BMP key precedes the astral key (the reverse of UTF-16 ordinal).
+        Assert.Collection(keys,
+            static key => Assert.Equal("k", key),
+            key => Assert.Equal(bmpKey, key),
+            key => Assert.Equal(astralKey, key));
+    }
+
+    [Fact]
+    public async Task S3CompatibleBucketRoute_ListType2_WithSingleSpaceDelimiter_GroupsOnSpace()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        await client.PutAsync("/integrated-s3/buckets/space-delimiter-bucket", content: null);
+        foreach (var key in new[] { "alpha beta", "alpha gamma", "solo" }) {
+            var putResponse = await client.PutAsync(
+                $"/integrated-s3/buckets/space-delimiter-bucket/objects/{Uri.EscapeDataString(key)}",
+                new StringContent("x", Encoding.UTF8, "text/plain"));
+            Assert.Equal(HttpStatusCode.OK, putResponse.StatusCode);
+        }
+
+        // A single-space delimiter is a legitimate S3 value and must NOT be dropped as whitespace.
+        var response = await client.GetAsync($"/integrated-s3/space-delimiter-bucket?list-type=2&delimiter={Uri.EscapeDataString(" ")}");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        // PreserveWhitespace so the whitespace-only <Delimiter> element text is not normalized away.
+        var document = XDocument.Parse(await response.Content.ReadAsStringAsync(), LoadOptions.PreserveWhitespace);
+
+        // The space delimiter is echoed back verbatim rather than suppressed.
+        Assert.Equal(" ", GetRequiredElementValue(document, "Delimiter"));
+
+        // "alpha beta" and "alpha gamma" collapse into the common prefix "alpha " (up to the space).
+        var prefixes = document.Root!.S3Elements("CommonPrefixes")
+            .Select(static prefix => prefix.S3Element("Prefix")?.Value)
+            .ToArray();
+        Assert.Collection(prefixes, static prefix => Assert.Equal("alpha ", prefix));
+
+        // "solo" has no space, so it is returned as a plain object.
+        var keys = document.Root.S3Elements("Contents")
+            .Select(static content => content.S3Element("Key")?.Value)
+            .ToArray();
+        Assert.Collection(keys, static key => Assert.Equal("solo", key));
+    }
+
+    [Fact]
+    public async Task S3CompatibleBucketRoute_ListType2_WithWhitespaceStartAfter_IsHonored()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        await client.PutAsync("/integrated-s3/buckets/space-start-after-bucket", content: null);
+        // A single space sorts before every printable key, so a start-after of " " must keep every key.
+        foreach (var key in new[] { "!bang", "apple", "zebra" }) {
+            var putResponse = await client.PutAsync(
+                $"/integrated-s3/buckets/space-start-after-bucket/objects/{Uri.EscapeDataString(key)}",
+                new StringContent("x", Encoding.UTF8, "text/plain"));
+            Assert.Equal(HttpStatusCode.OK, putResponse.StatusCode);
+        }
+
+        // A whitespace-only start-after must be treated as the literal value " ", not dropped as absent.
+        var response = await client.GetAsync($"/integrated-s3/space-start-after-bucket?list-type=2&start-after={Uri.EscapeDataString(" ")}");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        // PreserveWhitespace so the whitespace-only <StartAfter> element text is not normalized away.
+        var document = XDocument.Parse(await response.Content.ReadAsStringAsync(), LoadOptions.PreserveWhitespace);
+
+        // The literal space is echoed back in StartAfter rather than suppressed.
+        Assert.Equal(" ", GetRequiredElementValue(document, "StartAfter"));
+
+        // "!bang" (0x21) sorts after " " (0x20), so all three keys survive the marker filter.
+        var keys = document.Root!.S3Elements("Contents")
+            .Select(static content => content.S3Element("Key")?.Value)
+            .ToArray();
+        Assert.Collection(keys,
+            static key => Assert.Equal("!bang", key),
+            static key => Assert.Equal("apple", key),
+            static key => Assert.Equal("zebra", key));
     }
 
     [Fact]
@@ -3653,7 +5205,8 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
 
         var headObjectResponse = await client.SendAsync(new HttpRequestMessage(HttpMethod.Head, "/integrated-s3/buckets/tagging-bucket/objects/docs/tagged.txt"));
         Assert.Equal(HttpStatusCode.OK, headObjectResponse.StatusCode);
-        Assert.Equal("2", Assert.Single(headObjectResponse.Headers.GetValues("x-amz-tagging-count")));
+        // AWS emits x-amz-tagging-count on GET only, never on HEAD.
+        Assert.False(headObjectResponse.Headers.Contains("x-amz-tagging-count"));
     }
 
     [Fact]
@@ -4176,7 +5729,8 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
         const string secretAccessKey = "first-party-presign-part-secret";
         const string bucketName = "first-party-presign-part-bucket";
         const string objectKey = "docs/client-presigned-multipart.bin";
-        const string firstPartPayload = "first presigned part payload|";
+        // The first (non-final) part must be at least the S3 minimum of 5 MiB.
+        var firstPartPayload = new string('a', 5 * 1024 * 1024);
         const string secondPartPayload = "second presigned part payload";
 
         await using var isolatedClient = await _factory.CreateIsolatedClientAsync(builder => {
@@ -4505,7 +6059,7 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
     }
 
     [Theory]
-    [InlineData("ownershipControls")]
+    [InlineData("notarealsubresource")]
     [InlineData("versioning&list-type=2")]
     [InlineData("cors&versioning")]
     public async Task S3CompatibleBucketRoute_UnsupportedSubresource_ReturnsNotImplemented(string query)
@@ -4789,7 +6343,8 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
 """, Encoding.UTF8, "application/xml")
         };
 
-        await AssertErrorResponseAsync(await client.SendAsync(putObjectLockRequest), HttpStatusCode.Conflict, "OperationAborted");
+        // AWS returns InvalidBucketState (409) for enabling Object Lock without versioning, not OperationAborted.
+        await AssertErrorResponseAsync(await client.SendAsync(putObjectLockRequest), HttpStatusCode.Conflict, "InvalidBucketState");
     }
 
     [Fact]
@@ -4926,6 +6481,113 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
             $"/integrated-s3/{bucketName}/docs/small.bin",
             new ByteArrayContent(new byte[512]));
         Assert.Equal(HttpStatusCode.OK, withinLimitResponse.StatusCode);
+    }
+
+    [Fact]
+    public void IntegratedS3Options_MaxObjectSizeBytes_DefaultsToFiveGibibytes()
+    {
+        // Regression for the disk-exhaustion DoS: the shipped default must be a finite, non-null cap
+        // so object uploads (and aws-chunked temp-file spooling) are bounded out of the box.
+        Assert.Equal(5L * 1024 * 1024 * 1024, new IntegratedS3Options().MaxObjectSizeBytes);
+    }
+
+    [Fact]
+    public async Task PutObject_AwsChunkedBodyExceedingMaxObjectSizeBytes_ReturnsEntityTooLarge()
+    {
+        // Regression for the aws-chunked disk-exhaustion DoS: an actual chunk stream whose decoded size
+        // exceeds the cap must be rejected mid-spool with 413 EntityTooLarge even when the client
+        // understates x-amz-decoded-content-length, instead of being written unbounded to the temp volume.
+        await using var isolatedClient = await _factory.CreateIsolatedClientAsync(builder =>
+            builder.Services.Configure<IntegratedS3Options>(static options => options.MaxObjectSizeBytes = 1024));
+        using var client = isolatedClient.Client;
+
+        const string bucketName = "aws-chunked-oversized-body-bucket";
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync($"/integrated-s3/buckets/{bucketName}", content: null)).StatusCode);
+
+        // 4096 decoded bytes across chunk frames (> 1024 cap), but the header lies and declares only 8 bytes
+        // so the up-front declared-length check does not fire; the cumulative-byte cap in the spool loop must.
+        using var body = new MemoryStream();
+        WriteAscii(body, "800\r\n"); // 0x800 = 2048 bytes
+        body.Write(new byte[2048], 0, 2048);
+        WriteAscii(body, "\r\n800\r\n"); // another 2048 bytes
+        body.Write(new byte[2048], 0, 2048);
+        WriteAscii(body, "\r\n0\r\n\r\n");
+
+        using var putRequest = new HttpRequestMessage(HttpMethod.Put, $"/integrated-s3/{bucketName}/docs/oversized.txt")
+        {
+            Content = new ByteArrayContent(body.ToArray())
+        };
+        putRequest.Content.Headers.ContentType = new MediaTypeHeaderValue("text/plain");
+        putRequest.Content.Headers.ContentEncoding.Add("aws-chunked");
+        putRequest.Headers.TryAddWithoutValidation("x-amz-decoded-content-length", "8");
+        putRequest.Headers.TryAddWithoutValidation("x-amz-content-sha256", "STREAMING-UNSIGNED-PAYLOAD-TRAILER");
+
+        var response = await client.SendAsync(putRequest);
+
+        Assert.Equal(HttpStatusCode.RequestEntityTooLarge, response.StatusCode);
+        var document = XDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal("EntityTooLarge", GetRequiredElementValue(document, "Code"));
+    }
+
+    [Fact]
+    public async Task PutObject_AwsChunkedDeclaredDecodedLengthExceedingCap_ReturnsEntityTooLargeBeforeSpooling()
+    {
+        // The declared x-amz-decoded-content-length is checked before any byte is written to disk, so an
+        // oversized upload is rejected up front.
+        await using var isolatedClient = await _factory.CreateIsolatedClientAsync(builder =>
+            builder.Services.Configure<IntegratedS3Options>(static options => options.MaxObjectSizeBytes = 1024));
+        using var client = isolatedClient.Client;
+
+        const string bucketName = "aws-chunked-declared-oversized-bucket";
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync($"/integrated-s3/buckets/{bucketName}", content: null)).StatusCode);
+
+        using var putRequest = new HttpRequestMessage(HttpMethod.Put, $"/integrated-s3/{bucketName}/docs/declared-oversized.txt")
+        {
+            Content = new ByteArrayContent(Encoding.ASCII.GetBytes("4\r\ndata\r\n0\r\n\r\n"))
+        };
+        putRequest.Content.Headers.ContentType = new MediaTypeHeaderValue("text/plain");
+        putRequest.Content.Headers.ContentEncoding.Add("aws-chunked");
+        putRequest.Headers.TryAddWithoutValidation("x-amz-decoded-content-length", "1048576"); // 1 MiB > 1024 cap
+        putRequest.Headers.TryAddWithoutValidation("x-amz-content-sha256", "STREAMING-UNSIGNED-PAYLOAD-TRAILER");
+
+        var response = await client.SendAsync(putRequest);
+
+        Assert.Equal(HttpStatusCode.RequestEntityTooLarge, response.StatusCode);
+        var document = XDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal("EntityTooLarge", GetRequiredElementValue(document, "Code"));
+    }
+
+    [Fact]
+    public async Task PutObject_AwsChunkedBodyWithinMaxObjectSizeBytes_Succeeds()
+    {
+        // A body within the configured cap still uploads normally, proving the cap does not over-reject.
+        await using var isolatedClient = await _factory.CreateIsolatedClientAsync(builder =>
+            builder.Services.Configure<IntegratedS3Options>(static options => options.MaxObjectSizeBytes = 1024));
+        using var client = isolatedClient.Client;
+
+        const string bucketName = "aws-chunked-within-cap-bucket";
+        const string objectKey = "docs/within-cap.txt";
+        const string payload = "hello from aws chunked within cap";
+        var checksum = ComputeSha256Base64(payload);
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync($"/integrated-s3/buckets/{bucketName}", content: null)).StatusCode);
+
+        using var putRequest = CreateAwsChunkedPutObjectRequest(
+            $"/integrated-s3/{bucketName}/{objectKey}",
+            payload,
+            sdkChecksumAlgorithm: "SHA256",
+            trailerHeaders: new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["x-amz-checksum-sha256"] = checksum
+            },
+            declaredTrailerHeaderNames: ["x-amz-checksum-sha256"]);
+        putRequest.Headers.TryAddWithoutValidation("x-amz-content-sha256", "STREAMING-UNSIGNED-PAYLOAD-TRAILER");
+
+        var putResponse = await client.SendAsync(putRequest);
+        Assert.Equal(HttpStatusCode.OK, putResponse.StatusCode);
+
+        var getResponse = await client.GetAsync($"/integrated-s3/{bucketName}/{objectKey}");
+        Assert.Equal(HttpStatusCode.OK, getResponse.StatusCode);
+        Assert.Equal(payload, await getResponse.Content.ReadAsStringAsync());
     }
 
     [Fact]
@@ -5490,7 +7152,9 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
     {
         using var client = await _factory.CreateClientAsync();
         var expiresUtc = new DateTimeOffset(2026, 3, 14, 17, 0, 0, TimeSpan.Zero);
-        const string completedPayload = "hello world";
+        // The first (non-final) part must be at least the S3 minimum of 5 MiB.
+        var firstPartPayload = new string('a', 5 * 1024 * 1024);
+        var completedPayload = firstPartPayload + "world";
         var expectedChecksumSha256 = ComputeSha256Base64(completedPayload);
         var expectedChecksumCrc32c = ChecksumTestAlgorithms.ComputeCrc32cBase64(completedPayload);
 
@@ -5522,7 +7186,7 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
 
         var part1Response = await client.PutAsync(
                 $"/integrated-s3/multipart-bucket/docs/multipart.txt?partNumber=1&uploadId={Uri.EscapeDataString(uploadId)}",
-                new StringContent("hello ", Encoding.UTF8, "text/plain"));
+                new StringContent(firstPartPayload, Encoding.UTF8, "text/plain"));
         Assert.Equal(HttpStatusCode.OK, part1Response.StatusCode);
         var part1ETag = part1Response.Headers.ETag?.Tag ?? throw new Xunit.Sdk.XunitException("Expected multipart part ETag header.");
 
@@ -6521,7 +8185,8 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
 
         const string bucketName = "multipart-checksum-bucket";
         const string objectKey = "docs/checksum.txt";
-        const string part1Payload = "hello ";
+        // The first (non-final) part must be at least the S3 minimum of 5 MiB.
+        var part1Payload = new string('a', 5 * 1024 * 1024);
         const string part2Payload = "world";
 
         Assert.Equal(HttpStatusCode.Created, (await client.PutAsync($"/integrated-s3/buckets/{bucketName}", content: null)).StatusCode);
@@ -6609,7 +8274,8 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
 
         const string bucketName = "multipart-sha1-checksum-bucket";
         const string objectKey = "docs/sha1-checksum.txt";
-        const string part1Payload = "hello ";
+        // The first (non-final) part must be at least the S3 minimum of 5 MiB.
+        var part1Payload = new string('a', 5 * 1024 * 1024);
         const string part2Payload = "world";
 
         Assert.Equal(HttpStatusCode.Created, (await client.PutAsync($"/integrated-s3/buckets/{bucketName}", content: null)).StatusCode);
@@ -6705,7 +8371,8 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
 
         const string bucketName = "multipart-crc32c-checksum-bucket";
         const string objectKey = "docs/crc32c-checksum.txt";
-        const string part1Payload = "hello ";
+        // The first (non-final) part must be at least the S3 minimum of 5 MiB.
+        var part1Payload = new string('a', 5 * 1024 * 1024);
         const string part2Payload = "world";
 
         Assert.Equal(HttpStatusCode.Created, (await client.PutAsync($"/integrated-s3/buckets/{bucketName}", content: null)).StatusCode);
@@ -6935,6 +8602,38 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
         Assert.Equal("InvalidRequest", GetRequiredElementValue(document, "Code"));
         Assert.Contains("x-amz-server-side-encryption-aws-kms-key-id", GetRequiredElementValue(document, "Message"));
         Assert.Null(storageService.LastPutObjectRequest);
+    }
+
+    [Fact]
+    public async Task S3CompatiblePutObject_WhenQuotaExceeded_ReturnsEntityTooLargeWith400()
+    {
+        var storageService = new RecordingStorageService
+        {
+            PutObjectFailure = new StorageError
+            {
+                Code = StorageErrorCode.QuotaExceeded,
+                Message = "A storage quota was exceeded.",
+                BucketName = "quota-bucket",
+                ObjectKey = "docs/over-quota.txt",
+                ProviderName = "recording"
+            }
+        };
+        await using var isolatedClient = await CreateStorageServiceIsolatedClientAsync(storageService);
+        using var client = isolatedClient.Client;
+
+        using var request = new HttpRequestMessage(HttpMethod.Put, "/integrated-s3/quota-bucket/docs/over-quota.txt")
+        {
+            Content = new StringContent("payload", Encoding.UTF8, "text/plain")
+        };
+
+        var response = await client.SendAsync(request);
+
+        // AWS EntityTooLarge is HTTP 400, not 413.
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal("application/xml", response.Content.Headers.ContentType?.MediaType);
+
+        var document = XDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal("EntityTooLarge", GetRequiredElementValue(document, "Code"));
     }
 
     [Fact]
@@ -9144,13 +10843,90 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
         var suspendResponse = await client.SendAsync(suspendRequest);
         Assert.Equal(HttpStatusCode.OK, suspendResponse.StatusCode);
 
+        // Issue #151: a PUT on a versioning-suspended bucket stores the "null" version, so no
+        // x-amz-version-id header is emitted and it overwrites any prior null version. The
+        // previously-enabled version (v1) is retained as a non-current version.
         var v2 = await client.PutAsync(
             "/integrated-s3/suspend-versioning-bucket/file.txt",
             new StringContent("v2", Encoding.UTF8, "text/plain"));
         Assert.Equal(HttpStatusCode.OK, v2.StatusCode);
-        var v2VersionId = Assert.Single(v2.Headers.GetValues("x-amz-version-id"));
+        Assert.False(v2.Headers.TryGetValues("x-amz-version-id", out _));
 
-        Assert.NotEqual(v1VersionId, v2VersionId);
+        // The current object is now the null-version "v2" payload.
+        var currentGet = await client.GetAsync("/integrated-s3/suspend-versioning-bucket/file.txt");
+        Assert.Equal(HttpStatusCode.OK, currentGet.StatusCode);
+        Assert.False(currentGet.Headers.TryGetValues("x-amz-version-id", out _));
+        Assert.Equal("v2", await currentGet.Content.ReadAsStringAsync());
+
+        // The enabled-era version v1 is preserved and still addressable by its version id.
+        var v1Get = await client.GetAsync($"/integrated-s3/suspend-versioning-bucket/file.txt?versionId={Uri.EscapeDataString(v1VersionId)}");
+        Assert.Equal(HttpStatusCode.OK, v1Get.StatusCode);
+        Assert.Equal("v1", await v1Get.Content.ReadAsStringAsync());
+    }
+
+    [Fact]
+    public async Task PutBucketVersioning_WithAbsentStatus_ReturnsIllegalVersioningConfiguration()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync("/integrated-s3/buckets/absent-status-versioning-bucket", content: null)).StatusCode);
+
+        using var request = new HttpRequestMessage(HttpMethod.Put, "/integrated-s3/absent-status-versioning-bucket?versioning")
+        {
+            Content = new StringContent("""
+<VersioningConfiguration>
+</VersioningConfiguration>
+""", Encoding.UTF8, "application/xml")
+        };
+        var response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        var errorDocument = XDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal("IllegalVersioningConfigurationException", GetRequiredElementValue(errorDocument, "Code"));
+    }
+
+    [Fact]
+    public async Task PutBucketVersioning_WithEmptyStatus_ReturnsIllegalVersioningConfiguration()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync("/integrated-s3/buckets/empty-status-versioning-bucket", content: null)).StatusCode);
+
+        using var request = new HttpRequestMessage(HttpMethod.Put, "/integrated-s3/empty-status-versioning-bucket?versioning")
+        {
+            Content = new StringContent("""
+<VersioningConfiguration>
+  <Status></Status>
+</VersioningConfiguration>
+""", Encoding.UTF8, "application/xml")
+        };
+        var response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        var errorDocument = XDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal("IllegalVersioningConfigurationException", GetRequiredElementValue(errorDocument, "Code"));
+    }
+
+    [Fact]
+    public async Task PutBucketVersioning_WithInvalidStatus_ReturnsIllegalVersioningConfiguration()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync("/integrated-s3/buckets/invalid-status-versioning-bucket", content: null)).StatusCode);
+
+        using var request = new HttpRequestMessage(HttpMethod.Put, "/integrated-s3/invalid-status-versioning-bucket?versioning")
+        {
+            Content = new StringContent("""
+<VersioningConfiguration>
+  <Status>Disabled</Status>
+</VersioningConfiguration>
+""", Encoding.UTF8, "application/xml")
+        };
+        var response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        var errorDocument = XDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal("IllegalVersioningConfigurationException", GetRequiredElementValue(errorDocument, "Code"));
     }
 
     [Fact]
@@ -9295,6 +11071,82 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
     }
 
     [Fact]
+    public async Task ListObjectVersions_VersionIdMarkerWithoutKeyMarker_ReturnsInvalidArgument()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync("/integrated-s3/buckets/vid-marker-no-key-bucket", content: null)).StatusCode);
+        await EnableBucketVersioningAsync(client, "vid-marker-no-key-bucket");
+
+        // AWS rejects a version-id-marker supplied without a key-marker with 400 InvalidArgument.
+        var response = await client.GetAsync(
+            "/integrated-s3/vid-marker-no-key-bucket?versions&version-id-marker=some-version-id");
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal("application/xml", response.Content.Headers.ContentType?.MediaType);
+        var errorDocument = XDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal("InvalidArgument", GetRequiredElementValue(errorDocument, "Code"));
+        Assert.Contains("key marker", GetRequiredElementValue(errorDocument, "Message"), StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task ListObjectVersions_EmitsOwnerOnEachVersionEntry()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync("/integrated-s3/buckets/owner-versions-bucket", content: null)).StatusCode);
+        await EnableBucketVersioningAsync(client, "owner-versions-bucket");
+
+        await client.PutAsync(
+            "/integrated-s3/owner-versions-bucket/docs/file.txt",
+            new StringContent("v1", Encoding.UTF8, "text/plain"));
+
+        var listResponse = await client.GetAsync("/integrated-s3/owner-versions-bucket?versions");
+        Assert.Equal(HttpStatusCode.OK, listResponse.StatusCode);
+        var document = XDocument.Parse(await listResponse.Content.ReadAsStringAsync());
+
+        var version = Assert.Single(document.Root!.Elements(S3Ns + "Version"));
+        var owner = version.Element(S3Ns + "Owner");
+        Assert.NotNull(owner);
+        Assert.False(string.IsNullOrWhiteSpace(owner!.Element(S3Ns + "ID")?.Value));
+    }
+
+    [Fact]
+    public async Task ListObjectVersions_TruncatedOnCommonPrefixBoundary_NextKeyMarkerIsCommonPrefix()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync("/integrated-s3/buckets/prefix-boundary-versions-bucket", content: null)).StatusCode);
+        await EnableBucketVersioningAsync(client, "prefix-boundary-versions-bucket");
+
+        // Two grouped common prefixes under a delimiter: alpha/ and beta/.
+        await client.PutAsync(
+            "/integrated-s3/prefix-boundary-versions-bucket/alpha/one.txt",
+            new StringContent("a", Encoding.UTF8, "text/plain"));
+        await client.PutAsync(
+            "/integrated-s3/prefix-boundary-versions-bucket/alpha/two.txt",
+            new StringContent("a", Encoding.UTF8, "text/plain"));
+        await client.PutAsync(
+            "/integrated-s3/prefix-boundary-versions-bucket/beta/one.txt",
+            new StringContent("b", Encoding.UTF8, "text/plain"));
+
+        // max-keys=1 with a delimiter truncates right after the first CommonPrefix (alpha/).
+        var response = await client.GetAsync(
+            "/integrated-s3/prefix-boundary-versions-bucket?versions&delimiter=/&max-keys=1");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var document = XDocument.Parse(await response.Content.ReadAsStringAsync());
+
+        Assert.Equal("true", GetRequiredElementValue(document, "IsTruncated"));
+        var commonPrefix = Assert.Single(document.Root!.Elements(S3Ns + "CommonPrefixes"));
+        Assert.Equal("alpha/", commonPrefix.Element(S3Ns + "Prefix")?.Value);
+
+        // AWS sets NextKeyMarker to the common-prefix string (not an underlying object key)
+        // and omits NextVersionIdMarker at a CommonPrefix truncation boundary.
+        Assert.Equal("alpha/", GetRequiredElementValue(document, "NextKeyMarker"));
+        Assert.Empty(document.Root!.Elements(S3Ns + "NextVersionIdMarker"));
+    }
+
+    [Fact]
     public async Task ListObjectVersions_DeleteMarkerNotInGetResponse_OnlyInVersionsList()
     {
         using var client = await _factory.CreateClientAsync();
@@ -9422,6 +11274,296 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
         });
     }
 
+    // Regression harness for #152: returns the specific *ConfigurationNotFound error for each bucket
+    // subresource getter, deliberately WITHOUT SuggestedHttpStatusCode so the endpoint has to derive
+    // both the HTTP status (ToStatusCode) and the S3 error Code (ToS3ErrorCode) from the enum value.
+    private sealed class AbsentBucketConfigStorageService : IStorageService
+    {
+        private static StorageError NotFound(StorageErrorCode code, string bucketName) => new()
+        {
+            Code = code,
+            Message = $"Bucket '{bucketName}' does not have the requested configuration.",
+            BucketName = bucketName
+        };
+
+        private static NotSupportedException Boom() => new("Not used by the #152 absent-config regression test.");
+
+        public ValueTask<StorageResult<BucketTaggingConfiguration>> GetBucketTaggingAsync(string bucketName, CancellationToken cancellationToken = default)
+            => ValueTask.FromResult(StorageResult<BucketTaggingConfiguration>.Failure(NotFound(StorageErrorCode.TaggingConfigurationNotFound, bucketName)));
+
+        public ValueTask<StorageResult<BucketPublicAccessBlockConfiguration>> GetBucketPublicAccessBlockAsync(string bucketName, CancellationToken cancellationToken = default)
+            => ValueTask.FromResult(StorageResult<BucketPublicAccessBlockConfiguration>.Failure(NotFound(StorageErrorCode.PublicAccessBlockConfigurationNotFound, bucketName)));
+
+        public ValueTask<StorageResult<BucketOwnershipControlsConfiguration>> GetBucketOwnershipControlsAsync(string bucketName, CancellationToken cancellationToken = default)
+            => ValueTask.FromResult(StorageResult<BucketOwnershipControlsConfiguration>.Failure(NotFound(StorageErrorCode.OwnershipControlsNotFound, bucketName)));
+
+        public ValueTask<StorageResult<BucketWebsiteConfiguration>> GetBucketWebsiteAsync(string bucketName, CancellationToken cancellationToken = default)
+            => ValueTask.FromResult(StorageResult<BucketWebsiteConfiguration>.Failure(NotFound(StorageErrorCode.WebsiteConfigurationNotFound, bucketName)));
+
+        public ValueTask<StorageResult<BucketLifecycleConfiguration>> GetBucketLifecycleAsync(string bucketName, CancellationToken cancellationToken = default)
+            => ValueTask.FromResult(StorageResult<BucketLifecycleConfiguration>.Failure(NotFound(StorageErrorCode.LifecycleConfigurationNotFound, bucketName)));
+
+        public ValueTask<StorageResult<BucketReplicationConfiguration>> GetBucketReplicationAsync(string bucketName, CancellationToken cancellationToken = default)
+            => ValueTask.FromResult(StorageResult<BucketReplicationConfiguration>.Failure(NotFound(StorageErrorCode.ReplicationConfigurationNotFound, bucketName)));
+
+        public ValueTask<StorageResult<ObjectLockConfiguration>> GetObjectLockConfigurationAsync(string bucketName, CancellationToken cancellationToken = default)
+            => ValueTask.FromResult(StorageResult<ObjectLockConfiguration>.Failure(NotFound(StorageErrorCode.ObjectLockConfigurationNotFound, bucketName)));
+
+        public ValueTask<StorageResult<BucketAnalyticsConfiguration>> GetBucketAnalyticsConfigurationAsync(string bucketName, string id, CancellationToken cancellationToken = default)
+            => ValueTask.FromResult(StorageResult<BucketAnalyticsConfiguration>.Failure(NotFound(StorageErrorCode.AnalyticsConfigurationNotFound, bucketName)));
+
+        public ValueTask<StorageResult<BucketMetricsConfiguration>> GetBucketMetricsConfigurationAsync(string bucketName, string id, CancellationToken cancellationToken = default)
+            => ValueTask.FromResult(StorageResult<BucketMetricsConfiguration>.Failure(NotFound(StorageErrorCode.MetricsConfigurationNotFound, bucketName)));
+
+        public ValueTask<StorageResult<BucketInventoryConfiguration>> GetBucketInventoryConfigurationAsync(string bucketName, string id, CancellationToken cancellationToken = default)
+            => ValueTask.FromResult(StorageResult<BucketInventoryConfiguration>.Failure(NotFound(StorageErrorCode.InventoryConfigurationNotFound, bucketName)));
+
+        public IAsyncEnumerable<BucketInfo> ListBucketsAsync(CancellationToken cancellationToken = default) => throw Boom();
+        // Overridden below with a proper NotFound result so #153's intelligent-tiering routing regression can assert the mapped 404.
+        public ValueTask<StorageResult<BucketInfo>> CreateBucketAsync(CreateBucketRequest request, CancellationToken cancellationToken = default) => throw Boom();
+        public ValueTask<StorageResult<BucketLocationInfo>> GetBucketLocationAsync(string bucketName, CancellationToken cancellationToken = default) => throw Boom();
+        public ValueTask<StorageResult<BucketVersioningInfo>> GetBucketVersioningAsync(string bucketName, CancellationToken cancellationToken = default) => throw Boom();
+        public ValueTask<StorageResult<BucketVersioningInfo>> PutBucketVersioningAsync(PutBucketVersioningRequest request, CancellationToken cancellationToken = default) => throw Boom();
+        public ValueTask<StorageResult<BucketCorsConfiguration>> GetBucketCorsAsync(string bucketName, CancellationToken cancellationToken = default) => throw Boom();
+        public ValueTask<StorageResult<BucketCorsConfiguration>> PutBucketCorsAsync(PutBucketCorsRequest request, CancellationToken cancellationToken = default) => throw Boom();
+        public ValueTask<StorageResult> DeleteBucketCorsAsync(DeleteBucketCorsRequest request, CancellationToken cancellationToken = default) => throw Boom();
+        public ValueTask<StorageResult<BucketDefaultEncryptionConfiguration>> GetBucketDefaultEncryptionAsync(string bucketName, CancellationToken cancellationToken = default) => throw Boom();
+        public ValueTask<StorageResult<BucketDefaultEncryptionConfiguration>> PutBucketDefaultEncryptionAsync(PutBucketDefaultEncryptionRequest request, CancellationToken cancellationToken = default) => throw Boom();
+        public ValueTask<StorageResult> DeleteBucketDefaultEncryptionAsync(DeleteBucketDefaultEncryptionRequest request, CancellationToken cancellationToken = default) => throw Boom();
+        public ValueTask<StorageResult<BucketPublicAccessBlockConfiguration>> PutBucketPublicAccessBlockAsync(PutBucketPublicAccessBlockRequest request, CancellationToken cancellationToken = default) => throw Boom();
+        public ValueTask<StorageResult> DeleteBucketPublicAccessBlockAsync(DeleteBucketPublicAccessBlockRequest request, CancellationToken cancellationToken = default) => throw Boom();
+        public ValueTask<StorageResult<BucketInfo>> HeadBucketAsync(string bucketName, CancellationToken cancellationToken = default) => throw Boom();
+        public ValueTask<StorageResult> DeleteBucketAsync(DeleteBucketRequest request, CancellationToken cancellationToken = default) => throw Boom();
+        public IAsyncEnumerable<ObjectInfo> ListObjectsAsync(ListObjectsRequest request, CancellationToken cancellationToken = default) => throw Boom();
+        public IAsyncEnumerable<ObjectInfo> ListObjectVersionsAsync(ListObjectVersionsRequest request, CancellationToken cancellationToken = default) => throw Boom();
+        public IAsyncEnumerable<MultipartUploadInfo> ListMultipartUploadsAsync(ListMultipartUploadsRequest request, CancellationToken cancellationToken = default) => throw Boom();
+        public IAsyncEnumerable<MultipartUploadPart> ListMultipartUploadPartsAsync(ListMultipartUploadPartsRequest request, CancellationToken cancellationToken = default) => throw Boom();
+        public ValueTask<StorageResult<GetObjectResponse>> GetObjectAsync(GetObjectRequest request, CancellationToken cancellationToken = default) => throw Boom();
+        public ValueTask<StorageResult<ObjectRetentionInfo>> GetObjectRetentionAsync(GetObjectRetentionRequest request, CancellationToken cancellationToken = default) => throw Boom();
+        public ValueTask<StorageResult<ObjectLegalHoldInfo>> GetObjectLegalHoldAsync(GetObjectLegalHoldRequest request, CancellationToken cancellationToken = default) => throw Boom();
+        public ValueTask<StorageResult<GetObjectAttributesResponse>> GetObjectAttributesAsync(GetObjectAttributesRequest request, CancellationToken cancellationToken = default) => throw Boom();
+        public ValueTask<StorageResult<ObjectTagSet>> GetObjectTagsAsync(GetObjectTagsRequest request, CancellationToken cancellationToken = default) => throw Boom();
+        public ValueTask<StorageResult<ObjectInfo>> CopyObjectAsync(CopyObjectRequest request, CancellationToken cancellationToken = default) => throw Boom();
+        public ValueTask<StorageResult<ObjectInfo>> PutObjectAsync(PutObjectRequest request, CancellationToken cancellationToken = default) => throw Boom();
+        public ValueTask<StorageResult<ObjectTagSet>> PutObjectTagsAsync(PutObjectTagsRequest request, CancellationToken cancellationToken = default) => throw Boom();
+        public ValueTask<StorageResult<ObjectTagSet>> DeleteObjectTagsAsync(DeleteObjectTagsRequest request, CancellationToken cancellationToken = default) => throw Boom();
+        public ValueTask<StorageResult<MultipartUploadInfo>> InitiateMultipartUploadAsync(InitiateMultipartUploadRequest request, CancellationToken cancellationToken = default) => throw Boom();
+        public ValueTask<StorageResult<MultipartUploadPart>> UploadMultipartPartAsync(UploadMultipartPartRequest request, CancellationToken cancellationToken = default) => throw Boom();
+        public ValueTask<StorageResult<MultipartUploadPart>> UploadPartCopyAsync(UploadPartCopyRequest request, CancellationToken cancellationToken = default) => throw Boom();
+        public ValueTask<StorageResult<ObjectInfo>> CompleteMultipartUploadAsync(CompleteMultipartUploadRequest request, CancellationToken cancellationToken = default) => throw Boom();
+        public ValueTask<StorageResult> AbortMultipartUploadAsync(AbortMultipartUploadRequest request, CancellationToken cancellationToken = default) => throw Boom();
+        public ValueTask<StorageResult<ObjectInfo>> HeadObjectAsync(HeadObjectRequest request, CancellationToken cancellationToken = default) => throw Boom();
+        public ValueTask<StorageResult<DeleteObjectResult>> DeleteObjectAsync(DeleteObjectRequest request, CancellationToken cancellationToken = default) => throw Boom();
+        public ValueTask<StorageResult<BucketTaggingConfiguration>> PutBucketTaggingAsync(PutBucketTaggingRequest request, CancellationToken cancellationToken = default) => throw Boom();
+        public ValueTask<StorageResult> DeleteBucketTaggingAsync(DeleteBucketTaggingRequest request, CancellationToken cancellationToken = default) => throw Boom();
+        public ValueTask<StorageResult<BucketLoggingConfiguration>> GetBucketLoggingAsync(string bucketName, CancellationToken cancellationToken = default) => throw Boom();
+        public ValueTask<StorageResult<BucketLoggingConfiguration>> PutBucketLoggingAsync(PutBucketLoggingRequest request, CancellationToken cancellationToken = default) => throw Boom();
+        public ValueTask<StorageResult<BucketWebsiteConfiguration>> PutBucketWebsiteAsync(PutBucketWebsiteRequest request, CancellationToken cancellationToken = default) => throw Boom();
+        public ValueTask<StorageResult> DeleteBucketWebsiteAsync(DeleteBucketWebsiteRequest request, CancellationToken cancellationToken = default) => throw Boom();
+        public ValueTask<StorageResult<BucketRequestPaymentConfiguration>> GetBucketRequestPaymentAsync(string bucketName, CancellationToken cancellationToken = default) => throw Boom();
+        public ValueTask<StorageResult<BucketRequestPaymentConfiguration>> PutBucketRequestPaymentAsync(PutBucketRequestPaymentRequest request, CancellationToken cancellationToken = default) => throw Boom();
+        public ValueTask<StorageResult<BucketAccelerateConfiguration>> GetBucketAccelerateAsync(string bucketName, CancellationToken cancellationToken = default) => throw Boom();
+        public ValueTask<StorageResult<BucketAccelerateConfiguration>> PutBucketAccelerateAsync(PutBucketAccelerateRequest request, CancellationToken cancellationToken = default) => throw Boom();
+        public ValueTask<StorageResult<BucketLifecycleConfiguration>> PutBucketLifecycleAsync(PutBucketLifecycleRequest request, CancellationToken cancellationToken = default) => throw Boom();
+        public ValueTask<StorageResult> DeleteBucketLifecycleAsync(DeleteBucketLifecycleRequest request, CancellationToken cancellationToken = default) => throw Boom();
+        public ValueTask<StorageResult<BucketReplicationConfiguration>> PutBucketReplicationAsync(PutBucketReplicationRequest request, CancellationToken cancellationToken = default) => throw Boom();
+        public ValueTask<StorageResult> DeleteBucketReplicationAsync(DeleteBucketReplicationRequest request, CancellationToken cancellationToken = default) => throw Boom();
+        public ValueTask<StorageResult<BucketNotificationConfiguration>> GetBucketNotificationConfigurationAsync(string bucketName, CancellationToken cancellationToken = default) => throw Boom();
+        public ValueTask<StorageResult<BucketNotificationConfiguration>> PutBucketNotificationConfigurationAsync(PutBucketNotificationConfigurationRequest request, CancellationToken cancellationToken = default) => throw Boom();
+        public ValueTask<StorageResult<ObjectLockConfiguration>> PutObjectLockConfigurationAsync(PutObjectLockConfigurationRequest request, CancellationToken cancellationToken = default) => throw Boom();
+        public ValueTask<StorageResult<BucketAnalyticsConfiguration>> PutBucketAnalyticsConfigurationAsync(PutBucketAnalyticsConfigurationRequest request, CancellationToken cancellationToken = default) => throw Boom();
+        public ValueTask<StorageResult> DeleteBucketAnalyticsConfigurationAsync(DeleteBucketAnalyticsConfigurationRequest request, CancellationToken cancellationToken = default) => throw Boom();
+        public ValueTask<StorageResult<IReadOnlyList<BucketAnalyticsConfiguration>>> ListBucketAnalyticsConfigurationsAsync(string bucketName, CancellationToken cancellationToken = default) => throw Boom();
+        public ValueTask<StorageResult<BucketMetricsConfiguration>> PutBucketMetricsConfigurationAsync(PutBucketMetricsConfigurationRequest request, CancellationToken cancellationToken = default) => throw Boom();
+        public ValueTask<StorageResult> DeleteBucketMetricsConfigurationAsync(DeleteBucketMetricsConfigurationRequest request, CancellationToken cancellationToken = default) => throw Boom();
+        public ValueTask<StorageResult<IReadOnlyList<BucketMetricsConfiguration>>> ListBucketMetricsConfigurationsAsync(string bucketName, CancellationToken cancellationToken = default) => throw Boom();
+        public ValueTask<StorageResult<BucketInventoryConfiguration>> PutBucketInventoryConfigurationAsync(PutBucketInventoryConfigurationRequest request, CancellationToken cancellationToken = default) => throw Boom();
+        public ValueTask<StorageResult> DeleteBucketInventoryConfigurationAsync(DeleteBucketInventoryConfigurationRequest request, CancellationToken cancellationToken = default) => throw Boom();
+        public ValueTask<StorageResult<IReadOnlyList<BucketInventoryConfiguration>>> ListBucketInventoryConfigurationsAsync(string bucketName, CancellationToken cancellationToken = default) => throw Boom();
+        public ValueTask<StorageResult<BucketIntelligentTieringConfiguration>> GetBucketIntelligentTieringConfigurationAsync(string bucketName, string id, CancellationToken cancellationToken = default)
+            => ValueTask.FromResult(StorageResult<BucketIntelligentTieringConfiguration>.Failure(NotFound(StorageErrorCode.IntelligentTieringConfigurationNotFound, bucketName)));
+        public ValueTask<StorageResult<BucketIntelligentTieringConfiguration>> PutBucketIntelligentTieringConfigurationAsync(PutBucketIntelligentTieringConfigurationRequest request, CancellationToken cancellationToken = default) => throw Boom();
+        public ValueTask<StorageResult> DeleteBucketIntelligentTieringConfigurationAsync(DeleteBucketIntelligentTieringConfigurationRequest request, CancellationToken cancellationToken = default) => throw Boom();
+        public ValueTask<StorageResult<IReadOnlyList<BucketIntelligentTieringConfiguration>>> ListBucketIntelligentTieringConfigurationsAsync(string bucketName, CancellationToken cancellationToken = default) => throw Boom();
+        public ValueTask<StorageResult<ObjectRetentionInfo>> PutObjectRetentionAsync(PutObjectRetentionRequest request, CancellationToken cancellationToken = default) => throw Boom();
+        public ValueTask<StorageResult<ObjectLegalHoldInfo>> PutObjectLegalHoldAsync(PutObjectLegalHoldRequest request, CancellationToken cancellationToken = default) => throw Boom();
+        public ValueTask<StorageResult<SelectObjectContentResponse>> SelectObjectContentAsync(SelectObjectContentRequest request, CancellationToken cancellationToken = default) => throw Boom();
+        public ValueTask<StorageResult<RestoreObjectResponse>> RestoreObjectAsync(RestoreObjectRequest request, CancellationToken cancellationToken = default) => throw Boom();
+    }
+
+    private sealed class ThrowingStorageService : IStorageService
+    {
+        private static InvalidOperationException Boom() =>
+            new("Simulated unexpected storage failure for the global exception handler regression test.");
+
+#pragma warning disable CS1998 // async method without await; the throw runs on first enumeration
+        private static async IAsyncEnumerable<T> ThrowingEnumerable<T>()
+        {
+            throw Boom();
+#pragma warning disable CS0162
+            yield break;
+#pragma warning restore CS0162
+        }
+#pragma warning restore CS1998
+
+        public IAsyncEnumerable<BucketInfo> ListBucketsAsync(CancellationToken cancellationToken = default) => ThrowingEnumerable<BucketInfo>();
+
+        public ValueTask<StorageResult<BucketInfo>> CreateBucketAsync(CreateBucketRequest request, CancellationToken cancellationToken = default) => throw Boom();
+
+        public ValueTask<StorageResult<BucketLocationInfo>> GetBucketLocationAsync(string bucketName, CancellationToken cancellationToken = default) => throw Boom();
+
+        public ValueTask<StorageResult<BucketVersioningInfo>> GetBucketVersioningAsync(string bucketName, CancellationToken cancellationToken = default) => throw Boom();
+
+        public ValueTask<StorageResult<BucketVersioningInfo>> PutBucketVersioningAsync(PutBucketVersioningRequest request, CancellationToken cancellationToken = default) => throw Boom();
+
+        public ValueTask<StorageResult<BucketCorsConfiguration>> GetBucketCorsAsync(string bucketName, CancellationToken cancellationToken = default) => throw Boom();
+
+        public ValueTask<StorageResult<BucketCorsConfiguration>> PutBucketCorsAsync(PutBucketCorsRequest request, CancellationToken cancellationToken = default) => throw Boom();
+
+        public ValueTask<StorageResult> DeleteBucketCorsAsync(DeleteBucketCorsRequest request, CancellationToken cancellationToken = default) => throw Boom();
+
+        public ValueTask<StorageResult<BucketDefaultEncryptionConfiguration>> GetBucketDefaultEncryptionAsync(string bucketName, CancellationToken cancellationToken = default) => throw Boom();
+
+        public ValueTask<StorageResult<BucketDefaultEncryptionConfiguration>> PutBucketDefaultEncryptionAsync(PutBucketDefaultEncryptionRequest request, CancellationToken cancellationToken = default) => throw Boom();
+
+        public ValueTask<StorageResult> DeleteBucketDefaultEncryptionAsync(DeleteBucketDefaultEncryptionRequest request, CancellationToken cancellationToken = default) => throw Boom();
+
+        public ValueTask<StorageResult<BucketPublicAccessBlockConfiguration>> GetBucketPublicAccessBlockAsync(string bucketName, CancellationToken cancellationToken = default) => throw Boom();
+
+        public ValueTask<StorageResult<BucketPublicAccessBlockConfiguration>> PutBucketPublicAccessBlockAsync(PutBucketPublicAccessBlockRequest request, CancellationToken cancellationToken = default) => throw Boom();
+
+        public ValueTask<StorageResult> DeleteBucketPublicAccessBlockAsync(DeleteBucketPublicAccessBlockRequest request, CancellationToken cancellationToken = default) => throw Boom();
+
+        public ValueTask<StorageResult<BucketInfo>> HeadBucketAsync(string bucketName, CancellationToken cancellationToken = default) => throw Boom();
+
+        public ValueTask<StorageResult> DeleteBucketAsync(DeleteBucketRequest request, CancellationToken cancellationToken = default) => throw Boom();
+
+        public IAsyncEnumerable<ObjectInfo> ListObjectsAsync(ListObjectsRequest request, CancellationToken cancellationToken = default) => ThrowingEnumerable<ObjectInfo>();
+
+        public IAsyncEnumerable<ObjectInfo> ListObjectVersionsAsync(ListObjectVersionsRequest request, CancellationToken cancellationToken = default) => ThrowingEnumerable<ObjectInfo>();
+
+        public IAsyncEnumerable<MultipartUploadInfo> ListMultipartUploadsAsync(ListMultipartUploadsRequest request, CancellationToken cancellationToken = default) => ThrowingEnumerable<MultipartUploadInfo>();
+
+        public IAsyncEnumerable<MultipartUploadPart> ListMultipartUploadPartsAsync(ListMultipartUploadPartsRequest request, CancellationToken cancellationToken = default) => ThrowingEnumerable<MultipartUploadPart>();
+
+        public ValueTask<StorageResult<GetObjectResponse>> GetObjectAsync(GetObjectRequest request, CancellationToken cancellationToken = default) => throw Boom();
+
+        public ValueTask<StorageResult<ObjectRetentionInfo>> GetObjectRetentionAsync(GetObjectRetentionRequest request, CancellationToken cancellationToken = default) => throw Boom();
+
+        public ValueTask<StorageResult<ObjectLegalHoldInfo>> GetObjectLegalHoldAsync(GetObjectLegalHoldRequest request, CancellationToken cancellationToken = default) => throw Boom();
+
+        public ValueTask<StorageResult<GetObjectAttributesResponse>> GetObjectAttributesAsync(GetObjectAttributesRequest request, CancellationToken cancellationToken = default) => throw Boom();
+
+        public ValueTask<StorageResult<ObjectTagSet>> GetObjectTagsAsync(GetObjectTagsRequest request, CancellationToken cancellationToken = default) => throw Boom();
+
+        public ValueTask<StorageResult<ObjectInfo>> CopyObjectAsync(CopyObjectRequest request, CancellationToken cancellationToken = default) => throw Boom();
+
+        public ValueTask<StorageResult<ObjectInfo>> PutObjectAsync(PutObjectRequest request, CancellationToken cancellationToken = default) => throw Boom();
+
+        public ValueTask<StorageResult<ObjectTagSet>> PutObjectTagsAsync(PutObjectTagsRequest request, CancellationToken cancellationToken = default) => throw Boom();
+
+        public ValueTask<StorageResult<ObjectTagSet>> DeleteObjectTagsAsync(DeleteObjectTagsRequest request, CancellationToken cancellationToken = default) => throw Boom();
+
+        public ValueTask<StorageResult<MultipartUploadInfo>> InitiateMultipartUploadAsync(InitiateMultipartUploadRequest request, CancellationToken cancellationToken = default) => throw Boom();
+
+        public ValueTask<StorageResult<MultipartUploadPart>> UploadMultipartPartAsync(UploadMultipartPartRequest request, CancellationToken cancellationToken = default) => throw Boom();
+
+        public ValueTask<StorageResult<MultipartUploadPart>> UploadPartCopyAsync(UploadPartCopyRequest request, CancellationToken cancellationToken = default) => throw Boom();
+
+        public ValueTask<StorageResult<ObjectInfo>> CompleteMultipartUploadAsync(CompleteMultipartUploadRequest request, CancellationToken cancellationToken = default) => throw Boom();
+
+        public ValueTask<StorageResult> AbortMultipartUploadAsync(AbortMultipartUploadRequest request, CancellationToken cancellationToken = default) => throw Boom();
+
+        public ValueTask<StorageResult<ObjectInfo>> HeadObjectAsync(HeadObjectRequest request, CancellationToken cancellationToken = default) => throw Boom();
+
+        public ValueTask<StorageResult<DeleteObjectResult>> DeleteObjectAsync(DeleteObjectRequest request, CancellationToken cancellationToken = default) => throw Boom();
+
+        public ValueTask<StorageResult<BucketTaggingConfiguration>> GetBucketTaggingAsync(string bucketName, CancellationToken cancellationToken = default) => throw Boom();
+
+        public ValueTask<StorageResult<BucketTaggingConfiguration>> PutBucketTaggingAsync(PutBucketTaggingRequest request, CancellationToken cancellationToken = default) => throw Boom();
+
+        public ValueTask<StorageResult> DeleteBucketTaggingAsync(DeleteBucketTaggingRequest request, CancellationToken cancellationToken = default) => throw Boom();
+
+        public ValueTask<StorageResult<BucketLoggingConfiguration>> GetBucketLoggingAsync(string bucketName, CancellationToken cancellationToken = default) => throw Boom();
+
+        public ValueTask<StorageResult<BucketLoggingConfiguration>> PutBucketLoggingAsync(PutBucketLoggingRequest request, CancellationToken cancellationToken = default) => throw Boom();
+
+        public ValueTask<StorageResult<BucketWebsiteConfiguration>> GetBucketWebsiteAsync(string bucketName, CancellationToken cancellationToken = default) => throw Boom();
+
+        public ValueTask<StorageResult<BucketWebsiteConfiguration>> PutBucketWebsiteAsync(PutBucketWebsiteRequest request, CancellationToken cancellationToken = default) => throw Boom();
+
+        public ValueTask<StorageResult> DeleteBucketWebsiteAsync(DeleteBucketWebsiteRequest request, CancellationToken cancellationToken = default) => throw Boom();
+
+        public ValueTask<StorageResult<BucketRequestPaymentConfiguration>> GetBucketRequestPaymentAsync(string bucketName, CancellationToken cancellationToken = default) => throw Boom();
+
+        public ValueTask<StorageResult<BucketRequestPaymentConfiguration>> PutBucketRequestPaymentAsync(PutBucketRequestPaymentRequest request, CancellationToken cancellationToken = default) => throw Boom();
+
+        public ValueTask<StorageResult<BucketAccelerateConfiguration>> GetBucketAccelerateAsync(string bucketName, CancellationToken cancellationToken = default) => throw Boom();
+
+        public ValueTask<StorageResult<BucketAccelerateConfiguration>> PutBucketAccelerateAsync(PutBucketAccelerateRequest request, CancellationToken cancellationToken = default) => throw Boom();
+
+        public ValueTask<StorageResult<BucketLifecycleConfiguration>> GetBucketLifecycleAsync(string bucketName, CancellationToken cancellationToken = default) => throw Boom();
+
+        public ValueTask<StorageResult<BucketLifecycleConfiguration>> PutBucketLifecycleAsync(PutBucketLifecycleRequest request, CancellationToken cancellationToken = default) => throw Boom();
+
+        public ValueTask<StorageResult> DeleteBucketLifecycleAsync(DeleteBucketLifecycleRequest request, CancellationToken cancellationToken = default) => throw Boom();
+
+        public ValueTask<StorageResult<BucketReplicationConfiguration>> GetBucketReplicationAsync(string bucketName, CancellationToken cancellationToken = default) => throw Boom();
+
+        public ValueTask<StorageResult<BucketReplicationConfiguration>> PutBucketReplicationAsync(PutBucketReplicationRequest request, CancellationToken cancellationToken = default) => throw Boom();
+
+        public ValueTask<StorageResult> DeleteBucketReplicationAsync(DeleteBucketReplicationRequest request, CancellationToken cancellationToken = default) => throw Boom();
+
+        public ValueTask<StorageResult<BucketNotificationConfiguration>> GetBucketNotificationConfigurationAsync(string bucketName, CancellationToken cancellationToken = default) => throw Boom();
+
+        public ValueTask<StorageResult<BucketNotificationConfiguration>> PutBucketNotificationConfigurationAsync(PutBucketNotificationConfigurationRequest request, CancellationToken cancellationToken = default) => throw Boom();
+
+        public ValueTask<StorageResult<ObjectLockConfiguration>> GetObjectLockConfigurationAsync(string bucketName, CancellationToken cancellationToken = default) => throw Boom();
+
+        public ValueTask<StorageResult<ObjectLockConfiguration>> PutObjectLockConfigurationAsync(PutObjectLockConfigurationRequest request, CancellationToken cancellationToken = default) => throw Boom();
+
+        public ValueTask<StorageResult<BucketAnalyticsConfiguration>> GetBucketAnalyticsConfigurationAsync(string bucketName, string id, CancellationToken cancellationToken = default) => throw Boom();
+
+        public ValueTask<StorageResult<BucketAnalyticsConfiguration>> PutBucketAnalyticsConfigurationAsync(PutBucketAnalyticsConfigurationRequest request, CancellationToken cancellationToken = default) => throw Boom();
+
+        public ValueTask<StorageResult> DeleteBucketAnalyticsConfigurationAsync(DeleteBucketAnalyticsConfigurationRequest request, CancellationToken cancellationToken = default) => throw Boom();
+
+        public ValueTask<StorageResult<IReadOnlyList<BucketAnalyticsConfiguration>>> ListBucketAnalyticsConfigurationsAsync(string bucketName, CancellationToken cancellationToken = default) => throw Boom();
+
+        public ValueTask<StorageResult<BucketMetricsConfiguration>> GetBucketMetricsConfigurationAsync(string bucketName, string id, CancellationToken cancellationToken = default) => throw Boom();
+
+        public ValueTask<StorageResult<BucketMetricsConfiguration>> PutBucketMetricsConfigurationAsync(PutBucketMetricsConfigurationRequest request, CancellationToken cancellationToken = default) => throw Boom();
+
+        public ValueTask<StorageResult> DeleteBucketMetricsConfigurationAsync(DeleteBucketMetricsConfigurationRequest request, CancellationToken cancellationToken = default) => throw Boom();
+
+        public ValueTask<StorageResult<IReadOnlyList<BucketMetricsConfiguration>>> ListBucketMetricsConfigurationsAsync(string bucketName, CancellationToken cancellationToken = default) => throw Boom();
+
+        public ValueTask<StorageResult<BucketInventoryConfiguration>> GetBucketInventoryConfigurationAsync(string bucketName, string id, CancellationToken cancellationToken = default) => throw Boom();
+
+        public ValueTask<StorageResult<BucketInventoryConfiguration>> PutBucketInventoryConfigurationAsync(PutBucketInventoryConfigurationRequest request, CancellationToken cancellationToken = default) => throw Boom();
+
+        public ValueTask<StorageResult> DeleteBucketInventoryConfigurationAsync(DeleteBucketInventoryConfigurationRequest request, CancellationToken cancellationToken = default) => throw Boom();
+
+        public ValueTask<StorageResult<IReadOnlyList<BucketInventoryConfiguration>>> ListBucketInventoryConfigurationsAsync(string bucketName, CancellationToken cancellationToken = default) => throw Boom();
+
+        public ValueTask<StorageResult<BucketIntelligentTieringConfiguration>> GetBucketIntelligentTieringConfigurationAsync(string bucketName, string id, CancellationToken cancellationToken = default) => throw Boom();
+
+        public ValueTask<StorageResult<BucketIntelligentTieringConfiguration>> PutBucketIntelligentTieringConfigurationAsync(PutBucketIntelligentTieringConfigurationRequest request, CancellationToken cancellationToken = default) => throw Boom();
+
+        public ValueTask<StorageResult> DeleteBucketIntelligentTieringConfigurationAsync(DeleteBucketIntelligentTieringConfigurationRequest request, CancellationToken cancellationToken = default) => throw Boom();
+
+        public ValueTask<StorageResult<IReadOnlyList<BucketIntelligentTieringConfiguration>>> ListBucketIntelligentTieringConfigurationsAsync(string bucketName, CancellationToken cancellationToken = default) => throw Boom();
+
+        public ValueTask<StorageResult<ObjectRetentionInfo>> PutObjectRetentionAsync(PutObjectRetentionRequest request, CancellationToken cancellationToken = default) => throw Boom();
+
+        public ValueTask<StorageResult<ObjectLegalHoldInfo>> PutObjectLegalHoldAsync(PutObjectLegalHoldRequest request, CancellationToken cancellationToken = default) => throw Boom();
+
+        public ValueTask<StorageResult<SelectObjectContentResponse>> SelectObjectContentAsync(SelectObjectContentRequest request, CancellationToken cancellationToken = default) => throw Boom();
+
+        public ValueTask<StorageResult<RestoreObjectResponse>> RestoreObjectAsync(RestoreObjectRequest request, CancellationToken cancellationToken = default) => throw Boom();
+
+    }
+
     private sealed class RecordingStorageService : IStorageService
     {
         private static readonly DateTimeOffset DefaultTimestampUtc = DateTimeOffset.Parse("2026-03-01T00:00:00Z", CultureInfo.InvariantCulture);
@@ -9454,6 +11596,14 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
 
         public DeleteBucketDefaultEncryptionRequest? LastDeleteBucketDefaultEncryptionRequest { get; private set; }
 
+        public PutBucketPublicAccessBlockRequest? LastPutBucketPublicAccessBlockRequest { get; private set; }
+
+        public DeleteBucketPublicAccessBlockRequest? LastDeleteBucketPublicAccessBlockRequest { get; private set; }
+
+        public PutBucketOwnershipControlsRequest? LastPutBucketOwnershipControlsRequest { get; private set; }
+
+        public DeleteBucketOwnershipControlsRequest? LastDeleteBucketOwnershipControlsRequest { get; private set; }
+
         public ObjectInfo? PutObjectResult { get; set; }
 
         public ObjectInfo? CopyObjectResult { get; set; }
@@ -9482,6 +11632,10 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
         public MultipartUploadPart? UploadPartCopyResult { get; set; }
 
         private readonly Dictionary<string, BucketDefaultEncryptionConfiguration> _bucketDefaultEncryptions = new(StringComparer.Ordinal);
+
+        private readonly Dictionary<string, BucketPublicAccessBlockConfiguration> _bucketPublicAccessBlocks = new(StringComparer.Ordinal);
+
+        private readonly Dictionary<string, BucketOwnershipControlsConfiguration> _bucketOwnershipControls = new(StringComparer.Ordinal);
 
         public IAsyncEnumerable<BucketInfo> ListBucketsAsync(CancellationToken cancellationToken = default) => throw new NotSupportedException();
 
@@ -9526,6 +11680,69 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
         {
             LastDeleteBucketDefaultEncryptionRequest = request;
             _bucketDefaultEncryptions.Remove(request.BucketName);
+            return ValueTask.FromResult(StorageResult.Success());
+        }
+
+        public ValueTask<StorageResult<BucketPublicAccessBlockConfiguration>> GetBucketPublicAccessBlockAsync(string bucketName, CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            return ValueTask.FromResult(_bucketPublicAccessBlocks.TryGetValue(bucketName, out var configuration)
+                ? StorageResult<BucketPublicAccessBlockConfiguration>.Success(ClonePublicAccessBlock(bucketName, configuration))
+                : StorageResult<BucketPublicAccessBlockConfiguration>.Failure(CreatePublicAccessBlockNotFound(bucketName)));
+        }
+
+        public ValueTask<StorageResult<BucketPublicAccessBlockConfiguration>> PutBucketPublicAccessBlockAsync(PutBucketPublicAccessBlockRequest request, CancellationToken cancellationToken = default)
+        {
+            LastPutBucketPublicAccessBlockRequest = request;
+
+            var configuration = new BucketPublicAccessBlockConfiguration
+            {
+                BucketName = request.BucketName,
+                BlockPublicAcls = request.BlockPublicAcls,
+                IgnorePublicAcls = request.IgnorePublicAcls,
+                BlockPublicPolicy = request.BlockPublicPolicy,
+                RestrictPublicBuckets = request.RestrictPublicBuckets
+            };
+
+            _bucketPublicAccessBlocks[request.BucketName] = configuration;
+            return ValueTask.FromResult(StorageResult<BucketPublicAccessBlockConfiguration>.Success(ClonePublicAccessBlock(request.BucketName, configuration)));
+        }
+
+        public ValueTask<StorageResult> DeleteBucketPublicAccessBlockAsync(DeleteBucketPublicAccessBlockRequest request, CancellationToken cancellationToken = default)
+        {
+            LastDeleteBucketPublicAccessBlockRequest = request;
+            _bucketPublicAccessBlocks.Remove(request.BucketName);
+            return ValueTask.FromResult(StorageResult.Success());
+        }
+
+        public ValueTask<StorageResult<BucketOwnershipControlsConfiguration>> GetBucketOwnershipControlsAsync(string bucketName, CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            return ValueTask.FromResult(_bucketOwnershipControls.TryGetValue(bucketName, out var configuration)
+                ? StorageResult<BucketOwnershipControlsConfiguration>.Success(CloneOwnershipControls(bucketName, configuration))
+                : StorageResult<BucketOwnershipControlsConfiguration>.Failure(CreateOwnershipControlsNotFound(bucketName)));
+        }
+
+        public ValueTask<StorageResult<BucketOwnershipControlsConfiguration>> PutBucketOwnershipControlsAsync(PutBucketOwnershipControlsRequest request, CancellationToken cancellationToken = default)
+        {
+            LastPutBucketOwnershipControlsRequest = request;
+
+            var configuration = new BucketOwnershipControlsConfiguration
+            {
+                BucketName = request.BucketName,
+                ObjectOwnership = request.ObjectOwnership
+            };
+
+            _bucketOwnershipControls[request.BucketName] = configuration;
+            return ValueTask.FromResult(StorageResult<BucketOwnershipControlsConfiguration>.Success(CloneOwnershipControls(request.BucketName, configuration)));
+        }
+
+        public ValueTask<StorageResult> DeleteBucketOwnershipControlsAsync(DeleteBucketOwnershipControlsRequest request, CancellationToken cancellationToken = default)
+        {
+            LastDeleteBucketOwnershipControlsRequest = request;
+            _bucketOwnershipControls.Remove(request.BucketName);
             return ValueTask.FromResult(StorageResult.Success());
         }
 
@@ -9599,9 +11816,15 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
                     customerEncryption: ToCustomerEncryptionInfo(request.DestinationCustomerEncryption))));
         }
 
+        public StorageError? PutObjectFailure { get; set; }
+
         public ValueTask<StorageResult<ObjectInfo>> PutObjectAsync(PutObjectRequest request, CancellationToken cancellationToken = default)
         {
             LastPutObjectRequest = request;
+
+            if (PutObjectFailure is not null) {
+                return new ValueTask<StorageResult<ObjectInfo>>(StorageResult<ObjectInfo>.Failure(PutObjectFailure));
+            }
 
             return new ValueTask<StorageResult<ObjectInfo>>(StorageResult<ObjectInfo>.Success(
                 PutObjectResult ?? CreateObjectInfo(
@@ -9815,6 +12038,49 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
             {
                 Code = StorageErrorCode.BucketEncryptionConfigurationNotFound,
                 Message = $"Bucket '{bucketName}' does not have a default encryption configuration.",
+                BucketName = bucketName,
+                SuggestedHttpStatusCode = 404
+            };
+        }
+
+        private static BucketPublicAccessBlockConfiguration ClonePublicAccessBlock(string bucketName, BucketPublicAccessBlockConfiguration configuration)
+        {
+            return new BucketPublicAccessBlockConfiguration
+            {
+                BucketName = bucketName,
+                BlockPublicAcls = configuration.BlockPublicAcls,
+                IgnorePublicAcls = configuration.IgnorePublicAcls,
+                BlockPublicPolicy = configuration.BlockPublicPolicy,
+                RestrictPublicBuckets = configuration.RestrictPublicBuckets
+            };
+        }
+
+        private static StorageError CreatePublicAccessBlockNotFound(string bucketName)
+        {
+            return new StorageError
+            {
+                Code = StorageErrorCode.PublicAccessBlockConfigurationNotFound,
+                Message = $"Bucket '{bucketName}' does not have a public access block configuration.",
+                BucketName = bucketName,
+                SuggestedHttpStatusCode = 404
+            };
+        }
+
+        private static BucketOwnershipControlsConfiguration CloneOwnershipControls(string bucketName, BucketOwnershipControlsConfiguration configuration)
+        {
+            return new BucketOwnershipControlsConfiguration
+            {
+                BucketName = bucketName,
+                ObjectOwnership = configuration.ObjectOwnership
+            };
+        }
+
+        private static StorageError CreateOwnershipControlsNotFound(string bucketName)
+        {
+            return new StorageError
+            {
+                Code = StorageErrorCode.OwnershipControlsNotFound,
+                Message = $"Bucket '{bucketName}' does not have an ownership controls configuration.",
                 BucketName = bucketName,
                 SuggestedHttpStatusCode = 404
             };
@@ -10059,6 +12325,23 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
 
             return ValueTask.CompletedTask;
         }
+
+        public ValueTask RevertToPendingAsync(string repairId, CancellationToken cancellationToken = default)
+        {
+            ArgumentException.ThrowIfNullOrWhiteSpace(repairId);
+            cancellationToken.ThrowIfCancellationRequested();
+
+            if (_entries.TryGetValue(repairId, out var entry)) {
+                _entries[repairId] = entry with
+                {
+                    Status = StorageReplicaRepairStatus.Pending,
+                    LastErrorCode = null,
+                    LastErrorMessage = null
+                };
+            }
+
+            return ValueTask.CompletedTask;
+        }
     }
 
     private static void ConfigureTestHeaderRoutePolicies(IServiceCollection services, params (string PolicyName, string RequiredScope)[] policies)
@@ -10135,6 +12418,28 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
     }
 
     [Fact]
+    public async Task UnhandledException_ReturnsInternalErrorS3XmlResponse()
+    {
+        await using var isolatedClient = await CreateStorageServiceIsolatedClientAsync(new ThrowingStorageService());
+        using var client = isolatedClient.Client;
+
+        var response = await client.GetAsync("/integrated-s3/some-bucket/some-key.txt");
+
+        Assert.Equal(HttpStatusCode.InternalServerError, response.StatusCode);
+        Assert.Equal("application/xml", response.Content.Headers.ContentType?.MediaType);
+
+        Assert.True(response.Headers.Contains("x-amz-request-id"), "Missing x-amz-request-id header");
+        Assert.True(response.Headers.Contains("x-amz-id-2"), "Missing x-amz-id-2 header");
+        Assert.False(string.IsNullOrWhiteSpace(response.Headers.GetValues("x-amz-request-id").Single()));
+
+        var document = XDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal(S3Ns + "Error", document.Root!.Name);
+        Assert.Equal("InternalError", GetRequiredElementValue(document, "Code"));
+        Assert.False(string.IsNullOrWhiteSpace(document.Root.S3Element("Message")?.Value));
+        Assert.False(string.IsNullOrWhiteSpace(document.Root.S3Element("RequestId")?.Value));
+    }
+
+    [Fact]
     public async Task S3ErrorResponses_IncludeRequestIdAndHostIdHeaders()
     {
         using var client = await _factory.CreateClientAsync();
@@ -10149,6 +12454,117 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
         var hostId = errorResponse.Headers.GetValues("x-amz-id-2").Single();
         Assert.False(string.IsNullOrWhiteSpace(requestId), "x-amz-request-id should not be empty");
         Assert.False(string.IsNullOrWhiteSpace(hostId), "x-amz-id-2 should not be empty");
+    }
+
+    [Fact]
+    public async Task PutObject_S3CompatiblePath_ReturnsEmptyBodyAndEtagHeader()
+    {
+        using var client = await _factory.CreateClientAsync();
+        const string bucketName = "wire-put-empty-body-bucket";
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync($"/integrated-s3/buckets/{bucketName}", content: null)).StatusCode);
+
+        var response = await client.PutAsync(
+            $"/integrated-s3/{bucketName}/docs/put-empty.txt",
+            new StringContent("wire format payload", Encoding.UTF8, "text/plain"));
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        // AWS S3 PutObject: ETag travels only in the response header, body is empty (never JSON).
+        Assert.False(string.IsNullOrWhiteSpace(response.Headers.ETag?.Tag), "PutObject must set the ETag response header.");
+        var body = await response.Content.ReadAsStringAsync();
+        Assert.Equal(string.Empty, body);
+        Assert.NotEqual("application/json", response.Content.Headers.ContentType?.MediaType);
+    }
+
+    [Fact]
+    public async Task CopyObject_S3CompatiblePath_OmitsEtagResponseHeaderAndKeepsBodyEtag()
+    {
+        using var client = await _factory.CreateClientAsync();
+        const string bucketName = "wire-copy-no-etag-header-bucket";
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync($"/integrated-s3/buckets/{bucketName}", content: null)).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await client.PutAsync(
+            $"/integrated-s3/{bucketName}/docs/copy-source.txt",
+            new StringContent("copy source payload", Encoding.UTF8, "text/plain"))).StatusCode);
+
+        using var copyRequest = new HttpRequestMessage(HttpMethod.Put, $"/integrated-s3/{bucketName}/docs/copy-dest.txt");
+        copyRequest.Headers.TryAddWithoutValidation("x-amz-copy-source", $"/{bucketName}/docs/copy-source.txt");
+        var copyResponse = await client.SendAsync(copyRequest);
+
+        Assert.Equal(HttpStatusCode.OK, copyResponse.StatusCode);
+        // AWS does not set a top-level ETag header on CopyObject; the ETag is only in the body.
+        Assert.Null(copyResponse.Headers.ETag);
+        Assert.False(copyResponse.Headers.Contains("ETag"), "CopyObject must not emit an ETag response header.");
+
+        var copyDocument = XDocument.Parse(await copyResponse.Content.ReadAsStringAsync());
+        S3XmlTestHelper.AssertRoot(copyDocument, "CopyObjectResult");
+        Assert.False(string.IsNullOrWhiteSpace(GetRequiredElementValue(copyDocument, "ETag")), "CopyObjectResult body must carry the ETag.");
+    }
+
+    [Fact]
+    public async Task CompleteMultipartUpload_OmitsEtagResponseHeaderAndBodyHasLocation()
+    {
+        using var client = await _factory.CreateClientAsync();
+        const string bucketName = "wire-complete-mpu-bucket";
+        const string objectKey = "docs/complete-mpu.dat";
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync($"/integrated-s3/buckets/{bucketName}", content: null)).StatusCode);
+
+        using var initiateRequest = new HttpRequestMessage(HttpMethod.Post, $"/integrated-s3/{bucketName}/{objectKey}?uploads")
+        {
+            Content = new ByteArrayContent([])
+        };
+        var initiateResponse = await client.SendAsync(initiateRequest);
+        Assert.Equal(HttpStatusCode.OK, initiateResponse.StatusCode);
+        var uploadId = XDocument.Parse(await initiateResponse.Content.ReadAsStringAsync()).Root!.S3Element("UploadId")!.Value;
+
+        // A single part is the final part, so it is exempt from the S3 minimum part-size rule.
+        var partResponse = await client.PutAsync(
+            $"/integrated-s3/{bucketName}/{objectKey}?partNumber=1&uploadId={Uri.EscapeDataString(uploadId)}",
+            new ByteArrayContent(Encoding.UTF8.GetBytes("only part payload")));
+        Assert.Equal(HttpStatusCode.OK, partResponse.StatusCode);
+        var partETag = partResponse.Headers.ETag?.Tag ?? throw new Xunit.Sdk.XunitException("Expected UploadPart ETag header.");
+
+        using var completeRequest = new HttpRequestMessage(HttpMethod.Post, $"/integrated-s3/{bucketName}/{objectKey}?uploadId={Uri.EscapeDataString(uploadId)}")
+        {
+            Content = new StringContent($"""
+<CompleteMultipartUpload>
+  <Part>
+    <PartNumber>1</PartNumber>
+    <ETag>{partETag}</ETag>
+  </Part>
+</CompleteMultipartUpload>
+""", Encoding.UTF8, "application/xml")
+        };
+        var completeResponse = await client.SendAsync(completeRequest);
+
+        Assert.Equal(HttpStatusCode.OK, completeResponse.StatusCode);
+        // AWS does not set a top-level ETag header on CompleteMultipartUpload.
+        Assert.Null(completeResponse.Headers.ETag);
+        Assert.False(completeResponse.Headers.Contains("ETag"), "CompleteMultipartUpload must not emit an ETag response header.");
+
+        var completeDocument = XDocument.Parse(await completeResponse.Content.ReadAsStringAsync());
+        S3XmlTestHelper.AssertRoot(completeDocument, "CompleteMultipartUploadResult");
+        Assert.False(string.IsNullOrWhiteSpace(GetRequiredElementValue(completeDocument, "Location")), "CompleteMultipartUploadResult body must include <Location>.");
+        Assert.False(string.IsNullOrWhiteSpace(GetRequiredElementValue(completeDocument, "ETag")), "CompleteMultipartUploadResult body must carry the ETag.");
+    }
+
+    [Fact]
+    public async Task S3ErrorResponse_Body_IncludesHostIdMirroringHeader()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        var errorResponse = await client.GetAsync("/integrated-s3/nonexistent-hostid-bucket/doc.txt");
+        Assert.Equal(HttpStatusCode.NotFound, errorResponse.StatusCode);
+
+        var hostIdHeader = errorResponse.Headers.GetValues("x-amz-id-2").Single();
+
+        var errorDocument = XDocument.Parse(await errorResponse.Content.ReadAsStringAsync());
+        Assert.Equal(S3Ns + "Error", errorDocument.Root!.Name);
+        var bodyHostId = GetRequiredElementValue(errorDocument, "HostId");
+        Assert.False(string.IsNullOrWhiteSpace(bodyHostId), "Error body must include <HostId>.");
+        Assert.Equal(hostIdHeader, bodyHostId);
     }
 
     [Fact]
@@ -10229,6 +12645,79 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
     private static async Task AssertNotImplementedResponseAsync(HttpResponseMessage response)
         => await AssertErrorResponseAsync(response, HttpStatusCode.NotImplemented, "NotImplemented");
 
+    [Fact]
+    public async Task S3CompatibleUploadPart_PartNumberAboveMaximum_ReturnsInvalidArgument()
+    {
+        using var client = await _factory.CreateClientAsync();
+        const string bucketName = "multipart-partnumber-range-bucket";
+        const string objectKey = "docs/range.txt";
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync($"/integrated-s3/buckets/{bucketName}", content: null)).StatusCode);
+
+        using var initiateRequest = new HttpRequestMessage(HttpMethod.Post, $"/integrated-s3/{bucketName}/{objectKey}?uploads")
+        {
+            Content = new ByteArrayContent([])
+        };
+        var initiateResponse = await client.SendAsync(initiateRequest);
+        Assert.Equal(HttpStatusCode.OK, initiateResponse.StatusCode);
+        var uploadId = GetRequiredElementValue(XDocument.Parse(await initiateResponse.Content.ReadAsStringAsync()), "UploadId");
+
+        var partResponse = await client.PutAsync(
+            $"/integrated-s3/{bucketName}/{objectKey}?partNumber=10001&uploadId={Uri.EscapeDataString(uploadId)}",
+            new StringContent("payload", Encoding.UTF8, "text/plain"));
+
+        await AssertErrorResponseAsync(partResponse, HttpStatusCode.BadRequest, "InvalidArgument");
+    }
+
+    [Fact]
+    public async Task S3CompatibleCompleteMultipartUpload_PartsNotAscending_ReturnsInvalidPartOrder()
+    {
+        using var client = await _factory.CreateClientAsync();
+        const string bucketName = "multipart-partorder-bucket";
+        const string objectKey = "docs/order.txt";
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync($"/integrated-s3/buckets/{bucketName}", content: null)).StatusCode);
+
+        using var initiateRequest = new HttpRequestMessage(HttpMethod.Post, $"/integrated-s3/{bucketName}/{objectKey}?uploads")
+        {
+            Content = new ByteArrayContent([])
+        };
+        var initiateResponse = await client.SendAsync(initiateRequest);
+        Assert.Equal(HttpStatusCode.OK, initiateResponse.StatusCode);
+        var uploadId = GetRequiredElementValue(XDocument.Parse(await initiateResponse.Content.ReadAsStringAsync()), "UploadId");
+
+        var firstPartResponse = await client.PutAsync(
+            $"/integrated-s3/{bucketName}/{objectKey}?partNumber=1&uploadId={Uri.EscapeDataString(uploadId)}",
+            new StringContent("hello ", Encoding.UTF8, "text/plain"));
+        Assert.Equal(HttpStatusCode.OK, firstPartResponse.StatusCode);
+        var firstPartETag = firstPartResponse.Headers.ETag?.Tag ?? throw new Xunit.Sdk.XunitException("Expected first part ETag header.");
+
+        var secondPartResponse = await client.PutAsync(
+            $"/integrated-s3/{bucketName}/{objectKey}?partNumber=2&uploadId={Uri.EscapeDataString(uploadId)}",
+            new StringContent("world", Encoding.UTF8, "text/plain"));
+        Assert.Equal(HttpStatusCode.OK, secondPartResponse.StatusCode);
+        var secondPartETag = secondPartResponse.Headers.ETag?.Tag ?? throw new Xunit.Sdk.XunitException("Expected second part ETag header.");
+
+        // Parts listed in descending order (2 then 1) must be rejected with InvalidPartOrder.
+        using var completeRequest = new HttpRequestMessage(HttpMethod.Post, $"/integrated-s3/{bucketName}/{objectKey}?uploadId={Uri.EscapeDataString(uploadId)}")
+        {
+            Content = new StringContent($"""
+<CompleteMultipartUpload>
+  <Part>
+    <PartNumber>2</PartNumber>
+    <ETag>{secondPartETag}</ETag>
+  </Part>
+  <Part>
+    <PartNumber>1</PartNumber>
+    <ETag>{firstPartETag}</ETag>
+  </Part>
+</CompleteMultipartUpload>
+""", Encoding.UTF8, "application/xml")
+        };
+
+        await AssertErrorResponseAsync(await client.SendAsync(completeRequest), HttpStatusCode.BadRequest, "InvalidPartOrder");
+    }
+
     private static async Task AssertErrorResponseAsync(HttpResponseMessage response, HttpStatusCode expectedStatusCode, string expectedCode)
     {
         Assert.Equal(expectedStatusCode, response.StatusCode);
@@ -10305,6 +12794,183 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
             LastErrorCode = lastError?.Code,
             LastErrorMessage = lastError?.Message
         };
+    }
+
+    [Fact]
+    public async Task PutObject_WithMalformedContentMd5_ReturnsInvalidDigest()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync("/integrated-s3/buckets/malformed-md5-bucket", content: null)).StatusCode);
+
+        // A Content-MD5 that is not valid base64 is syntactically invalid and must yield InvalidDigest,
+        // never BadDigest (which is reserved for a well-formed digest that fails to match the body).
+        using var putRequest = new HttpRequestMessage(HttpMethod.Put, "/integrated-s3/malformed-md5-bucket/docs/bad-md5.txt")
+        {
+            Content = new StringContent("content md5 format check", Encoding.UTF8, "text/plain")
+        };
+        putRequest.Content.Headers.TryAddWithoutValidation("Content-MD5", "not-valid-base64!!!");
+
+        var response = await client.SendAsync(putRequest);
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal("application/xml", response.Content.Headers.ContentType?.MediaType);
+
+        var document = XDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal("InvalidDigest", GetRequiredElementValue(document, "Code"));
+        Assert.Equal("The Content-MD5 you specified is not valid.", GetRequiredElementValue(document, "Message"));
+    }
+
+    [Fact]
+    public async Task PutObject_WithWrongLengthContentMd5_ReturnsInvalidDigest()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync("/integrated-s3/buckets/wrong-length-md5-bucket", content: null)).StatusCode);
+
+        // Valid base64 but the decoded value is not a 16-byte MD5 digest -> still InvalidDigest.
+        var wrongLengthMd5 = Convert.ToBase64String(new byte[8]);
+
+        using var putRequest = new HttpRequestMessage(HttpMethod.Put, "/integrated-s3/wrong-length-md5-bucket/docs/short-md5.txt")
+        {
+            Content = new StringContent("content md5 length check", Encoding.UTF8, "text/plain")
+        };
+        putRequest.Content.Headers.TryAddWithoutValidation("Content-MD5", wrongLengthMd5);
+
+        var response = await client.SendAsync(putRequest);
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+
+        var document = XDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal("InvalidDigest", GetRequiredElementValue(document, "Code"));
+        Assert.Equal("The Content-MD5 you specified is not valid.", GetRequiredElementValue(document, "Message"));
+    }
+
+    [Fact]
+    public async Task PutObject_WithValidContentMd5_Succeeds()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync("/integrated-s3/buckets/valid-md5-bucket", content: null)).StatusCode);
+
+        const string payload = "content md5 happy path";
+
+        using var putRequest = new HttpRequestMessage(HttpMethod.Put, "/integrated-s3/valid-md5-bucket/docs/good-md5.txt")
+        {
+            Content = new StringContent(payload, Encoding.UTF8, "text/plain")
+        };
+        putRequest.Content.Headers.TryAddWithoutValidation("Content-MD5", ComputeContentMd5Base64(payload));
+
+        var response = await client.SendAsync(putRequest);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        var getResponse = await client.GetAsync("/integrated-s3/valid-md5-bucket/docs/good-md5.txt");
+        Assert.Equal(HttpStatusCode.OK, getResponse.StatusCode);
+        Assert.Equal(payload, await getResponse.Content.ReadAsStringAsync());
+    }
+
+    [Fact]
+    public async Task CompleteMultipartUpload_WithInvalidChecksumType_ReturnsInvalidRequest()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        const string bucketName = "mpu-invalid-checksum-type-bucket";
+        const string objectKey = "docs/invalid-type.txt";
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync($"/integrated-s3/buckets/{bucketName}", content: null)).StatusCode);
+
+        using var initiateRequest = new HttpRequestMessage(HttpMethod.Post, $"/integrated-s3/{bucketName}/{objectKey}?uploads");
+        var initiateResponse = await client.SendAsync(initiateRequest);
+        Assert.Equal(HttpStatusCode.OK, initiateResponse.StatusCode);
+        var initiateDocument = XDocument.Parse(await initiateResponse.Content.ReadAsStringAsync());
+        var uploadId = GetRequiredElementValue(initiateDocument, "UploadId");
+
+        var completeBody = """
+<CompleteMultipartUpload>
+    <Part>
+        <PartNumber>1</PartNumber>
+        <ETag>"whatever"</ETag>
+    </Part>
+</CompleteMultipartUpload>
+""";
+
+        using var completeRequest = new HttpRequestMessage(HttpMethod.Post, $"/integrated-s3/{bucketName}/{objectKey}?uploadId={Uri.EscapeDataString(uploadId)}")
+        {
+            Content = new StringContent(completeBody, Encoding.UTF8, "application/xml")
+        };
+        completeRequest.Headers.TryAddWithoutValidation("x-amz-checksum-type", "BOGUS");
+
+        var completeResponse = await client.SendAsync(completeRequest);
+        Assert.Equal(HttpStatusCode.BadRequest, completeResponse.StatusCode);
+
+        var errorDocument = XDocument.Parse(await completeResponse.Content.ReadAsStringAsync());
+        Assert.Equal("InvalidRequest", GetRequiredElementValue(errorDocument, "Code"));
+    }
+
+    [Fact]
+    public async Task CompleteMultipartUpload_WithFullObjectChecksumType_EchoesFullObjectChecksum()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        const string bucketName = "mpu-full-object-bucket";
+        const string objectKey = "docs/full-object.txt";
+        // The first (non-final) part must be at least the S3 minimum of 5 MiB.
+        var part1Payload = new string('a', 5 * 1024 * 1024);
+        const string part2Payload = "world";
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync($"/integrated-s3/buckets/{bucketName}", content: null)).StatusCode);
+
+        using var initiateRequest = new HttpRequestMessage(HttpMethod.Post, $"/integrated-s3/{bucketName}/{objectKey}?uploads");
+        initiateRequest.Headers.TryAddWithoutValidation("Content-Type", "text/plain");
+        var initiateResponse = await client.SendAsync(initiateRequest);
+        Assert.Equal(HttpStatusCode.OK, initiateResponse.StatusCode);
+        var initiateDocument = XDocument.Parse(await initiateResponse.Content.ReadAsStringAsync());
+        var uploadId = GetRequiredElementValue(initiateDocument, "UploadId");
+
+        using var part1Request = new HttpRequestMessage(HttpMethod.Put, $"/integrated-s3/{bucketName}/{objectKey}?partNumber=1&uploadId={Uri.EscapeDataString(uploadId)}")
+        {
+            Content = new StringContent(part1Payload, Encoding.UTF8, "text/plain")
+        };
+        var part1Response = await client.SendAsync(part1Request);
+        Assert.Equal(HttpStatusCode.OK, part1Response.StatusCode);
+        var part1ETag = part1Response.Headers.ETag?.Tag ?? throw new Xunit.Sdk.XunitException("Expected multipart part ETag header.");
+
+        using var part2Request = new HttpRequestMessage(HttpMethod.Put, $"/integrated-s3/{bucketName}/{objectKey}?partNumber=2&uploadId={Uri.EscapeDataString(uploadId)}")
+        {
+            Content = new StringContent(part2Payload, Encoding.UTF8, "text/plain")
+        };
+        var part2Response = await client.SendAsync(part2Request);
+        Assert.Equal(HttpStatusCode.OK, part2Response.StatusCode);
+        var part2ETag = part2Response.Headers.ETag?.Tag ?? throw new Xunit.Sdk.XunitException("Expected multipart part ETag header.");
+
+        // FULL_OBJECT multipart completions carry a whole-object CRC computed over the assembled object.
+        var fullObjectCrc32c = ChecksumTestAlgorithms.ComputeCrc32cBase64(part1Payload + part2Payload);
+
+        var completeBody = $"""
+<CompleteMultipartUpload>
+    <Part>
+        <PartNumber>1</PartNumber>
+        <ETag>{part1ETag}</ETag>
+    </Part>
+    <Part>
+        <PartNumber>2</PartNumber>
+        <ETag>{part2ETag}</ETag>
+    </Part>
+</CompleteMultipartUpload>
+""";
+
+        using var completeRequest = new HttpRequestMessage(HttpMethod.Post, $"/integrated-s3/{bucketName}/{objectKey}?uploadId={Uri.EscapeDataString(uploadId)}")
+        {
+            Content = new StringContent(completeBody, Encoding.UTF8, "application/xml")
+        };
+        completeRequest.Headers.TryAddWithoutValidation("x-amz-checksum-type", "FULL_OBJECT");
+        completeRequest.Headers.TryAddWithoutValidation("x-amz-checksum-crc32c", fullObjectCrc32c);
+
+        var completeResponse = await client.SendAsync(completeRequest);
+        Assert.Equal(HttpStatusCode.OK, completeResponse.StatusCode);
+
+        var completeDocument = XDocument.Parse(await completeResponse.Content.ReadAsStringAsync());
+        S3XmlTestHelper.AssertRoot(completeDocument, "CompleteMultipartUploadResult");
+        Assert.Equal("FULL_OBJECT", GetRequiredElementValue(completeDocument, "ChecksumType"));
+        Assert.Equal(fullObjectCrc32c, GetRequiredElementValue(completeDocument, "ChecksumCRC32C"));
     }
 
     private static string ComputeSha1Base64(string content)
@@ -10413,6 +13079,30 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
         }
 
         WriteAscii(stream, "\r\n");
+        return stream.ToArray();
+    }
+
+    private static byte[] BuildMultiChunkAwsChunkedPayload(byte[] payloadBytes, IReadOnlyList<int> chunkSizes)
+    {
+        using var stream = new MemoryStream();
+        var offset = 0;
+        foreach (var requestedSize in chunkSizes) {
+            if (offset >= payloadBytes.Length) {
+                break;
+            }
+
+            var size = Math.Min(requestedSize, payloadBytes.Length - offset);
+            WriteAscii(stream, $"{size:x}\r\n");
+            stream.Write(payloadBytes, offset, size);
+            WriteAscii(stream, "\r\n");
+            offset += size;
+        }
+
+        if (offset != payloadBytes.Length) {
+            throw new InvalidOperationException("The supplied chunk sizes do not cover the whole payload.");
+        }
+
+        WriteAscii(stream, "0\r\n\r\n");
         return stream.ToArray();
     }
 

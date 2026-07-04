@@ -53,6 +53,12 @@ public sealed class CopyObjectRequest
     /// <summary>The expiration date for the destination object, in UTC.</summary>
     public DateTimeOffset? ExpiresUtc { get; init; }
 
+    /// <summary>
+    /// The raw, verbatim <c>Expires</c> header value for the destination object (used when replacing
+    /// metadata). AWS treats <c>Expires</c> as an opaque string stored and returned unchanged.
+    /// </summary>
+    public string? Expires { get; init; }
+
     /// <summary>User-defined metadata for the destination object (used when replacing metadata).</summary>
     public IReadOnlyDictionary<string, string>? Metadata { get; init; }
 

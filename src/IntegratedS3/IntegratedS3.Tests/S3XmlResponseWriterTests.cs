@@ -263,4 +263,148 @@ public sealed class S3XmlResponseWriterTests
                 Assert.Equal(S3XmlTestHelper.CanonicalS3Namespace, element.Name.NamespaceName));
         }
     }
+
+    [Fact]
+    public void WriteListObjectVersionsResult_EmitsOwnerOnVersionAndDeleteMarkerEntries()
+    {
+        var timestamp = new DateTimeOffset(2026, 03, 14, 09, 00, 00, TimeSpan.Zero);
+        var owner = new S3BucketOwner { Id = "owner-id-123", DisplayName = "owner-name" };
+
+        var xml = S3XmlResponseWriter.WriteListObjectVersionsResult(new S3ListObjectVersionsResult
+        {
+            Name = "bucket",
+            MaxKeys = 2,
+            Versions =
+            [
+                new S3ObjectVersionEntry
+                {
+                    Key = "docs/a.txt",
+                    VersionId = "version-1",
+                    IsLatest = true,
+                    ETag = "etag-1",
+                    Size = 10,
+                    LastModifiedUtc = timestamp,
+                    Owner = owner
+                },
+                new S3ObjectVersionEntry
+                {
+                    Key = "docs/deleted.txt",
+                    VersionId = "version-2",
+                    IsDeleteMarker = true,
+                    LastModifiedUtc = timestamp,
+                    Owner = owner
+                }
+            ],
+            CommonPrefixes = []
+        });
+
+        var document = XDocument.Parse(xml);
+        var ns = S3XmlTestHelper.CanonicalS3Namespace;
+
+        var version = Assert.Single(document.Root!.Elements(XName.Get("Version", ns)));
+        var versionOwner = version.Element(XName.Get("Owner", ns));
+        Assert.NotNull(versionOwner);
+        Assert.Equal("owner-id-123", versionOwner!.Element(XName.Get("ID", ns))?.Value);
+        Assert.Equal("owner-name", versionOwner.Element(XName.Get("DisplayName", ns))?.Value);
+
+        var deleteMarker = Assert.Single(document.Root!.Elements(XName.Get("DeleteMarker", ns)));
+        var deleteMarkerOwner = deleteMarker.Element(XName.Get("Owner", ns));
+        Assert.NotNull(deleteMarkerOwner);
+        Assert.Equal("owner-id-123", deleteMarkerOwner!.Element(XName.Get("ID", ns))?.Value);
+    }
+
+    [Fact]
+    public void WriteListObjectVersionsResult_AlwaysEmitsEmptyKeyAndVersionIdMarkers_OnFirstPage()
+    {
+        // Regression for #136: AWS always emits <KeyMarker> and <VersionIdMarker> in
+        // ListVersionsResult, present-but-empty on the first page (no marker supplied).
+        var xml = S3XmlResponseWriter.WriteListObjectVersionsResult(new S3ListObjectVersionsResult
+        {
+            Name = "bucket",
+            Prefix = "docs/",
+            MaxKeys = 1,
+            KeyMarker = null,
+            VersionIdMarker = null,
+            Versions = [],
+            CommonPrefixes = []
+        });
+
+        var document = XDocument.Parse(xml);
+        var ns = S3XmlTestHelper.CanonicalS3Namespace;
+
+        var keyMarker = document.Root!.Element(XName.Get("KeyMarker", ns));
+        Assert.NotNull(keyMarker);
+        Assert.Equal(string.Empty, keyMarker!.Value);
+
+        var versionIdMarker = document.Root!.Element(XName.Get("VersionIdMarker", ns));
+        Assert.NotNull(versionIdMarker);
+        Assert.Equal(string.Empty, versionIdMarker!.Value);
+    }
+
+    [Fact]
+    public void EmptyConfigurationResponses_EmitCanonicalS3NamespaceOnSelfClosingRoot()
+    {
+        // Regression for #117: empty configs serialize the root as a self-closing element
+        // (e.g. <NotificationConfiguration />). The namespace must still be present on the
+        // root, not dropped because a post-processing string Replace found no "<Root>".
+        var responses = new (string RootName, string Xml)[]
+        {
+            ("NotificationConfiguration",
+                S3XmlResponseWriter.WriteNotificationConfiguration(new S3NotificationConfiguration())),
+            ("BucketLoggingStatus",
+                S3XmlResponseWriter.WriteBucketLoggingStatus(new S3BucketLoggingStatus())),
+            ("LifecycleConfiguration",
+                S3XmlResponseWriter.WriteLifecycleConfiguration(new S3LifecycleConfiguration())),
+            ("ReplicationConfiguration",
+                S3XmlResponseWriter.WriteReplicationConfiguration(new S3ReplicationConfiguration())),
+            ("ObjectLockConfiguration",
+                S3XmlResponseWriter.WriteObjectLockConfiguration(new S3ObjectLockConfiguration()))
+        };
+
+        foreach (var (rootName, xml) in responses) {
+            // The root must be self-closing to exercise the original bug path.
+            Assert.Contains($"<{rootName} ", xml, StringComparison.Ordinal);
+            Assert.DoesNotContain($"</{rootName}>", xml, StringComparison.Ordinal);
+
+            var document = XDocument.Parse(xml);
+            S3XmlTestHelper.AssertRoot(document, rootName);
+            Assert.Equal(S3XmlTestHelper.CanonicalS3Namespace, document.Root!.Name.NamespaceName);
+        }
+    }
+
+    [Fact]
+    public void WriteError_EmitsHostId_WhenProvided()
+    {
+        var ns = S3XmlTestHelper.CanonicalS3Namespace;
+
+        var xml = S3XmlResponseWriter.WriteError(new S3ErrorResponse
+        {
+            Code = "NoSuchBucket",
+            Message = "The specified bucket does not exist.",
+            Resource = "/bucket/key",
+            RequestId = "request-id-123",
+            HostId = "host-id-456"
+        });
+
+        var document = XDocument.Parse(xml);
+        S3XmlTestHelper.AssertRoot(document, "Error");
+        Assert.Equal("host-id-456", document.Root!.Element(XName.Get("HostId", ns))?.Value);
+        Assert.Equal("request-id-123", document.Root!.Element(XName.Get("RequestId", ns))?.Value);
+    }
+
+    [Fact]
+    public void WriteError_OmitsHostId_WhenNotProvided()
+    {
+        var ns = S3XmlTestHelper.CanonicalS3Namespace;
+
+        var xml = S3XmlResponseWriter.WriteError(new S3ErrorResponse
+        {
+            Code = "NoSuchBucket",
+            Message = "The specified bucket does not exist."
+        });
+
+        var document = XDocument.Parse(xml);
+        S3XmlTestHelper.AssertRoot(document, "Error");
+        Assert.Null(document.Root!.Element(XName.Get("HostId", ns)));
+    }
 }

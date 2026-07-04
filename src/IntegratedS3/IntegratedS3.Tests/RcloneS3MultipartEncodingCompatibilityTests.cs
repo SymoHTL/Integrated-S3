@@ -155,9 +155,10 @@ public sealed class RcloneS3MultipartEncodingCompatibilityTests : IClassFixture<
         Assert.Equal(key, El(initiateDoc, "Key"));
         Assert.False(string.IsNullOrWhiteSpace(uploadId));
 
-        // Upload 3 distinct parts (~1KB each)
-        var part1Data = Repeat(0x41, 1024); // AAA...
-        var part2Data = Repeat(0x42, 1024); // BBB...
+        // Upload 3 distinct parts. Every non-final part must be at least the S3 minimum of 5 MiB;
+        // the last part may be smaller.
+        var part1Data = Repeat(0x41, 5 * 1024 * 1024); // AAA...
+        var part2Data = Repeat(0x42, 5 * 1024 * 1024); // BBB...
         var part3Data = Repeat(0x43, 1024); // CCC...
 
         var etag1 = await UploadPartAsync(client, bucket, key, uploadId, 1, part1Data);
@@ -198,7 +199,8 @@ public sealed class RcloneS3MultipartEncodingCompatibilityTests : IClassFixture<
             ["x-amz-meta-source"] = "rclone"
         });
 
-        var part1 = Repeat(0x61, 512);
+        // The first (non-final) part must be at least the S3 minimum of 5 MiB.
+        var part1 = Repeat(0x61, 5 * 1024 * 1024);
         var part2 = Repeat(0x62, 512);
         var etag1 = await UploadPartAsync(client, bucket, key, uploadId, 1, part1);
         var etag2 = await UploadPartAsync(client, bucket, key, uploadId, 2, part2);
@@ -373,8 +375,9 @@ public sealed class RcloneS3MultipartEncodingCompatibilityTests : IClassFixture<
         await CreateBucketAsync(client, bucket);
 
         var uploadId = await InitiateMultipartAsync(client, bucket, key);
-        var etag1 = await UploadPartAsync(client, bucket, key, uploadId, 1, Repeat(0x10, 512));
-        var etag2 = await UploadPartAsync(client, bucket, key, uploadId, 2, Repeat(0x20, 512));
+        // Every non-final part must be at least the S3 minimum of 5 MiB; the last part may be smaller.
+        var etag1 = await UploadPartAsync(client, bucket, key, uploadId, 1, Repeat(0x10, 5 * 1024 * 1024));
+        var etag2 = await UploadPartAsync(client, bucket, key, uploadId, 2, Repeat(0x20, 5 * 1024 * 1024));
         var etag3 = await UploadPartAsync(client, bucket, key, uploadId, 3, Repeat(0x30, 512));
 
         var completeResp = await CompleteMultipartAsync(client, bucket, key, uploadId,
@@ -667,33 +670,40 @@ public sealed class RcloneS3MultipartEncodingCompatibilityTests : IClassFixture<
     }
 
     [Fact]
-    public async Task Error_CompleteMultipartWithWrongPartOrder_DiskProviderAutoSorts()
+    public async Task Error_CompleteMultipartWithWrongPartOrder_ReturnsInvalidPartOrder()
     {
-        // Note: Real S3 rejects parts in wrong order with InvalidPartOrder.
-        // The disk provider auto-sorts parts (see DiskStorageService.cs OrderBy),
-        // so this test verifies the disk backend silently reorders and succeeds.
+        // Real S3 rejects parts supplied out of ascending part-number order with
+        // InvalidPartOrder (HTTP 400). The disk provider must match this behavior
+        // instead of silently re-sorting (issue #147).
         using var client = await _factory.CreateClientAsync();
         var bucket = Bucket();
         const string key = "wrong-order-test.dat";
         await CreateBucketAsync(client, bucket);
 
         var uploadId = await InitiateMultipartAsync(client, bucket, key);
-        var part1Data = Encoding.UTF8.GetBytes("FIRST");
-        var part2Data = Encoding.UTF8.GetBytes("SECOND");
+        // Parts 1 and 2 are non-final, so they must be at least the S3 minimum of 5 MiB; the
+        // last part may be smaller. Use distinct fill bytes so the reassembly check is meaningful.
+        var part1Data = Repeat(0x46, 5 * 1024 * 1024); // 'F'
+        var part2Data = Repeat(0x53, 5 * 1024 * 1024); // 'S'
         var part3Data = Encoding.UTF8.GetBytes("THIRD");
 
         var etag1 = await UploadPartAsync(client, bucket, key, uploadId, 1, part1Data);
         var etag2 = await UploadPartAsync(client, bucket, key, uploadId, 2, part2Data);
         var etag3 = await UploadPartAsync(client, bucket, key, uploadId, 3, part3Data);
 
-        // Complete with parts in reversed order (3, 1, 2)
+        // Complete with parts in reversed order (3, 1, 2) must be rejected.
         var completeResp = await CompleteMultipartAsync(client, bucket, key, uploadId,
             [(3, etag3), (1, etag1), (2, etag2)]);
 
-        // Disk provider auto-sorts, so this succeeds
-        Assert.Equal(HttpStatusCode.OK, completeResp.StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, completeResp.StatusCode);
+        var errorDoc = XDocument.Parse(await completeResp.Content.ReadAsStringAsync());
+        Assert.Equal("InvalidPartOrder", El(errorDoc, "Code"));
 
-        // Content should be in part-number order (1,2,3), not submission order
+        // In ascending part-number order (1, 2, 3) the same upload completes successfully.
+        var orderedResp = await CompleteMultipartAsync(client, bucket, key, uploadId,
+            [(1, etag1), (2, etag2), (3, etag3)]);
+        Assert.Equal(HttpStatusCode.OK, orderedResp.StatusCode);
+
         var getResp = await client.GetAsync(ObjectPath(bucket, key));
         var downloaded = await getResp.Content.ReadAsByteArrayAsync();
         Assert.Equal(

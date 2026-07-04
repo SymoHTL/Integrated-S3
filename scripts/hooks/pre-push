@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# Local pre-push regression gate: build + unit/integration tests + fast E2E smoke.
+# Install with scripts/install-hooks.sh (sets core.hooksPath). Bypass once with: git push --no-verify.
+set -euo pipefail
+cd "$(git rev-parse --show-toplevel)"
+
+echo "[pre-push] build (Release)…"
+dotnet build src/IntegratedS3/IntegratedS3.slnx -c Release --nologo -v minimal
+
+echo "[pre-push] unit & integration tests…"
+dotnet test src/IntegratedS3/IntegratedS3.Tests/IntegratedS3.Tests.csproj -c Release --no-build
+
+echo "[pre-push] fast E2E smoke…"
+dotnet test src/IntegratedS3/IntegratedS3.E2E.Tests/IntegratedS3.E2E.Tests.csproj -c Release --no-build --filter "Suite=Smoke"
+
+echo "[pre-push] OK"

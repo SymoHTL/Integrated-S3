@@ -109,6 +109,59 @@ public sealed class IntegratedS3AwsSdkCompatibilityTests : IClassFixture<WebUiAp
         Assert.Equal(System.Net.HttpStatusCode.NoContent, deleteObjectResponse.HttpStatusCode);
     }
 
+    // Regression for issue #233: a ranged GetObject returns 206 Partial Content. Previously the server
+    // attached the whole-object x-amz-checksum-* header to the partial body; the AWS SDK for .NET v4
+    // (checksum validation on by default) then recomputed the checksum over the returned slice and threw
+    // "Expected hash not equal to calculated hash". With the fix the partial 206 carries no whole-object
+    // checksum, so the ranged download succeeds without disabling checksum validation.
+    [Fact]
+    public async Task AmazonS3Client_RangedGetObject_SucceedsWithoutChecksumValidationFailure()
+    {
+        const string accessKeyId = "aws-sdk-range-checksum-access";
+        const string secretAccessKey = "aws-sdk-range-checksum-secret";
+
+        await using var isolatedClient = await CreateAuthenticatedLoopbackClientAsync(accessKeyId, secretAccessKey);
+        using var s3Client = CreateS3Client(isolatedClient.BaseAddress!, accessKeyId, secretAccessKey);
+
+        const string bucketName = "aws-sdk-range-checksum-bucket";
+        const string objectKey = "docs/ranged.bin";
+
+        // A payload large enough that a byte range is a genuine subset of the object.
+        var payloadBytes = new byte[300_000];
+        RandomNumberGenerator.Fill(payloadBytes);
+
+        Assert.Equal(HttpStatusCode.OK, (await s3Client.PutBucketAsync(new PutBucketRequest
+        {
+            BucketName = bucketName
+        })).HttpStatusCode);
+
+        using (var uploadStream = new MemoryStream(payloadBytes, writable: false)) {
+            var putResponse = await s3Client.PutObjectAsync(new PutObjectRequest
+            {
+                BucketName = bucketName,
+                Key = objectKey,
+                InputStream = uploadStream,
+                ContentType = "application/octet-stream",
+                UseChunkEncoding = false
+            });
+            Assert.Equal(HttpStatusCode.OK, putResponse.HttpStatusCode);
+        }
+
+        // The SDK validates the response checksum against the received bytes by default. Before the fix
+        // this call threw AmazonClientException: "Expected hash not equal to calculated hash".
+        var rangedGetResponse = await s3Client.GetObjectAsync(new GetObjectRequest
+        {
+            BucketName = bucketName,
+            Key = objectKey,
+            ByteRange = new ByteRange(100, 199)
+        });
+        Assert.Equal(HttpStatusCode.PartialContent, rangedGetResponse.HttpStatusCode);
+
+        using var rangedBuffer = new MemoryStream();
+        await rangedGetResponse.ResponseStream.CopyToAsync(rangedBuffer);
+        Assert.Equal(payloadBytes.AsSpan(100, 100).ToArray(), rangedBuffer.ToArray());
+    }
+
     [Fact]
     public async Task AmazonS3Client_PathStyleAwsChunkedPutObject_WorksAgainstIntegratedS3()
     {
@@ -2095,7 +2148,9 @@ public sealed class IntegratedS3AwsSdkCompatibilityTests : IClassFixture<WebUiAp
     {
         const string accessKeyId = "aws-sdk-multipart-access";
         const string secretAccessKey = "aws-sdk-multipart-secret";
-        const string completedPayload = "hello world";
+        // The first (non-final) part must be at least the S3 minimum of 5 MiB.
+        var firstPartPayload = new string('a', 5 * 1024 * 1024);
+        var completedPayload = firstPartPayload + "world";
 
         await using var isolatedClient = await CreateAuthenticatedLoopbackClientAsync(accessKeyId, secretAccessKey);
         using var s3Client = CreateS3Client(isolatedClient.BaseAddress!, accessKeyId, secretAccessKey);
@@ -2117,7 +2172,7 @@ public sealed class IntegratedS3AwsSdkCompatibilityTests : IClassFixture<WebUiAp
         });
         Assert.Equal(HttpStatusCode.OK, initiateResponse.HttpStatusCode);
 
-        await using var part1Stream = new MemoryStream(Encoding.UTF8.GetBytes("hello "));
+        await using var part1Stream = new MemoryStream(Encoding.UTF8.GetBytes(firstPartPayload));
         var part1Response = await s3Client.UploadPartAsync(new UploadPartRequest
         {
             BucketName = bucketName,
@@ -2660,7 +2715,8 @@ public sealed class IntegratedS3AwsSdkCompatibilityTests : IClassFixture<WebUiAp
         const string bucketName = "aws-sdk-multipart-checksum-bucket";
         const string objectKey = "docs/multipart-checksum.txt";
         const string copiedObjectKey = "docs/multipart-checksum-copy.txt";
-        const string part1Payload = "hello ";
+        // The first (non-final) part must be at least the S3 minimum of 5 MiB.
+        var part1Payload = new string('a', 5 * 1024 * 1024);
         const string part2Payload = "world";
 
         Assert.Equal(HttpStatusCode.OK, (await s3Client.PutBucketAsync(new PutBucketRequest
@@ -2889,7 +2945,8 @@ public sealed class IntegratedS3AwsSdkCompatibilityTests : IClassFixture<WebUiAp
         const string bucketName = "aws-sdk-multipart-sha1-bucket";
         const string objectKey = "docs/multipart-sha1.txt";
         const string copiedObjectKey = "docs/multipart-sha1-copy.txt";
-        const string part1Payload = "hello ";
+        // The first (non-final) part must be at least the S3 minimum of 5 MiB.
+        var part1Payload = new string('a', 5 * 1024 * 1024);
         const string part2Payload = "world";
 
         Assert.Equal(HttpStatusCode.OK, (await s3Client.PutBucketAsync(new PutBucketRequest
@@ -3014,7 +3071,8 @@ public sealed class IntegratedS3AwsSdkCompatibilityTests : IClassFixture<WebUiAp
         const string bucketName = "aws-sdk-multipart-crc32c-bucket";
         const string objectKey = "docs/multipart-crc32c.txt";
         const string copiedObjectKey = "docs/multipart-crc32c-copy.txt";
-        const string part1Payload = "hello ";
+        // The first (non-final) part must be at least the S3 minimum of 5 MiB.
+        var part1Payload = new string('a', 5 * 1024 * 1024);
         const string part2Payload = "world";
 
         Assert.Equal(HttpStatusCode.OK, (await s3Client.PutBucketAsync(new PutBucketRequest

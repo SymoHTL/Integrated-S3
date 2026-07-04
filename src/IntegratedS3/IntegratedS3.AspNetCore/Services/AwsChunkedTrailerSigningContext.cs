@@ -13,6 +13,13 @@ internal sealed class AwsChunkedTrailerSigningContext
     public required string SecretAccessKey { get; init; }
 
     /// <summary>
+    /// The request's seed signature: the SigV4/SigV4a signature computed over the canonical request.
+    /// It anchors the per-chunk signature chain — <c>chunk[0]</c> chains from this value — so that the
+    /// verified body bytes are cryptographically bound back to the authenticated request signature.
+    /// </summary>
+    public required string SeedSignature { get; init; }
+
+    /// <summary>
     /// When true the trailer signature must be verified with ECDSA (SigV4a) instead of HMAC (SigV4).
     /// </summary>
     public bool IsSigV4a { get; init; }

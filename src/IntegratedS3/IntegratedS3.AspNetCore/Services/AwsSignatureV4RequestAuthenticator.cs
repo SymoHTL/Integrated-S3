@@ -20,6 +20,7 @@ internal sealed class AwsSignatureV4RequestAuthenticator(
     private const string SigV4aAlgorithm = "AWS4-ECDSA-P256-SHA256";
     private const string AwsContentSha256HeaderName = "x-amz-content-sha256";
     private const string AwsDateHeaderName = "x-amz-date";
+    private const string HttpDateHeaderName = "Date";
     private const string AwsSecurityTokenHeaderName = "x-amz-security-token";
     private const string AwsSecurityTokenQueryKey = "X-Amz-Security-Token";
     private const string AwsTrailerHeaderName = "x-amz-trailer";
@@ -29,6 +30,14 @@ internal sealed class AwsSignatureV4RequestAuthenticator(
     private const string StreamingAws4HmacSha256PayloadTrailer = "STREAMING-AWS4-HMAC-SHA256-PAYLOAD-TRAILER";
     private const string StreamingSigV4aPayloadTrailer = "STREAMING-AWS4-ECDSA-P256-SHA256-PAYLOAD-TRAILER";
     private const string StreamingUnsignedPayloadTrailer = "STREAMING-UNSIGNED-PAYLOAD-TRAILER";
+
+    /// <summary>
+    /// AWS-parity hard ceiling for the presigned-URL <c>X-Amz-Expires</c> value: 604800 seconds
+    /// (7 days). AWS S3 rejects any larger value with <c>AuthorizationQueryParametersError</c>
+    /// regardless of server configuration, so this bound is enforced independently of the
+    /// configurable <see cref="IntegratedS3Options.MaximumPresignedUrlExpirySeconds"/>.
+    /// </summary>
+    private const int MaximumPresignedUrlExpiryHardCapSeconds = 604800;
 
     public async ValueTask<IntegratedS3RequestAuthenticationResult> AuthenticateAsync(HttpContext httpContext, CancellationToken cancellationToken = default)
     {
@@ -147,8 +156,8 @@ internal sealed class AwsSignatureV4RequestAuthenticator(
             return IntegratedS3RequestAuthenticationResult.Failure(securityTokenErrorCode!, securityTokenError!, statusCode);
         }
 
-        if (!TryParseHeaderTimestamp(httpContext.Request.Headers[AwsDateHeaderName].ToString(), out var requestTimestampUtc)) {
-            return IntegratedS3RequestAuthenticationResult.Failure("AccessDenied", "The request must include a valid x-amz-date header.");
+        if (!TryResolveRequestTimestamp(httpContext.Request, out var requestTimestampUtc)) {
+            return IntegratedS3RequestAuthenticationResult.Failure("AccessDenied", "The request must include a valid x-amz-date or Date header.");
         }
 
         if (IsOutsideAllowedClockSkew(requestTimestampUtc, settings)) {
@@ -169,7 +178,12 @@ internal sealed class AwsSignatureV4RequestAuthenticator(
             return IntegratedS3RequestAuthenticationResult.Failure("SignatureDoesNotMatch", "The request signature we calculated does not match the signature you provided.");
         }
 
-        StoreAwsChunkedTrailerSigningContext(httpContext, payloadHash!, credential, authorization.CredentialScope, requestTimestampUtc);
+        // Seed the per-chunk signature chain with the client's own (now cryptographically verified)
+        // request signature text, not the server-recomputed one: AWS clients derive chunk signatures
+        // from the exact hex string they placed in the Authorization header, and the header signature
+        // is compared case-insensitively — so a differently-cased-but-valid seed must chain from the
+        // client's text to reproduce the same HMAC chain.
+        StoreAwsChunkedTrailerSigningContext(httpContext, payloadHash!, credential, authorization.CredentialScope, requestTimestampUtc, authorization.Signature);
         return IntegratedS3RequestAuthenticationResult.Success(CreatePrincipal(credential));
     }
 
@@ -192,6 +206,10 @@ internal sealed class AwsSignatureV4RequestAuthenticator(
             return IntegratedS3RequestAuthenticationResult.Failure("AuthorizationQueryParametersError", scopeError!, statusCode);
         }
 
+        if (presignedRequest.ExpiresSeconds > MaximumPresignedUrlExpiryHardCapSeconds) {
+            return IntegratedS3RequestAuthenticationResult.Failure("AuthorizationQueryParametersError", $"X-Amz-Expires must be less than or equal to {MaximumPresignedUrlExpiryHardCapSeconds} seconds.", statusCode: 400);
+        }
+
         if (presignedRequest.ExpiresSeconds > settings.MaximumPresignedUrlExpirySeconds) {
             return IntegratedS3RequestAuthenticationResult.Failure("AuthorizationQueryParametersError", $"Presigned URL expiry exceeds the configured maximum of {settings.MaximumPresignedUrlExpirySeconds} seconds.", statusCode: 400);
         }
@@ -201,7 +219,10 @@ internal sealed class AwsSignatureV4RequestAuthenticator(
             return IntegratedS3RequestAuthenticationResult.Failure("RequestTimeTooSkewed", "The presigned request time is too far in the future.");
         }
 
-        if (nowUtc - presignedRequest.SignedAtUtc > TimeSpan.FromSeconds(presignedRequest.ExpiresSeconds) + TimeSpan.FromMinutes(settings.AllowedSignatureClockSkewMinutes)) {
+        // The presigned expiry boundary is an absolute bound at SignedAtUtc + X-Amz-Expires.
+        // Clock-skew tolerance applies only to the future-dated SignedAtUtc check above,
+        // not to lengthening the URL's stated lifetime (see issue #132).
+        if (nowUtc - presignedRequest.SignedAtUtc > TimeSpan.FromSeconds(presignedRequest.ExpiresSeconds)) {
             return IntegratedS3RequestAuthenticationResult.Failure("AccessDenied", "The presigned request has expired.");
         }
 
@@ -236,7 +257,7 @@ internal sealed class AwsSignatureV4RequestAuthenticator(
             return IntegratedS3RequestAuthenticationResult.Failure("SignatureDoesNotMatch", "The presigned request signature does not match the expected signature.");
         }
 
-        StoreAwsChunkedTrailerSigningContext(httpContext, payloadHash!, credential, presignedRequest.CredentialScope, presignedRequest.SignedAtUtc);
+        StoreAwsChunkedTrailerSigningContext(httpContext, payloadHash!, credential, presignedRequest.CredentialScope, presignedRequest.SignedAtUtc, presignedRequest.Signature);
         return IntegratedS3RequestAuthenticationResult.Success(CreatePrincipal(credential));
     }
 
@@ -393,8 +414,8 @@ internal sealed class AwsSignatureV4RequestAuthenticator(
             return IntegratedS3RequestAuthenticationResult.Failure(securityTokenErrorCode!, securityTokenError!, statusCode);
         }
 
-        if (!TryParseHeaderTimestamp(httpContext.Request.Headers[AwsDateHeaderName].ToString(), out var requestTimestampUtc)) {
-            return IntegratedS3RequestAuthenticationResult.Failure("AccessDenied", "The request must include a valid x-amz-date header.");
+        if (!TryResolveRequestTimestamp(httpContext.Request, out var requestTimestampUtc)) {
+            return IntegratedS3RequestAuthenticationResult.Failure("AccessDenied", "The request must include a valid x-amz-date or Date header.");
         }
 
         if (IsOutsideAllowedClockSkew(requestTimestampUtc, settings)) {
@@ -419,7 +440,7 @@ internal sealed class AwsSignatureV4RequestAuthenticator(
             return IntegratedS3RequestAuthenticationResult.Failure("SignatureDoesNotMatch", "The request signature we calculated does not match the signature you provided.");
         }
 
-        StoreSigV4aChunkedTrailerSigningContext(httpContext, payloadHash!, credential, authorization.CredentialScope, requestTimestampUtc);
+        StoreSigV4aChunkedTrailerSigningContext(httpContext, payloadHash!, credential, authorization.CredentialScope, requestTimestampUtc, authorization.Signature);
         return IntegratedS3RequestAuthenticationResult.Success(CreateSigV4aPrincipal(credential));
     }
 
@@ -437,6 +458,10 @@ internal sealed class AwsSignatureV4RequestAuthenticator(
             return IntegratedS3RequestAuthenticationResult.Failure("AuthorizationQueryParametersError", regionError!, statusCode);
         }
 
+        if (presignedRequest.ExpiresSeconds > MaximumPresignedUrlExpiryHardCapSeconds) {
+            return IntegratedS3RequestAuthenticationResult.Failure("AuthorizationQueryParametersError", $"X-Amz-Expires must be less than or equal to {MaximumPresignedUrlExpiryHardCapSeconds} seconds.", statusCode: 400);
+        }
+
         if (presignedRequest.ExpiresSeconds > settings.MaximumPresignedUrlExpirySeconds) {
             return IntegratedS3RequestAuthenticationResult.Failure("AuthorizationQueryParametersError", $"Presigned URL expiry exceeds the configured maximum of {settings.MaximumPresignedUrlExpirySeconds} seconds.", statusCode: 400);
         }
@@ -446,7 +471,10 @@ internal sealed class AwsSignatureV4RequestAuthenticator(
             return IntegratedS3RequestAuthenticationResult.Failure("RequestTimeTooSkewed", "The presigned request time is too far in the future.");
         }
 
-        if (nowUtc - presignedRequest.SignedAtUtc > TimeSpan.FromSeconds(presignedRequest.ExpiresSeconds) + TimeSpan.FromMinutes(settings.AllowedSignatureClockSkewMinutes)) {
+        // The presigned expiry boundary is an absolute bound at SignedAtUtc + X-Amz-Expires.
+        // Clock-skew tolerance applies only to the future-dated SignedAtUtc check above,
+        // not to lengthening the URL's stated lifetime (see issue #132).
+        if (nowUtc - presignedRequest.SignedAtUtc > TimeSpan.FromSeconds(presignedRequest.ExpiresSeconds)) {
             return IntegratedS3RequestAuthenticationResult.Failure("AccessDenied", "The presigned request has expired.");
         }
 
@@ -485,7 +513,7 @@ internal sealed class AwsSignatureV4RequestAuthenticator(
             return IntegratedS3RequestAuthenticationResult.Failure("SignatureDoesNotMatch", "The presigned request signature does not match the expected signature.");
         }
 
-        StoreSigV4aChunkedTrailerSigningContext(httpContext, payloadHash!, credential, presignedRequest.CredentialScope, presignedRequest.SignedAtUtc);
+        StoreSigV4aChunkedTrailerSigningContext(httpContext, payloadHash!, credential, presignedRequest.CredentialScope, presignedRequest.SignedAtUtc, presignedRequest.Signature);
         return IntegratedS3RequestAuthenticationResult.Success(CreateSigV4aPrincipal(credential));
     }
 
@@ -552,7 +580,8 @@ internal sealed class AwsSignatureV4RequestAuthenticator(
         string payloadHash,
         IntegratedS3AccessKeyCredential credential,
         S3SigV4CredentialScope credentialScope,
-        DateTimeOffset requestTimestampUtc)
+        DateTimeOffset requestTimestampUtc,
+        string seedSignature)
     {
         if (!IsSignedTrailerBackedPayloadHash(payloadHash)) {
             return;
@@ -563,6 +592,7 @@ internal sealed class AwsSignatureV4RequestAuthenticator(
             CredentialScope = credentialScope,
             SignedAtUtc = requestTimestampUtc,
             SecretAccessKey = credential.SecretAccessKey,
+            SeedSignature = seedSignature,
             IsSigV4a = true,
             AccessKeyId = credential.AccessKeyId
         });
@@ -605,9 +635,44 @@ internal sealed class AwsSignatureV4RequestAuthenticator(
         return true;
     }
 
+    // Per AWS SigV4 ("Elements of an AWS API request signature"): when x-amz-date is absent, fall
+    // back to the standard HTTP Date header for the request timestamp. x-amz-date takes precedence
+    // when both are present. See https://docs.aws.amazon.com/IAM/latest/UserGuide/signing-elements.html
+    private static bool TryResolveRequestTimestamp(HttpRequest request, out DateTimeOffset requestTimestampUtc)
+    {
+        var amzDate = request.Headers[AwsDateHeaderName].ToString();
+        if (!string.IsNullOrWhiteSpace(amzDate)) {
+            return TryParseHeaderTimestamp(amzDate, out requestTimestampUtc);
+        }
+
+        return TryParseDateHeaderTimestamp(request.Headers[HttpDateHeaderName].ToString(), out requestTimestampUtc);
+    }
+
     private static bool TryParseHeaderTimestamp(string? rawValue, out DateTimeOffset requestTimestampUtc)
     {
         return DateTimeOffset.TryParseExact(rawValue, "yyyyMMdd'T'HHmmss'Z'", CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal, out requestTimestampUtc);
+    }
+
+    // The standard HTTP Date header is typically RFC 1123 ("R") when signed by SigV4 clients, but the
+    // SigV4 spec also permits the ISO 8601 basic form; accept both. The resolved instant is re-serialized
+    // to the canonical yyyyMMddTHHmmssZ form by BuildStringToSign, so either format yields the same signature.
+    private static bool TryParseDateHeaderTimestamp(string? rawValue, out DateTimeOffset requestTimestampUtc)
+    {
+        if (string.IsNullOrWhiteSpace(rawValue)) {
+            requestTimestampUtc = default;
+            return false;
+        }
+
+        if (TryParseHeaderTimestamp(rawValue, out requestTimestampUtc)) {
+            return true;
+        }
+
+        if (DateTimeOffset.TryParseExact(rawValue, "R", CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal, out requestTimestampUtc)) {
+            return true;
+        }
+
+        requestTimestampUtc = default;
+        return false;
     }
 
     private static bool IsOutsideAllowedClockSkew(DateTimeOffset requestTimestampUtc, IntegratedS3Options settings)
@@ -710,7 +775,8 @@ internal sealed class AwsSignatureV4RequestAuthenticator(
         string payloadHash,
         IntegratedS3AccessKeyCredential credential,
         S3SigV4CredentialScope credentialScope,
-        DateTimeOffset requestTimestampUtc)
+        DateTimeOffset requestTimestampUtc,
+        string seedSignature)
     {
         if (!IsSignedTrailerBackedPayloadHash(payloadHash)) {
             return;
@@ -720,7 +786,8 @@ internal sealed class AwsSignatureV4RequestAuthenticator(
         {
             CredentialScope = credentialScope,
             SignedAtUtc = requestTimestampUtc,
-            SecretAccessKey = credential.SecretAccessKey
+            SecretAccessKey = credential.SecretAccessKey,
+            SeedSignature = seedSignature
         });
     }
 

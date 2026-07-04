@@ -15,7 +15,7 @@ public static class S3XmlRequestReader
         ArgumentNullException.ThrowIfNull(content);
 
         try {
-            var document = await XDocument.LoadAsync(content, LoadOptions.None, cancellationToken);
+            var document = await HardenedXml.LoadAsync(content, cancellationToken);
             var root = document.Root;
             if (root is null || !string.Equals(root.Name.LocalName, "VersioningConfiguration", StringComparison.Ordinal)) {
                 throw new FormatException("The bucket versioning request body must contain a root 'VersioningConfiguration' element.");
@@ -45,7 +45,7 @@ public static class S3XmlRequestReader
         ArgumentNullException.ThrowIfNull(content);
 
         try {
-            var document = await XDocument.LoadAsync(content, LoadOptions.None, cancellationToken);
+            var document = await HardenedXml.LoadAsync(content, cancellationToken);
             var root = document.Root;
             if (root is null || !string.Equals(root.Name.LocalName, "ServerSideEncryptionConfiguration", StringComparison.Ordinal)) {
                 throw new FormatException("The bucket encryption request body must contain a root 'ServerSideEncryptionConfiguration' element.");
@@ -75,6 +75,108 @@ public static class S3XmlRequestReader
         }
     }
 
+    /// <summary>Reads a bucket public access block configuration from the XML request body.</summary>
+    /// <param name="content">The request body stream containing the XML payload.</param>
+    /// <param name="cancellationToken">A token to cancel the asynchronous operation.</param>
+    /// <returns>The deserialized <see cref="S3PublicAccessBlockConfiguration"/>.</returns>
+    public static async Task<S3PublicAccessBlockConfiguration> ReadPublicAccessBlockConfigurationAsync(Stream content, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(content);
+
+        try {
+            var document = await HardenedXml.LoadAsync(content, cancellationToken);
+            var root = document.Root;
+            if (root is null || !string.Equals(root.Name.LocalName, "PublicAccessBlockConfiguration", StringComparison.Ordinal)) {
+                throw new FormatException("The public access block request body must contain a root 'PublicAccessBlockConfiguration' element.");
+            }
+
+            return new S3PublicAccessBlockConfiguration
+            {
+                BlockPublicAcls = ParseOptionalBoolean(root, "BlockPublicAcls"),
+                IgnorePublicAcls = ParseOptionalBoolean(root, "IgnorePublicAcls"),
+                BlockPublicPolicy = ParseOptionalBoolean(root, "BlockPublicPolicy"),
+                RestrictPublicBuckets = ParseOptionalBoolean(root, "RestrictPublicBuckets")
+            };
+        }
+        catch (FormatException ex) {
+            ProtocolTelemetry.RecordXmlParseError("ReadPublicAccessBlockConfiguration", ex.Message);
+            throw;
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException) {
+            ProtocolTelemetry.RecordXmlParseError("ReadPublicAccessBlockConfiguration", exception.Message);
+            throw new FormatException("The public access block request body is not valid XML.", exception);
+        }
+    }
+
+    private static bool ParseOptionalBoolean(XElement parent, string childName)
+    {
+        var text = GetSingleOptionalChildValue(
+            parent,
+            childName,
+            $"The public access block configuration must not contain multiple '{childName}' elements.");
+
+        if (text is null) {
+            return false;
+        }
+
+        if (!bool.TryParse(text, out var parsed)) {
+            throw new FormatException($"The '{childName}' element must be 'true' or 'false'.");
+        }
+
+        return parsed;
+    }
+
+    /// <summary>Reads a bucket ownership controls configuration from the XML request body.</summary>
+    /// <param name="content">The request body stream containing the XML payload.</param>
+    /// <param name="cancellationToken">A token to cancel the asynchronous operation.</param>
+    /// <returns>The deserialized <see cref="S3OwnershipControlsConfiguration"/>.</returns>
+    public static async Task<S3OwnershipControlsConfiguration> ReadOwnershipControlsConfigurationAsync(Stream content, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(content);
+
+        try {
+            var document = await HardenedXml.LoadAsync(content, cancellationToken);
+            var root = document.Root;
+            if (root is null || !string.Equals(root.Name.LocalName, "OwnershipControls", StringComparison.Ordinal)) {
+                throw new FormatException("The ownership controls request body must contain a root 'OwnershipControls' element.");
+            }
+
+            var rules = root.Elements()
+                .Where(static child => string.Equals(child.Name.LocalName, "Rule", StringComparison.Ordinal))
+                .ToArray();
+            if (rules.Length != 1) {
+                throw new FormatException("The ownership controls configuration must contain exactly one 'Rule' element.");
+            }
+
+            var objectOwnership = GetSingleOptionalChildValue(
+                rules[0],
+                "ObjectOwnership",
+                "The ownership controls rule must not contain multiple 'ObjectOwnership' elements.");
+            if (string.IsNullOrWhiteSpace(objectOwnership)) {
+                throw new FormatException("The ownership controls rule must contain a non-empty 'ObjectOwnership' element.");
+            }
+
+            if (!string.Equals(objectOwnership, "BucketOwnerPreferred", StringComparison.Ordinal)
+                && !string.Equals(objectOwnership, "ObjectWriter", StringComparison.Ordinal)
+                && !string.Equals(objectOwnership, "BucketOwnerEnforced", StringComparison.Ordinal)) {
+                throw new FormatException("The 'ObjectOwnership' element must be 'BucketOwnerPreferred', 'ObjectWriter', or 'BucketOwnerEnforced'.");
+            }
+
+            return new S3OwnershipControlsConfiguration
+            {
+                ObjectOwnership = objectOwnership
+            };
+        }
+        catch (FormatException ex) {
+            ProtocolTelemetry.RecordXmlParseError("ReadOwnershipControlsConfiguration", ex.Message);
+            throw;
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException) {
+            ProtocolTelemetry.RecordXmlParseError("ReadOwnershipControlsConfiguration", exception.Message);
+            throw new FormatException("The ownership controls request body is not valid XML.", exception);
+        }
+    }
+
     /// <summary>Reads a CORS configuration from the XML request body.</summary>
     /// <param name="content">The request body stream containing the XML payload.</param>
     /// <param name="cancellationToken">A token to cancel the asynchronous operation.</param>
@@ -84,7 +186,7 @@ public static class S3XmlRequestReader
         ArgumentNullException.ThrowIfNull(content);
 
         try {
-            var document = await XDocument.LoadAsync(content, LoadOptions.None, cancellationToken);
+            var document = await HardenedXml.LoadAsync(content, cancellationToken);
             var root = document.Root;
             if (root is null || !string.Equals(root.Name.LocalName, "CORSConfiguration", StringComparison.Ordinal)) {
                 throw new FormatException("The bucket CORS request body must contain a root 'CORSConfiguration' element.");
@@ -123,7 +225,7 @@ public static class S3XmlRequestReader
         ArgumentNullException.ThrowIfNull(content);
 
         try {
-            var document = await XDocument.LoadAsync(content, LoadOptions.None, cancellationToken);
+            var document = await HardenedXml.LoadAsync(content, cancellationToken);
             var root = document.Root;
             if (root is null || !string.Equals(root.Name.LocalName, "CompleteMultipartUpload", StringComparison.Ordinal)) {
                 throw new FormatException("The complete multipart upload request body must contain a root 'CompleteMultipartUpload' element.");
@@ -162,7 +264,7 @@ public static class S3XmlRequestReader
         ArgumentNullException.ThrowIfNull(content);
 
         try {
-            var document = await XDocument.LoadAsync(content, LoadOptions.None, cancellationToken);
+            var document = await HardenedXml.LoadAsync(content, cancellationToken);
             var root = document.Root;
             if (root is null || !string.Equals(root.Name.LocalName, "Delete", StringComparison.Ordinal)) {
                 throw new FormatException("The delete request body must contain a root 'Delete' element.");
@@ -214,7 +316,7 @@ public static class S3XmlRequestReader
         ArgumentNullException.ThrowIfNull(content);
 
         try {
-            var document = await XDocument.LoadAsync(content, LoadOptions.None, cancellationToken);
+            var document = await HardenedXml.LoadAsync(content, cancellationToken);
             var root = document.Root;
             if (root is null || !string.Equals(root.Name.LocalName, "Tagging", StringComparison.Ordinal)) {
                 throw new FormatException("The tagging request body must contain a root 'Tagging' element.");
@@ -258,7 +360,7 @@ public static class S3XmlRequestReader
         ArgumentNullException.ThrowIfNull(content);
 
         try {
-            var document = await XDocument.LoadAsync(content, LoadOptions.None, cancellationToken);
+            var document = await HardenedXml.LoadAsync(content, cancellationToken);
             var root = document.Root;
             if (root is null || !string.Equals(root.Name.LocalName, "AccessControlPolicy", StringComparison.Ordinal)) {
                 throw new FormatException("The ACL request body must contain a root 'AccessControlPolicy' element.");
@@ -310,7 +412,7 @@ public static class S3XmlRequestReader
         ArgumentNullException.ThrowIfNull(content);
 
         try {
-            var document = await XDocument.LoadAsync(content, LoadOptions.None, cancellationToken);
+            var document = await HardenedXml.LoadAsync(content, cancellationToken);
             var root = document.Root;
             if (root is null || !string.Equals(root.Name.LocalName, "Tagging", StringComparison.Ordinal)) {
                 throw new FormatException("The bucket tagging request body must contain a root 'Tagging' element.");
@@ -350,7 +452,7 @@ public static class S3XmlRequestReader
         ArgumentNullException.ThrowIfNull(content);
 
         try {
-            var document = await XDocument.LoadAsync(content, LoadOptions.None, cancellationToken);
+            var document = await HardenedXml.LoadAsync(content, cancellationToken);
             var root = document.Root;
             if (root is null || !string.Equals(root.Name.LocalName, "BucketLoggingStatus", StringComparison.Ordinal)) {
                 throw new FormatException("The bucket logging request body must contain a root 'BucketLoggingStatus' element.");
@@ -390,7 +492,7 @@ public static class S3XmlRequestReader
         ArgumentNullException.ThrowIfNull(content);
 
         try {
-            var document = await XDocument.LoadAsync(content, LoadOptions.None, cancellationToken);
+            var document = await HardenedXml.LoadAsync(content, cancellationToken);
             var root = document.Root;
             if (root is null || !string.Equals(root.Name.LocalName, "WebsiteConfiguration", StringComparison.Ordinal)) {
                 throw new FormatException("The website configuration request body must contain a root 'WebsiteConfiguration' element.");
@@ -487,7 +589,7 @@ public static class S3XmlRequestReader
         ArgumentNullException.ThrowIfNull(content);
 
         try {
-            var document = await XDocument.LoadAsync(content, LoadOptions.None, cancellationToken);
+            var document = await HardenedXml.LoadAsync(content, cancellationToken);
             var root = document.Root;
             if (root is null || !string.Equals(root.Name.LocalName, "RequestPaymentConfiguration", StringComparison.Ordinal)) {
                 throw new FormatException("The request payment configuration request body must contain a root 'RequestPaymentConfiguration' element.");
@@ -517,7 +619,7 @@ public static class S3XmlRequestReader
         ArgumentNullException.ThrowIfNull(content);
 
         try {
-            var document = await XDocument.LoadAsync(content, LoadOptions.None, cancellationToken);
+            var document = await HardenedXml.LoadAsync(content, cancellationToken);
             var root = document.Root;
             if (root is null || !string.Equals(root.Name.LocalName, "AccelerateConfiguration", StringComparison.Ordinal)) {
                 throw new FormatException("The accelerate configuration request body must contain a root 'AccelerateConfiguration' element.");
@@ -547,7 +649,7 @@ public static class S3XmlRequestReader
         ArgumentNullException.ThrowIfNull(content);
 
         try {
-            var document = await XDocument.LoadAsync(content, LoadOptions.None, cancellationToken);
+            var document = await HardenedXml.LoadAsync(content, cancellationToken);
             var root = document.Root;
             if (root is null || !string.Equals(root.Name.LocalName, "LifecycleConfiguration", StringComparison.Ordinal)) {
                 throw new FormatException("The lifecycle configuration request body must contain a root 'LifecycleConfiguration' element.");
@@ -582,7 +684,7 @@ public static class S3XmlRequestReader
         ArgumentNullException.ThrowIfNull(content);
 
         try {
-            var document = await XDocument.LoadAsync(content, LoadOptions.None, cancellationToken);
+            var document = await HardenedXml.LoadAsync(content, cancellationToken);
             var root = document.Root;
             if (root is null || !string.Equals(root.Name.LocalName, "ReplicationConfiguration", StringComparison.Ordinal)) {
                 throw new FormatException("The replication configuration request body must contain a root 'ReplicationConfiguration' element.");
@@ -620,7 +722,7 @@ public static class S3XmlRequestReader
         ArgumentNullException.ThrowIfNull(content);
 
         try {
-            var document = await XDocument.LoadAsync(content, LoadOptions.None, cancellationToken);
+            var document = await HardenedXml.LoadAsync(content, cancellationToken);
             var root = document.Root;
             if (root is null || !string.Equals(root.Name.LocalName, "NotificationConfiguration", StringComparison.Ordinal)) {
                 throw new FormatException("The notification configuration request body must contain a root 'NotificationConfiguration' element.");
@@ -685,7 +787,7 @@ public static class S3XmlRequestReader
         ArgumentNullException.ThrowIfNull(content);
 
         try {
-            var document = await XDocument.LoadAsync(content, LoadOptions.None, cancellationToken);
+            var document = await HardenedXml.LoadAsync(content, cancellationToken);
             var root = document.Root;
             if (root is null || !string.Equals(root.Name.LocalName, "ObjectLockConfiguration", StringComparison.Ordinal)) {
                 throw new FormatException("The object lock configuration request body must contain a root 'ObjectLockConfiguration' element.");
@@ -734,7 +836,7 @@ public static class S3XmlRequestReader
         ArgumentNullException.ThrowIfNull(content);
 
         try {
-            var document = await XDocument.LoadAsync(content, LoadOptions.None, cancellationToken);
+            var document = await HardenedXml.LoadAsync(content, cancellationToken);
             var root = document.Root;
             if (root is null || !string.Equals(root.Name.LocalName, "AnalyticsConfiguration", StringComparison.Ordinal)) {
                 throw new FormatException("The analytics configuration request body must contain a root 'AnalyticsConfiguration' element.");
@@ -823,7 +925,7 @@ public static class S3XmlRequestReader
         ArgumentNullException.ThrowIfNull(content);
 
         try {
-            var document = await XDocument.LoadAsync(content, LoadOptions.None, cancellationToken);
+            var document = await HardenedXml.LoadAsync(content, cancellationToken);
             var root = document.Root;
             if (root is null || !string.Equals(root.Name.LocalName, "MetricsConfiguration", StringComparison.Ordinal)) {
                 throw new FormatException("The metrics configuration request body must contain a root 'MetricsConfiguration' element.");
@@ -876,7 +978,7 @@ public static class S3XmlRequestReader
         ArgumentNullException.ThrowIfNull(content);
 
         try {
-            var document = await XDocument.LoadAsync(content, LoadOptions.None, cancellationToken);
+            var document = await HardenedXml.LoadAsync(content, cancellationToken);
             var root = document.Root;
             if (root is null || !string.Equals(root.Name.LocalName, "InventoryConfiguration", StringComparison.Ordinal)) {
                 throw new FormatException("The inventory configuration request body must contain a root 'InventoryConfiguration' element.");
@@ -961,7 +1063,7 @@ public static class S3XmlRequestReader
         ArgumentNullException.ThrowIfNull(content);
 
         try {
-            var document = await XDocument.LoadAsync(content, LoadOptions.None, cancellationToken);
+            var document = await HardenedXml.LoadAsync(content, cancellationToken);
             var root = document.Root;
             if (root is null || !string.Equals(root.Name.LocalName, "IntelligentTieringConfiguration", StringComparison.Ordinal)) {
                 throw new FormatException("The intelligent tiering configuration request body must contain a root 'IntelligentTieringConfiguration' element.");
@@ -1029,7 +1131,7 @@ public static class S3XmlRequestReader
         ArgumentNullException.ThrowIfNull(content);
 
         try {
-            var document = await XDocument.LoadAsync(content, LoadOptions.None, cancellationToken);
+            var document = await HardenedXml.LoadAsync(content, cancellationToken);
             var root = document.Root;
             if (root is null || !string.Equals(root.Name.LocalName, "Retention", StringComparison.Ordinal)) {
                 throw new FormatException("The object retention request body must contain a root 'Retention' element.");
@@ -1067,7 +1169,7 @@ public static class S3XmlRequestReader
         ArgumentNullException.ThrowIfNull(content);
 
         try {
-            var document = await XDocument.LoadAsync(content, LoadOptions.None, cancellationToken);
+            var document = await HardenedXml.LoadAsync(content, cancellationToken);
             var root = document.Root;
             if (root is null || !string.Equals(root.Name.LocalName, "LegalHold", StringComparison.Ordinal)) {
                 throw new FormatException("The object legal hold request body must contain a root 'LegalHold' element.");
@@ -1097,7 +1199,7 @@ public static class S3XmlRequestReader
         ArgumentNullException.ThrowIfNull(content);
 
         try {
-            var document = await XDocument.LoadAsync(content, LoadOptions.None, cancellationToken);
+            var document = await HardenedXml.LoadAsync(content, cancellationToken);
             var root = document.Root;
             if (root is null || !string.Equals(root.Name.LocalName, "RestoreRequest", StringComparison.Ordinal)) {
                 throw new FormatException("The restore request body must contain a root 'RestoreRequest' element.");

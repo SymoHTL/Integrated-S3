@@ -41,14 +41,32 @@ public enum StorageErrorCode
     /// <summary>A concurrent modification was detected on the same object version.</summary>
     VersionConflict,
 
-    /// <summary>A bucket with the specified name already exists.</summary>
+    /// <summary>A bucket with the specified name already exists and is owned by another account.</summary>
     BucketAlreadyExists,
+
+    /// <summary>A bucket with the specified name already exists and is owned by the requesting account (idempotent re-create).</summary>
+    BucketAlreadyOwnedByYou,
+
+    /// <summary>The bucket is in a state that does not permit the requested operation (e.g., enabling Object Lock without versioning).</summary>
+    InvalidBucketState,
 
     /// <summary>The bucket cannot be deleted because it still contains objects.</summary>
     BucketNotEmpty,
 
     /// <summary>A multipart upload ID conflict or invalid state transition was detected.</summary>
     MultipartConflict,
+
+    /// <summary>The specified multipart upload does not exist, or has been completed or aborted.</summary>
+    NoSuchUpload,
+
+    /// <summary>One or more listed multipart parts is missing or has a mismatched ETag.</summary>
+    InvalidPart,
+
+    /// <summary>The multipart parts were not supplied in ascending part-number order (or contain duplicates).</summary>
+    InvalidPartOrder,
+
+    /// <summary>An argument value violates its allowed range or format (e.g., part number outside 1..10000).</summary>
+    InvalidArgument,
 
     /// <summary>The request was rate-limited by the storage backend.</summary>
     Throttled,
@@ -92,6 +110,12 @@ public enum StorageErrorCode
     /// <summary>No intelligent-tiering configuration exists for the bucket.</summary>
     IntelligentTieringConfigurationNotFound,
 
+    /// <summary>No public access block configuration exists for the bucket.</summary>
+    PublicAccessBlockConfigurationNotFound,
+
     /// <summary>The object is protected by an object-lock retention policy or legal hold.</summary>
     ObjectLocked,
+
+    /// <summary>No ownership controls configuration exists for the bucket.</summary>
+    OwnershipControlsNotFound,
 }

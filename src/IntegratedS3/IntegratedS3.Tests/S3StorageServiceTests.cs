@@ -1,4 +1,6 @@
 using System.Net;
+using System.Net.Http;
+using System.Net.Sockets;
 using System.Text;
 using Amazon.Runtime;
 using Amazon.S3;
@@ -288,6 +290,21 @@ public sealed class S3StorageServiceTests
 
         Assert.False(result.IsSuccess);
         Assert.Equal(StorageErrorCode.BucketAlreadyExists, result.Error!.Code);
+    }
+
+    [Fact]
+    public async Task CreateBucketAsync_TranslatesBucketAlreadyOwnedByYou_ToDistinctCode()
+    {
+        var fake = new FakeS3Client();
+        fake.CreateBucketException = new AmazonS3Exception(
+            "Bucket already owned by you.", ErrorType.Sender, "BucketAlreadyOwnedByYou", "req-1", HttpStatusCode.Conflict);
+
+        var svc = BuildService(fake);
+        var result = await svc.CreateBucketAsync(new CreateBucketRequest { BucketName = "my-bucket" });
+
+        Assert.False(result.IsSuccess);
+        // Must be distinguished from BucketAlreadyExists (a name owned by another account).
+        Assert.Equal(StorageErrorCode.BucketAlreadyOwnedByYou, result.Error!.Code);
     }
 
     // --- HeadBucketAsync ---
@@ -1445,6 +1462,157 @@ public sealed class S3StorageServiceTests
 
         Assert.False(result.IsSuccess);
         Assert.Equal(StorageErrorCode.BucketNotFound, result.Error!.Code);
+    }
+
+    // --- Transport / transient failure translation (issue #129) ---
+    // Regression: transport-layer failures (HTTP timeouts, socket resets, DNS/TLS errors, 5xx
+    // without an S3 error body) must be translated into a well-typed, retryable StorageResult
+    // failure instead of escaping the provider as a raw, unclassified exception.
+
+    [Fact]
+    public async Task PutObjectAsync_TranslatesHttpRequestException_ToProviderUnavailable()
+    {
+        var fake = new FakeS3Client
+        {
+            PutObjectException = new HttpRequestException("Connection reset by peer.")
+        };
+        var svc = BuildService(fake);
+
+        var result = await svc.PutObjectAsync(new PutObjectRequest
+        {
+            BucketName = "b",
+            Key = "k",
+            Content = Stream.Null
+        });
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(StorageErrorCode.ProviderUnavailable, result.Error!.Code);
+        Assert.Equal(503, result.Error.SuggestedHttpStatusCode);
+    }
+
+    [Fact]
+    public async Task PutObjectAsync_TranslatesSocketException_ToProviderUnavailable()
+    {
+        var fake = new FakeS3Client
+        {
+            PutObjectException = new SocketException((int)SocketError.HostNotFound)
+        };
+        var svc = BuildService(fake);
+
+        var result = await svc.PutObjectAsync(new PutObjectRequest
+        {
+            BucketName = "b",
+            Key = "k",
+            Content = Stream.Null
+        });
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(StorageErrorCode.ProviderUnavailable, result.Error!.Code);
+    }
+
+    [Fact]
+    public async Task PutObjectAsync_TranslatesRequestTimeout_ToProviderUnavailable()
+    {
+        // An HttpClient request timeout surfaces as a TaskCanceledException whose token the caller
+        // never cancelled. It must NOT be treated as caller cancellation.
+        var fake = new FakeS3Client
+        {
+            PutObjectException = new TaskCanceledException("The request was canceled due to the configured HttpClient.Timeout.")
+        };
+        var svc = BuildService(fake);
+
+        var result = await svc.PutObjectAsync(new PutObjectRequest
+        {
+            BucketName = "b",
+            Key = "k",
+            Content = Stream.Null
+        });
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(StorageErrorCode.ProviderUnavailable, result.Error!.Code);
+    }
+
+    [Fact]
+    public async Task GetObjectAsync_TranslatesServiceExceptionWithoutStatus_ToProviderUnavailable()
+    {
+        // A bare AmazonServiceException (no S3 error body, no HTTP status) models a transport-level
+        // failure surfaced by the AWS SDK — e.g. the request never reached the upstream.
+        var fake = new FakeS3Client
+        {
+            GetObjectException = new AmazonServiceException("Unable to reach the endpoint.")
+        };
+        var svc = BuildService(fake);
+
+        var result = await svc.GetObjectAsync(new GetObjectRequest { BucketName = "b", Key = "k" });
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(StorageErrorCode.ProviderUnavailable, result.Error!.Code);
+    }
+
+    [Fact]
+    public async Task GetObjectAsync_TranslatesService503_ToProviderUnavailable()
+    {
+        var fake = new FakeS3Client
+        {
+            GetObjectException = new AmazonServiceException("Service Unavailable")
+            {
+                StatusCode = HttpStatusCode.ServiceUnavailable
+            }
+        };
+        var svc = BuildService(fake);
+
+        var result = await svc.GetObjectAsync(new GetObjectRequest { BucketName = "b", Key = "k" });
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(StorageErrorCode.ProviderUnavailable, result.Error!.Code);
+        Assert.Equal(503, result.Error.SuggestedHttpStatusCode);
+    }
+
+    [Fact]
+    public async Task GetObjectAsync_TranslatesHttpRequestException_ToProviderUnavailable()
+    {
+        var fake = new FakeS3Client
+        {
+            GetObjectException = new HttpRequestException("Name or service not known.")
+        };
+        var svc = BuildService(fake);
+
+        var result = await svc.GetObjectAsync(new GetObjectRequest { BucketName = "b", Key = "k" });
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(StorageErrorCode.ProviderUnavailable, result.Error!.Code);
+    }
+
+    [Fact]
+    public async Task GetObjectAsync_RethrowsCallerCancellation_NotTranslatedAsProviderFault()
+    {
+        // Caller-initiated cancellation must propagate as OperationCanceledException, not be
+        // reclassified into a provider failure.
+        using var cts = new CancellationTokenSource();
+        await cts.CancelAsync();
+        var fake = new FakeS3Client
+        {
+            GetObjectException = new OperationCanceledException(cts.Token)
+        };
+        var svc = BuildService(fake);
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () =>
+            await svc.GetObjectAsync(new GetObjectRequest { BucketName = "b", Key = "k" }, cts.Token));
+    }
+
+    [Fact]
+    public async Task CreateBucketAsync_TranslatesHttpRequestException_ToProviderUnavailable()
+    {
+        var fake = new FakeS3Client
+        {
+            CreateBucketException = new HttpRequestException("The SSL connection could not be established.")
+        };
+        var svc = BuildService(fake);
+
+        var result = await svc.CreateBucketAsync(new CreateBucketRequest { BucketName = "b" });
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(StorageErrorCode.ProviderUnavailable, result.Error!.Code);
     }
 
     // --- DeleteObjectAsync ---
@@ -2621,7 +2789,7 @@ public sealed class S3StorageServiceTests
 internal sealed class FakeS3Client : IS3StorageClient
 {
     public List<S3BucketEntry> Buckets { get; } = [];
-    public AmazonS3Exception? CreateBucketException { get; set; }
+    public Exception? CreateBucketException { get; set; }
     public bool HeadBucketReturnsNull { get; set; }
     public AmazonS3Exception? DeleteBucketException { get; set; }
 
@@ -2693,7 +2861,7 @@ internal sealed class FakeS3Client : IS3StorageClient
 
     // Get object
     public S3GetObjectResult? GetObjectResult { get; set; }
-    public AmazonS3Exception? GetObjectException { get; set; }
+    public Exception? GetObjectException { get; set; }
     public BucketTaggingConfiguration? BucketTaggingResult { get; set; }
     public bool DeleteBucketTaggingCalled { get; private set; }
     public PutBucketTaggingRequest? LastPutBucketTaggingRequest { get; private set; }
@@ -2714,7 +2882,7 @@ internal sealed class FakeS3Client : IS3StorageClient
 
     // Put object
     public S3ObjectEntry? PutObjectResult { get; set; }
-    public AmazonS3Exception? PutObjectException { get; set; }
+    public Exception? PutObjectException { get; set; }
     public PutObjectRequest? LastPutObjectRequest { get; private set; }
     public ObjectServerSideEncryptionSettings? LastPutObjectServerSideEncryption { get; private set; }
     public ObjectCustomerEncryptionSettings? LastPutObjectCustomerEncryption { get; private set; }

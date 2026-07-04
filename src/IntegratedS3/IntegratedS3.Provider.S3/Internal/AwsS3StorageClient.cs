@@ -10,6 +10,8 @@ using Microsoft.Extensions.Logging;
 using PutBucketDefaultEncryptionStorageRequest = IntegratedS3.Abstractions.Requests.PutBucketDefaultEncryptionRequest;
 using UploadPartCopyStorageRequest = IntegratedS3.Abstractions.Requests.UploadPartCopyRequest;
 using PutBucketTaggingStorageRequest = IntegratedS3.Abstractions.Requests.PutBucketTaggingRequest;
+using PutBucketPublicAccessBlockStorageRequest = IntegratedS3.Abstractions.Requests.PutBucketPublicAccessBlockRequest;
+using PutBucketOwnershipControlsStorageRequest = IntegratedS3.Abstractions.Requests.PutBucketOwnershipControlsRequest;
 using PutBucketLoggingStorageRequest = IntegratedS3.Abstractions.Requests.PutBucketLoggingRequest;
 using PutBucketWebsiteStorageRequest = IntegratedS3.Abstractions.Requests.PutBucketWebsiteRequest;
 using PutBucketRequestPaymentStorageRequest = IntegratedS3.Abstractions.Requests.PutBucketRequestPaymentRequest;
@@ -329,6 +331,123 @@ internal sealed class AwsS3StorageClient : IS3StorageClient
     }
 
     // -------------------------------------------------------------------------
+    // Bucket Public Access Block
+    // -------------------------------------------------------------------------
+
+    public async Task<BucketPublicAccessBlockConfiguration> GetBucketPublicAccessBlockAsync(string bucketName, CancellationToken cancellationToken = default)
+    {
+        var request = new GetPublicAccessBlockRequest
+        {
+            BucketName = bucketName
+        };
+
+        var response = await _s3.GetPublicAccessBlockAsync(request, cancellationToken).ConfigureAwait(false);
+        var config = response.PublicAccessBlockConfiguration;
+        return new BucketPublicAccessBlockConfiguration
+        {
+            BucketName = bucketName,
+            BlockPublicAcls = config?.BlockPublicAcls ?? false,
+            IgnorePublicAcls = config?.IgnorePublicAcls ?? false,
+            BlockPublicPolicy = config?.BlockPublicPolicy ?? false,
+            RestrictPublicBuckets = config?.RestrictPublicBuckets ?? false
+        };
+    }
+
+    public async Task<BucketPublicAccessBlockConfiguration> SetBucketPublicAccessBlockAsync(PutBucketPublicAccessBlockStorageRequest request, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+
+        var putRequest = new PutPublicAccessBlockRequest
+        {
+            BucketName = request.BucketName,
+            PublicAccessBlockConfiguration = new Amazon.S3.Model.PublicAccessBlockConfiguration
+            {
+                BlockPublicAcls = request.BlockPublicAcls,
+                IgnorePublicAcls = request.IgnorePublicAcls,
+                BlockPublicPolicy = request.BlockPublicPolicy,
+                RestrictPublicBuckets = request.RestrictPublicBuckets
+            }
+        };
+
+        await _s3.PutPublicAccessBlockAsync(putRequest, cancellationToken).ConfigureAwait(false);
+        return new BucketPublicAccessBlockConfiguration
+        {
+            BucketName = request.BucketName,
+            BlockPublicAcls = request.BlockPublicAcls,
+            IgnorePublicAcls = request.IgnorePublicAcls,
+            BlockPublicPolicy = request.BlockPublicPolicy,
+            RestrictPublicBuckets = request.RestrictPublicBuckets
+        };
+    }
+
+    public async Task DeleteBucketPublicAccessBlockAsync(string bucketName, CancellationToken cancellationToken = default)
+    {
+        var request = new DeletePublicAccessBlockRequest
+        {
+            BucketName = bucketName
+        };
+
+        await _s3.DeletePublicAccessBlockAsync(request, cancellationToken).ConfigureAwait(false);
+    }
+
+    // -------------------------------------------------------------------------
+    // Bucket Ownership Controls
+    // -------------------------------------------------------------------------
+
+    public async Task<BucketOwnershipControlsConfiguration> GetBucketOwnershipControlsAsync(string bucketName, CancellationToken cancellationToken = default)
+    {
+        var request = new GetBucketOwnershipControlsRequest
+        {
+            BucketName = bucketName
+        };
+
+        var response = await _s3.GetBucketOwnershipControlsAsync(request, cancellationToken).ConfigureAwait(false);
+        var rule = response.OwnershipControls?.Rules?.FirstOrDefault();
+        return new BucketOwnershipControlsConfiguration
+        {
+            BucketName = bucketName,
+            ObjectOwnership = rule?.ObjectOwnership?.Value ?? string.Empty
+        };
+    }
+
+    public async Task<BucketOwnershipControlsConfiguration> SetBucketOwnershipControlsAsync(PutBucketOwnershipControlsStorageRequest request, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+
+        var putRequest = new PutBucketOwnershipControlsRequest
+        {
+            BucketName = request.BucketName,
+            OwnershipControls = new Amazon.S3.Model.OwnershipControls
+            {
+                Rules =
+                [
+                    new OwnershipControlsRule
+                    {
+                        ObjectOwnership = ObjectOwnership.FindValue(request.ObjectOwnership)
+                    }
+                ]
+            }
+        };
+
+        await _s3.PutBucketOwnershipControlsAsync(putRequest, cancellationToken).ConfigureAwait(false);
+        return new BucketOwnershipControlsConfiguration
+        {
+            BucketName = request.BucketName,
+            ObjectOwnership = request.ObjectOwnership
+        };
+    }
+
+    public async Task DeleteBucketOwnershipControlsAsync(string bucketName, CancellationToken cancellationToken = default)
+    {
+        var request = new DeleteBucketOwnershipControlsRequest
+        {
+            BucketName = bucketName
+        };
+
+        await _s3.DeleteBucketOwnershipControlsAsync(request, cancellationToken).ConfigureAwait(false);
+    }
+
+    // -------------------------------------------------------------------------
     // Object listing
     // -------------------------------------------------------------------------
 
@@ -365,7 +484,8 @@ internal sealed class AwsS3StorageClient : IS3StorageClient
                     ETag: o.ETag,
                     LastModifiedUtc: ToDateTimeOffset(o.LastModified),
                     Metadata: null,
-                    VersionId: null))
+                    VersionId: null,
+                    StorageClass: o.StorageClass?.Value))
                 .ToList();
 
             var result = new S3ObjectListPage(
@@ -435,7 +555,8 @@ internal sealed class AwsS3StorageClient : IS3StorageClient
                     Metadata: null,
                     VersionId: v.VersionId,
                     IsLatest: v.IsLatest == true,
-                    IsDeleteMarker: v.IsDeleteMarker == true))
+                    IsDeleteMarker: v.IsDeleteMarker == true,
+                    StorageClass: v.StorageClass?.Value))
                 .ToList();
 
             var result = new S3ObjectVersionListPage(
@@ -516,7 +637,8 @@ internal sealed class AwsS3StorageClient : IS3StorageClient
                 LegalHoldStatus: S3ObjectLockMapper.ToLegalHoldStatus(response.ObjectLockLegalHoldStatus),
                 CustomerEncryption: S3ServerSideEncryptionMapper.ToCustomerEncryptionInfo(
                     response.ServerSideEncryptionCustomerMethod,
-                    response.ServerSideEncryptionCustomerProvidedKeyMD5));
+                    response.ServerSideEncryptionCustomerProvidedKeyMD5),
+                StorageClass: response.StorageClass?.Value);
 
             sw.Stop();
             S3StorageTelemetry.RecordSuccess("HeadObject", sw.Elapsed);
@@ -735,7 +857,8 @@ internal sealed class AwsS3StorageClient : IS3StorageClient
                 LegalHoldStatus: S3ObjectLockMapper.ToLegalHoldStatus(response.ObjectLockLegalHoldStatus),
                 CustomerEncryption: S3ServerSideEncryptionMapper.ToCustomerEncryptionInfo(
                     response.ServerSideEncryptionCustomerMethod,
-                    response.ServerSideEncryptionCustomerProvidedKeyMD5));
+                    response.ServerSideEncryptionCustomerProvidedKeyMD5),
+                StorageClass: response.StorageClass?.Value);
 
             long totalContentLength = TryParseContentRangeTotal(response.ContentRange)
                 ?? response.ContentLength;
@@ -964,7 +1087,8 @@ internal sealed class AwsS3StorageClient : IS3StorageClient
                     response.BucketKeyEnabled),
                 CustomerEncryption: S3ServerSideEncryptionMapper.ToCustomerEncryptionInfo(
                     response.ServerSideEncryptionCustomerMethod,
-                    response.ServerSideEncryptionCustomerProvidedKeyMD5));
+                    response.ServerSideEncryptionCustomerProvidedKeyMD5),
+                StorageClass: storageClass);
 
             sw.Stop();
             S3StorageTelemetry.RecordSuccess("PutObject", sw.Elapsed);
@@ -1157,7 +1281,8 @@ internal sealed class AwsS3StorageClient : IS3StorageClient
                     response.BucketKeyEnabled),
                 CustomerEncryption: S3ServerSideEncryptionMapper.ToCustomerEncryptionInfo(
                     response.ServerSideEncryptionCustomerMethod,
-                    response.ServerSideEncryptionCustomerProvidedKeyMD5));
+                    response.ServerSideEncryptionCustomerProvidedKeyMD5),
+                StorageClass: storageClass);
 
             sw.Stop();
             S3StorageTelemetry.RecordSuccess("CopyObject", sw.Elapsed);
@@ -2516,24 +2641,26 @@ internal sealed class AwsS3StorageClient : IS3StorageClient
             OutputSerialization = BuildOutputSerialization(request)
         };
         var response = await _s3.SelectObjectContentAsync(sdkRequest, cancellationToken).ConfigureAwait(false);
-        var outputStream = new MemoryStream();
-        if (response.Payload is { } payload)
+        try
         {
-            var tcs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-            payload.RecordsEventReceived += (_, args) =>
-            {
-                if (args.EventStreamEvent?.Payload is { } recordPayload)
-                    recordPayload.CopyTo(outputStream);
-            };
-            payload.EndEventReceived += (_, _) => tcs.TrySetResult();
-            payload.ExceptionReceived += (_, args) => tcs.TrySetException(args.EventStreamException);
-            payload.StartProcessing();
-            await tcs.Task.ConfigureAwait(false);
-            outputStream.Position = 0;
+            // Stream the S3 Select result incrementally instead of buffering the whole payload in
+            // memory. The returned stream owns the SDK response: disposing it (which the endpoint
+            // does via `await using`) disposes the live event stream and releases the underlying HTTP
+            // connection. The read loop observes the cancellation token so an aborted request stops
+            // draining and cannot hang forever on a stalled upstream stream.
+            var eventStream = new SelectRecordsStream(response, cancellationToken);
+            return new S3SelectObjectContentResult(
+                EventStream: eventStream,
+                ContentType: "application/octet-stream");
         }
-        return new S3SelectObjectContentResult(
-            EventStream: outputStream,
-            ContentType: "application/octet-stream");
+        catch
+        {
+            // If wiring up the streaming wrapper fails, dispose the SDK event stream so its connection
+            // is not leaked before the result reaches a caller that would own it. (The response itself
+            // is not IDisposable; Payload — the live event stream — is.)
+            response.Payload?.Dispose();
+            throw;
+        }
     }
 
     // -------------------------------------------------------------------------

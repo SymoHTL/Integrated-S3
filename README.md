@@ -179,7 +179,7 @@ See [docs/observability.md](docs/observability.md) for the full list of instrume
 | [Observability](docs/observability.md) | Traces, metrics, structured logging, and OpenTelemetry integration |
 | [Provider Contract Testing](docs/provider-contract-testing.md) | xUnit harness for validating custom `IStorageBackend` implementations |
 | [Host Maintenance Jobs](docs/host-maintenance-jobs.md) | Opt-in recurring maintenance hosted service |
-| [Performance Benchmarks](docs/performance-benchmarks.md) | BenchmarkDotNet harness and hot-path scenario catalog |
+| [Performance Benchmarks](docs/performance-benchmarks.md) | Custom Stopwatch-based hot-path benchmark harness and scenario catalog |
 | [AOT/Trimming Guidance](docs/aot-trimming-guidance.md) | Guidelines for AOT and trimming compatibility |
 
 ---
@@ -207,6 +207,24 @@ dotnet publish -c Release --self-contained src/IntegratedS3/WebUi/WebUi.csproj
 Contributions are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md) for the development workflow, build/test requirements, and pull request process. Release history lives in [CHANGELOG.md](CHANGELOG.md).
 
 To report a security vulnerability, please use the private channel described in [SECURITY.md](SECURITY.md) — do not open a public issue.
+
+---
+
+## Benchmarks & E2E tests
+
+Local-first suites for catching regressions early (no paid CI required):
+
+- **Benchmarks** — `IntegratedS3.Benchmarks` is a [BenchmarkDotNet](https://benchmarkdotnet.org/) suite over
+  the hot paths (SigV4/SigV4a, S3 XML, checksums, Disk provider), reporting mean time + allocations.
+  `scripts/bench.sh` runs it; `scripts/bench-compare.sh` fails when a benchmark's mean regresses > 15% or
+  allocations grow versus the committed [baseline](benchmarks/baseline/README.md).
+- **E2E** — `IntegratedS3.E2E.Tests` boots the real host on a Kestrel loopback socket with the Disk provider
+  and drives it with the AWS SDK for .NET. `scripts/e2e-smoke.sh` runs the fast offline subset;
+  `scripts/e2e.sh` runs the full suite.
+
+Both `.sh` and `.ps1` wrappers are provided (plus a `Makefile`). CI runs only the fast free-tier checks
+automatically; benchmarks and the full E2E suite are opt-in. See
+[docs/performance-benchmarks.md](docs/performance-benchmarks.md) for details and the CI strategy.
 
 ---
 

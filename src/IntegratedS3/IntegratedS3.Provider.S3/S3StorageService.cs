@@ -1,4 +1,5 @@
 using System.Runtime.CompilerServices;
+using Amazon.Runtime;
 using Amazon.S3;
 using IntegratedS3.Abstractions.Capabilities;
 using IntegratedS3.Abstractions.Errors;
@@ -113,9 +114,13 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
                 Headers = BuildDirectPresignHeaders(request)
             });
         }
-        catch (AmazonS3Exception ex)
+        catch (AmazonServiceException ex)
         {
             return StorageResult<StorageDirectObjectAccessGrant>.Failure(S3ErrorTranslator.Translate(ex, Name, request.BucketName, request.Key));
+        }
+        catch (Exception ex) when (S3ErrorTranslator.IsTransportFailure(ex, cancellationToken))
+        {
+            return StorageResult<StorageDirectObjectAccessGrant>.Failure(S3ErrorTranslator.TranslateTransport(ex, Name, request.BucketName, request.Key));
         }
     }
 
@@ -157,9 +162,13 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
                 CreatedAtUtc = entry.CreatedAtUtc
             });
         }
-        catch (AmazonS3Exception ex)
+        catch (AmazonServiceException ex)
         {
             return StorageResult<BucketInfo>.Failure(S3ErrorTranslator.Translate(ex, Name, request.BucketName));
+        }
+        catch (Exception ex) when (S3ErrorTranslator.IsTransportFailure(ex, cancellationToken))
+        {
+            return StorageResult<BucketInfo>.Failure(S3ErrorTranslator.TranslateTransport(ex, Name, request.BucketName));
         }
     }
 
@@ -176,9 +185,13 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
                     : entry.LocationConstraint
             });
         }
-        catch (AmazonS3Exception ex)
+        catch (AmazonServiceException ex)
         {
             return StorageResult<BucketLocationInfo>.Failure(S3ErrorTranslator.Translate(ex, Name, bucketName));
+        }
+        catch (Exception ex) when (S3ErrorTranslator.IsTransportFailure(ex, cancellationToken))
+        {
+            return StorageResult<BucketLocationInfo>.Failure(S3ErrorTranslator.TranslateTransport(ex, Name, bucketName));
         }
     }
 
@@ -193,9 +206,13 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
                 Status = entry.Status
             });
         }
-        catch (AmazonS3Exception ex)
+        catch (AmazonServiceException ex)
         {
             return StorageResult<BucketVersioningInfo>.Failure(S3ErrorTranslator.Translate(ex, Name, bucketName));
+        }
+        catch (Exception ex) when (S3ErrorTranslator.IsTransportFailure(ex, cancellationToken))
+        {
+            return StorageResult<BucketVersioningInfo>.Failure(S3ErrorTranslator.TranslateTransport(ex, Name, bucketName));
         }
     }
 
@@ -210,9 +227,13 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
                 Status = entry.Status
             });
         }
-        catch (AmazonS3Exception ex)
+        catch (AmazonServiceException ex)
         {
             return StorageResult<BucketVersioningInfo>.Failure(S3ErrorTranslator.Translate(ex, Name, request.BucketName));
+        }
+        catch (Exception ex) when (S3ErrorTranslator.IsTransportFailure(ex, cancellationToken))
+        {
+            return StorageResult<BucketVersioningInfo>.Failure(S3ErrorTranslator.TranslateTransport(ex, Name, request.BucketName));
         }
     }
 
@@ -228,9 +249,13 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
 
             return StorageResult<BucketCorsConfiguration>.Success(ToBucketCorsConfiguration(bucketName, entry));
         }
-        catch (AmazonS3Exception ex)
+        catch (AmazonServiceException ex)
         {
             return StorageResult<BucketCorsConfiguration>.Failure(S3ErrorTranslator.Translate(ex, Name, bucketName));
+        }
+        catch (Exception ex) when (S3ErrorTranslator.IsTransportFailure(ex, cancellationToken))
+        {
+            return StorageResult<BucketCorsConfiguration>.Failure(S3ErrorTranslator.TranslateTransport(ex, Name, bucketName));
         }
     }
 
@@ -244,9 +269,13 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
                 cancellationToken).ConfigureAwait(false);
             return StorageResult<BucketCorsConfiguration>.Success(ToBucketCorsConfiguration(request.BucketName, entry));
         }
-        catch (AmazonS3Exception ex)
+        catch (AmazonServiceException ex)
         {
             return StorageResult<BucketCorsConfiguration>.Failure(S3ErrorTranslator.Translate(ex, Name, request.BucketName));
+        }
+        catch (Exception ex) when (S3ErrorTranslator.IsTransportFailure(ex, cancellationToken))
+        {
+            return StorageResult<BucketCorsConfiguration>.Failure(S3ErrorTranslator.TranslateTransport(ex, Name, request.BucketName));
         }
     }
 
@@ -257,9 +286,13 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
             await _client.DeleteBucketCorsAsync(request.BucketName, cancellationToken).ConfigureAwait(false);
             return StorageResult.Success();
         }
-        catch (AmazonS3Exception ex)
+        catch (AmazonServiceException ex)
         {
             return StorageResult.Failure(S3ErrorTranslator.Translate(ex, Name, request.BucketName));
+        }
+        catch (Exception ex) when (S3ErrorTranslator.IsTransportFailure(ex, cancellationToken))
+        {
+            return StorageResult.Failure(S3ErrorTranslator.TranslateTransport(ex, Name, request.BucketName));
         }
     }
 
@@ -274,9 +307,13 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
         {
             return StorageResult<BucketDefaultEncryptionConfiguration>.Failure(StorageError.Unsupported(ex.Message, bucketName));
         }
-        catch (AmazonS3Exception ex)
+        catch (AmazonServiceException ex)
         {
             return StorageResult<BucketDefaultEncryptionConfiguration>.Failure(S3ErrorTranslator.Translate(ex, Name, bucketName));
+        }
+        catch (Exception ex) when (S3ErrorTranslator.IsTransportFailure(ex, cancellationToken))
+        {
+            return StorageResult<BucketDefaultEncryptionConfiguration>.Failure(S3ErrorTranslator.TranslateTransport(ex, Name, bucketName));
         }
     }
 
@@ -291,9 +328,13 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
         {
             return StorageResult<BucketDefaultEncryptionConfiguration>.Failure(StorageError.Unsupported(ex.Message, request.BucketName));
         }
-        catch (AmazonS3Exception ex)
+        catch (AmazonServiceException ex)
         {
             return StorageResult<BucketDefaultEncryptionConfiguration>.Failure(S3ErrorTranslator.Translate(ex, Name, request.BucketName));
+        }
+        catch (Exception ex) when (S3ErrorTranslator.IsTransportFailure(ex, cancellationToken))
+        {
+            return StorageResult<BucketDefaultEncryptionConfiguration>.Failure(S3ErrorTranslator.TranslateTransport(ex, Name, request.BucketName));
         }
     }
 
@@ -304,9 +345,123 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
             await _client.DeleteBucketDefaultEncryptionAsync(request.BucketName, cancellationToken).ConfigureAwait(false);
             return StorageResult.Success();
         }
-        catch (AmazonS3Exception ex)
+        catch (AmazonServiceException ex)
         {
             return StorageResult.Failure(S3ErrorTranslator.Translate(ex, Name, request.BucketName));
+        }
+        catch (Exception ex) when (S3ErrorTranslator.IsTransportFailure(ex, cancellationToken))
+        {
+            return StorageResult.Failure(S3ErrorTranslator.TranslateTransport(ex, Name, request.BucketName));
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Bucket Public Access Block
+    // -------------------------------------------------------------------------
+
+    public async ValueTask<StorageResult<BucketPublicAccessBlockConfiguration>> GetBucketPublicAccessBlockAsync(string bucketName, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var config = await _client.GetBucketPublicAccessBlockAsync(bucketName, cancellationToken).ConfigureAwait(false);
+            return StorageResult<BucketPublicAccessBlockConfiguration>.Success(config);
+        }
+        catch (AmazonServiceException ex)
+        {
+            return StorageResult<BucketPublicAccessBlockConfiguration>.Failure(S3ErrorTranslator.Translate(ex, Name, bucketName));
+        }
+        catch (Exception ex) when (S3ErrorTranslator.IsTransportFailure(ex, cancellationToken))
+        {
+            return StorageResult<BucketPublicAccessBlockConfiguration>.Failure(S3ErrorTranslator.TranslateTransport(ex, Name, bucketName));
+        }
+    }
+
+    public async ValueTask<StorageResult<BucketPublicAccessBlockConfiguration>> PutBucketPublicAccessBlockAsync(PutBucketPublicAccessBlockRequest request, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var config = await _client.SetBucketPublicAccessBlockAsync(request, cancellationToken).ConfigureAwait(false);
+            return StorageResult<BucketPublicAccessBlockConfiguration>.Success(config);
+        }
+        catch (AmazonServiceException ex)
+        {
+            return StorageResult<BucketPublicAccessBlockConfiguration>.Failure(S3ErrorTranslator.Translate(ex, Name, request.BucketName));
+        }
+        catch (Exception ex) when (S3ErrorTranslator.IsTransportFailure(ex, cancellationToken))
+        {
+            return StorageResult<BucketPublicAccessBlockConfiguration>.Failure(S3ErrorTranslator.TranslateTransport(ex, Name, request.BucketName));
+        }
+    }
+
+    public async ValueTask<StorageResult> DeleteBucketPublicAccessBlockAsync(DeleteBucketPublicAccessBlockRequest request, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            await _client.DeleteBucketPublicAccessBlockAsync(request.BucketName, cancellationToken).ConfigureAwait(false);
+            return StorageResult.Success();
+        }
+        catch (AmazonServiceException ex)
+        {
+            return StorageResult.Failure(S3ErrorTranslator.Translate(ex, Name, request.BucketName));
+        }
+        catch (Exception ex) when (S3ErrorTranslator.IsTransportFailure(ex, cancellationToken))
+        {
+            return StorageResult.Failure(S3ErrorTranslator.TranslateTransport(ex, Name, request.BucketName));
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Bucket Ownership Controls
+    // -------------------------------------------------------------------------
+
+    public async ValueTask<StorageResult<BucketOwnershipControlsConfiguration>> GetBucketOwnershipControlsAsync(string bucketName, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var config = await _client.GetBucketOwnershipControlsAsync(bucketName, cancellationToken).ConfigureAwait(false);
+            return StorageResult<BucketOwnershipControlsConfiguration>.Success(config);
+        }
+        catch (AmazonServiceException ex)
+        {
+            return StorageResult<BucketOwnershipControlsConfiguration>.Failure(S3ErrorTranslator.Translate(ex, Name, bucketName));
+        }
+        catch (Exception ex) when (S3ErrorTranslator.IsTransportFailure(ex, cancellationToken))
+        {
+            return StorageResult<BucketOwnershipControlsConfiguration>.Failure(S3ErrorTranslator.TranslateTransport(ex, Name, bucketName));
+        }
+    }
+
+    public async ValueTask<StorageResult<BucketOwnershipControlsConfiguration>> PutBucketOwnershipControlsAsync(PutBucketOwnershipControlsRequest request, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var config = await _client.SetBucketOwnershipControlsAsync(request, cancellationToken).ConfigureAwait(false);
+            return StorageResult<BucketOwnershipControlsConfiguration>.Success(config);
+        }
+        catch (AmazonServiceException ex)
+        {
+            return StorageResult<BucketOwnershipControlsConfiguration>.Failure(S3ErrorTranslator.Translate(ex, Name, request.BucketName));
+        }
+        catch (Exception ex) when (S3ErrorTranslator.IsTransportFailure(ex, cancellationToken))
+        {
+            return StorageResult<BucketOwnershipControlsConfiguration>.Failure(S3ErrorTranslator.TranslateTransport(ex, Name, request.BucketName));
+        }
+    }
+
+    public async ValueTask<StorageResult> DeleteBucketOwnershipControlsAsync(DeleteBucketOwnershipControlsRequest request, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            await _client.DeleteBucketOwnershipControlsAsync(request.BucketName, cancellationToken).ConfigureAwait(false);
+            return StorageResult.Success();
+        }
+        catch (AmazonServiceException ex)
+        {
+            return StorageResult.Failure(S3ErrorTranslator.Translate(ex, Name, request.BucketName));
+        }
+        catch (Exception ex) when (S3ErrorTranslator.IsTransportFailure(ex, cancellationToken))
+        {
+            return StorageResult.Failure(S3ErrorTranslator.TranslateTransport(ex, Name, request.BucketName));
         }
     }
 
@@ -321,9 +476,13 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
             var config = await _client.GetBucketTaggingAsync(bucketName, cancellationToken).ConfigureAwait(false);
             return StorageResult<BucketTaggingConfiguration>.Success(config);
         }
-        catch (AmazonS3Exception ex)
+        catch (AmazonServiceException ex)
         {
             return StorageResult<BucketTaggingConfiguration>.Failure(S3ErrorTranslator.Translate(ex, Name, bucketName));
+        }
+        catch (Exception ex) when (S3ErrorTranslator.IsTransportFailure(ex, cancellationToken))
+        {
+            return StorageResult<BucketTaggingConfiguration>.Failure(S3ErrorTranslator.TranslateTransport(ex, Name, bucketName));
         }
     }
 
@@ -334,9 +493,13 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
             var config = await _client.PutBucketTaggingAsync(request, cancellationToken).ConfigureAwait(false);
             return StorageResult<BucketTaggingConfiguration>.Success(config);
         }
-        catch (AmazonS3Exception ex)
+        catch (AmazonServiceException ex)
         {
             return StorageResult<BucketTaggingConfiguration>.Failure(S3ErrorTranslator.Translate(ex, Name, request.BucketName));
+        }
+        catch (Exception ex) when (S3ErrorTranslator.IsTransportFailure(ex, cancellationToken))
+        {
+            return StorageResult<BucketTaggingConfiguration>.Failure(S3ErrorTranslator.TranslateTransport(ex, Name, request.BucketName));
         }
     }
 
@@ -347,9 +510,13 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
             await _client.DeleteBucketTaggingAsync(request.BucketName, cancellationToken).ConfigureAwait(false);
             return StorageResult.Success();
         }
-        catch (AmazonS3Exception ex)
+        catch (AmazonServiceException ex)
         {
             return StorageResult.Failure(S3ErrorTranslator.Translate(ex, Name, request.BucketName));
+        }
+        catch (Exception ex) when (S3ErrorTranslator.IsTransportFailure(ex, cancellationToken))
+        {
+            return StorageResult.Failure(S3ErrorTranslator.TranslateTransport(ex, Name, request.BucketName));
         }
     }
 
@@ -364,9 +531,13 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
             var config = await _client.GetBucketLoggingAsync(bucketName, cancellationToken).ConfigureAwait(false);
             return StorageResult<BucketLoggingConfiguration>.Success(config);
         }
-        catch (AmazonS3Exception ex)
+        catch (AmazonServiceException ex)
         {
             return StorageResult<BucketLoggingConfiguration>.Failure(S3ErrorTranslator.Translate(ex, Name, bucketName));
+        }
+        catch (Exception ex) when (S3ErrorTranslator.IsTransportFailure(ex, cancellationToken))
+        {
+            return StorageResult<BucketLoggingConfiguration>.Failure(S3ErrorTranslator.TranslateTransport(ex, Name, bucketName));
         }
     }
 
@@ -377,9 +548,13 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
             var config = await _client.PutBucketLoggingAsync(request, cancellationToken).ConfigureAwait(false);
             return StorageResult<BucketLoggingConfiguration>.Success(config);
         }
-        catch (AmazonS3Exception ex)
+        catch (AmazonServiceException ex)
         {
             return StorageResult<BucketLoggingConfiguration>.Failure(S3ErrorTranslator.Translate(ex, Name, request.BucketName));
+        }
+        catch (Exception ex) when (S3ErrorTranslator.IsTransportFailure(ex, cancellationToken))
+        {
+            return StorageResult<BucketLoggingConfiguration>.Failure(S3ErrorTranslator.TranslateTransport(ex, Name, request.BucketName));
         }
     }
 
@@ -394,9 +569,13 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
             var config = await _client.GetBucketWebsiteAsync(bucketName, cancellationToken).ConfigureAwait(false);
             return StorageResult<BucketWebsiteConfiguration>.Success(config);
         }
-        catch (AmazonS3Exception ex)
+        catch (AmazonServiceException ex)
         {
             return StorageResult<BucketWebsiteConfiguration>.Failure(S3ErrorTranslator.Translate(ex, Name, bucketName));
+        }
+        catch (Exception ex) when (S3ErrorTranslator.IsTransportFailure(ex, cancellationToken))
+        {
+            return StorageResult<BucketWebsiteConfiguration>.Failure(S3ErrorTranslator.TranslateTransport(ex, Name, bucketName));
         }
     }
 
@@ -407,9 +586,13 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
             var config = await _client.PutBucketWebsiteAsync(request, cancellationToken).ConfigureAwait(false);
             return StorageResult<BucketWebsiteConfiguration>.Success(config);
         }
-        catch (AmazonS3Exception ex)
+        catch (AmazonServiceException ex)
         {
             return StorageResult<BucketWebsiteConfiguration>.Failure(S3ErrorTranslator.Translate(ex, Name, request.BucketName));
+        }
+        catch (Exception ex) when (S3ErrorTranslator.IsTransportFailure(ex, cancellationToken))
+        {
+            return StorageResult<BucketWebsiteConfiguration>.Failure(S3ErrorTranslator.TranslateTransport(ex, Name, request.BucketName));
         }
     }
 
@@ -420,9 +603,13 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
             await _client.DeleteBucketWebsiteAsync(request.BucketName, cancellationToken).ConfigureAwait(false);
             return StorageResult.Success();
         }
-        catch (AmazonS3Exception ex)
+        catch (AmazonServiceException ex)
         {
             return StorageResult.Failure(S3ErrorTranslator.Translate(ex, Name, request.BucketName));
+        }
+        catch (Exception ex) when (S3ErrorTranslator.IsTransportFailure(ex, cancellationToken))
+        {
+            return StorageResult.Failure(S3ErrorTranslator.TranslateTransport(ex, Name, request.BucketName));
         }
     }
 
@@ -437,9 +624,13 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
             var config = await _client.GetBucketRequestPaymentAsync(bucketName, cancellationToken).ConfigureAwait(false);
             return StorageResult<BucketRequestPaymentConfiguration>.Success(config);
         }
-        catch (AmazonS3Exception ex)
+        catch (AmazonServiceException ex)
         {
             return StorageResult<BucketRequestPaymentConfiguration>.Failure(S3ErrorTranslator.Translate(ex, Name, bucketName));
+        }
+        catch (Exception ex) when (S3ErrorTranslator.IsTransportFailure(ex, cancellationToken))
+        {
+            return StorageResult<BucketRequestPaymentConfiguration>.Failure(S3ErrorTranslator.TranslateTransport(ex, Name, bucketName));
         }
     }
 
@@ -450,9 +641,13 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
             var config = await _client.PutBucketRequestPaymentAsync(request, cancellationToken).ConfigureAwait(false);
             return StorageResult<BucketRequestPaymentConfiguration>.Success(config);
         }
-        catch (AmazonS3Exception ex)
+        catch (AmazonServiceException ex)
         {
             return StorageResult<BucketRequestPaymentConfiguration>.Failure(S3ErrorTranslator.Translate(ex, Name, request.BucketName));
+        }
+        catch (Exception ex) when (S3ErrorTranslator.IsTransportFailure(ex, cancellationToken))
+        {
+            return StorageResult<BucketRequestPaymentConfiguration>.Failure(S3ErrorTranslator.TranslateTransport(ex, Name, request.BucketName));
         }
     }
 
@@ -467,9 +662,13 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
             var config = await _client.GetBucketAccelerateAsync(bucketName, cancellationToken).ConfigureAwait(false);
             return StorageResult<BucketAccelerateConfiguration>.Success(config);
         }
-        catch (AmazonS3Exception ex)
+        catch (AmazonServiceException ex)
         {
             return StorageResult<BucketAccelerateConfiguration>.Failure(S3ErrorTranslator.Translate(ex, Name, bucketName));
+        }
+        catch (Exception ex) when (S3ErrorTranslator.IsTransportFailure(ex, cancellationToken))
+        {
+            return StorageResult<BucketAccelerateConfiguration>.Failure(S3ErrorTranslator.TranslateTransport(ex, Name, bucketName));
         }
     }
 
@@ -480,9 +679,13 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
             var config = await _client.PutBucketAccelerateAsync(request, cancellationToken).ConfigureAwait(false);
             return StorageResult<BucketAccelerateConfiguration>.Success(config);
         }
-        catch (AmazonS3Exception ex)
+        catch (AmazonServiceException ex)
         {
             return StorageResult<BucketAccelerateConfiguration>.Failure(S3ErrorTranslator.Translate(ex, Name, request.BucketName));
+        }
+        catch (Exception ex) when (S3ErrorTranslator.IsTransportFailure(ex, cancellationToken))
+        {
+            return StorageResult<BucketAccelerateConfiguration>.Failure(S3ErrorTranslator.TranslateTransport(ex, Name, request.BucketName));
         }
     }
 
@@ -497,9 +700,13 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
             var config = await _client.GetBucketLifecycleAsync(bucketName, cancellationToken).ConfigureAwait(false);
             return StorageResult<BucketLifecycleConfiguration>.Success(config);
         }
-        catch (AmazonS3Exception ex)
+        catch (AmazonServiceException ex)
         {
             return StorageResult<BucketLifecycleConfiguration>.Failure(S3ErrorTranslator.Translate(ex, Name, bucketName));
+        }
+        catch (Exception ex) when (S3ErrorTranslator.IsTransportFailure(ex, cancellationToken))
+        {
+            return StorageResult<BucketLifecycleConfiguration>.Failure(S3ErrorTranslator.TranslateTransport(ex, Name, bucketName));
         }
     }
 
@@ -510,9 +717,13 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
             var config = await _client.PutBucketLifecycleAsync(request, cancellationToken).ConfigureAwait(false);
             return StorageResult<BucketLifecycleConfiguration>.Success(config);
         }
-        catch (AmazonS3Exception ex)
+        catch (AmazonServiceException ex)
         {
             return StorageResult<BucketLifecycleConfiguration>.Failure(S3ErrorTranslator.Translate(ex, Name, request.BucketName));
+        }
+        catch (Exception ex) when (S3ErrorTranslator.IsTransportFailure(ex, cancellationToken))
+        {
+            return StorageResult<BucketLifecycleConfiguration>.Failure(S3ErrorTranslator.TranslateTransport(ex, Name, request.BucketName));
         }
     }
 
@@ -523,9 +734,13 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
             await _client.DeleteBucketLifecycleAsync(request.BucketName, cancellationToken).ConfigureAwait(false);
             return StorageResult.Success();
         }
-        catch (AmazonS3Exception ex)
+        catch (AmazonServiceException ex)
         {
             return StorageResult.Failure(S3ErrorTranslator.Translate(ex, Name, request.BucketName));
+        }
+        catch (Exception ex) when (S3ErrorTranslator.IsTransportFailure(ex, cancellationToken))
+        {
+            return StorageResult.Failure(S3ErrorTranslator.TranslateTransport(ex, Name, request.BucketName));
         }
     }
 
@@ -540,9 +755,13 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
             var config = await _client.GetBucketReplicationAsync(bucketName, cancellationToken).ConfigureAwait(false);
             return StorageResult<BucketReplicationConfiguration>.Success(config);
         }
-        catch (AmazonS3Exception ex)
+        catch (AmazonServiceException ex)
         {
             return StorageResult<BucketReplicationConfiguration>.Failure(S3ErrorTranslator.Translate(ex, Name, bucketName));
+        }
+        catch (Exception ex) when (S3ErrorTranslator.IsTransportFailure(ex, cancellationToken))
+        {
+            return StorageResult<BucketReplicationConfiguration>.Failure(S3ErrorTranslator.TranslateTransport(ex, Name, bucketName));
         }
     }
 
@@ -553,9 +772,13 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
             var config = await _client.PutBucketReplicationAsync(request, cancellationToken).ConfigureAwait(false);
             return StorageResult<BucketReplicationConfiguration>.Success(config);
         }
-        catch (AmazonS3Exception ex)
+        catch (AmazonServiceException ex)
         {
             return StorageResult<BucketReplicationConfiguration>.Failure(S3ErrorTranslator.Translate(ex, Name, request.BucketName));
+        }
+        catch (Exception ex) when (S3ErrorTranslator.IsTransportFailure(ex, cancellationToken))
+        {
+            return StorageResult<BucketReplicationConfiguration>.Failure(S3ErrorTranslator.TranslateTransport(ex, Name, request.BucketName));
         }
     }
 
@@ -566,9 +789,13 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
             await _client.DeleteBucketReplicationAsync(request.BucketName, cancellationToken).ConfigureAwait(false);
             return StorageResult.Success();
         }
-        catch (AmazonS3Exception ex)
+        catch (AmazonServiceException ex)
         {
             return StorageResult.Failure(S3ErrorTranslator.Translate(ex, Name, request.BucketName));
+        }
+        catch (Exception ex) when (S3ErrorTranslator.IsTransportFailure(ex, cancellationToken))
+        {
+            return StorageResult.Failure(S3ErrorTranslator.TranslateTransport(ex, Name, request.BucketName));
         }
     }
 
@@ -583,9 +810,13 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
             var config = await _client.GetBucketNotificationConfigurationAsync(bucketName, cancellationToken).ConfigureAwait(false);
             return StorageResult<BucketNotificationConfiguration>.Success(config);
         }
-        catch (AmazonS3Exception ex)
+        catch (AmazonServiceException ex)
         {
             return StorageResult<BucketNotificationConfiguration>.Failure(S3ErrorTranslator.Translate(ex, Name, bucketName));
+        }
+        catch (Exception ex) when (S3ErrorTranslator.IsTransportFailure(ex, cancellationToken))
+        {
+            return StorageResult<BucketNotificationConfiguration>.Failure(S3ErrorTranslator.TranslateTransport(ex, Name, bucketName));
         }
     }
 
@@ -596,9 +827,13 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
             var config = await _client.PutBucketNotificationConfigurationAsync(request, cancellationToken).ConfigureAwait(false);
             return StorageResult<BucketNotificationConfiguration>.Success(config);
         }
-        catch (AmazonS3Exception ex)
+        catch (AmazonServiceException ex)
         {
             return StorageResult<BucketNotificationConfiguration>.Failure(S3ErrorTranslator.Translate(ex, Name, request.BucketName));
+        }
+        catch (Exception ex) when (S3ErrorTranslator.IsTransportFailure(ex, cancellationToken))
+        {
+            return StorageResult<BucketNotificationConfiguration>.Failure(S3ErrorTranslator.TranslateTransport(ex, Name, request.BucketName));
         }
     }
 
@@ -613,9 +848,13 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
             var config = await _client.GetObjectLockConfigurationAsync(bucketName, cancellationToken).ConfigureAwait(false);
             return StorageResult<ObjectLockConfiguration>.Success(config);
         }
-        catch (AmazonS3Exception ex)
+        catch (AmazonServiceException ex)
         {
             return StorageResult<ObjectLockConfiguration>.Failure(S3ErrorTranslator.Translate(ex, Name, bucketName));
+        }
+        catch (Exception ex) when (S3ErrorTranslator.IsTransportFailure(ex, cancellationToken))
+        {
+            return StorageResult<ObjectLockConfiguration>.Failure(S3ErrorTranslator.TranslateTransport(ex, Name, bucketName));
         }
     }
 
@@ -626,9 +865,13 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
             var config = await _client.PutObjectLockConfigurationAsync(request, cancellationToken).ConfigureAwait(false);
             return StorageResult<ObjectLockConfiguration>.Success(config);
         }
-        catch (AmazonS3Exception ex)
+        catch (AmazonServiceException ex)
         {
             return StorageResult<ObjectLockConfiguration>.Failure(S3ErrorTranslator.Translate(ex, Name, request.BucketName));
+        }
+        catch (Exception ex) when (S3ErrorTranslator.IsTransportFailure(ex, cancellationToken))
+        {
+            return StorageResult<ObjectLockConfiguration>.Failure(S3ErrorTranslator.TranslateTransport(ex, Name, request.BucketName));
         }
     }
 
@@ -643,9 +886,13 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
             var config = await _client.GetBucketAnalyticsConfigurationAsync(bucketName, id, cancellationToken).ConfigureAwait(false);
             return StorageResult<BucketAnalyticsConfiguration>.Success(config);
         }
-        catch (AmazonS3Exception ex)
+        catch (AmazonServiceException ex)
         {
             return StorageResult<BucketAnalyticsConfiguration>.Failure(S3ErrorTranslator.Translate(ex, Name, bucketName));
+        }
+        catch (Exception ex) when (S3ErrorTranslator.IsTransportFailure(ex, cancellationToken))
+        {
+            return StorageResult<BucketAnalyticsConfiguration>.Failure(S3ErrorTranslator.TranslateTransport(ex, Name, bucketName));
         }
     }
 
@@ -656,9 +903,13 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
             var config = await _client.PutBucketAnalyticsConfigurationAsync(request, cancellationToken).ConfigureAwait(false);
             return StorageResult<BucketAnalyticsConfiguration>.Success(config);
         }
-        catch (AmazonS3Exception ex)
+        catch (AmazonServiceException ex)
         {
             return StorageResult<BucketAnalyticsConfiguration>.Failure(S3ErrorTranslator.Translate(ex, Name, request.BucketName));
+        }
+        catch (Exception ex) when (S3ErrorTranslator.IsTransportFailure(ex, cancellationToken))
+        {
+            return StorageResult<BucketAnalyticsConfiguration>.Failure(S3ErrorTranslator.TranslateTransport(ex, Name, request.BucketName));
         }
     }
 
@@ -669,9 +920,13 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
             await _client.DeleteBucketAnalyticsConfigurationAsync(request.BucketName, request.Id, cancellationToken).ConfigureAwait(false);
             return StorageResult.Success();
         }
-        catch (AmazonS3Exception ex)
+        catch (AmazonServiceException ex)
         {
             return StorageResult.Failure(S3ErrorTranslator.Translate(ex, Name, request.BucketName));
+        }
+        catch (Exception ex) when (S3ErrorTranslator.IsTransportFailure(ex, cancellationToken))
+        {
+            return StorageResult.Failure(S3ErrorTranslator.TranslateTransport(ex, Name, request.BucketName));
         }
     }
 
@@ -682,9 +937,13 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
             var configs = await _client.ListBucketAnalyticsConfigurationsAsync(bucketName, cancellationToken).ConfigureAwait(false);
             return StorageResult<IReadOnlyList<BucketAnalyticsConfiguration>>.Success(configs);
         }
-        catch (AmazonS3Exception ex)
+        catch (AmazonServiceException ex)
         {
             return StorageResult<IReadOnlyList<BucketAnalyticsConfiguration>>.Failure(S3ErrorTranslator.Translate(ex, Name, bucketName));
+        }
+        catch (Exception ex) when (S3ErrorTranslator.IsTransportFailure(ex, cancellationToken))
+        {
+            return StorageResult<IReadOnlyList<BucketAnalyticsConfiguration>>.Failure(S3ErrorTranslator.TranslateTransport(ex, Name, bucketName));
         }
     }
 
@@ -699,9 +958,13 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
             var config = await _client.GetBucketMetricsConfigurationAsync(bucketName, id, cancellationToken).ConfigureAwait(false);
             return StorageResult<BucketMetricsConfiguration>.Success(config);
         }
-        catch (AmazonS3Exception ex)
+        catch (AmazonServiceException ex)
         {
             return StorageResult<BucketMetricsConfiguration>.Failure(S3ErrorTranslator.Translate(ex, Name, bucketName));
+        }
+        catch (Exception ex) when (S3ErrorTranslator.IsTransportFailure(ex, cancellationToken))
+        {
+            return StorageResult<BucketMetricsConfiguration>.Failure(S3ErrorTranslator.TranslateTransport(ex, Name, bucketName));
         }
     }
 
@@ -712,9 +975,13 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
             var config = await _client.PutBucketMetricsConfigurationAsync(request, cancellationToken).ConfigureAwait(false);
             return StorageResult<BucketMetricsConfiguration>.Success(config);
         }
-        catch (AmazonS3Exception ex)
+        catch (AmazonServiceException ex)
         {
             return StorageResult<BucketMetricsConfiguration>.Failure(S3ErrorTranslator.Translate(ex, Name, request.BucketName));
+        }
+        catch (Exception ex) when (S3ErrorTranslator.IsTransportFailure(ex, cancellationToken))
+        {
+            return StorageResult<BucketMetricsConfiguration>.Failure(S3ErrorTranslator.TranslateTransport(ex, Name, request.BucketName));
         }
     }
 
@@ -725,9 +992,13 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
             await _client.DeleteBucketMetricsConfigurationAsync(request.BucketName, request.Id, cancellationToken).ConfigureAwait(false);
             return StorageResult.Success();
         }
-        catch (AmazonS3Exception ex)
+        catch (AmazonServiceException ex)
         {
             return StorageResult.Failure(S3ErrorTranslator.Translate(ex, Name, request.BucketName));
+        }
+        catch (Exception ex) when (S3ErrorTranslator.IsTransportFailure(ex, cancellationToken))
+        {
+            return StorageResult.Failure(S3ErrorTranslator.TranslateTransport(ex, Name, request.BucketName));
         }
     }
 
@@ -738,9 +1009,13 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
             var configs = await _client.ListBucketMetricsConfigurationsAsync(bucketName, cancellationToken).ConfigureAwait(false);
             return StorageResult<IReadOnlyList<BucketMetricsConfiguration>>.Success(configs);
         }
-        catch (AmazonS3Exception ex)
+        catch (AmazonServiceException ex)
         {
             return StorageResult<IReadOnlyList<BucketMetricsConfiguration>>.Failure(S3ErrorTranslator.Translate(ex, Name, bucketName));
+        }
+        catch (Exception ex) when (S3ErrorTranslator.IsTransportFailure(ex, cancellationToken))
+        {
+            return StorageResult<IReadOnlyList<BucketMetricsConfiguration>>.Failure(S3ErrorTranslator.TranslateTransport(ex, Name, bucketName));
         }
     }
 
@@ -755,9 +1030,13 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
             var config = await _client.GetBucketInventoryConfigurationAsync(bucketName, id, cancellationToken).ConfigureAwait(false);
             return StorageResult<BucketInventoryConfiguration>.Success(config);
         }
-        catch (AmazonS3Exception ex)
+        catch (AmazonServiceException ex)
         {
             return StorageResult<BucketInventoryConfiguration>.Failure(S3ErrorTranslator.Translate(ex, Name, bucketName));
+        }
+        catch (Exception ex) when (S3ErrorTranslator.IsTransportFailure(ex, cancellationToken))
+        {
+            return StorageResult<BucketInventoryConfiguration>.Failure(S3ErrorTranslator.TranslateTransport(ex, Name, bucketName));
         }
     }
 
@@ -768,9 +1047,13 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
             var config = await _client.PutBucketInventoryConfigurationAsync(request, cancellationToken).ConfigureAwait(false);
             return StorageResult<BucketInventoryConfiguration>.Success(config);
         }
-        catch (AmazonS3Exception ex)
+        catch (AmazonServiceException ex)
         {
             return StorageResult<BucketInventoryConfiguration>.Failure(S3ErrorTranslator.Translate(ex, Name, request.BucketName));
+        }
+        catch (Exception ex) when (S3ErrorTranslator.IsTransportFailure(ex, cancellationToken))
+        {
+            return StorageResult<BucketInventoryConfiguration>.Failure(S3ErrorTranslator.TranslateTransport(ex, Name, request.BucketName));
         }
     }
 
@@ -781,9 +1064,13 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
             await _client.DeleteBucketInventoryConfigurationAsync(request.BucketName, request.Id, cancellationToken).ConfigureAwait(false);
             return StorageResult.Success();
         }
-        catch (AmazonS3Exception ex)
+        catch (AmazonServiceException ex)
         {
             return StorageResult.Failure(S3ErrorTranslator.Translate(ex, Name, request.BucketName));
+        }
+        catch (Exception ex) when (S3ErrorTranslator.IsTransportFailure(ex, cancellationToken))
+        {
+            return StorageResult.Failure(S3ErrorTranslator.TranslateTransport(ex, Name, request.BucketName));
         }
     }
 
@@ -794,9 +1081,13 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
             var configs = await _client.ListBucketInventoryConfigurationsAsync(bucketName, cancellationToken).ConfigureAwait(false);
             return StorageResult<IReadOnlyList<BucketInventoryConfiguration>>.Success(configs);
         }
-        catch (AmazonS3Exception ex)
+        catch (AmazonServiceException ex)
         {
             return StorageResult<IReadOnlyList<BucketInventoryConfiguration>>.Failure(S3ErrorTranslator.Translate(ex, Name, bucketName));
+        }
+        catch (Exception ex) when (S3ErrorTranslator.IsTransportFailure(ex, cancellationToken))
+        {
+            return StorageResult<IReadOnlyList<BucketInventoryConfiguration>>.Failure(S3ErrorTranslator.TranslateTransport(ex, Name, bucketName));
         }
     }
 
@@ -811,9 +1102,13 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
             var config = await _client.GetBucketIntelligentTieringConfigurationAsync(bucketName, id, cancellationToken).ConfigureAwait(false);
             return StorageResult<BucketIntelligentTieringConfiguration>.Success(config);
         }
-        catch (AmazonS3Exception ex)
+        catch (AmazonServiceException ex)
         {
             return StorageResult<BucketIntelligentTieringConfiguration>.Failure(S3ErrorTranslator.Translate(ex, Name, bucketName));
+        }
+        catch (Exception ex) when (S3ErrorTranslator.IsTransportFailure(ex, cancellationToken))
+        {
+            return StorageResult<BucketIntelligentTieringConfiguration>.Failure(S3ErrorTranslator.TranslateTransport(ex, Name, bucketName));
         }
     }
 
@@ -824,9 +1119,13 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
             var config = await _client.PutBucketIntelligentTieringConfigurationAsync(request, cancellationToken).ConfigureAwait(false);
             return StorageResult<BucketIntelligentTieringConfiguration>.Success(config);
         }
-        catch (AmazonS3Exception ex)
+        catch (AmazonServiceException ex)
         {
             return StorageResult<BucketIntelligentTieringConfiguration>.Failure(S3ErrorTranslator.Translate(ex, Name, request.BucketName));
+        }
+        catch (Exception ex) when (S3ErrorTranslator.IsTransportFailure(ex, cancellationToken))
+        {
+            return StorageResult<BucketIntelligentTieringConfiguration>.Failure(S3ErrorTranslator.TranslateTransport(ex, Name, request.BucketName));
         }
     }
 
@@ -837,9 +1136,13 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
             await _client.DeleteBucketIntelligentTieringConfigurationAsync(request.BucketName, request.Id, cancellationToken).ConfigureAwait(false);
             return StorageResult.Success();
         }
-        catch (AmazonS3Exception ex)
+        catch (AmazonServiceException ex)
         {
             return StorageResult.Failure(S3ErrorTranslator.Translate(ex, Name, request.BucketName));
+        }
+        catch (Exception ex) when (S3ErrorTranslator.IsTransportFailure(ex, cancellationToken))
+        {
+            return StorageResult.Failure(S3ErrorTranslator.TranslateTransport(ex, Name, request.BucketName));
         }
     }
 
@@ -850,9 +1153,13 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
             var configs = await _client.ListBucketIntelligentTieringConfigurationsAsync(bucketName, cancellationToken).ConfigureAwait(false);
             return StorageResult<IReadOnlyList<BucketIntelligentTieringConfiguration>>.Success(configs);
         }
-        catch (AmazonS3Exception ex)
+        catch (AmazonServiceException ex)
         {
             return StorageResult<IReadOnlyList<BucketIntelligentTieringConfiguration>>.Failure(S3ErrorTranslator.Translate(ex, Name, bucketName));
+        }
+        catch (Exception ex) when (S3ErrorTranslator.IsTransportFailure(ex, cancellationToken))
+        {
+            return StorageResult<IReadOnlyList<BucketIntelligentTieringConfiguration>>.Failure(S3ErrorTranslator.TranslateTransport(ex, Name, bucketName));
         }
     }
 
@@ -867,9 +1174,13 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
             var result = await _client.PutObjectRetentionAsync(request, cancellationToken).ConfigureAwait(false);
             return StorageResult<ObjectRetentionInfo>.Success(result);
         }
-        catch (AmazonS3Exception ex)
+        catch (AmazonServiceException ex)
         {
             return StorageResult<ObjectRetentionInfo>.Failure(S3ErrorTranslator.Translate(ex, Name, request.BucketName, request.Key));
+        }
+        catch (Exception ex) when (S3ErrorTranslator.IsTransportFailure(ex, cancellationToken))
+        {
+            return StorageResult<ObjectRetentionInfo>.Failure(S3ErrorTranslator.TranslateTransport(ex, Name, request.BucketName, request.Key));
         }
     }
 
@@ -880,9 +1191,13 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
             var result = await _client.PutObjectLegalHoldAsync(request, cancellationToken).ConfigureAwait(false);
             return StorageResult<ObjectLegalHoldInfo>.Success(result);
         }
-        catch (AmazonS3Exception ex)
+        catch (AmazonServiceException ex)
         {
             return StorageResult<ObjectLegalHoldInfo>.Failure(S3ErrorTranslator.Translate(ex, Name, request.BucketName, request.Key));
+        }
+        catch (Exception ex) when (S3ErrorTranslator.IsTransportFailure(ex, cancellationToken))
+        {
+            return StorageResult<ObjectLegalHoldInfo>.Failure(S3ErrorTranslator.TranslateTransport(ex, Name, request.BucketName, request.Key));
         }
     }
 
@@ -901,9 +1216,13 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
                 RestoreOutputPath = result.RestoreOutputPath
             });
         }
-        catch (AmazonS3Exception ex)
+        catch (AmazonServiceException ex)
         {
             return StorageResult<RestoreObjectResponse>.Failure(S3ErrorTranslator.Translate(ex, Name, request.BucketName, request.Key));
+        }
+        catch (Exception ex) when (S3ErrorTranslator.IsTransportFailure(ex, cancellationToken))
+        {
+            return StorageResult<RestoreObjectResponse>.Failure(S3ErrorTranslator.TranslateTransport(ex, Name, request.BucketName, request.Key));
         }
     }
 
@@ -922,9 +1241,13 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
                 ContentType = result.ContentType
             });
         }
-        catch (AmazonS3Exception ex)
+        catch (AmazonServiceException ex)
         {
             return StorageResult<SelectObjectContentResponse>.Failure(S3ErrorTranslator.Translate(ex, Name, request.BucketName, request.Key));
+        }
+        catch (Exception ex) when (S3ErrorTranslator.IsTransportFailure(ex, cancellationToken))
+        {
+            return StorageResult<SelectObjectContentResponse>.Failure(S3ErrorTranslator.TranslateTransport(ex, Name, request.BucketName, request.Key));
         }
     }
 
@@ -951,9 +1274,13 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
                 CreatedAtUtc = entry.CreatedAtUtc
             });
         }
-        catch (AmazonS3Exception ex)
+        catch (AmazonServiceException ex)
         {
             return StorageResult<BucketInfo>.Failure(S3ErrorTranslator.Translate(ex, Name, bucketName));
+        }
+        catch (Exception ex) when (S3ErrorTranslator.IsTransportFailure(ex, cancellationToken))
+        {
+            return StorageResult<BucketInfo>.Failure(S3ErrorTranslator.TranslateTransport(ex, Name, bucketName));
         }
     }
 
@@ -964,9 +1291,13 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
             await _client.DeleteBucketAsync(request.BucketName, cancellationToken).ConfigureAwait(false);
             return StorageResult.Success();
         }
-        catch (AmazonS3Exception ex)
+        catch (AmazonServiceException ex)
         {
             return StorageResult.Failure(S3ErrorTranslator.Translate(ex, Name, request.BucketName));
+        }
+        catch (Exception ex) when (S3ErrorTranslator.IsTransportFailure(ex, cancellationToken))
+        {
+            return StorageResult.Failure(S3ErrorTranslator.TranslateTransport(ex, Name, request.BucketName));
         }
     }
 
@@ -997,10 +1328,15 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
                     remaining,
                     cancellationToken).ConfigureAwait(false);
             }
-            catch (AmazonS3Exception ex)
+            catch (AmazonServiceException ex)
             {
                 throw new InvalidOperationException(
                     S3ErrorTranslator.Translate(ex, Name, request.BucketName).Message, ex);
+            }
+            catch (Exception ex) when (S3ErrorTranslator.IsTransportFailure(ex, cancellationToken))
+            {
+                throw new InvalidOperationException(
+                    S3ErrorTranslator.TranslateTransport(ex, Name, request.BucketName).Message, ex);
             }
 
             foreach (var entry in page.Entries)
@@ -1047,10 +1383,15 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
                     remaining,
                     cancellationToken).ConfigureAwait(false);
             }
-            catch (AmazonS3Exception ex)
+            catch (AmazonServiceException ex)
             {
                 throw new InvalidOperationException(
                     S3ErrorTranslator.Translate(ex, Name, request.BucketName).Message, ex);
+            }
+            catch (Exception ex) when (S3ErrorTranslator.IsTransportFailure(ex, cancellationToken))
+            {
+                throw new InvalidOperationException(
+                    S3ErrorTranslator.TranslateTransport(ex, Name, request.BucketName).Message, ex);
             }
 
             foreach (var entry in page.Entries)
@@ -1097,10 +1438,15 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
                     remaining,
                     cancellationToken).ConfigureAwait(false);
             }
-            catch (AmazonS3Exception ex)
+            catch (AmazonServiceException ex)
             {
                 throw new InvalidOperationException(
                     S3ErrorTranslator.Translate(ex, Name, request.BucketName).Message, ex);
+            }
+            catch (Exception ex) when (S3ErrorTranslator.IsTransportFailure(ex, cancellationToken))
+            {
+                throw new InvalidOperationException(
+                    S3ErrorTranslator.TranslateTransport(ex, Name, request.BucketName).Message, ex);
             }
 
             foreach (var entry in page.Entries)
@@ -1152,10 +1498,15 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
             {
                 yield break;
             }
-            catch (AmazonS3Exception ex)
+            catch (AmazonServiceException ex)
             {
                 throw new InvalidOperationException(
                     S3ErrorTranslator.Translate(ex, Name, request.BucketName, request.Key).Message, ex);
+            }
+            catch (Exception ex) when (S3ErrorTranslator.IsTransportFailure(ex, cancellationToken))
+            {
+                throw new InvalidOperationException(
+                    S3ErrorTranslator.TranslateTransport(ex, Name, request.BucketName, request.Key).Message, ex);
             }
 
             foreach (var entry in page.Entries)
@@ -1203,9 +1554,13 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
 
             return StorageResult<ObjectInfo>.Success(info);
         }
-        catch (AmazonS3Exception ex)
+        catch (AmazonServiceException ex)
         {
             return StorageResult<ObjectInfo>.Failure(S3ErrorTranslator.Translate(ex, Name, request.BucketName, request.Key));
+        }
+        catch (Exception ex) when (S3ErrorTranslator.IsTransportFailure(ex, cancellationToken))
+        {
+            return StorageResult<ObjectInfo>.Failure(S3ErrorTranslator.TranslateTransport(ex, Name, request.BucketName, request.Key));
         }
         catch (S3ServerSideEncryptionNotSupportedException ex)
         {
@@ -1276,9 +1631,13 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
                 return StorageResult<GetObjectResponse>.Failure(StorageError.Unsupported(objectLockEx.Message, request.BucketName, request.Key));
             }
         }
-        catch (AmazonS3Exception ex)
+        catch (AmazonServiceException ex)
         {
             return StorageResult<GetObjectResponse>.Failure(S3ErrorTranslator.Translate(ex, Name, request.BucketName, request.Key));
+        }
+        catch (Exception ex) when (S3ErrorTranslator.IsTransportFailure(ex, cancellationToken))
+        {
+            return StorageResult<GetObjectResponse>.Failure(S3ErrorTranslator.TranslateTransport(ex, Name, request.BucketName, request.Key));
         }
         catch (S3ServerSideEncryptionNotSupportedException ex)
         {
@@ -1297,9 +1656,13 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
             var retention = await _client.GetObjectRetentionAsync(request.BucketName, request.Key, request.VersionId, cancellationToken).ConfigureAwait(false);
             return StorageResult<ObjectRetentionInfo>.Success(retention);
         }
-        catch (AmazonS3Exception ex)
+        catch (AmazonServiceException ex)
         {
             return StorageResult<ObjectRetentionInfo>.Failure(S3ErrorTranslator.Translate(ex, Name, request.BucketName, request.Key));
+        }
+        catch (Exception ex) when (S3ErrorTranslator.IsTransportFailure(ex, cancellationToken))
+        {
+            return StorageResult<ObjectRetentionInfo>.Failure(S3ErrorTranslator.TranslateTransport(ex, Name, request.BucketName, request.Key));
         }
         catch (S3ObjectLockNotSupportedException ex)
         {
@@ -1314,9 +1677,13 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
             var legalHold = await _client.GetObjectLegalHoldAsync(request.BucketName, request.Key, request.VersionId, cancellationToken).ConfigureAwait(false);
             return StorageResult<ObjectLegalHoldInfo>.Success(legalHold);
         }
-        catch (AmazonS3Exception ex)
+        catch (AmazonServiceException ex)
         {
             return StorageResult<ObjectLegalHoldInfo>.Failure(S3ErrorTranslator.Translate(ex, Name, request.BucketName, request.Key));
+        }
+        catch (Exception ex) when (S3ErrorTranslator.IsTransportFailure(ex, cancellationToken))
+        {
+            return StorageResult<ObjectLegalHoldInfo>.Failure(S3ErrorTranslator.TranslateTransport(ex, Name, request.BucketName, request.Key));
         }
         catch (S3ObjectLockNotSupportedException ex)
         {
@@ -1331,9 +1698,13 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
             var response = await _client.GetObjectAttributesAsync(request, cancellationToken).ConfigureAwait(false);
             return StorageResult<GetObjectAttributesResponse>.Success(response);
         }
-        catch (AmazonS3Exception ex)
+        catch (AmazonServiceException ex)
         {
             return StorageResult<GetObjectAttributesResponse>.Failure(S3ErrorTranslator.Translate(ex, Name, request.BucketName, request.Key));
+        }
+        catch (Exception ex) when (S3ErrorTranslator.IsTransportFailure(ex, cancellationToken))
+        {
+            return StorageResult<GetObjectAttributesResponse>.Failure(S3ErrorTranslator.TranslateTransport(ex, Name, request.BucketName, request.Key));
         }
     }
 
@@ -1376,9 +1747,13 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
 
             return StorageResult<ObjectInfo>.Success(EntryToObjectInfo(request.BucketName, entry));
         }
-        catch (AmazonS3Exception ex)
+        catch (AmazonServiceException ex)
         {
             return StorageResult<ObjectInfo>.Failure(S3ErrorTranslator.Translate(ex, Name, request.BucketName, request.Key));
+        }
+        catch (Exception ex) when (S3ErrorTranslator.IsTransportFailure(ex, cancellationToken))
+        {
+            return StorageResult<ObjectInfo>.Failure(S3ErrorTranslator.TranslateTransport(ex, Name, request.BucketName, request.Key));
         }
         catch (S3ServerSideEncryptionNotSupportedException ex)
         {
@@ -1402,9 +1777,13 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
                 IsDeleteMarker = result.IsDeleteMarker
             });
         }
-        catch (AmazonS3Exception ex)
+        catch (AmazonServiceException ex)
         {
             return StorageResult<DeleteObjectResult>.Failure(S3ErrorTranslator.Translate(ex, Name, request.BucketName, request.Key));
+        }
+        catch (Exception ex) when (S3ErrorTranslator.IsTransportFailure(ex, cancellationToken))
+        {
+            return StorageResult<DeleteObjectResult>.Failure(S3ErrorTranslator.TranslateTransport(ex, Name, request.BucketName, request.Key));
         }
     }
 
@@ -1425,9 +1804,13 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
                 Tags = tags
             });
         }
-        catch (AmazonS3Exception ex)
+        catch (AmazonServiceException ex)
         {
             return StorageResult<ObjectTagSet>.Failure(S3ErrorTranslator.Translate(ex, Name, request.BucketName, request.Key));
+        }
+        catch (Exception ex) when (S3ErrorTranslator.IsTransportFailure(ex, cancellationToken))
+        {
+            return StorageResult<ObjectTagSet>.Failure(S3ErrorTranslator.TranslateTransport(ex, Name, request.BucketName, request.Key));
         }
     }
 
@@ -1444,9 +1827,13 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
                 Tags = request.Tags
             });
         }
-        catch (AmazonS3Exception ex)
+        catch (AmazonServiceException ex)
         {
             return StorageResult<ObjectTagSet>.Failure(S3ErrorTranslator.Translate(ex, Name, request.BucketName, request.Key));
+        }
+        catch (Exception ex) when (S3ErrorTranslator.IsTransportFailure(ex, cancellationToken))
+        {
+            return StorageResult<ObjectTagSet>.Failure(S3ErrorTranslator.TranslateTransport(ex, Name, request.BucketName, request.Key));
         }
     }
 
@@ -1463,9 +1850,13 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
                 Tags = new Dictionary<string, string>(StringComparer.Ordinal)
             });
         }
-        catch (AmazonS3Exception ex)
+        catch (AmazonServiceException ex)
         {
             return StorageResult<ObjectTagSet>.Failure(S3ErrorTranslator.Translate(ex, Name, request.BucketName, request.Key));
+        }
+        catch (Exception ex) when (S3ErrorTranslator.IsTransportFailure(ex, cancellationToken))
+        {
+            return StorageResult<ObjectTagSet>.Failure(S3ErrorTranslator.TranslateTransport(ex, Name, request.BucketName, request.Key));
         }
     }
 
@@ -1538,9 +1929,13 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
 
             return StorageResult<ObjectInfo>.Success(EntryToObjectInfo(request.DestinationBucketName, enrichedEntry));
         }
-        catch (AmazonS3Exception ex)
+        catch (AmazonServiceException ex)
         {
             return StorageResult<ObjectInfo>.Failure(TranslateCopyObjectError(ex, request));
+        }
+        catch (Exception ex) when (S3ErrorTranslator.IsTransportFailure(ex, cancellationToken))
+        {
+            return StorageResult<ObjectInfo>.Failure(S3ErrorTranslator.TranslateTransport(ex, Name, request.DestinationBucketName, request.DestinationKey));
         }
         catch (S3ServerSideEncryptionNotSupportedException ex)
         {
@@ -1583,9 +1978,13 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
 
             return StorageResult<MultipartUploadInfo>.Success(upload);
         }
-        catch (AmazonS3Exception ex)
+        catch (AmazonServiceException ex)
         {
             return StorageResult<MultipartUploadInfo>.Failure(S3ErrorTranslator.Translate(ex, Name, request.BucketName, request.Key));
+        }
+        catch (Exception ex) when (S3ErrorTranslator.IsTransportFailure(ex, cancellationToken))
+        {
+            return StorageResult<MultipartUploadInfo>.Failure(S3ErrorTranslator.TranslateTransport(ex, Name, request.BucketName, request.Key));
         }
         catch (S3ServerSideEncryptionNotSupportedException ex)
         {
@@ -1635,12 +2034,16 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
 
             return StorageResult<MultipartUploadPart>.Success(part);
         }
-        catch (AmazonS3Exception ex)
+        catch (AmazonServiceException ex)
         {
             return StorageResult<MultipartUploadPart>.Failure(
                 !string.IsNullOrWhiteSpace(request.CopySourceBucketName) && !string.IsNullOrWhiteSpace(request.CopySourceKey)
                     ? TranslateCopyMultipartPartError(ex, request)
                     : S3ErrorTranslator.Translate(ex, Name, request.BucketName, request.Key));
+        }
+        catch (Exception ex) when (S3ErrorTranslator.IsTransportFailure(ex, cancellationToken))
+        {
+            return StorageResult<MultipartUploadPart>.Failure(S3ErrorTranslator.TranslateTransport(ex, Name, request.BucketName, request.Key));
         }
     }
 
@@ -1661,9 +2064,13 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
             var part = await _client.UploadPartCopyAsync(request, cancellationToken).ConfigureAwait(false);
             return StorageResult<MultipartUploadPart>.Success(part);
         }
-        catch (AmazonS3Exception ex)
+        catch (AmazonServiceException ex)
         {
             return StorageResult<MultipartUploadPart>.Failure(TranslateCopyPartError(ex, request));
+        }
+        catch (Exception ex) when (S3ErrorTranslator.IsTransportFailure(ex, cancellationToken))
+        {
+            return StorageResult<MultipartUploadPart>.Failure(S3ErrorTranslator.TranslateTransport(ex, Name, request.BucketName, request.Key));
         }
         catch (NotSupportedException ex)
         {
@@ -1693,9 +2100,13 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
 
             return StorageResult<ObjectInfo>.Success(EntryToObjectInfo(request.BucketName, enrichedEntry));
         }
-        catch (AmazonS3Exception ex)
+        catch (AmazonServiceException ex)
         {
             return StorageResult<ObjectInfo>.Failure(S3ErrorTranslator.Translate(ex, Name, request.BucketName, request.Key));
+        }
+        catch (Exception ex) when (S3ErrorTranslator.IsTransportFailure(ex, cancellationToken))
+        {
+            return StorageResult<ObjectInfo>.Failure(S3ErrorTranslator.TranslateTransport(ex, Name, request.BucketName, request.Key));
         }
         catch (S3ServerSideEncryptionNotSupportedException ex)
         {
@@ -1717,9 +2128,13 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
 
             return StorageResult.Success();
         }
-        catch (AmazonS3Exception ex)
+        catch (AmazonServiceException ex)
         {
             return StorageResult.Failure(S3ErrorTranslator.Translate(ex, Name, request.BucketName, request.Key));
+        }
+        catch (Exception ex) when (S3ErrorTranslator.IsTransportFailure(ex, cancellationToken))
+        {
+            return StorageResult.Failure(S3ErrorTranslator.TranslateTransport(ex, Name, request.BucketName, request.Key));
         }
     }
 
@@ -1749,7 +2164,8 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
         RetainUntilDateUtc = entry.RetainUntilDateUtc,
         LegalHoldStatus = entry.LegalHoldStatus,
         ServerSideEncryption = entry.ServerSideEncryption,
-        CustomerEncryption = entry.CustomerEncryption
+        CustomerEncryption = entry.CustomerEncryption,
+        StorageClass = StorageClass.NormalizeForEcho(entry.StorageClass)
     };
 
     private async Task<S3ObjectEntry> EnrichObjectEntryAsync(
@@ -1770,7 +2186,7 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
         }
     }
 
-    private StorageError TranslateCopyObjectError(AmazonS3Exception exception, CopyObjectRequest request)
+    private StorageError TranslateCopyObjectError(AmazonServiceException exception, CopyObjectRequest request)
     {
         if (string.Equals(exception.ErrorCode, "NoSuchKey", StringComparison.OrdinalIgnoreCase))
         {
@@ -1794,7 +2210,7 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
         return S3ErrorTranslator.Translate(exception, Name, request.DestinationBucketName, request.DestinationKey);
     }
 
-    private StorageError TranslateCopyPartError(AmazonS3Exception exception, UploadPartCopyRequest request)
+    private StorageError TranslateCopyPartError(AmazonServiceException exception, UploadPartCopyRequest request)
     {
         if (string.Equals(exception.ErrorCode, "NoSuchKey", StringComparison.OrdinalIgnoreCase)
             || string.Equals(exception.ErrorCode, "NoSuchVersion", StringComparison.OrdinalIgnoreCase)
@@ -1810,7 +2226,7 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
         return S3ErrorTranslator.Translate(exception, Name, request.BucketName, request.Key);
     }
 
-    private StorageError TranslateCopyMultipartPartError(AmazonS3Exception exception, UploadMultipartPartRequest request)
+    private StorageError TranslateCopyMultipartPartError(AmazonServiceException exception, UploadMultipartPartRequest request)
     {
         var sourceBucketName = request.CopySourceBucketName!;
         var sourceKey = request.CopySourceKey!;

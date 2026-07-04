@@ -5,6 +5,7 @@ using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json;
 using IntegratedS3.Abstractions.Capabilities;
+using IntegratedS3.Abstractions.Comparers;
 using IntegratedS3.Abstractions.Errors;
 using IntegratedS3.Abstractions.Models;
 using IntegratedS3.Abstractions.Requests;
@@ -27,6 +28,21 @@ internal sealed class DiskStorageService(
     private const string VersionStoreDirectoryName = ".integrateds3-versions";
     private const string MultipartUploadsDirectoryName = ".integrateds3-multipart";
     private const string MultipartStateFileName = "upload.json";
+    private const int MaxMultipartPartNumber = 10000;
+
+    /// <summary>
+    /// The minimum size, in bytes, that every multipart part except the last must meet.
+    /// AWS S3 rejects a CompleteMultipartUpload with <c>EntityTooSmall</c> when any non-final
+    /// part is smaller than 5 MiB (5 * 1024 * 1024 = 5,242,880 bytes).
+    /// </summary>
+    private const long MinimumMultipartPartSizeBytes = 5L * 1024 * 1024;
+
+    /// <summary>
+    /// The default object <c>Content-Type</c> AWS S3 assigns when a caller stores an object without
+    /// supplying one. AWS uses <c>binary/octet-stream</c> (not <c>application/octet-stream</c>).
+    /// </summary>
+    private const string DefaultObjectContentType = "binary/octet-stream";
+
     private const string Md5ChecksumAlgorithm = "md5";
     private const string Sha256ChecksumAlgorithm = "sha256";
     private const string Sha1ChecksumAlgorithm = "sha1";
@@ -156,10 +172,14 @@ internal sealed class DiskStorageService(
 
         var bucketPath = GetBucketPath(request.BucketName);
         if (Directory.Exists(bucketPath)) {
+            // The disk backend is single-tenant: an existing bucket directory is always owned by
+            // the requesting account, so this is an idempotent re-create. AWS reports this as
+            // BucketAlreadyOwnedByYou (409 outside us-east-1); BucketAlreadyExists is reserved for
+            // names owned by a *different* account, which cannot occur here.
             return StorageResult<BucketInfo>.Failure(new StorageError
             {
-                Code = StorageErrorCode.BucketAlreadyExists,
-                Message = $"Bucket '{request.BucketName}' already exists.",
+                Code = StorageErrorCode.BucketAlreadyOwnedByYou,
+                Message = $"Your previous request to create the named bucket '{request.BucketName}' succeeded and you already own it.",
                 BucketName = request.BucketName,
                 ProviderName = options.ProviderName
             });
@@ -248,6 +268,8 @@ internal sealed class DiskStorageService(
             MetricsConfigurations = existingMetadata.MetricsConfigurations,
             InventoryConfigurations = existingMetadata.InventoryConfigurations,
             IntelligentTieringConfigurations = existingMetadata.IntelligentTieringConfigurations,
+            PublicAccessBlockConfiguration = existingMetadata.PublicAccessBlockConfiguration,
+            OwnershipControlsConfiguration = existingMetadata.OwnershipControlsConfiguration,
         };
 
         if (!ShouldPersistBucketMetadata(metadata)) {
@@ -313,6 +335,8 @@ internal sealed class DiskStorageService(
             MetricsConfigurations = existingMetadata.MetricsConfigurations,
             InventoryConfigurations = existingMetadata.InventoryConfigurations,
             IntelligentTieringConfigurations = existingMetadata.IntelligentTieringConfigurations,
+            PublicAccessBlockConfiguration = existingMetadata.PublicAccessBlockConfiguration,
+            OwnershipControlsConfiguration = existingMetadata.OwnershipControlsConfiguration,
         };
 
         if (!ShouldPersistBucketMetadata(updatedMetadata)) {
@@ -354,6 +378,8 @@ internal sealed class DiskStorageService(
             MetricsConfigurations = existingMetadata.MetricsConfigurations,
             InventoryConfigurations = existingMetadata.InventoryConfigurations,
             IntelligentTieringConfigurations = existingMetadata.IntelligentTieringConfigurations,
+            PublicAccessBlockConfiguration = existingMetadata.PublicAccessBlockConfiguration,
+            OwnershipControlsConfiguration = existingMetadata.OwnershipControlsConfiguration,
         };
 
         if (!ShouldPersistBucketMetadata(updatedMetadata)) {
@@ -425,6 +451,8 @@ internal sealed class DiskStorageService(
             MetricsConfigurations = existingMetadata.MetricsConfigurations,
             InventoryConfigurations = existingMetadata.InventoryConfigurations,
             IntelligentTieringConfigurations = existingMetadata.IntelligentTieringConfigurations,
+            PublicAccessBlockConfiguration = existingMetadata.PublicAccessBlockConfiguration,
+            OwnershipControlsConfiguration = existingMetadata.OwnershipControlsConfiguration,
         };
 
         await PersistBucketMetadataAsync(bucketPath, updatedMetadata, cancellationToken);
@@ -465,11 +493,241 @@ internal sealed class DiskStorageService(
             MetricsConfigurations = existingMetadata.MetricsConfigurations,
             InventoryConfigurations = existingMetadata.InventoryConfigurations,
             IntelligentTieringConfigurations = existingMetadata.IntelligentTieringConfigurations,
+            PublicAccessBlockConfiguration = existingMetadata.PublicAccessBlockConfiguration,
+            OwnershipControlsConfiguration = existingMetadata.OwnershipControlsConfiguration,
         };
 
         await PersistBucketMetadataAsync(bucketPath, updatedMetadata, cancellationToken);
         return StorageResult.Success();
     }
+
+    // -------------------------------------------------------------------------
+    // Bucket Public Access Block
+    // -------------------------------------------------------------------------
+
+    public async ValueTask<StorageResult<BucketPublicAccessBlockConfiguration>> GetBucketPublicAccessBlockAsync(string bucketName, CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+
+        var bucketPath = GetBucketPath(bucketName);
+        if (!Directory.Exists(bucketPath)) {
+            return StorageResult<BucketPublicAccessBlockConfiguration>.Failure(BucketNotFound(bucketName));
+        }
+
+        var metadata = await ReadBucketMetadataAsync(bucketPath, cancellationToken);
+        if (metadata.PublicAccessBlockConfiguration is null) {
+            return StorageResult<BucketPublicAccessBlockConfiguration>.Failure(ConfigurationNotFound(StorageErrorCode.PublicAccessBlockConfigurationNotFound, bucketName, "public access block"));
+        }
+
+        return StorageResult<BucketPublicAccessBlockConfiguration>.Success(new BucketPublicAccessBlockConfiguration
+        {
+            BucketName = bucketName,
+            BlockPublicAcls = metadata.PublicAccessBlockConfiguration.BlockPublicAcls,
+            IgnorePublicAcls = metadata.PublicAccessBlockConfiguration.IgnorePublicAcls,
+            BlockPublicPolicy = metadata.PublicAccessBlockConfiguration.BlockPublicPolicy,
+            RestrictPublicBuckets = metadata.PublicAccessBlockConfiguration.RestrictPublicBuckets
+        });
+    }
+
+    public async ValueTask<StorageResult<BucketPublicAccessBlockConfiguration>> PutBucketPublicAccessBlockAsync(PutBucketPublicAccessBlockRequest request, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        cancellationToken.ThrowIfCancellationRequested();
+
+        var bucketPath = GetBucketPath(request.BucketName);
+        if (!Directory.Exists(bucketPath)) {
+            return StorageResult<BucketPublicAccessBlockConfiguration>.Failure(BucketNotFound(request.BucketName));
+        }
+
+        var diskConfig = new DiskBucketPublicAccessBlockConfiguration
+        {
+            BlockPublicAcls = request.BlockPublicAcls,
+            IgnorePublicAcls = request.IgnorePublicAcls,
+            BlockPublicPolicy = request.BlockPublicPolicy,
+            RestrictPublicBuckets = request.RestrictPublicBuckets
+        };
+
+        using var bucketMutationLock = await AcquireBucketMutationLockAsync(bucketPath, cancellationToken);
+        var existingMetadata = await ReadBucketMetadataAsync(bucketPath, cancellationToken);
+        var updatedMetadata = new DiskBucketMetadata
+        {
+            VersioningStatus = existingMetadata.VersioningStatus,
+            CorsConfiguration = existingMetadata.CorsConfiguration,
+            TaggingConfiguration = existingMetadata.TaggingConfiguration,
+            LoggingConfiguration = existingMetadata.LoggingConfiguration,
+            WebsiteConfiguration = existingMetadata.WebsiteConfiguration,
+            RequestPaymentConfiguration = existingMetadata.RequestPaymentConfiguration,
+            AccelerateConfiguration = existingMetadata.AccelerateConfiguration,
+            LifecycleConfiguration = existingMetadata.LifecycleConfiguration,
+            ReplicationConfiguration = existingMetadata.ReplicationConfiguration,
+            NotificationConfiguration = existingMetadata.NotificationConfiguration,
+            ObjectLockConfiguration = existingMetadata.ObjectLockConfiguration,
+            AnalyticsConfigurations = existingMetadata.AnalyticsConfigurations,
+            MetricsConfigurations = existingMetadata.MetricsConfigurations,
+            InventoryConfigurations = existingMetadata.InventoryConfigurations,
+            IntelligentTieringConfigurations = existingMetadata.IntelligentTieringConfigurations,
+            PublicAccessBlockConfiguration = diskConfig,
+            OwnershipControlsConfiguration = existingMetadata.OwnershipControlsConfiguration,
+        };
+
+        await PersistBucketMetadataAsync(bucketPath, updatedMetadata, cancellationToken);
+
+        return StorageResult<BucketPublicAccessBlockConfiguration>.Success(new BucketPublicAccessBlockConfiguration
+        {
+            BucketName = request.BucketName,
+            BlockPublicAcls = diskConfig.BlockPublicAcls,
+            IgnorePublicAcls = diskConfig.IgnorePublicAcls,
+            BlockPublicPolicy = diskConfig.BlockPublicPolicy,
+            RestrictPublicBuckets = diskConfig.RestrictPublicBuckets
+        });
+    }
+
+    public async ValueTask<StorageResult> DeleteBucketPublicAccessBlockAsync(DeleteBucketPublicAccessBlockRequest request, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        cancellationToken.ThrowIfCancellationRequested();
+
+        var bucketPath = GetBucketPath(request.BucketName);
+        if (!Directory.Exists(bucketPath)) {
+            return StorageResult.Failure(BucketNotFound(request.BucketName));
+        }
+
+        using var bucketMutationLock = await AcquireBucketMutationLockAsync(bucketPath, cancellationToken);
+        var existingMetadata = await ReadBucketMetadataAsync(bucketPath, cancellationToken);
+        var updatedMetadata = new DiskBucketMetadata
+        {
+            VersioningStatus = existingMetadata.VersioningStatus,
+            CorsConfiguration = existingMetadata.CorsConfiguration,
+            TaggingConfiguration = existingMetadata.TaggingConfiguration,
+            LoggingConfiguration = existingMetadata.LoggingConfiguration,
+            WebsiteConfiguration = existingMetadata.WebsiteConfiguration,
+            RequestPaymentConfiguration = existingMetadata.RequestPaymentConfiguration,
+            AccelerateConfiguration = existingMetadata.AccelerateConfiguration,
+            LifecycleConfiguration = existingMetadata.LifecycleConfiguration,
+            ReplicationConfiguration = existingMetadata.ReplicationConfiguration,
+            NotificationConfiguration = existingMetadata.NotificationConfiguration,
+            ObjectLockConfiguration = existingMetadata.ObjectLockConfiguration,
+            AnalyticsConfigurations = existingMetadata.AnalyticsConfigurations,
+            MetricsConfigurations = existingMetadata.MetricsConfigurations,
+            InventoryConfigurations = existingMetadata.InventoryConfigurations,
+            IntelligentTieringConfigurations = existingMetadata.IntelligentTieringConfigurations,
+            PublicAccessBlockConfiguration = null,
+            OwnershipControlsConfiguration = existingMetadata.OwnershipControlsConfiguration,
+        };
+
+        await PersistBucketMetadataAsync(bucketPath, updatedMetadata, cancellationToken);
+        return StorageResult.Success();
+    }
+
+    // -------------------------------------------------------------------------
+    // Bucket Ownership Controls
+    // -------------------------------------------------------------------------
+
+    public async ValueTask<StorageResult<BucketOwnershipControlsConfiguration>> GetBucketOwnershipControlsAsync(string bucketName, CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+
+        var bucketPath = GetBucketPath(bucketName);
+        if (!Directory.Exists(bucketPath)) {
+            return StorageResult<BucketOwnershipControlsConfiguration>.Failure(BucketNotFound(bucketName));
+        }
+
+        var metadata = await ReadBucketMetadataAsync(bucketPath, cancellationToken);
+        if (metadata.OwnershipControlsConfiguration is null) {
+            return StorageResult<BucketOwnershipControlsConfiguration>.Failure(ConfigurationNotFound(StorageErrorCode.OwnershipControlsNotFound, bucketName, "ownership controls"));
+        }
+
+        return StorageResult<BucketOwnershipControlsConfiguration>.Success(new BucketOwnershipControlsConfiguration
+        {
+            BucketName = bucketName,
+            ObjectOwnership = metadata.OwnershipControlsConfiguration.ObjectOwnership
+        });
+    }
+
+    public async ValueTask<StorageResult<BucketOwnershipControlsConfiguration>> PutBucketOwnershipControlsAsync(PutBucketOwnershipControlsRequest request, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        cancellationToken.ThrowIfCancellationRequested();
+
+        var bucketPath = GetBucketPath(request.BucketName);
+        if (!Directory.Exists(bucketPath)) {
+            return StorageResult<BucketOwnershipControlsConfiguration>.Failure(BucketNotFound(request.BucketName));
+        }
+
+        var diskConfig = new DiskBucketOwnershipControlsConfiguration
+        {
+            ObjectOwnership = request.ObjectOwnership
+        };
+
+        using var bucketMutationLock = await AcquireBucketMutationLockAsync(bucketPath, cancellationToken);
+        var existingMetadata = await ReadBucketMetadataAsync(bucketPath, cancellationToken);
+        var updatedMetadata = new DiskBucketMetadata
+        {
+            VersioningStatus = existingMetadata.VersioningStatus,
+            CorsConfiguration = existingMetadata.CorsConfiguration,
+            TaggingConfiguration = existingMetadata.TaggingConfiguration,
+            LoggingConfiguration = existingMetadata.LoggingConfiguration,
+            WebsiteConfiguration = existingMetadata.WebsiteConfiguration,
+            RequestPaymentConfiguration = existingMetadata.RequestPaymentConfiguration,
+            AccelerateConfiguration = existingMetadata.AccelerateConfiguration,
+            LifecycleConfiguration = existingMetadata.LifecycleConfiguration,
+            ReplicationConfiguration = existingMetadata.ReplicationConfiguration,
+            NotificationConfiguration = existingMetadata.NotificationConfiguration,
+            ObjectLockConfiguration = existingMetadata.ObjectLockConfiguration,
+            AnalyticsConfigurations = existingMetadata.AnalyticsConfigurations,
+            MetricsConfigurations = existingMetadata.MetricsConfigurations,
+            InventoryConfigurations = existingMetadata.InventoryConfigurations,
+            IntelligentTieringConfigurations = existingMetadata.IntelligentTieringConfigurations,
+            PublicAccessBlockConfiguration = existingMetadata.PublicAccessBlockConfiguration,
+            OwnershipControlsConfiguration = diskConfig,
+        };
+
+        await PersistBucketMetadataAsync(bucketPath, updatedMetadata, cancellationToken);
+
+        return StorageResult<BucketOwnershipControlsConfiguration>.Success(new BucketOwnershipControlsConfiguration
+        {
+            BucketName = request.BucketName,
+            ObjectOwnership = diskConfig.ObjectOwnership
+        });
+    }
+
+    public async ValueTask<StorageResult> DeleteBucketOwnershipControlsAsync(DeleteBucketOwnershipControlsRequest request, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        cancellationToken.ThrowIfCancellationRequested();
+
+        var bucketPath = GetBucketPath(request.BucketName);
+        if (!Directory.Exists(bucketPath)) {
+            return StorageResult.Failure(BucketNotFound(request.BucketName));
+        }
+
+        using var bucketMutationLock = await AcquireBucketMutationLockAsync(bucketPath, cancellationToken);
+        var existingMetadata = await ReadBucketMetadataAsync(bucketPath, cancellationToken);
+        var updatedMetadata = new DiskBucketMetadata
+        {
+            VersioningStatus = existingMetadata.VersioningStatus,
+            CorsConfiguration = existingMetadata.CorsConfiguration,
+            TaggingConfiguration = existingMetadata.TaggingConfiguration,
+            LoggingConfiguration = existingMetadata.LoggingConfiguration,
+            WebsiteConfiguration = existingMetadata.WebsiteConfiguration,
+            RequestPaymentConfiguration = existingMetadata.RequestPaymentConfiguration,
+            AccelerateConfiguration = existingMetadata.AccelerateConfiguration,
+            LifecycleConfiguration = existingMetadata.LifecycleConfiguration,
+            ReplicationConfiguration = existingMetadata.ReplicationConfiguration,
+            NotificationConfiguration = existingMetadata.NotificationConfiguration,
+            ObjectLockConfiguration = existingMetadata.ObjectLockConfiguration,
+            AnalyticsConfigurations = existingMetadata.AnalyticsConfigurations,
+            MetricsConfigurations = existingMetadata.MetricsConfigurations,
+            InventoryConfigurations = existingMetadata.InventoryConfigurations,
+            IntelligentTieringConfigurations = existingMetadata.IntelligentTieringConfigurations,
+            PublicAccessBlockConfiguration = existingMetadata.PublicAccessBlockConfiguration,
+            OwnershipControlsConfiguration = null,
+        };
+
+        await PersistBucketMetadataAsync(bucketPath, updatedMetadata, cancellationToken);
+        return StorageResult.Success();
+    }
+
     // -------------------------------------------------------------------------
     // Bucket Logging
     // -------------------------------------------------------------------------
@@ -527,6 +785,8 @@ internal sealed class DiskStorageService(
             MetricsConfigurations = existingMetadata.MetricsConfigurations,
             InventoryConfigurations = existingMetadata.InventoryConfigurations,
             IntelligentTieringConfigurations = existingMetadata.IntelligentTieringConfigurations,
+            PublicAccessBlockConfiguration = existingMetadata.PublicAccessBlockConfiguration,
+            OwnershipControlsConfiguration = existingMetadata.OwnershipControlsConfiguration,
         };
 
         await PersistBucketMetadataAsync(bucketPath, updatedMetadata, cancellationToken);
@@ -590,6 +850,8 @@ internal sealed class DiskStorageService(
             MetricsConfigurations = existingMetadata.MetricsConfigurations,
             InventoryConfigurations = existingMetadata.InventoryConfigurations,
             IntelligentTieringConfigurations = existingMetadata.IntelligentTieringConfigurations,
+            PublicAccessBlockConfiguration = existingMetadata.PublicAccessBlockConfiguration,
+            OwnershipControlsConfiguration = existingMetadata.OwnershipControlsConfiguration,
         };
 
         await PersistBucketMetadataAsync(bucketPath, updatedMetadata, cancellationToken);
@@ -626,6 +888,8 @@ internal sealed class DiskStorageService(
             MetricsConfigurations = existingMetadata.MetricsConfigurations,
             InventoryConfigurations = existingMetadata.InventoryConfigurations,
             IntelligentTieringConfigurations = existingMetadata.IntelligentTieringConfigurations,
+            PublicAccessBlockConfiguration = existingMetadata.PublicAccessBlockConfiguration,
+            OwnershipControlsConfiguration = existingMetadata.OwnershipControlsConfiguration,
         };
 
         await PersistBucketMetadataAsync(bucketPath, updatedMetadata, cancellationToken);
@@ -690,6 +954,8 @@ internal sealed class DiskStorageService(
             MetricsConfigurations = existingMetadata.MetricsConfigurations,
             InventoryConfigurations = existingMetadata.InventoryConfigurations,
             IntelligentTieringConfigurations = existingMetadata.IntelligentTieringConfigurations,
+            PublicAccessBlockConfiguration = existingMetadata.PublicAccessBlockConfiguration,
+            OwnershipControlsConfiguration = existingMetadata.OwnershipControlsConfiguration,
         };
 
         await PersistBucketMetadataAsync(bucketPath, updatedMetadata, cancellationToken);
@@ -759,6 +1025,8 @@ internal sealed class DiskStorageService(
             MetricsConfigurations = existingMetadata.MetricsConfigurations,
             InventoryConfigurations = existingMetadata.InventoryConfigurations,
             IntelligentTieringConfigurations = existingMetadata.IntelligentTieringConfigurations,
+            PublicAccessBlockConfiguration = existingMetadata.PublicAccessBlockConfiguration,
+            OwnershipControlsConfiguration = existingMetadata.OwnershipControlsConfiguration,
         };
 
         await PersistBucketMetadataAsync(bucketPath, updatedMetadata, cancellationToken);
@@ -821,6 +1089,8 @@ internal sealed class DiskStorageService(
             MetricsConfigurations = existingMetadata.MetricsConfigurations,
             InventoryConfigurations = existingMetadata.InventoryConfigurations,
             IntelligentTieringConfigurations = existingMetadata.IntelligentTieringConfigurations,
+            PublicAccessBlockConfiguration = existingMetadata.PublicAccessBlockConfiguration,
+            OwnershipControlsConfiguration = existingMetadata.OwnershipControlsConfiguration,
         };
 
         await PersistBucketMetadataAsync(bucketPath, updatedMetadata, cancellationToken);
@@ -857,6 +1127,8 @@ internal sealed class DiskStorageService(
             MetricsConfigurations = existingMetadata.MetricsConfigurations,
             InventoryConfigurations = existingMetadata.InventoryConfigurations,
             IntelligentTieringConfigurations = existingMetadata.IntelligentTieringConfigurations,
+            PublicAccessBlockConfiguration = existingMetadata.PublicAccessBlockConfiguration,
+            OwnershipControlsConfiguration = existingMetadata.OwnershipControlsConfiguration,
         };
 
         await PersistBucketMetadataAsync(bucketPath, updatedMetadata, cancellationToken);
@@ -914,6 +1186,8 @@ internal sealed class DiskStorageService(
             MetricsConfigurations = existingMetadata.MetricsConfigurations,
             InventoryConfigurations = existingMetadata.InventoryConfigurations,
             IntelligentTieringConfigurations = existingMetadata.IntelligentTieringConfigurations,
+            PublicAccessBlockConfiguration = existingMetadata.PublicAccessBlockConfiguration,
+            OwnershipControlsConfiguration = existingMetadata.OwnershipControlsConfiguration,
         };
 
         await PersistBucketMetadataAsync(bucketPath, updatedMetadata, cancellationToken);
@@ -950,6 +1224,8 @@ internal sealed class DiskStorageService(
             MetricsConfigurations = existingMetadata.MetricsConfigurations,
             InventoryConfigurations = existingMetadata.InventoryConfigurations,
             IntelligentTieringConfigurations = existingMetadata.IntelligentTieringConfigurations,
+            PublicAccessBlockConfiguration = existingMetadata.PublicAccessBlockConfiguration,
+            OwnershipControlsConfiguration = existingMetadata.OwnershipControlsConfiguration,
         };
 
         await PersistBucketMetadataAsync(bucketPath, updatedMetadata, cancellationToken);
@@ -1006,6 +1282,8 @@ internal sealed class DiskStorageService(
             MetricsConfigurations = existingMetadata.MetricsConfigurations,
             InventoryConfigurations = existingMetadata.InventoryConfigurations,
             IntelligentTieringConfigurations = existingMetadata.IntelligentTieringConfigurations,
+            PublicAccessBlockConfiguration = existingMetadata.PublicAccessBlockConfiguration,
+            OwnershipControlsConfiguration = existingMetadata.OwnershipControlsConfiguration,
         };
 
         await PersistBucketMetadataAsync(bucketPath, updatedMetadata, cancellationToken);
@@ -1048,9 +1326,11 @@ internal sealed class DiskStorageService(
         using var bucketMutationLock = await AcquireBucketMutationLockAsync(bucketPath, cancellationToken);
         var existingMetadata = await ReadBucketMetadataAsync(bucketPath, cancellationToken);
         if (existingMetadata.VersioningStatus != BucketVersioningStatus.Enabled) {
+            // AWS surfaces this precondition as InvalidBucketState (409), not OperationAborted: the
+            // bucket must have versioning enabled before Object Lock can be configured.
             return StorageResult<ObjectLockConfiguration>.Failure(new StorageError
             {
-                Code = StorageErrorCode.VersionConflict,
+                Code = StorageErrorCode.InvalidBucketState,
                 Message = $"Object Lock configuration requires versioning to be enabled on bucket '{request.BucketName}'.",
                 BucketName = request.BucketName,
                 ProviderName = options.ProviderName,
@@ -1075,6 +1355,8 @@ internal sealed class DiskStorageService(
             MetricsConfigurations = existingMetadata.MetricsConfigurations,
             InventoryConfigurations = existingMetadata.InventoryConfigurations,
             IntelligentTieringConfigurations = existingMetadata.IntelligentTieringConfigurations,
+            PublicAccessBlockConfiguration = existingMetadata.PublicAccessBlockConfiguration,
+            OwnershipControlsConfiguration = existingMetadata.OwnershipControlsConfiguration,
         };
 
         await PersistBucketMetadataAsync(bucketPath, updatedMetadata, cancellationToken);
@@ -1137,6 +1419,8 @@ internal sealed class DiskStorageService(
             MetricsConfigurations = existingMetadata.MetricsConfigurations,
             InventoryConfigurations = existingMetadata.InventoryConfigurations,
             IntelligentTieringConfigurations = existingMetadata.IntelligentTieringConfigurations,
+            PublicAccessBlockConfiguration = existingMetadata.PublicAccessBlockConfiguration,
+            OwnershipControlsConfiguration = existingMetadata.OwnershipControlsConfiguration,
         };
 
         await PersistBucketMetadataAsync(bucketPath, updatedMetadata, cancellationToken);
@@ -1178,6 +1462,8 @@ internal sealed class DiskStorageService(
             MetricsConfigurations = existingMetadata.MetricsConfigurations,
             InventoryConfigurations = existingMetadata.InventoryConfigurations,
             IntelligentTieringConfigurations = existingMetadata.IntelligentTieringConfigurations,
+            PublicAccessBlockConfiguration = existingMetadata.PublicAccessBlockConfiguration,
+            OwnershipControlsConfiguration = existingMetadata.OwnershipControlsConfiguration,
         };
 
         await PersistBucketMetadataAsync(bucketPath, updatedMetadata, cancellationToken);
@@ -1260,6 +1546,8 @@ internal sealed class DiskStorageService(
             MetricsConfigurations = updatedDict,
             InventoryConfigurations = existingMetadata.InventoryConfigurations,
             IntelligentTieringConfigurations = existingMetadata.IntelligentTieringConfigurations,
+            PublicAccessBlockConfiguration = existingMetadata.PublicAccessBlockConfiguration,
+            OwnershipControlsConfiguration = existingMetadata.OwnershipControlsConfiguration,
         };
 
         await PersistBucketMetadataAsync(bucketPath, updatedMetadata, cancellationToken);
@@ -1301,6 +1589,8 @@ internal sealed class DiskStorageService(
             MetricsConfigurations = updatedDict.Count > 0 ? updatedDict : null,
             InventoryConfigurations = existingMetadata.InventoryConfigurations,
             IntelligentTieringConfigurations = existingMetadata.IntelligentTieringConfigurations,
+            PublicAccessBlockConfiguration = existingMetadata.PublicAccessBlockConfiguration,
+            OwnershipControlsConfiguration = existingMetadata.OwnershipControlsConfiguration,
         };
 
         await PersistBucketMetadataAsync(bucketPath, updatedMetadata, cancellationToken);
@@ -1383,6 +1673,8 @@ internal sealed class DiskStorageService(
             MetricsConfigurations = existingMetadata.MetricsConfigurations,
             InventoryConfigurations = updatedDict,
             IntelligentTieringConfigurations = existingMetadata.IntelligentTieringConfigurations,
+            PublicAccessBlockConfiguration = existingMetadata.PublicAccessBlockConfiguration,
+            OwnershipControlsConfiguration = existingMetadata.OwnershipControlsConfiguration,
         };
 
         await PersistBucketMetadataAsync(bucketPath, updatedMetadata, cancellationToken);
@@ -1424,6 +1716,8 @@ internal sealed class DiskStorageService(
             MetricsConfigurations = existingMetadata.MetricsConfigurations,
             InventoryConfigurations = updatedDict.Count > 0 ? updatedDict : null,
             IntelligentTieringConfigurations = existingMetadata.IntelligentTieringConfigurations,
+            PublicAccessBlockConfiguration = existingMetadata.PublicAccessBlockConfiguration,
+            OwnershipControlsConfiguration = existingMetadata.OwnershipControlsConfiguration,
         };
 
         await PersistBucketMetadataAsync(bucketPath, updatedMetadata, cancellationToken);
@@ -1506,6 +1800,8 @@ internal sealed class DiskStorageService(
             MetricsConfigurations = existingMetadata.MetricsConfigurations,
             InventoryConfigurations = existingMetadata.InventoryConfigurations,
             IntelligentTieringConfigurations = updatedDict,
+            PublicAccessBlockConfiguration = existingMetadata.PublicAccessBlockConfiguration,
+            OwnershipControlsConfiguration = existingMetadata.OwnershipControlsConfiguration,
         };
 
         await PersistBucketMetadataAsync(bucketPath, updatedMetadata, cancellationToken);
@@ -1547,6 +1843,8 @@ internal sealed class DiskStorageService(
             MetricsConfigurations = existingMetadata.MetricsConfigurations,
             InventoryConfigurations = existingMetadata.InventoryConfigurations,
             IntelligentTieringConfigurations = updatedDict.Count > 0 ? updatedDict : null,
+            PublicAccessBlockConfiguration = existingMetadata.PublicAccessBlockConfiguration,
+            OwnershipControlsConfiguration = existingMetadata.OwnershipControlsConfiguration,
         };
 
         await PersistBucketMetadataAsync(bucketPath, updatedMetadata, cancellationToken);
@@ -1706,7 +2004,7 @@ internal sealed class DiskStorageService(
                 ObjectKey = GetObjectKey(bucketPath, filePath)
             })
             .Where(entry => string.IsNullOrEmpty(prefix) || entry.ObjectKey.StartsWith(prefix, StringComparison.Ordinal))
-            .OrderBy(entry => entry.ObjectKey, StringComparer.Ordinal);
+            .OrderBy(entry => entry.ObjectKey, Utf8OrdinalComparer.Instance);
 
         var yielded = 0;
 
@@ -1714,7 +2012,7 @@ internal sealed class DiskStorageService(
             cancellationToken.ThrowIfCancellationRequested();
 
             if (!string.IsNullOrEmpty(continuationToken)
-                && StringComparer.Ordinal.Compare(entry.ObjectKey, continuationToken) <= 0) {
+                && Utf8OrdinalComparer.Instance.Compare(entry.ObjectKey, continuationToken) <= 0) {
                 continue;
             }
 
@@ -1830,11 +2128,7 @@ internal sealed class DiskStorageService(
 
         var uploadState = uploadStateResult.Value!;
         var uploadChecksumAlgorithm = uploadState.State.ChecksumAlgorithm;
-        if (!string.IsNullOrWhiteSpace(uploadChecksumAlgorithm)
-            && !string.Equals(uploadChecksumAlgorithm, Sha256ChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)
-            && !string.Equals(uploadChecksumAlgorithm, Sha1ChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)
-            && !string.Equals(uploadChecksumAlgorithm, Crc32ChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)
-            && !string.Equals(uploadChecksumAlgorithm, Crc32cChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)) {
+        if (!IsMultipartSupportedChecksumAlgorithm(uploadChecksumAlgorithm)) {
             throw new NotSupportedException(
                 $"Checksum algorithm '{uploadChecksumAlgorithm}' is not currently supported for multipart uploads.");
         }
@@ -1861,12 +2155,15 @@ internal sealed class DiskStorageService(
             }
 
             var partInfo = new FileInfo(partEntry.PartPath);
-            var actualChecksums = await ComputeChecksumsAsync(partEntry.PartPath, cancellationToken);
+            var actualChecksums = await ComputeChecksumsAsync(
+                partEntry.PartPath,
+                DetermineRequiredChecksumAlgorithms(requestedChecksums: null, uploadChecksumAlgorithm),
+                cancellationToken);
 
             yield return new MultipartUploadPart
             {
                 PartNumber = partNumber,
-                ETag = BuildETag(partInfo),
+                ETag = BuildPartETag(actualChecksums),
                 ContentLength = partInfo.Length,
                 LastModifiedUtc = partInfo.LastWriteTimeUtc,
                 Checksums = CreateMultipartPartResponseChecksums(
@@ -1965,7 +2262,17 @@ internal sealed class DiskStorageService(
             return StorageResult<GetObjectResponse>.Failure(rangeError);
         }
 
-        var stream = new FileStream(storedObject.ContentPath, FileMode.Open, FileAccess.Read, FileShare.Read, 81920, FileOptions.Asynchronous | FileOptions.SequentialScan);
+        // The content file is opened without holding the per-object mutation lock (reads are
+        // intentionally lock-free). A concurrent DeleteObject/overwrite can therefore land between
+        // ResolveStoredObjectAsync above and this open, causing FileNotFoundException/
+        // DirectoryNotFoundException. Translate that lost TOCTOU race to the S3-correct
+        // NoSuchKey (404) instead of surfacing an InternalError (500). The stream is opened with
+        // FileShare.Delete so a concurrent rename/delete of the file cannot fail a writer's
+        // File.Move on Windows while a reader keeps its handle.
+        var stream = TryOpenObjectReadStream(storedObject.ContentPath);
+        if (stream is null) {
+            return StorageResult<GetObjectResponse>.Failure(ObjectNotFound(request.BucketName, request.Key, request.VersionId));
+        }
 
         Stream responseStream = stream;
         ObjectInfo responseObject = objectInfo;
@@ -2155,9 +2462,20 @@ internal sealed class DiskStorageService(
 
         var tempDestinationPath = $"{destinationPath}.{Guid.NewGuid():N}.tmp";
         try {
-            await using (var sourceStream = new FileStream(sourcePath, FileMode.Open, FileAccess.Read, FileShare.Read, 81920, FileOptions.Asynchronous | FileOptions.SequentialScan))
+            // The source content file is opened while holding only the destination mutation lock,
+            // never the source lock, so a concurrent delete/overwrite of the source key can race
+            // this open. Translate a lost TOCTOU race (FileNotFound/DirectoryNotFound) to the
+            // S3-correct NoSuchKey (404) instead of an InternalError (500), and open with
+            // FileShare.Delete so a concurrent rename/delete of the source cannot fail on Windows.
+            var sourceStream = TryOpenObjectReadStream(sourcePath);
+            if (sourceStream is null) {
+                return StorageResult<ObjectInfo>.Failure(ObjectNotFound(request.SourceBucketName, request.SourceKey, request.SourceVersionId));
+            }
+
+            await using (sourceStream)
             await using (var destinationStream = new FileStream(tempDestinationPath, FileMode.CreateNew, FileAccess.Write, FileShare.None, 81920, FileOptions.Asynchronous | FileOptions.SequentialScan)) {
                 await sourceStream.CopyToAsync(destinationStream, cancellationToken);
+                await FlushToStableStorageAsync(destinationStream, cancellationToken);
             }
 
             var sourceMetadata = sourceObject.Metadata;
@@ -2165,7 +2483,10 @@ internal sealed class DiskStorageService(
                 || sourceMetadata.Checksums is null
                 || request.Checksums is { Count: > 0 };
             var actualChecksums = requiresActualChecksums
-                ? await ComputeChecksumsAsync(tempDestinationPath, cancellationToken)
+                ? await ComputeChecksumsAsync(
+                    tempDestinationPath,
+                    DetermineRequiredChecksumAlgorithms(request.Checksums, checksumAlgorithm, computeAllWhenNoneRequested: true),
+                    cancellationToken)
                 : null;
             var checksumValidationError = ValidateRequestedChecksums(request.Checksums, actualChecksums, request.DestinationBucketName, request.DestinationKey);
             if (checksumValidationError is not null) {
@@ -2174,17 +2495,15 @@ internal sealed class DiskStorageService(
 
             var checksums = CreateCopyObjectChecksums(actualChecksums, sourceMetadata.Checksums, checksumAlgorithm);
 
-            if (await HasCurrentVersionStateAsync(request.DestinationBucketName, request.DestinationKey, cancellationToken)
-                && await IsVersioningEnabledAsync(request.DestinationBucketName, cancellationToken)) {
-                await ArchiveCurrentObjectVersionAsync(request.DestinationBucketName, request.DestinationKey, destinationPath, cancellationToken);
-            }
+            var versioningStatus = await GetBucketVersioningStatusAsync(request.DestinationBucketName, cancellationToken);
+            await PreserveCurrentVersionBeforeOverwriteAsync(request.DestinationBucketName, request.DestinationKey, destinationPath, versioningStatus, cancellationToken);
 
             File.Move(tempDestinationPath, destinationPath, overwrite: true);
 
             var tags = request.TaggingDirective == ObjectTaggingDirective.Replace
                 ? NormalizeTags(request.Tags)
                 : NormalizeTags(sourceMetadata.Tags);
-            var versionId = CreateVersionId();
+            var versionId = AssignWriteVersionId(versioningStatus);
             var useReplacementMetadata = request.MetadataDirective == CopyObjectMetadataDirective.Replace;
             await WriteStoredObjectStateAsync(
                 request.DestinationBucketName,
@@ -2192,7 +2511,7 @@ internal sealed class DiskStorageService(
                 destinationPath,
                 versionId,
                 useReplacementMetadata
-                    ? string.IsNullOrWhiteSpace(request.ContentType) ? "application/octet-stream" : request.ContentType
+                    ? string.IsNullOrWhiteSpace(request.ContentType) ? DefaultObjectContentType : request.ContentType
                     : sourceMetadata.ContentType,
                 useReplacementMetadata
                     ? request.Metadata
@@ -2207,7 +2526,11 @@ internal sealed class DiskStorageService(
                 contentDisposition: useReplacementMetadata ? request.ContentDisposition : sourceMetadata.ContentDisposition,
                 contentEncoding: useReplacementMetadata ? request.ContentEncoding : sourceMetadata.ContentEncoding,
                 contentLanguage: useReplacementMetadata ? request.ContentLanguage : sourceMetadata.ContentLanguage,
-                expiresUtc: useReplacementMetadata ? request.ExpiresUtc : sourceMetadata.ExpiresUtc);
+                expiresUtc: useReplacementMetadata ? request.ExpiresUtc : sourceMetadata.ExpiresUtc,
+                expires: useReplacementMetadata ? request.Expires : sourceMetadata.Expires,
+                // AWS applies the request's storage class to the copy (defaulting to STANDARD); it does
+                // not preserve the source object's class unless the request repeats it.
+                storageClass: NormalizeStoredStorageClass(request.StorageClass));
         }
         finally {
             if (File.Exists(tempDestinationPath)) {
@@ -2296,11 +2619,19 @@ internal sealed class DiskStorageService(
 
         var tempFilePath = $"{objectPath}.{Guid.NewGuid():N}.tmp";
         try {
+            // Hash the body inline while streaming it to the temp file (only the MD5 needed for the
+            // ETag plus any client-requested/validated checksum algorithms), so the object is not
+            // read back off disk a second time just to compute digests.
+            IReadOnlyDictionary<string, string> actualChecksums;
             await using (var tempStream = new FileStream(tempFilePath, FileMode.CreateNew, FileAccess.Write, FileShare.None, 81920, FileOptions.Asynchronous | FileOptions.SequentialScan)) {
-                await request.Content.CopyToAsync(tempStream, cancellationToken);
+                actualChecksums = await CopyToTempAndComputeChecksumsAsync(
+                    request.Content,
+                    tempStream,
+                    DetermineRequiredChecksumAlgorithms(request.Checksums, computeAllWhenNoneRequested: true),
+                    cancellationToken);
+                await FlushToStableStorageAsync(tempStream, cancellationToken);
             }
 
-            var actualChecksums = await ComputeChecksumsAsync(tempFilePath, cancellationToken);
             var checksumValidationError = ValidateRequestedChecksums(request.Checksums, actualChecksums, request.BucketName, request.Key);
             if (checksumValidationError is not null) {
                 return StorageResult<ObjectInfo>.Failure(checksumValidationError);
@@ -2308,19 +2639,17 @@ internal sealed class DiskStorageService(
 
             var persistedChecksums = CreatePutObjectChecksums(actualChecksums, request.Checksums);
 
-            if (await HasCurrentVersionStateAsync(request.BucketName, request.Key, cancellationToken)
-                && await IsVersioningEnabledAsync(request.BucketName, cancellationToken)) {
-                await ArchiveCurrentObjectVersionAsync(request.BucketName, request.Key, objectPath, cancellationToken);
-            }
+            var versioningStatus = await GetBucketVersioningStatusAsync(request.BucketName, cancellationToken);
+            await PreserveCurrentVersionBeforeOverwriteAsync(request.BucketName, request.Key, objectPath, versioningStatus, cancellationToken);
 
             File.Move(tempFilePath, objectPath, overwrite: true);
-            var versionId = CreateVersionId();
+            var versionId = AssignWriteVersionId(versioningStatus);
             await WriteStoredObjectStateAsync(
                 request.BucketName,
                 request.Key,
                 objectPath,
                 versionId,
-                string.IsNullOrWhiteSpace(request.ContentType) ? "application/octet-stream" : request.ContentType,
+                string.IsNullOrWhiteSpace(request.ContentType) ? DefaultObjectContentType : request.ContentType,
                 request.Metadata,
                 NormalizeTags(request.Tags),
                 persistedChecksums,
@@ -2332,7 +2661,9 @@ internal sealed class DiskStorageService(
                 contentDisposition: request.ContentDisposition,
                 contentEncoding: request.ContentEncoding,
                 contentLanguage: request.ContentLanguage,
-                expiresUtc: request.ExpiresUtc);
+                expiresUtc: request.ExpiresUtc,
+                expires: request.Expires,
+                storageClass: NormalizeStoredStorageClass(request.StorageClass));
         }
         finally {
             if (File.Exists(tempFilePath)) {
@@ -2500,12 +2831,7 @@ internal sealed class DiskStorageService(
                 request.Key)));
         }
 
-        if (!string.IsNullOrWhiteSpace(checksumAlgorithm)
-            && !string.Equals(checksumAlgorithm, Sha256ChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)
-            && !string.Equals(checksumAlgorithm, Sha1ChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)
-            && !string.Equals(checksumAlgorithm, Crc32ChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)
-            && !string.Equals(checksumAlgorithm, Crc32cChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)
-            && !string.Equals(checksumAlgorithm, Crc64NvmeChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)) {
+        if (!IsMultipartSupportedChecksumAlgorithm(checksumAlgorithm)) {
             return ValueTask.FromResult(StorageResult<MultipartUploadInfo>.Failure(StorageError.Unsupported(
                 $"Checksum algorithm '{request.ChecksumAlgorithm}' is not currently supported for multipart uploads.",
                 request.BucketName,
@@ -2534,9 +2860,9 @@ internal sealed class DiskStorageService(
     {
         ArgumentNullException.ThrowIfNull(request);
 
-        if (request.PartNumber <= 0) {
-            return StorageResult<MultipartUploadPart>.Failure(MultipartConflict(
-                "Multipart part numbers must be greater than zero.",
+        if (request.PartNumber < 1 || request.PartNumber > MaxMultipartPartNumber) {
+            return StorageResult<MultipartUploadPart>.Failure(InvalidPartArgument(
+                $"Part number must be an integer between 1 and {MaxMultipartPartNumber}, inclusive.",
                 request.BucketName,
                 request.Key));
         }
@@ -2552,11 +2878,7 @@ internal sealed class DiskStorageService(
 
         var uploadDirectoryPath = uploadStateResult.Value!.UploadDirectoryPath;
         var uploadChecksumAlgorithm = uploadStateResult.Value.State.ChecksumAlgorithm;
-        if (!string.IsNullOrWhiteSpace(uploadChecksumAlgorithm)
-            && !string.Equals(uploadChecksumAlgorithm, Sha256ChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)
-            && !string.Equals(uploadChecksumAlgorithm, Sha1ChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)
-            && !string.Equals(uploadChecksumAlgorithm, Crc32ChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)
-            && !string.Equals(uploadChecksumAlgorithm, Crc32cChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)) {
+        if (!IsMultipartSupportedChecksumAlgorithm(uploadChecksumAlgorithm)) {
             return StorageResult<MultipartUploadPart>.Failure(StorageError.Unsupported(
                 $"Checksum algorithm '{uploadChecksumAlgorithm}' is not currently supported for multipart uploads.",
                 request.BucketName,
@@ -2583,6 +2905,15 @@ internal sealed class DiskStorageService(
 
         var partPath = GetMultipartPartPath(uploadDirectoryPath, request.PartNumber);
         var tempPartPath = $"{partPath}.{Guid.NewGuid():N}.tmp";
+        // The returned ETag/checksum/length MUST describe the bytes THIS call wrote. The finalized
+        // part path is shared per (uploadId, partNumber), so two concurrent UploadPart calls for the
+        // same part number race on partPath: re-reading partPath after File.Move could observe the
+        // other caller's bytes. Capture the metadata from this call's exclusively-owned temp file
+        // BEFORE the atomic File.Move so the response always matches what this call persisted. The
+        // File.Move rename is atomic, so the persisted part is never torn (last writer wins).
+        long partLength;
+        DateTime partLastWriteTimeUtc;
+        IReadOnlyDictionary<string, string> actualChecksums;
         if (HasCopySource(request)) {
             if (!string.IsNullOrWhiteSpace(request.ChecksumAlgorithm)
                 || request.Checksums is { Count: > 0 }) {
@@ -2626,7 +2957,15 @@ internal sealed class DiskStorageService(
             }
 
             try {
-                await using (var sourceStream = new FileStream(sourceObject.ContentPath, FileMode.Open, FileAccess.Read, FileShare.Read, 81920, FileOptions.Asynchronous | FileOptions.SequentialScan))
+                // The copy source is opened lock-free, so a concurrent delete/overwrite of the
+                // source key can race this open. Translate a lost TOCTOU race to NoSuchKey (404)
+                // and open with FileShare.Delete so a concurrent rename/delete cannot fail on Windows.
+                var sourceStream = TryOpenObjectReadStream(sourceObject.ContentPath);
+                if (sourceStream is null) {
+                    return StorageResult<MultipartUploadPart>.Failure(ObjectNotFound(request.CopySourceBucketName!, request.CopySourceKey!, request.CopySourceVersionId));
+                }
+
+                await using (sourceStream)
                 await using (var tempStream = new FileStream(tempPartPath, FileMode.CreateNew, FileAccess.Write, FileShare.None, 81920, FileOptions.Asynchronous | FileOptions.SequentialScan)) {
                     if (normalizedRange is { Start: long start, End: long end }) {
                         sourceStream.Seek(start, SeekOrigin.Begin);
@@ -2635,9 +2974,26 @@ internal sealed class DiskStorageService(
                     else {
                         await sourceStream.CopyToAsync(tempStream, cancellationToken);
                     }
+
+                    await FlushToStableStorageAsync(tempStream, cancellationToken);
                 }
 
-                File.Move(tempPartPath, partPath, overwrite: true);
+                // Capture this call's metadata from the temp file before publishing it, so the
+                // response describes the bytes this call wrote even if a concurrent same-part
+                // upload overwrites partPath immediately after the move.
+                var tempInfo = new FileInfo(tempPartPath);
+                partLength = tempInfo.Length;
+                partLastWriteTimeUtc = tempInfo.LastWriteTimeUtc;
+                actualChecksums = await ComputeChecksumsAsync(
+                    tempPartPath,
+                    DetermineRequiredChecksumAlgorithms(request.Checksums, uploadChecksumAlgorithm) | ToChecksumAlgorithmFlag(requestChecksumAlgorithm),
+                    cancellationToken);
+
+                // Serialize the publish for this (uploadId, partNumber). Concurrent overwrite moves
+                // into the same destination fail with UnauthorizedAccessException on Windows.
+                using (await AcquireMultipartPartMutationLockAsync(uploadDirectoryPath, request.PartNumber, cancellationToken)) {
+                    File.Move(tempPartPath, partPath, overwrite: true);
+                }
             }
             finally {
                 if (File.Exists(tempPartPath)) {
@@ -2659,9 +3015,25 @@ internal sealed class DiskStorageService(
             try {
                 await using (var tempStream = new FileStream(tempPartPath, FileMode.CreateNew, FileAccess.Write, FileShare.None, 81920, FileOptions.Asynchronous | FileOptions.SequentialScan)) {
                     await request.Content.CopyToAsync(tempStream, cancellationToken);
+                    await FlushToStableStorageAsync(tempStream, cancellationToken);
                 }
 
-                File.Move(tempPartPath, partPath, overwrite: true);
+                // Capture this call's metadata from the temp file before publishing it, so the
+                // response describes the bytes this call wrote even if a concurrent same-part
+                // upload overwrites partPath immediately after the move.
+                var tempInfo = new FileInfo(tempPartPath);
+                partLength = tempInfo.Length;
+                partLastWriteTimeUtc = tempInfo.LastWriteTimeUtc;
+                actualChecksums = await ComputeChecksumsAsync(
+                    tempPartPath,
+                    DetermineRequiredChecksumAlgorithms(request.Checksums, uploadChecksumAlgorithm) | ToChecksumAlgorithmFlag(requestChecksumAlgorithm),
+                    cancellationToken);
+
+                // Serialize the publish for this (uploadId, partNumber). Concurrent overwrite moves
+                // into the same destination fail with UnauthorizedAccessException on Windows.
+                using (await AcquireMultipartPartMutationLockAsync(uploadDirectoryPath, request.PartNumber, cancellationToken)) {
+                    File.Move(tempPartPath, partPath, overwrite: true);
+                }
             }
             finally {
                 if (File.Exists(tempPartPath)) {
@@ -2670,8 +3042,6 @@ internal sealed class DiskStorageService(
             }
         }
 
-        var partInfo = new FileInfo(partPath);
-        var actualChecksums = await ComputeChecksumsAsync(partPath, cancellationToken);
         var checksumValidationError = ValidateRequestedChecksums(request.Checksums, actualChecksums, request.BucketName, request.Key);
         if (checksumValidationError is not null) {
             return StorageResult<MultipartUploadPart>.Failure(checksumValidationError);
@@ -2680,9 +3050,9 @@ internal sealed class DiskStorageService(
         return StorageResult<MultipartUploadPart>.Success(new MultipartUploadPart
         {
             PartNumber = request.PartNumber,
-            ETag = BuildETag(partInfo),
-            ContentLength = partInfo.Length,
-            LastModifiedUtc = partInfo.LastWriteTimeUtc,
+            ETag = BuildPartETag(actualChecksums),
+            ContentLength = partLength,
+            LastModifiedUtc = partLastWriteTimeUtc,
             Checksums = CreateMultipartPartResponseChecksums(
                 actualChecksums,
                 uploadChecksumAlgorithm,
@@ -2746,11 +3116,7 @@ internal sealed class DiskStorageService(
 
         var uploadDirectoryPath = uploadStateResult.Value!.UploadDirectoryPath;
         var uploadChecksumAlgorithm = uploadStateResult.Value.State.ChecksumAlgorithm;
-        if (!string.IsNullOrWhiteSpace(uploadChecksumAlgorithm)
-            && !string.Equals(uploadChecksumAlgorithm, Sha256ChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)
-            && !string.Equals(uploadChecksumAlgorithm, Sha1ChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)
-            && !string.Equals(uploadChecksumAlgorithm, Crc32ChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)
-            && !string.Equals(uploadChecksumAlgorithm, Crc32cChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)) {
+        if (!IsMultipartSupportedChecksumAlgorithm(uploadChecksumAlgorithm)) {
             return StorageResult<MultipartUploadPart>.Failure(StorageError.Unsupported(
                 $"Checksum algorithm '{uploadChecksumAlgorithm}' is not currently supported for multipart uploads.",
                 request.BucketName,
@@ -2777,8 +3143,23 @@ internal sealed class DiskStorageService(
 
         var partPath = GetMultipartPartPath(uploadDirectoryPath, request.PartNumber);
         var tempPartPath = $"{partPath}.{Guid.NewGuid():N}.tmp";
+        // Capture the metadata from this call's exclusively-owned temp file before the atomic
+        // publish and serialize the publish, so the response always describes the bytes this call
+        // wrote and a concurrent same-part publish cannot fail the overwrite move on Windows. See
+        // the matching handling in UploadMultipartPartAsync.
+        long partLength;
+        DateTime partLastWriteTimeUtc;
+        IReadOnlyDictionary<string, string> actualChecksums;
         try {
-            await using (var sourceStream = new FileStream(sourceObject.ContentPath, FileMode.Open, FileAccess.Read, FileShare.Read, 81920, FileOptions.Asynchronous | FileOptions.SequentialScan))
+            // The copy source is opened lock-free, so a concurrent delete/overwrite of the
+            // source key can race this open. Translate a lost TOCTOU race to NoSuchKey (404)
+            // and open with FileShare.Delete so a concurrent rename/delete cannot fail on Windows.
+            var sourceStream = TryOpenObjectReadStream(sourceObject.ContentPath);
+            if (sourceStream is null) {
+                return StorageResult<MultipartUploadPart>.Failure(ObjectNotFound(request.SourceBucketName, request.SourceKey, request.SourceVersionId));
+            }
+
+            await using (sourceStream)
             await using (var tempStream = new FileStream(tempPartPath, FileMode.CreateNew, FileAccess.Write, FileShare.None, 81920, FileOptions.Asynchronous | FileOptions.SequentialScan)) {
                 if (normalizedRange is { Start: { } start, End: { } end }) {
                     sourceStream.Seek(start, SeekOrigin.Begin);
@@ -2787,9 +3168,21 @@ internal sealed class DiskStorageService(
                 else {
                     await sourceStream.CopyToAsync(tempStream, cancellationToken);
                 }
+
+                await FlushToStableStorageAsync(tempStream, cancellationToken);
             }
 
-            File.Move(tempPartPath, partPath, overwrite: true);
+            var tempInfo = new FileInfo(tempPartPath);
+            partLength = tempInfo.Length;
+            partLastWriteTimeUtc = tempInfo.LastWriteTimeUtc;
+            actualChecksums = await ComputeChecksumsAsync(
+                tempPartPath,
+                DetermineRequiredChecksumAlgorithms(request.Checksums, uploadChecksumAlgorithm) | ToChecksumAlgorithmFlag(requestChecksumAlgorithm),
+                cancellationToken);
+
+            using (await AcquireMultipartPartMutationLockAsync(uploadDirectoryPath, request.PartNumber, cancellationToken)) {
+                File.Move(tempPartPath, partPath, overwrite: true);
+            }
         }
         finally {
             if (File.Exists(tempPartPath)) {
@@ -2797,8 +3190,6 @@ internal sealed class DiskStorageService(
             }
         }
 
-        var partInfo = new FileInfo(partPath);
-        var actualChecksums = await ComputeChecksumsAsync(partPath, cancellationToken);
         var checksumValidationError = ValidateRequestedChecksums(request.Checksums, actualChecksums, request.BucketName, request.Key);
         if (checksumValidationError is not null) {
             return StorageResult<MultipartUploadPart>.Failure(checksumValidationError);
@@ -2807,9 +3198,9 @@ internal sealed class DiskStorageService(
         return StorageResult<MultipartUploadPart>.Success(new MultipartUploadPart
         {
             PartNumber = request.PartNumber,
-            ETag = BuildETag(partInfo),
-            ContentLength = partInfo.Length,
-            LastModifiedUtc = partInfo.LastWriteTimeUtc,
+            ETag = BuildPartETag(actualChecksums),
+            ContentLength = partLength,
+            LastModifiedUtc = partLastWriteTimeUtc,
             Checksums = CreateMultipartPartResponseChecksums(
                 actualChecksums,
                 uploadChecksumAlgorithm,
@@ -2866,11 +3257,7 @@ internal sealed class DiskStorageService(
 
         var uploadState = uploadStateResult.Value!;
         var uploadChecksumAlgorithm = uploadState.State.ChecksumAlgorithm;
-        if (!string.IsNullOrWhiteSpace(uploadChecksumAlgorithm)
-            && !string.Equals(uploadChecksumAlgorithm, Sha256ChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)
-            && !string.Equals(uploadChecksumAlgorithm, Sha1ChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)
-            && !string.Equals(uploadChecksumAlgorithm, Crc32ChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)
-            && !string.Equals(uploadChecksumAlgorithm, Crc32cChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)) {
+        if (!IsMultipartSupportedChecksumAlgorithm(uploadChecksumAlgorithm)) {
             return StorageResult<ObjectInfo>.Failure(StorageError.Unsupported(
                 $"Checksum algorithm '{uploadChecksumAlgorithm}' is not currently supported for multipart uploads.",
                 request.BucketName,
@@ -2894,37 +3281,84 @@ internal sealed class DiskStorageService(
                 || string.Equals(uploadChecksumAlgorithm, Crc32cChecksumAlgorithm, StringComparison.OrdinalIgnoreCase))
             ? new List<string>(request.Parts.Count)
             : null;
-        try {
-            await using (var destinationStream = new FileStream(tempObjectPath, FileMode.CreateNew, FileAccess.Write, FileShare.None, 81920, FileOptions.Asynchronous | FileOptions.SequentialScan)) {
-                foreach (var requestedPart in request.Parts.OrderBy(static part => part.PartNumber)) {
-                    if (requestedPart.PartNumber <= 0) {
-                        return StorageResult<ObjectInfo>.Failure(MultipartConflict(
-                            "Multipart part numbers must be greater than zero.",
-                            request.BucketName,
-                            request.Key));
-                    }
 
+        // Base64 MD5 of each part's bytes, in part order. Used to synthesize the S3 multipart object
+        // ETag "<hex(MD5(concat(partMd5Bytes)))>-<partCount>" independently of the checksum algorithm.
+        var partMd5Checksums = new List<string>(request.Parts.Count);
+
+        // Validate the client-supplied part list before consuming it. AWS requires parts to be
+        // listed in strictly ascending part-number order with no duplicates, and each part number
+        // must fall within the 1..10000 range. These checks must run against the caller's original
+        // order (request.Parts), not a re-sorted copy, so that InvalidPartOrder is surfaced.
+        var previousPartNumber = 0;
+        foreach (var requestedPart in request.Parts) {
+            if (requestedPart.PartNumber < 1 || requestedPart.PartNumber > MaxMultipartPartNumber) {
+                return StorageResult<ObjectInfo>.Failure(InvalidPartArgument(
+                    $"Part number must be an integer between 1 and {MaxMultipartPartNumber}, inclusive.",
+                    request.BucketName,
+                    request.Key));
+            }
+
+            if (requestedPart.PartNumber == previousPartNumber) {
+                return StorageResult<ObjectInfo>.Failure(InvalidPartOrder(
+                    $"The list of parts was not in ascending order. Part '{requestedPart.PartNumber}' is listed more than once.",
+                    request.BucketName,
+                    request.Key));
+            }
+
+            if (requestedPart.PartNumber < previousPartNumber) {
+                return StorageResult<ObjectInfo>.Failure(InvalidPartOrder(
+                    $"The list of parts was not in ascending order. Part '{requestedPart.PartNumber}' followed part '{previousPartNumber}'.",
+                    request.BucketName,
+                    request.Key));
+            }
+
+            previousPartNumber = requestedPart.PartNumber;
+        }
+
+        try {
+            // The last element of request.Parts is the highest-numbered part because the list has
+            // already been validated to be in strictly ascending part-number order above.
+            var lastPartIndex = request.Parts.Count - 1;
+            await using (var destinationStream = new FileStream(tempObjectPath, FileMode.CreateNew, FileAccess.Write, FileShare.None, 81920, FileOptions.Asynchronous | FileOptions.SequentialScan)) {
+                for (var partIndex = 0; partIndex < request.Parts.Count; partIndex++) {
+                    var requestedPart = request.Parts[partIndex];
                     var partPath = GetMultipartPartPath(uploadState.UploadDirectoryPath, requestedPart.PartNumber);
                     if (!File.Exists(partPath)) {
-                        return StorageResult<ObjectInfo>.Failure(MultipartConflict(
-                            $"Multipart part '{requestedPart.PartNumber}' was not found for upload '{request.UploadId}'.",
+                        return StorageResult<ObjectInfo>.Failure(InvalidPart(
+                            $"One or more of the specified parts could not be found. Part '{requestedPart.PartNumber}' was not uploaded for upload '{request.UploadId}'.",
                             request.BucketName,
                             request.Key));
                     }
 
-                    var actualETag = BuildETag(new FileInfo(partPath));
+                    // Enforce the S3 minimum part size: every part except the last must be at least
+                    // 5 MiB. AWS rejects such completions with EntityTooSmall (HTTP 400). Mirror the
+                    // S3 backend, which surfaces the upstream EntityTooSmall as MultipartConflict.
+                    if (partIndex != lastPartIndex) {
+                        var partSizeBytes = new FileInfo(partPath).Length;
+                        if (partSizeBytes < MinimumMultipartPartSizeBytes) {
+                            return StorageResult<ObjectInfo>.Failure(MultipartInvalidRequest(
+                                $"Your proposed upload is smaller than the minimum allowed size. Part '{requestedPart.PartNumber}' is {partSizeBytes} bytes, but every part except the last must be at least {MinimumMultipartPartSizeBytes} bytes.",
+                                request.BucketName,
+                                request.Key));
+                        }
+                    }
+
+                    // Derive both the part ETag and the per-part MD5 (for the composite object ETag)
+                    // from the part's content, so completion no longer depends on filesystem mtime.
+                    var actualPartChecksums = await ComputeChecksumsAsync(
+                        partPath,
+                        DetermineRequiredChecksumAlgorithms(requestedPart.Checksums, uploadChecksumAlgorithm),
+                        cancellationToken);
+                    var actualETag = BuildPartETag(actualPartChecksums);
                     if (!string.Equals(NormalizeETag(requestedPart.ETag), NormalizeETag(actualETag), StringComparison.Ordinal)) {
-                        return StorageResult<ObjectInfo>.Failure(MultipartConflict(
-                            $"Multipart part '{requestedPart.PartNumber}' does not match the supplied ETag.",
+                        return StorageResult<ObjectInfo>.Failure(InvalidPart(
+                            $"The ETag supplied for part '{requestedPart.PartNumber}' does not match the ETag of the uploaded part.",
                             request.BucketName,
                             request.Key));
                     }
 
-                    IReadOnlyDictionary<string, string>? actualPartChecksums = null;
-                    if (compositePartChecksums is not null
-                        || (requestedPart.Checksums is not null && requestedPart.Checksums.Count > 0)) {
-                        actualPartChecksums = await ComputeChecksumsAsync(partPath, cancellationToken);
-                    }
+                    partMd5Checksums.Add(actualPartChecksums[Md5ChecksumAlgorithm]);
 
                     var partChecksumValidationError = ValidateRequestedChecksums(requestedPart.Checksums, actualPartChecksums, request.BucketName, request.Key);
                     if (partChecksumValidationError is not null) {
@@ -2946,12 +3380,12 @@ internal sealed class DiskStorageService(
                     await using var sourceStream = new FileStream(partPath, FileMode.Open, FileAccess.Read, FileShare.Read, 81920, FileOptions.Asynchronous | FileOptions.SequentialScan);
                     await sourceStream.CopyToAsync(destinationStream, cancellationToken);
                 }
+
+                await FlushToStableStorageAsync(destinationStream, cancellationToken);
             }
 
-            if (await HasCurrentVersionStateAsync(request.BucketName, request.Key, cancellationToken)
-                && await IsVersioningEnabledAsync(request.BucketName, cancellationToken)) {
-                await ArchiveCurrentObjectVersionAsync(request.BucketName, request.Key, objectPath, cancellationToken);
-            }
+            var versioningStatus = await GetBucketVersioningStatusAsync(request.BucketName, cancellationToken);
+            await PreserveCurrentVersionBeforeOverwriteAsync(request.BucketName, request.Key, objectPath, versioningStatus, cancellationToken);
 
             File.Move(tempObjectPath, objectPath, overwrite: true);
             IReadOnlyDictionary<string, string> checksums = compositePartChecksums is not null
@@ -2959,14 +3393,23 @@ internal sealed class DiskStorageService(
                 {
                     [uploadChecksumAlgorithm!] = BuildCompositeChecksum(uploadChecksumAlgorithm!, compositePartChecksums)
                 }
-                : await ComputeChecksumsAsync(objectPath, cancellationToken);
-            var versionId = CreateVersionId();
+                // Non-composite completion (no whole-object checksum algorithm, or a pass-through
+                // algorithm that cannot be server-computed): preserve the existing stored-checksum
+                // contract by persisting the full digest set for the assembled object.
+                : await ComputeChecksumsAsync(
+                    objectPath,
+                    DetermineRequiredChecksumAlgorithms(requestedChecksums: null, uploadChecksumAlgorithm, computeAllWhenNoneRequested: true),
+                    cancellationToken);
+            // A completed multipart object always exposes the composite S3 ETag
+            // "<hex(MD5(concat(partMd5Bytes)))>-<partCount>", regardless of any checksum algorithm.
+            var multipartETag = BuildMultipartETag(partMd5Checksums);
+            var versionId = AssignWriteVersionId(versioningStatus);
             await WriteStoredObjectStateAsync(
                 request.BucketName,
                 request.Key,
                 objectPath,
                 versionId,
-                string.IsNullOrWhiteSpace(uploadState.State.ContentType) ? "application/octet-stream" : uploadState.State.ContentType,
+                string.IsNullOrWhiteSpace(uploadState.State.ContentType) ? DefaultObjectContentType : uploadState.State.ContentType,
                 uploadState.State.Metadata,
                 uploadState.State.Tags,
                 checksums,
@@ -2978,10 +3421,13 @@ internal sealed class DiskStorageService(
                 contentDisposition: uploadState.State.ContentDisposition,
                 contentEncoding: uploadState.State.ContentEncoding,
                 contentLanguage: uploadState.State.ContentLanguage,
-                expiresUtc: uploadState.State.ExpiresUtc);
+                expiresUtc: uploadState.State.ExpiresUtc,
+                expires: uploadState.State.Expires,
+                etag: multipartETag,
+                storageClass: NormalizeStoredStorageClass(uploadState.State.StorageClass));
 
             await DeleteStoredMultipartStateAsync(request.BucketName, request.Key, request.UploadId, uploadState.UploadDirectoryPath, cancellationToken);
-            Directory.Delete(uploadState.UploadDirectoryPath, recursive: true);
+            DeleteDirectoryIfExists(uploadState.UploadDirectoryPath);
         }
         finally {
             if (File.Exists(tempObjectPath)) {
@@ -3001,14 +3447,23 @@ internal sealed class DiskStorageService(
             return StorageResult.Failure(BucketNotFound(request.BucketName));
         }
 
+        // Serialize against CompleteMultipartUpload on the same striped object mutation lock so an
+        // Abort concurrent with a Complete cannot interleave and delete the upload directory out from
+        // under an in-flight assemble/cleanup (which would surface as an unhandled 500 instead of a
+        // deterministic S3 error). Re-read the multipart state *after* acquiring the lock: a Complete
+        // (or a second Abort) that ran first may already have removed it, in which case we return a
+        // clean NoSuchUpload rather than throwing.
+        using var objectMutationLock = await AcquireObjectMutationLockAsync(request.BucketName, request.Key, cancellationToken);
+
         var uploadStateResult = await ReadMultipartStateAsync(request.BucketName, request.Key, request.UploadId, cancellationToken);
         if (!uploadStateResult.IsSuccess) {
             return StorageResult.Failure(uploadStateResult.Error!);
         }
 
-        Directory.Delete(uploadStateResult.Value!.UploadDirectoryPath, recursive: true);
-        await DeleteStoredMultipartStateAsync(request.BucketName, request.Key, request.UploadId, uploadStateResult.Value.UploadDirectoryPath, cancellationToken);
-        DeleteEmptyParentDirectories(Path.GetDirectoryName(uploadStateResult.Value.UploadDirectoryPath), GetMultipartRootPath());
+        var uploadDirectoryPath = uploadStateResult.Value!.UploadDirectoryPath;
+        DeleteDirectoryIfExists(uploadDirectoryPath);
+        await DeleteStoredMultipartStateAsync(request.BucketName, request.Key, request.UploadId, uploadDirectoryPath, cancellationToken);
+        DeleteEmptyParentDirectories(Path.GetDirectoryName(uploadDirectoryPath), GetMultipartRootPath());
         return StorageResult.Success();
     }
 
@@ -3027,6 +3482,22 @@ internal sealed class DiskStorageService(
         var obj = headResult.Value!;
         var attrs = request.ObjectAttributes;
 
+        // AWS returns the ObjectParts element only when the caller requests the "ObjectParts"
+        // attribute AND the object was produced by a multipart upload. A completed multipart object
+        // carries the composite ETag "<hex(MD5)>-<partCount>"; that suffix is the authoritative part
+        // count. AWS omits the individual <Part> list unless MaxParts pagination is requested (which
+        // this endpoint does not accept), so we surface TotalPartsCount with an empty, non-truncated
+        // listing — matching a default GetObjectAttributes(ObjectParts) response.
+        ObjectPartsInfo? objectParts = null;
+        if (attrs.Any(a => string.Equals(a, "ObjectParts", StringComparison.OrdinalIgnoreCase))
+            && TryGetMultipartPartCount(obj.ETag, out var totalPartsCount)) {
+            objectParts = new ObjectPartsInfo
+            {
+                TotalPartsCount = totalPartsCount,
+                IsTruncated = false,
+            };
+        }
+
         var response = new GetObjectAttributesResponse
         {
             VersionId = obj.VersionId,
@@ -3034,8 +3505,9 @@ internal sealed class DiskStorageService(
             LastModifiedUtc = obj.LastModifiedUtc,
             ETag = attrs.Any(a => string.Equals(a, "ETag", StringComparison.OrdinalIgnoreCase)) ? obj.ETag : null,
             ObjectSize = attrs.Any(a => string.Equals(a, "ObjectSize", StringComparison.OrdinalIgnoreCase)) ? obj.ContentLength : null,
-            StorageClass = attrs.Any(a => string.Equals(a, "StorageClass", StringComparison.OrdinalIgnoreCase)) ? "STANDARD" : null,
+            StorageClass = attrs.Any(a => string.Equals(a, "StorageClass", StringComparison.OrdinalIgnoreCase)) ? StorageClass.NormalizeForEcho(obj.StorageClass) : null,
             Checksums = attrs.Any(a => string.Equals(a, "Checksum", StringComparison.OrdinalIgnoreCase)) ? obj.Checksums : null,
+            ObjectParts = objectParts,
         };
 
         return StorageResult<GetObjectAttributesResponse>.Success(response);
@@ -3144,7 +3616,11 @@ internal sealed class DiskStorageService(
         using var objectMutationLock = await AcquireObjectMutationLockAsync(request.BucketName, request.Key, cancellationToken);
 
         var filePath = GetObjectPath(request.BucketName, request.Key);
-        var versioningEnabled = await IsVersioningEnabledAsync(request.BucketName, cancellationToken);
+        var versioningStatus = await GetBucketVersioningStatusAsync(request.BucketName, cancellationToken);
+        var versioningEnabled = versioningStatus == BucketVersioningStatus.Enabled;
+        // Suspended buckets still create delete markers, but with the "null" version id (which
+        // overwrites any existing null version) rather than a fresh unique version id.
+        var createsDeleteMarker = versioningStatus != BucketVersioningStatus.Disabled;
 
         if (!string.IsNullOrWhiteSpace(request.VersionId)) {
             var storedObjectResult = await ResolveStoredObjectAsync(request.BucketName, request.Key, request.VersionId, cancellationToken);
@@ -3194,8 +3670,10 @@ internal sealed class DiskStorageService(
         }
 
         if (!await HasCurrentVersionStateAsync(request.BucketName, request.Key, cancellationToken)) {
-            if (versioningEnabled && !request.BypassDeleteMarkerCreation) {
-                var deleteMarker = await CreateCurrentDeleteMarkerAsync(request.BucketName, request.Key, cancellationToken);
+            if (createsDeleteMarker && !request.BypassDeleteMarkerCreation) {
+                // Enabled -> unique version id; Suspended -> null version (overwrites any prior null).
+                var deleteMarkerVersionId = AssignWriteVersionId(versioningStatus);
+                var deleteMarker = await CreateCurrentDeleteMarkerAsync(request.BucketName, request.Key, deleteMarkerVersionId, cancellationToken);
                 return StorageResult<DeleteObjectResult>.Success(new DeleteObjectResult
                 {
                     BucketName = request.BucketName,
@@ -3213,14 +3691,18 @@ internal sealed class DiskStorageService(
             });
         }
 
-        if (versioningEnabled && !request.BypassDeleteMarkerCreation) {
-            await ArchiveCurrentObjectVersionAsync(request.BucketName, request.Key, filePath, cancellationToken);
+        if (createsDeleteMarker && !request.BypassDeleteMarkerCreation) {
+            // Preserve a prior non-null version (Enabled always archives; Suspended archives only a
+            // real version, overwriting an existing null version). Then replace the current object
+            // with a delete marker: unique-versioned when Enabled, the null version when Suspended.
+            await PreserveCurrentVersionBeforeOverwriteAsync(request.BucketName, request.Key, filePath, versioningStatus, cancellationToken);
 
             if (File.Exists(filePath)) {
                 File.Delete(filePath);
             }
 
-            var deleteMarker = await CreateCurrentDeleteMarkerAsync(request.BucketName, request.Key, cancellationToken);
+            var deleteMarkerVersionId = AssignWriteVersionId(versioningStatus);
+            var deleteMarker = await CreateCurrentDeleteMarkerAsync(request.BucketName, request.Key, deleteMarkerVersionId, cancellationToken);
             return StorageResult<DeleteObjectResult>.Success(new DeleteObjectResult
             {
                 BucketName = request.BucketName,
@@ -3696,17 +4178,19 @@ internal sealed class DiskStorageService(
             IsLatest = isLatest,
             IsDeleteMarker = metadata.IsDeleteMarker,
             ContentLength = metadata.IsDeleteMarker ? 0 : fileInfo?.Length ?? 0,
-            ContentType = metadata.IsDeleteMarker ? null : metadata.ContentType ?? "application/octet-stream",
+            ContentType = metadata.IsDeleteMarker ? null : metadata.ContentType ?? DefaultObjectContentType,
             CacheControl = metadata.IsDeleteMarker ? null : metadata.CacheControl,
             ContentDisposition = metadata.IsDeleteMarker ? null : metadata.ContentDisposition,
             ContentEncoding = metadata.IsDeleteMarker ? null : metadata.ContentEncoding,
             ContentLanguage = metadata.IsDeleteMarker ? null : metadata.ContentLanguage,
             ExpiresUtc = metadata.IsDeleteMarker ? null : metadata.ExpiresUtc,
-            ETag = metadata.IsDeleteMarker ? null : fileInfo is null ? null : BuildETag(fileInfo),
+            Expires = metadata.IsDeleteMarker ? null : metadata.Expires,
+            ETag = ResolveObjectETag(metadata, fileInfo),
             LastModifiedUtc = lastModifiedUtc,
             Metadata = metadata.Metadata,
             Tags = metadata.Tags,
-            Checksums = metadata.Checksums
+            Checksums = metadata.Checksums,
+            StorageClass = metadata.IsDeleteMarker ? null : StorageClass.NormalizeForEcho(metadata.StorageClass)
         };
     }
 
@@ -3858,14 +4342,26 @@ internal sealed class DiskStorageService(
         string? contentDisposition = null,
         string? contentEncoding = null,
         string? contentLanguage = null,
-        DateTimeOffset? expiresUtc = null)
+        DateTimeOffset? expiresUtc = null,
+        string? expires = null,
+        string? etag = null,
+        string? storageClass = null)
     {
+        // Persist the S3 content ETag so it never depends on filesystem mtime. Multipart callers
+        // pass the composite "<md5>-<partCount>" form explicitly; every other write path stores a
+        // single object and derives the single-part hex-MD5 ETag here (reusing the MD5 already
+        // computed into the checksum dictionary when present, hashing the content otherwise).
+        var resolvedETag = isDeleteMarker
+            ? null
+            : etag ?? await ComputeSinglePartETagAsync(objectPath, checksums, cancellationToken);
+
         if (_objectStateStore is null) {
             await WriteMetadataAsync(objectPath, new DiskObjectMetadata
             {
                 VersionId = versionId,
                 IsLatest = isLatest,
                 IsDeleteMarker = isDeleteMarker,
+                ETag = resolvedETag,
                 LastModifiedUtc = lastModifiedUtc,
                 ContentType = contentType,
                 CacheControl = isDeleteMarker ? null : cacheControl,
@@ -3873,9 +4369,11 @@ internal sealed class DiskStorageService(
                 ContentEncoding = isDeleteMarker ? null : contentEncoding,
                 ContentLanguage = isDeleteMarker ? null : contentLanguage,
                 ExpiresUtc = isDeleteMarker ? null : expiresUtc,
+                Expires = isDeleteMarker ? null : expires,
                 Metadata = metadata is null ? null : new Dictionary<string, string>(metadata, StringComparer.Ordinal),
                 Tags = tags is null ? null : new Dictionary<string, string>(tags, StringComparer.Ordinal),
-                Checksums = checksums is null ? null : new Dictionary<string, string>(checksums, StringComparer.OrdinalIgnoreCase)
+                Checksums = checksums is null ? null : new Dictionary<string, string>(checksums, StringComparer.OrdinalIgnoreCase),
+                StorageClass = isDeleteMarker ? null : storageClass
             }, cancellationToken);
 
             return;
@@ -3899,11 +4397,13 @@ internal sealed class DiskStorageService(
             ContentEncoding = isDeleteMarker ? null : contentEncoding,
             ContentLanguage = isDeleteMarker ? null : contentLanguage,
             ExpiresUtc = isDeleteMarker ? null : expiresUtc,
-            ETag = isDeleteMarker ? null : fileInfo is null ? null : BuildETag(fileInfo),
+            Expires = isDeleteMarker ? null : expires,
+            ETag = resolvedETag,
             LastModifiedUtc = lastModifiedUtc ?? fileInfo?.LastWriteTimeUtc ?? DateTimeOffset.UtcNow,
             Metadata = metadata is null ? null : new Dictionary<string, string>(metadata, StringComparer.Ordinal),
             Tags = tags is null ? null : new Dictionary<string, string>(tags, StringComparer.Ordinal),
-            Checksums = checksums is null ? null : new Dictionary<string, string>(checksums, StringComparer.OrdinalIgnoreCase)
+            Checksums = checksums is null ? null : new Dictionary<string, string>(checksums, StringComparer.OrdinalIgnoreCase),
+            StorageClass = isDeleteMarker ? null : storageClass
         }, cancellationToken);
 
         DeleteMetadataFileIfPresent(objectPath);
@@ -3923,7 +4423,8 @@ internal sealed class DiskStorageService(
         string? contentDisposition = null,
         string? contentEncoding = null,
         string? contentLanguage = null,
-        DateTimeOffset? expiresUtc = null)
+        DateTimeOffset? expiresUtc = null,
+        string? expires = null)
     {
         return WriteStoredObjectStateAsync(
             bucketName,
@@ -3942,7 +4443,8 @@ internal sealed class DiskStorageService(
             contentDisposition: contentDisposition,
             contentEncoding: contentEncoding,
             contentLanguage: contentLanguage,
-            expiresUtc: expiresUtc);
+            expiresUtc: expiresUtc,
+            expires: expires);
     }
 
     private async Task DeleteStoredObjectStateAsync(string bucketName, string key, string objectPath, string? versionId, CancellationToken cancellationToken)
@@ -4025,13 +4527,69 @@ internal sealed class DiskStorageService(
 
     private async Task<bool> IsVersioningEnabledAsync(string bucketName, CancellationToken cancellationToken)
     {
+        return await GetBucketVersioningStatusAsync(bucketName, cancellationToken) == BucketVersioningStatus.Enabled;
+    }
+
+    /// <summary>
+    /// Resolves the persisted versioning status for a bucket. A bucket that was never configured
+    /// (or whose directory is missing) reports <see cref="BucketVersioningStatus.Disabled"/>.
+    /// </summary>
+    private async Task<BucketVersioningStatus> GetBucketVersioningStatusAsync(string bucketName, CancellationToken cancellationToken)
+    {
         var bucketPath = GetBucketPath(bucketName);
         if (!Directory.Exists(bucketPath)) {
-            return false;
+            return BucketVersioningStatus.Disabled;
         }
 
         var metadata = await ReadBucketMetadataAsync(bucketPath, cancellationToken);
-        return metadata.VersioningStatus == BucketVersioningStatus.Enabled;
+        return metadata.VersioningStatus;
+    }
+
+    /// <summary>
+    /// Returns the version id to stamp on a freshly written object for the supplied versioning
+    /// status. Only <see cref="BucketVersioningStatus.Enabled"/> buckets mint a new unique version;
+    /// unversioned (<see cref="BucketVersioningStatus.Disabled"/>) and
+    /// <see cref="BucketVersioningStatus.Suspended"/> buckets store the AWS "null" version, which is
+    /// represented internally as a <see langword="null"/> version id so no <c>x-amz-version-id</c>
+    /// response header is emitted and a subsequent write overwrites the same null-version slot.
+    /// </summary>
+    private static string? AssignWriteVersionId(BucketVersioningStatus versioningStatus)
+    {
+        return versioningStatus == BucketVersioningStatus.Enabled ? CreateVersionId() : null;
+    }
+
+    /// <summary>
+    /// Preserves the current object's history when it is about to be overwritten by a new write.
+    /// On an <see cref="BucketVersioningStatus.Enabled"/> bucket the current object is archived as a
+    /// non-current version. On a <see cref="BucketVersioningStatus.Suspended"/> bucket a prior
+    /// non-null version is likewise archived (AWS retains versions created while versioning was
+    /// enabled), whereas an existing null version is simply overwritten in place. Unversioned
+    /// buckets keep no history and archive nothing.
+    /// </summary>
+    private async Task PreserveCurrentVersionBeforeOverwriteAsync(
+        string bucketName,
+        string key,
+        string currentPath,
+        BucketVersioningStatus versioningStatus,
+        CancellationToken cancellationToken)
+    {
+        if (versioningStatus == BucketVersioningStatus.Disabled) {
+            return;
+        }
+
+        var currentObject = await TryResolveCurrentStoredObjectAsync(bucketName, key, currentPath, cancellationToken);
+        if (currentObject is null) {
+            return;
+        }
+
+        // Enabled: archive whatever is current (minting a version id for legacy null-version state).
+        // Suspended: only archive a real (non-null) version; the existing null version is overwritten.
+        if (versioningStatus == BucketVersioningStatus.Suspended
+            && string.IsNullOrWhiteSpace(currentObject.Metadata.VersionId)) {
+            return;
+        }
+
+        await ArchiveCurrentObjectVersionAsync(bucketName, key, currentPath, cancellationToken);
     }
 
     private async Task ArchiveCurrentObjectVersionAsync(string bucketName, string key, string currentPath, CancellationToken cancellationToken)
@@ -4170,7 +4728,7 @@ internal sealed class DiskStorageService(
         }
 
         return versions
-            .OrderBy(version => version.Key, StringComparer.Ordinal)
+            .OrderBy(version => version.Key, Utf8OrdinalComparer.Instance)
             .ThenByDescending(version => version.IsLatest)
             .ThenByDescending(version => version.VersionId, StringComparer.Ordinal)
             .ToArray();
@@ -4185,7 +4743,7 @@ internal sealed class DiskStorageService(
             }
 
             return uploadsFromStateStore
-                .OrderBy(static upload => upload.Key, StringComparer.Ordinal)
+                .OrderBy(static upload => upload.Key, Utf8OrdinalComparer.Instance)
                 .ThenBy(upload => upload.InitiatedAtUtc)
                 .ThenBy(static upload => upload.UploadId, StringComparer.Ordinal)
                 .ToArray();
@@ -4222,7 +4780,7 @@ internal sealed class DiskStorageService(
         }
 
         return uploads
-            .OrderBy(static upload => upload.Key, StringComparer.Ordinal)
+            .OrderBy(static upload => upload.Key, Utf8OrdinalComparer.Instance)
             .ThenBy(upload => upload.InitiatedAtUtc)
             .ThenBy(static upload => upload.UploadId, StringComparer.Ordinal)
             .ToArray();
@@ -4234,10 +4792,9 @@ internal sealed class DiskStorageService(
         return await TryResolveCurrentStoredObjectAsync(bucketName, key, currentPath, cancellationToken) is not null;
     }
 
-    private async Task<ObjectInfo> CreateCurrentDeleteMarkerAsync(string bucketName, string key, CancellationToken cancellationToken)
+    private async Task<ObjectInfo> CreateCurrentDeleteMarkerAsync(string bucketName, string key, string? versionId, CancellationToken cancellationToken)
     {
         var currentPath = GetObjectPath(bucketName, key);
-        var versionId = CreateVersionId();
         var lastModifiedUtc = DateTimeOffset.UtcNow;
 
         await WriteStoredObjectStateAsync(
@@ -4432,7 +4989,7 @@ internal sealed class DiskStorageService(
     /// </summary>
     private static int FindVersionMarkerIndex(IReadOnlyList<ObjectInfo> versions, string? keyMarker, string? versionIdMarker)
     {
-        if (string.IsNullOrWhiteSpace(keyMarker)) {
+        if (string.IsNullOrEmpty(keyMarker)) {
             return -1;
         }
 
@@ -4447,9 +5004,9 @@ internal sealed class DiskStorageService(
         // Marker not found — fall back to comparison-based skip so pages
         // degrade gracefully when a version is removed between requests.
         for (var i = versions.Count - 1; i >= 0; i--) {
-            var keyComparison = StringComparer.Ordinal.Compare(versions[i].Key, normalizedKey);
+            var keyComparison = Utf8OrdinalComparer.Instance.Compare(versions[i].Key, normalizedKey);
             if (keyComparison < 0 || (keyComparison == 0
-                && !string.IsNullOrWhiteSpace(versionIdMarker)
+                && !string.IsNullOrEmpty(versionIdMarker)
                 && StringComparer.Ordinal.Compare(versions[i].VersionId, versionIdMarker) >= 0)) {
                 return i;
             }
@@ -4460,11 +5017,11 @@ internal sealed class DiskStorageService(
 
     private static bool IsMultipartUploadAfterMarker(MultipartUploadInfo upload, string? keyMarker, string? uploadIdMarker)
     {
-        if (string.IsNullOrWhiteSpace(keyMarker)) {
+        if (string.IsNullOrEmpty(keyMarker)) {
             return true;
         }
 
-        var keyComparison = StringComparer.Ordinal.Compare(upload.Key, NormalizeKey(keyMarker));
+        var keyComparison = Utf8OrdinalComparer.Instance.Compare(upload.Key, NormalizeKey(keyMarker));
         if (keyComparison > 0) {
             return true;
         }
@@ -4473,7 +5030,7 @@ internal sealed class DiskStorageService(
             return false;
         }
 
-        return !string.IsNullOrWhiteSpace(uploadIdMarker)
+        return !string.IsNullOrEmpty(uploadIdMarker)
                && StringComparer.Ordinal.Compare(upload.UploadId, uploadIdMarker) > 0;
     }
 
@@ -4503,9 +5060,11 @@ internal sealed class DiskStorageService(
             ContentEncoding = diskState.ContentEncoding,
             ContentLanguage = diskState.ContentLanguage,
             ExpiresUtc = diskState.ExpiresUtc,
+            Expires = diskState.Expires,
             Metadata = diskState.Metadata,
             Tags = NormalizeTags(diskState.Tags),
-            ChecksumAlgorithm = diskState.ChecksumAlgorithm
+            ChecksumAlgorithm = diskState.ChecksumAlgorithm,
+            StorageClass = diskState.StorageClass
         };
     }
 
@@ -4523,21 +5082,44 @@ internal sealed class DiskStorageService(
             ContentEncoding = state.ContentEncoding,
             ContentLanguage = state.ContentLanguage,
             ExpiresUtc = state.ExpiresUtc,
+            Expires = state.Expires,
             Metadata = state.Metadata is null ? null : new Dictionary<string, string>(state.Metadata, StringComparer.Ordinal),
             Tags = NormalizeTags(state.Tags) is { } tags ? new Dictionary<string, string>(tags, StringComparer.Ordinal) : null,
-            ChecksumAlgorithm = state.ChecksumAlgorithm
+            ChecksumAlgorithm = state.ChecksumAlgorithm,
+            StorageClass = state.StorageClass
         };
     }
 
     private static async ValueTask<DiskMultipartUploadState?> ReadDiskMultipartUploadStateAsync(string statePath, CancellationToken cancellationToken)
     {
-        if (!File.Exists(statePath)) {
+        // The multipart state sidecar is read without holding the object mutation lock (Complete and
+        // Abort both read it before acquiring the lock). A concurrent Abort/Complete may delete the
+        // upload directory containing this file while it is open. Share FileShare.Delete so a
+        // concurrent directory delete cannot fault this reader with a sharing violation; translate a
+        // lost race (file removed out from under us) to a null "no such upload" result.
+        FileStream stream;
+        try {
+            stream = new FileStream(statePath, FileMode.Open, FileAccess.Read, FileShare.Read | FileShare.Delete, 4096, FileOptions.Asynchronous | FileOptions.SequentialScan);
+        }
+        catch (FileNotFoundException) {
+            return null;
+        }
+        catch (DirectoryNotFoundException) {
             return null;
         }
 
-        await using var stream = new FileStream(statePath, FileMode.Open, FileAccess.Read, FileShare.Read, 4096, FileOptions.Asynchronous | FileOptions.SequentialScan);
-        return await JsonSerializer.DeserializeAsync(stream, DiskStorageJsonSerializerContext.Default.DiskMultipartUploadState, cancellationToken);
+        await using (stream) {
+            return await JsonSerializer.DeserializeAsync(stream, DiskStorageJsonSerializerContext.Default.DiskMultipartUploadState, cancellationToken);
+        }
     }
+
+    /// <summary>
+    /// Normalizes a request storage class for persistence: an unspecified or <c>STANDARD</c> value is
+    /// stored as <see langword="null"/> (read paths report <c>STANDARD</c>), and any other recognized
+    /// value is stored verbatim. Validation of unknown values happens at the HTTP boundary.
+    /// </summary>
+    private static string? NormalizeStoredStorageClass(string? storageClass)
+        => IntegratedS3.Abstractions.Models.StorageClass.IsNonStandard(storageClass) ? storageClass : null;
 
     private static DiskObjectMetadata ToDiskObjectMetadata(ObjectInfo? objectInfo)
     {
@@ -4548,6 +5130,7 @@ internal sealed class DiskStorageService(
                 VersionId = objectInfo.VersionId,
                 IsLatest = objectInfo.IsLatest,
                 IsDeleteMarker = objectInfo.IsDeleteMarker,
+                ETag = objectInfo.ETag,
                 LastModifiedUtc = objectInfo.LastModifiedUtc,
                 ContentType = objectInfo.ContentType,
                 CacheControl = objectInfo.CacheControl,
@@ -4555,9 +5138,11 @@ internal sealed class DiskStorageService(
                 ContentEncoding = objectInfo.ContentEncoding,
                 ContentLanguage = objectInfo.ContentLanguage,
                 ExpiresUtc = objectInfo.ExpiresUtc,
+                Expires = objectInfo.Expires,
                 Metadata = objectInfo.Metadata is null ? null : new Dictionary<string, string>(objectInfo.Metadata, StringComparer.Ordinal),
                 Tags = objectInfo.Tags is null ? null : new Dictionary<string, string>(objectInfo.Tags, StringComparer.Ordinal),
-                Checksums = objectInfo.Checksums is null ? null : new Dictionary<string, string>(objectInfo.Checksums, StringComparer.OrdinalIgnoreCase)
+                Checksums = objectInfo.Checksums is null ? null : new Dictionary<string, string>(objectInfo.Checksums, StringComparer.OrdinalIgnoreCase),
+                StorageClass = objectInfo.StorageClass
             };
     }
 
@@ -4582,7 +5167,9 @@ internal sealed class DiskStorageService(
             || metadata.AnalyticsConfigurations is { Count: > 0 }
             || metadata.MetricsConfigurations is { Count: > 0 }
             || metadata.InventoryConfigurations is { Count: > 0 }
-            || metadata.IntelligentTieringConfigurations is { Count: > 0 };
+            || metadata.IntelligentTieringConfigurations is { Count: > 0 }
+            || metadata.PublicAccessBlockConfiguration is not null
+            || metadata.OwnershipControlsConfiguration is not null;
     }
 
     private static BucketCorsConfiguration ToBucketCorsConfiguration(string bucketName, DiskBucketCorsConfiguration configuration)
@@ -5200,6 +5787,7 @@ internal sealed class DiskStorageService(
         try {
             await using (var stream = new FileStream(tempBucketMetadataPath, FileMode.CreateNew, FileAccess.Write, FileShare.None, 4096, FileOptions.Asynchronous | FileOptions.SequentialScan)) {
                 await JsonSerializer.SerializeAsync(stream, metadata, DiskStorageJsonSerializerContext.Default.DiskBucketMetadata, cancellationToken);
+                await FlushToStableStorageAsync(stream, cancellationToken);
             }
 
             File.Move(tempBucketMetadataPath, bucketMetadataPath, overwrite: true);
@@ -5228,7 +5816,7 @@ internal sealed class DiskStorageService(
         var uploadDirectoryPath = GetMultipartUploadPath(bucketName, uploadId);
         var statePath = GetMultipartStatePath(uploadDirectoryPath);
         if (_multipartStateStore is null && !File.Exists(statePath)) {
-            return StorageResult<MultipartUploadStateContext>.Failure(MultipartConflict(
+            return StorageResult<MultipartUploadStateContext>.Failure(NoSuchUpload(
                 $"Multipart upload '{uploadId}' was not found.",
                 bucketName,
                 key));
@@ -5239,7 +5827,7 @@ internal sealed class DiskStorageService(
             || !string.Equals(state.BucketName, bucketName, StringComparison.Ordinal)
             || !string.Equals(state.Key, key, StringComparison.Ordinal)
             || !string.Equals(state.UploadId, uploadId, StringComparison.Ordinal)) {
-            return StorageResult<MultipartUploadStateContext>.Failure(MultipartConflict(
+            return StorageResult<MultipartUploadStateContext>.Failure(NoSuchUpload(
                 $"Multipart upload '{uploadId}' does not match the supplied bucket or key.",
                 bucketName,
                 key));
@@ -5266,9 +5854,11 @@ internal sealed class DiskStorageService(
             ContentEncoding = request.ContentEncoding,
             ContentLanguage = request.ContentLanguage,
             ExpiresUtc = request.ExpiresUtc,
+            Expires = request.Expires,
             Metadata = request.Metadata is null ? null : new Dictionary<string, string>(request.Metadata),
             Tags = NormalizeTags(request.Tags),
-            ChecksumAlgorithm = uploadInfo.ChecksumAlgorithm
+            ChecksumAlgorithm = uploadInfo.ChecksumAlgorithm,
+            StorageClass = NormalizeStoredStorageClass(request.StorageClass)
         };
 
         var statePath = GetMultipartStatePath(uploadDirectoryPath);
@@ -5277,6 +5867,7 @@ internal sealed class DiskStorageService(
         try {
             await using (var stream = new FileStream(tempStatePath, FileMode.CreateNew, FileAccess.Write, FileShare.None, 4096, FileOptions.Asynchronous | FileOptions.SequentialScan)) {
                 await JsonSerializer.SerializeAsync(stream, diskState, DiskStorageJsonSerializerContext.Default.DiskMultipartUploadState, cancellationToken);
+                await FlushToStableStorageAsync(stream, cancellationToken);
             }
 
             File.Move(tempStatePath, statePath, overwrite: true);
@@ -5339,6 +5930,31 @@ internal sealed class DiskStorageService(
         }
     }
 
+    /// <summary>
+    /// Forces the buffered contents of a write-path temp file to stable storage before the caller
+    /// publishes it with an atomic <see cref="File.Move(string, string, bool)"/> rename.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Disposing a <see cref="FileStream"/> flushes user-space buffers into the OS page cache, but it
+    /// does not force the data blocks onto physical media. <see cref="File.Move(string, string, bool)"/>
+    /// then publishes the final name while those blocks may still be volatile, so a crash or power loss
+    /// can leave a renamed-but-empty/torn object or an unparseable JSON sidecar.
+    /// </para>
+    /// <para>
+    /// Calling this before the rename first drains any user-space buffers with
+    /// <see cref="Stream.FlushAsync(CancellationToken)"/> and then issues
+    /// <see cref="FileStream.Flush(bool)"/> with <c>flushToDisk: true</c>, which asks the OS to push the
+    /// file's data to disk. The call must happen while the stream is still open (before the enclosing
+    /// <c>await using</c> block disposes it).
+    /// </para>
+    /// </remarks>
+    private static async ValueTask FlushToStableStorageAsync(FileStream stream, CancellationToken cancellationToken)
+    {
+        await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
+        stream.Flush(flushToDisk: true);
+    }
+
     private static async Task WriteMetadataAsync(string objectPath, DiskObjectMetadata metadata, CancellationToken cancellationToken)
     {
         var metadataPath = GetMetadataPath(objectPath);
@@ -5351,6 +5967,7 @@ internal sealed class DiskStorageService(
         try {
             await using (var stream = new FileStream(tempMetadataPath, FileMode.CreateNew, FileAccess.Write, FileShare.None, 4096, FileOptions.Asynchronous | FileOptions.SequentialScan)) {
                 await JsonSerializer.SerializeAsync(stream, metadata, DiskStorageJsonSerializerContext.Default.DiskObjectMetadata, cancellationToken);
+                await FlushToStableStorageAsync(stream, cancellationToken);
             }
 
             File.Move(tempMetadataPath, metadataPath, overwrite: true);
@@ -5362,9 +5979,120 @@ internal sealed class DiskStorageService(
         }
     }
 
-    private static string BuildETag(FileInfo fileInfo)
+    /// <summary>
+    /// Resolves the S3 ETag returned to clients for a stored object. Prefers the ETag persisted at
+    /// write time (single-part hex-MD5 or the multipart composite form), then falls back to deriving
+    /// the single-part hex-MD5 from the stored MD5 checksum for legacy metadata written before the
+    /// ETag was persisted. Returns null for delete markers, missing content, or content with no
+    /// recoverable MD5 (never the old size+mtime string, which is not a valid S3 ETag).
+    /// </summary>
+    private static string? ResolveObjectETag(DiskObjectMetadata metadata, FileInfo? fileInfo)
     {
-        return $"{fileInfo.Length:x}-{fileInfo.LastWriteTimeUtc.Ticks:x}";
+        if (metadata.IsDeleteMarker || fileInfo is null) {
+            return null;
+        }
+
+        if (!string.IsNullOrEmpty(metadata.ETag)) {
+            return metadata.ETag;
+        }
+
+        if (TryGetChecksumValue(metadata.Checksums, Md5ChecksumAlgorithm, out var md5Base64)) {
+            try {
+                return Convert.ToHexStringLower(Convert.FromBase64String(md5Base64));
+            }
+            catch (FormatException) {
+                return null;
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Computes the S3 single-part ETag for the content at <paramref name="contentPath"/>: the
+    /// lowercase-hex MD5 of the object bytes. Prefers the MD5 already present in
+    /// <paramref name="checksums"/> (stored base64 by <see cref="ComputeChecksumsAsync"/>) to avoid
+    /// re-reading the file, and falls back to hashing the content when MD5 is absent (e.g. a
+    /// PutObject that persisted only a caller-requested non-MD5 checksum).
+    /// </summary>
+    private static async Task<string?> ComputeSinglePartETagAsync(string contentPath, IReadOnlyDictionary<string, string>? checksums, CancellationToken cancellationToken)
+    {
+        if (TryGetChecksumValue(checksums, Md5ChecksumAlgorithm, out var md5Base64)) {
+            try {
+                return Convert.ToHexStringLower(Convert.FromBase64String(md5Base64));
+            }
+            catch (FormatException) {
+                // Fall through to recomputing from content on a malformed stored value.
+            }
+        }
+
+        if (!File.Exists(contentPath)) {
+            return null;
+        }
+
+        await using var stream = new FileStream(contentPath, FileMode.Open, FileAccess.Read, FileShare.Read, 81920, FileOptions.Asynchronous | FileOptions.SequentialScan);
+        using var md5 = IncrementalHash.CreateHash(HashAlgorithmName.MD5);
+        var buffer = new byte[81920];
+        while (true) {
+            var read = await stream.ReadAsync(buffer.AsMemory(0, buffer.Length), cancellationToken);
+            if (read == 0) {
+                break;
+            }
+
+            md5.AppendData(buffer, 0, read);
+        }
+
+        return Convert.ToHexStringLower(md5.GetHashAndReset());
+    }
+
+    /// <summary>
+    /// Builds the S3 multipart object ETag: <c>&lt;hex(MD5(concat(partMd5Bytes)))&gt;-&lt;partCount&gt;</c>.
+    /// Each element of <paramref name="partMd5Base64"/> is the base64 MD5 of one part's bytes.
+    /// </summary>
+    private static string BuildMultipartETag(IReadOnlyList<string> partMd5Base64)
+    {
+        using var md5 = IncrementalHash.CreateHash(HashAlgorithmName.MD5);
+        foreach (var partMd5 in partMd5Base64) {
+            md5.AppendData(Convert.FromBase64String(partMd5));
+        }
+
+        return $"{Convert.ToHexStringLower(md5.GetHashAndReset())}-{partMd5Base64.Count}";
+    }
+
+    /// <summary>
+    /// Determines whether <paramref name="etag"/> is a multipart composite ETag of the form
+    /// <c>&lt;hex(MD5)&gt;-&lt;partCount&gt;</c> and, if so, extracts the trailing part count. Single-part
+    /// objects (plain hex MD5, no suffix) and delete markers return <see langword="false"/>.
+    /// </summary>
+    private static bool TryGetMultipartPartCount(string? etag, out int partCount)
+    {
+        partCount = 0;
+        if (string.IsNullOrEmpty(etag)) {
+            return false;
+        }
+
+        var separatorIndex = etag.LastIndexOf('-');
+        if (separatorIndex <= 0 || separatorIndex == etag.Length - 1) {
+            return false;
+        }
+
+        return int.TryParse(
+            etag.AsSpan(separatorIndex + 1),
+            NumberStyles.None,
+            CultureInfo.InvariantCulture,
+            out partCount)
+            && partCount > 0;
+    }
+
+    /// <summary>
+    /// Computes the S3 ETag of a single uploaded multipart part: the lowercase-hex MD5 of the part's
+    /// bytes, taken from the MD5 already computed by <see cref="ComputeChecksumsAsync"/>.
+    /// </summary>
+    private static string BuildPartETag(IReadOnlyDictionary<string, string> partChecksums)
+    {
+        return TryGetChecksumValue(partChecksums, Md5ChecksumAlgorithm, out var md5Base64)
+            ? Convert.ToHexStringLower(Convert.FromBase64String(md5Base64))
+            : throw new InvalidOperationException("Multipart part MD5 checksum is required to derive the part ETag.");
     }
 
     private static string CreateVersionId()
@@ -5372,14 +6100,78 @@ internal sealed class DiskStorageService(
         return Guid.CreateVersion7().ToString("N");
     }
 
-    private static async Task<IReadOnlyDictionary<string, string>> ComputeChecksumsAsync(string objectPath, CancellationToken cancellationToken)
+    /// <summary>
+    /// Opens an object content file for a lock-free read/copy-source stream. The file is opened
+    /// with <see cref="FileShare.Read"/> | <see cref="FileShare.Delete"/> so a concurrent
+    /// delete/rename of the underlying file (e.g. a writer publishing an overwrite via
+    /// <see cref="File.Move(string, string, bool)"/> on Windows) cannot fail the open or the
+    /// ongoing read while this reader keeps its handle. Returns <see langword="null"/> when the
+    /// file has already been removed by a concurrent delete (a lost TOCTOU race), so the caller
+    /// can translate it into an S3 <c>NoSuchKey</c> (404) rather than surfacing an
+    /// <see cref="IOException"/> as an <c>InternalError</c> (500).
+    /// </summary>
+    private static FileStream? TryOpenObjectReadStream(string contentPath)
+    {
+        try {
+            return new FileStream(
+                contentPath,
+                FileMode.Open,
+                FileAccess.Read,
+                FileShare.Read | FileShare.Delete,
+                81920,
+                FileOptions.Asynchronous | FileOptions.SequentialScan);
+        }
+        catch (FileNotFoundException) {
+            return null;
+        }
+        catch (DirectoryNotFoundException) {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Copies <paramref name="source"/> into <paramref name="destination"/> and computes the
+    /// requested content digests in the same single pass, so the object body is hashed inline as it
+    /// is streamed to disk rather than in a separate full re-read afterwards. MD5 is always computed
+    /// (needed for the ETag); the remaining digests are only computed when their flag is set.
+    /// </summary>
+    private static async Task<IReadOnlyDictionary<string, string>> CopyToTempAndComputeChecksumsAsync(
+        Stream source,
+        Stream destination,
+        ChecksumAlgorithms algorithms,
+        CancellationToken cancellationToken)
+    {
+        using var computation = new ChecksumComputation(algorithms);
+        var buffer = new byte[81920];
+
+        while (true) {
+            var read = await source.ReadAsync(buffer.AsMemory(0, buffer.Length), cancellationToken);
+            if (read == 0) {
+                break;
+            }
+
+            await destination.WriteAsync(buffer.AsMemory(0, read), cancellationToken);
+            computation.Append(buffer.AsSpan(0, read));
+        }
+
+        return computation.ToDictionary();
+    }
+
+    /// <summary>
+    /// Reads <paramref name="objectPath"/> once and computes only the digests in
+    /// <paramref name="algorithms"/>. MD5 is always included implicitly (see
+    /// <see cref="ChecksumComputation"/>) because every write path derives an ETag (or per-part
+    /// ETag) from it; the remaining SHA-1/SHA-256/CRC digests are only computed when the caller
+    /// actually needs them (a requested/required checksum algorithm), so a PutObject that requests
+    /// no checksum no longer pays for three cryptographic hashes plus two CRC passes over the body.
+    /// </summary>
+    private static async Task<IReadOnlyDictionary<string, string>> ComputeChecksumsAsync(
+        string objectPath,
+        ChecksumAlgorithms algorithms,
+        CancellationToken cancellationToken)
     {
         await using var stream = new FileStream(objectPath, FileMode.Open, FileAccess.Read, FileShare.Read, 81920, FileOptions.Asynchronous | FileOptions.SequentialScan);
-        using var md5 = IncrementalHash.CreateHash(HashAlgorithmName.MD5);
-        using var sha256 = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
-        using var sha1 = IncrementalHash.CreateHash(HashAlgorithmName.SHA1);
-        var crc32 = Crc32Accumulator.Create();
-        var crc32c = Crc32Accumulator.CreateCastagnoli();
+        using var computation = new ChecksumComputation(algorithms);
         var buffer = new byte[81920];
 
         while (true) {
@@ -5388,21 +6180,163 @@ internal sealed class DiskStorageService(
                 break;
             }
 
-            md5.AppendData(buffer, 0, read);
-            sha256.AppendData(buffer, 0, read);
-            sha1.AppendData(buffer, 0, read);
-            crc32.Append(buffer.AsSpan(0, read));
-            crc32c.Append(buffer.AsSpan(0, read));
+            computation.Append(buffer.AsSpan(0, read));
         }
 
-        return new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        return computation.ToDictionary();
+    }
+
+    /// <summary>
+    /// The set of content digests to compute over an object body. MD5 is implicitly always computed
+    /// (needed for every ETag / per-part ETag), so it has no flag of its own; the flags select the
+    /// additional, more expensive digests to compute in the same single pass.
+    /// </summary>
+    [Flags]
+    private enum ChecksumAlgorithms
+    {
+        None = 0,
+        Sha256 = 1 << 0,
+        Sha1 = 1 << 1,
+        Crc32 = 1 << 2,
+        Crc32c = 1 << 3,
+        All = Sha256 | Sha1 | Crc32 | Crc32c
+    }
+
+    /// <summary>
+    /// Maps a client-visible checksum algorithm key (<c>sha256</c>, <c>crc32</c>, …) to the
+    /// corresponding <see cref="ChecksumAlgorithms"/> flag. MD5 maps to <see cref="ChecksumAlgorithms.None"/>
+    /// (always computed) and CRC64NVME to <see cref="ChecksumAlgorithms.None"/> (pass-through, never
+    /// server-computed). Returns <see cref="ChecksumAlgorithms.None"/> for a null/blank/unknown key.
+    /// </summary>
+    private static ChecksumAlgorithms ToChecksumAlgorithmFlag(string? algorithm)
+    {
+        if (string.IsNullOrWhiteSpace(algorithm)) {
+            return ChecksumAlgorithms.None;
+        }
+
+        if (string.Equals(algorithm, Sha256ChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)) {
+            return ChecksumAlgorithms.Sha256;
+        }
+
+        if (string.Equals(algorithm, Sha1ChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)) {
+            return ChecksumAlgorithms.Sha1;
+        }
+
+        if (string.Equals(algorithm, Crc32ChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)) {
+            return ChecksumAlgorithms.Crc32;
+        }
+
+        if (string.Equals(algorithm, Crc32cChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)) {
+            return ChecksumAlgorithms.Crc32c;
+        }
+
+        return ChecksumAlgorithms.None;
+    }
+
+    /// <summary>
+    /// Builds the additional-digest set a write path must compute: every algorithm the client either
+    /// supplied a value for (for server-side validation) or asked the server to compute
+    /// (<paramref name="requiredAlgorithm"/>). MD5 is always computed regardless. Returns the smallest
+    /// set that still satisfies validation and the requested checksum response.
+    /// <para>
+    /// When neither a value nor an algorithm is requested and <paramref name="computeAllWhenNoneRequested"/>
+    /// is <see langword="true"/>, all digests are computed. Object-level write paths (PutObject,
+    /// CopyObject, the non-composite CompleteMultipartUpload) set this so an object stored without a
+    /// requested checksum still persists the full digest set for later retrieval, preserving the
+    /// existing stored-checksum contract; per-part paths leave it <see langword="false"/> because a
+    /// part only ever exposes the upload/requested algorithm.
+    /// </para>
+    /// </summary>
+    private static ChecksumAlgorithms DetermineRequiredChecksumAlgorithms(
+        IReadOnlyDictionary<string, string>? requestedChecksums,
+        string? requiredAlgorithm = null,
+        bool computeAllWhenNoneRequested = false)
+    {
+        var algorithms = ToChecksumAlgorithmFlag(requiredAlgorithm);
+
+        if (requestedChecksums is not null) {
+            foreach (var requestedChecksum in requestedChecksums) {
+                algorithms |= ToChecksumAlgorithmFlag(requestedChecksum.Key);
+            }
+        }
+
+        return computeAllWhenNoneRequested && algorithms == ChecksumAlgorithms.None
+            ? ChecksumAlgorithms.All
+            : algorithms;
+    }
+
+    /// <summary>
+    /// Incremental multi-digest accumulator. MD5 is always computed; SHA-1/SHA-256/CRC32/CRC32C are
+    /// only allocated and fed when their flag is set in the requested <see cref="ChecksumAlgorithms"/>.
+    /// Used both for the streaming (inline, tee) PutObject write path and for the read-back paths.
+    /// </summary>
+    private struct ChecksumComputation : IDisposable
+    {
+        private readonly IncrementalHash _md5;
+        private readonly IncrementalHash? _sha256;
+        private readonly IncrementalHash? _sha1;
+        private Crc32Accumulator _crc32;
+        private Crc32Accumulator _crc32c;
+        private readonly bool _hasCrc32;
+        private readonly bool _hasCrc32c;
+
+        public ChecksumComputation(ChecksumAlgorithms algorithms)
         {
-            ["md5"] = Convert.ToBase64String(md5.GetHashAndReset()),
-            ["sha256"] = Convert.ToBase64String(sha256.GetHashAndReset()),
-            ["sha1"] = Convert.ToBase64String(sha1.GetHashAndReset()),
-            ["crc32"] = Convert.ToBase64String(crc32.GetHashBytes()),
-            ["crc32c"] = Convert.ToBase64String(crc32c.GetHashBytes())
-        };
+            _md5 = IncrementalHash.CreateHash(HashAlgorithmName.MD5);
+            _sha256 = algorithms.HasFlag(ChecksumAlgorithms.Sha256) ? IncrementalHash.CreateHash(HashAlgorithmName.SHA256) : null;
+            _sha1 = algorithms.HasFlag(ChecksumAlgorithms.Sha1) ? IncrementalHash.CreateHash(HashAlgorithmName.SHA1) : null;
+            _hasCrc32 = algorithms.HasFlag(ChecksumAlgorithms.Crc32);
+            _hasCrc32c = algorithms.HasFlag(ChecksumAlgorithms.Crc32c);
+            _crc32 = _hasCrc32 ? Crc32Accumulator.Create() : default;
+            _crc32c = _hasCrc32c ? Crc32Accumulator.CreateCastagnoli() : default;
+        }
+
+        public void Append(ReadOnlySpan<byte> buffer)
+        {
+            _md5.AppendData(buffer);
+            _sha256?.AppendData(buffer);
+            _sha1?.AppendData(buffer);
+            if (_hasCrc32) {
+                _crc32.Append(buffer);
+            }
+
+            if (_hasCrc32c) {
+                _crc32c.Append(buffer);
+            }
+        }
+
+        public readonly IReadOnlyDictionary<string, string> ToDictionary()
+        {
+            var checksums = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+            {
+                [Md5ChecksumAlgorithm] = Convert.ToBase64String(_md5.GetHashAndReset())
+            };
+
+            if (_sha256 is not null) {
+                checksums[Sha256ChecksumAlgorithm] = Convert.ToBase64String(_sha256.GetHashAndReset());
+            }
+
+            if (_sha1 is not null) {
+                checksums[Sha1ChecksumAlgorithm] = Convert.ToBase64String(_sha1.GetHashAndReset());
+            }
+
+            if (_hasCrc32) {
+                checksums[Crc32ChecksumAlgorithm] = Convert.ToBase64String(_crc32.GetHashBytes());
+            }
+
+            if (_hasCrc32c) {
+                checksums[Crc32cChecksumAlgorithm] = Convert.ToBase64String(_crc32c.GetHashBytes());
+            }
+
+            return checksums;
+        }
+
+        public readonly void Dispose()
+        {
+            _md5.Dispose();
+            _sha256?.Dispose();
+            _sha1?.Dispose();
+        }
     }
 
     private static IReadOnlyDictionary<string, string>? NormalizeTags(IReadOnlyDictionary<string, string>? tags)
@@ -5524,6 +6458,24 @@ internal sealed class DiskStorageService(
 
         checksumAlgorithm = null;
         return false;
+    }
+
+    // Single source of truth for which checksum algorithms the multipart lifecycle can carry end-to-end.
+    // A blank algorithm is always allowed (no checksum requested). CRC64NVME is intentionally excluded:
+    // although it is a valid single-part checksum (accepted as pass-through), the multipart composite
+    // path (BuildCompositeChecksum) cannot synthesize it, so accepting it at initiate would leave the
+    // upload dead at UploadPart/Complete. All multipart lifecycle gates (initiate, upload part,
+    // upload-part-copy, complete, list parts) must use this helper so the accepted set cannot drift.
+    private static bool IsMultipartSupportedChecksumAlgorithm(string? checksumAlgorithm)
+    {
+        if (string.IsNullOrWhiteSpace(checksumAlgorithm)) {
+            return true;
+        }
+
+        return string.Equals(checksumAlgorithm, Sha256ChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(checksumAlgorithm, Sha1ChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(checksumAlgorithm, Crc32ChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(checksumAlgorithm, Crc32cChecksumAlgorithm, StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool TryGetChecksumValue(IReadOnlyDictionary<string, string>? checksums, string? algorithm, out string value)
@@ -5893,7 +6845,7 @@ internal sealed class DiskStorageService(
         }
 
         if (contentLength <= 0) {
-            error = InvalidRange("Cannot satisfy a range request for an empty object.", bucketName, objectKey);
+            error = InvalidRange("Cannot satisfy a range request for an empty object.", bucketName, objectKey, contentLength);
             return null;
         }
 
@@ -5903,7 +6855,7 @@ internal sealed class DiskStorageService(
         if (requestedRange.Start is null) {
             var suffixLength = requestedRange.End;
             if (suffixLength is null || suffixLength <= 0) {
-                error = InvalidRange("The requested suffix range is invalid.", bucketName, objectKey);
+                error = InvalidRange("The requested suffix range is invalid.", bucketName, objectKey, contentLength);
                 return null;
             }
 
@@ -5916,12 +6868,12 @@ internal sealed class DiskStorageService(
             end = requestedRange.End ?? contentLength - 1;
 
             if (start < 0 || end < start) {
-                error = InvalidRange("The requested byte range is invalid.", bucketName, objectKey);
+                error = InvalidRange("The requested byte range is invalid.", bucketName, objectKey, contentLength);
                 return null;
             }
 
             if (start >= contentLength) {
-                error = InvalidRange("The requested range starts beyond the end of the object.", bucketName, objectKey);
+                error = InvalidRange("The requested range starts beyond the end of the object.", bucketName, objectKey, contentLength);
                 return null;
             }
 
@@ -5935,7 +6887,7 @@ internal sealed class DiskStorageService(
         };
     }
 
-    private static StorageError InvalidRange(string message, string bucketName, string objectKey)
+    private static StorageError InvalidRange(string message, string bucketName, string objectKey, long resourceSize)
     {
         return new StorageError
         {
@@ -5943,7 +6895,8 @@ internal sealed class DiskStorageService(
             Message = message,
             BucketName = bucketName,
             ObjectKey = objectKey,
-            SuggestedHttpStatusCode = 416
+            SuggestedHttpStatusCode = 416,
+            ResourceSize = resourceSize
         };
     }
 
@@ -6034,6 +6987,58 @@ internal sealed class DiskStorageService(
         };
     }
 
+    private StorageError NoSuchUpload(string message, string bucketName, string objectKey)
+    {
+        return new StorageError
+        {
+            Code = StorageErrorCode.NoSuchUpload,
+            Message = message,
+            BucketName = bucketName,
+            ObjectKey = objectKey,
+            ProviderName = options.ProviderName,
+            SuggestedHttpStatusCode = 404
+        };
+    }
+
+    private StorageError InvalidPart(string message, string bucketName, string objectKey)
+    {
+        return new StorageError
+        {
+            Code = StorageErrorCode.InvalidPart,
+            Message = message,
+            BucketName = bucketName,
+            ObjectKey = objectKey,
+            ProviderName = options.ProviderName,
+            SuggestedHttpStatusCode = 400
+        };
+    }
+
+    private StorageError InvalidPartOrder(string message, string bucketName, string objectKey)
+    {
+        return new StorageError
+        {
+            Code = StorageErrorCode.InvalidPartOrder,
+            Message = message,
+            BucketName = bucketName,
+            ObjectKey = objectKey,
+            ProviderName = options.ProviderName,
+            SuggestedHttpStatusCode = 400
+        };
+    }
+
+    private StorageError InvalidPartArgument(string message, string bucketName, string objectKey)
+    {
+        return new StorageError
+        {
+            Code = StorageErrorCode.InvalidArgument,
+            Message = message,
+            BucketName = bucketName,
+            ObjectKey = objectKey,
+            ProviderName = options.ProviderName,
+            SuggestedHttpStatusCode = 400
+        };
+    }
+
     private static bool WasModifiedAfter(DateTimeOffset lastModifiedUtc, DateTimeOffset comparisonUtc)
     {
         return TruncateToWholeSeconds(lastModifiedUtc) > TruncateToWholeSeconds(comparisonUtc);
@@ -6102,6 +7107,27 @@ internal sealed class DiskStorageService(
     {
         var utcValue = value.ToUniversalTime();
         return utcValue.AddTicks(-(utcValue.Ticks % TimeSpan.TicksPerSecond));
+    }
+
+    /// <summary>
+    /// Recursively deletes <paramref name="directoryPath"/> if it still exists, treating an
+    /// already-removed directory as a benign no-op. Unlike <see cref="File.Delete(string)"/>,
+    /// <see cref="Directory.Delete(string, bool)"/> throws <see cref="DirectoryNotFoundException"/>
+    /// when the path is missing; this makes multipart cleanup idempotent so a concurrent
+    /// Abort/Complete (or a repeated Abort) cannot turn into an unhandled exception.
+    /// </summary>
+    private static void DeleteDirectoryIfExists(string directoryPath)
+    {
+        if (string.IsNullOrWhiteSpace(directoryPath)) {
+            return;
+        }
+
+        try {
+            Directory.Delete(directoryPath, recursive: true);
+        }
+        catch (DirectoryNotFoundException) {
+            // Another Abort/Complete on the same upload already removed the directory. No-op.
+        }
     }
 
     private static void DeleteEmptyParentDirectories(string? currentDirectoryPath, string stopAtDirectoryPath)
@@ -6268,6 +7294,21 @@ internal sealed class DiskStorageService(
     private ValueTask<MutationLockReleaser> AcquireObjectMutationLockAsync(string bucketName, string key, CancellationToken cancellationToken)
     {
         return AcquireMutationLockAsync(GetBucketPath(bucketName), NormalizeKey(key), cancellationToken);
+    }
+
+    /// <summary>
+    /// Serializes finalization of a single multipart part identified by its upload directory and
+    /// part number. Two concurrent UploadPart calls for the same <c>(uploadId, partNumber)</c>
+    /// publish into the same shared part path, so without this lock their
+    /// <see cref="File.Move(string, string, bool)"/> overwrites can race (a concurrent overwrite of
+    /// the same destination fails with <c>UnauthorizedAccessException</c> on Windows) and their
+    /// returned ETag/checksum could describe the other caller's bytes. Locks are striped, so
+    /// unrelated parts may occasionally share a stripe, which only adds contention and never
+    /// changes correctness.
+    /// </summary>
+    private ValueTask<MutationLockReleaser> AcquireMultipartPartMutationLockAsync(string uploadDirectoryPath, int partNumber, CancellationToken cancellationToken)
+    {
+        return AcquireMutationLockAsync(uploadDirectoryPath, partNumber.ToString(System.Globalization.CultureInfo.InvariantCulture), cancellationToken);
     }
 
     private async ValueTask<MutationLockReleaser> AcquireMutationLockAsync(string bucketPath, string? key, CancellationToken cancellationToken)

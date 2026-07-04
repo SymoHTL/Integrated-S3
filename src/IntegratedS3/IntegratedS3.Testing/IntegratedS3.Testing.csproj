@@ -6,7 +6,15 @@
 
   <ItemGroup>
     <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" />
-    <PackageReference Include="xunit" />
+    <!--
+      Shipped helper library only uses [Fact] (xunit.core) and Assert (xunit.assert); see
+      StorageProviderContractTests.cs. Reference those two packages directly instead of the full
+      `xunit` meta-package so consumers of the published IntegratedS3.Testing NuGet package do not
+      inherit the analyzer/build surface of the meta-package. See issue #144.
+    -->
+    <PackageReference Include="Microsoft.Extensions.Logging" />
+    <PackageReference Include="xunit.core" />
+    <PackageReference Include="xunit.assert" />
   </ItemGroup>
 
   <ItemGroup>

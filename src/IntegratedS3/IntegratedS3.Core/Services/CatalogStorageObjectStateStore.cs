@@ -18,11 +18,9 @@ public sealed class CatalogStorageObjectStateStore(IStorageCatalogStore catalogS
     /// <inheritdoc />
     public async ValueTask<ObjectInfo?> GetObjectInfoAsync(string providerName, string bucketName, string key, string? versionId = null, CancellationToken cancellationToken = default)
     {
-        var objects = await catalogStore.ListObjectsAsync(providerName, bucketName, cancellationToken);
-        var entry = string.IsNullOrWhiteSpace(versionId)
-            ? objects.FirstOrDefault(existing => string.Equals(existing.Key, key, StringComparison.Ordinal) && existing.IsLatest)
-            : objects.FirstOrDefault(existing => string.Equals(existing.Key, key, StringComparison.Ordinal)
-                && string.Equals(existing.VersionId, versionId, StringComparison.Ordinal));
+        // Push the key (and version) predicate into the catalog query so only the matching row is materialized,
+        // instead of loading and deserializing the entire bucket catalog for a single point lookup.
+        var entry = await catalogStore.GetObjectAsync(providerName, bucketName, key, versionId, cancellationToken);
         if (entry is null) {
             return null;
         }
@@ -33,9 +31,9 @@ public sealed class CatalogStorageObjectStateStore(IStorageCatalogStore catalogS
     /// <inheritdoc />
     public async IAsyncEnumerable<ObjectInfo> ListObjectVersionsAsync(string providerName, string bucketName, string? prefix = null, [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
-        var objects = await catalogStore.ListObjectsAsync(providerName, bucketName, cancellationToken);
+        // Push the prefix predicate into the catalog query so unrelated keys are never materialized.
+        var objects = await catalogStore.ListObjectsAsync(providerName, bucketName, prefix, cancellationToken);
         foreach (var entry in objects
-                     .Where(existing => string.IsNullOrWhiteSpace(prefix) || existing.Key.StartsWith(prefix, StringComparison.Ordinal))
                      .OrderBy(existing => existing.Key, StringComparer.Ordinal)
                      .ThenByDescending(existing => existing.IsLatest)
                      .ThenByDescending(existing => existing.VersionId, StringComparer.Ordinal)) {
@@ -80,7 +78,8 @@ public sealed class CatalogStorageObjectStateStore(IStorageCatalogStore catalogS
             RetentionMode = entry.RetentionMode,
             RetainUntilDateUtc = entry.RetainUntilDateUtc,
             LegalHoldStatus = entry.LegalHoldStatus,
-            ServerSideEncryption = entry.ServerSideEncryption
+            ServerSideEncryption = entry.ServerSideEncryption,
+            StorageClass = entry.StorageClass
         };
     }
 }

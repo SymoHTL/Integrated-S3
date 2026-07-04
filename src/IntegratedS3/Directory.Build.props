@@ -19,14 +19,18 @@
     <PackageReadmeFile Condition="'$(IsPackable)' != 'false'">README.md</PackageReadmeFile>
 
     <!-- Build quality -->
-    <!-- All compiler, analyzer, and MSBuild warnings fail the build. NuGet audit findings
-         (NU1901-NU1904) are exempted because the flagged packages are transitive
-         (Microsoft.OpenApi via Microsoft.AspNetCore.OpenApi, SQLitePCLRaw via EF Core Sqlite,
-         OpenTelemetry.Api/Exporter via the pinned OpenTelemetry 1.11.x line); they stay visible
-         as warnings and are upgraded through Dependabot instead of failing every build. -->
+    <!-- All compiler, analyzer, and MSBuild warnings fail the build. NuGet security audit is a
+         first-class CVE gate: it runs on every restore, covers the full transitive graph, and a
+         genuine advisory (NU1901-NU1904) now FAILS the build instead of being demoted to a warning. -->
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <WarningsAsErrors>$(WarningsAsErrors);nullable</WarningsAsErrors>
-    <WarningsNotAsErrors>$(WarningsNotAsErrors);NU1901;NU1902;NU1903;NU1904</WarningsNotAsErrors>
+
+    <!-- NuGet security audit: scan direct AND transitive packages, report from 'low' up, and let
+         the audit codes flow through TreatWarningsAsErrors so any real CVE breaks the build. -->
+    <NuGetAudit>true</NuGetAudit>
+    <NuGetAuditMode>all</NuGetAuditMode>
+    <NuGetAuditLevel>low</NuGetAuditLevel>
+
     <AnalysisLevel>latest</AnalysisLevel>
     <AnalysisMode>Default</AnalysisMode>
     <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
@@ -43,9 +47,26 @@
     <SymbolPackageFormat>snupkg</SymbolPackageFormat>
   </PropertyGroup>
 
-  <!-- SourceLink for source debugging -->
+  <!-- CVE-gate exceptions, suppressed per-advisory (NOT a blanket NU190x waiver) so every OTHER
+       high/critical CVE still fails the build. Both entries below are transitive-only, land solely
+       in IsPackable=false projects (sample hosts / test project) that are never packed or published,
+       and have no low-risk fixed version reachable today. Each must be removed the moment its
+       upstream ships a patched release.
+
+       1. GHSA-2m69-gcr7-jv3q (CVE-2025-6965, SQLitePCLRaw.lib.e_sqlite3 <= 2.1.11, NU1903 high).
+          No patched 2.1.x release exists (the fix lives upstream in SQLite 3.50.2, not yet in a
+          2.1.x bundle). Pulled only by Microsoft.EntityFrameworkCore.Sqlite into IntegratedS3.Tests.
+
+       2. GHSA-v5pm-xwqc-g5wc (Microsoft.OpenApi 2.0.0, NU1903 high). Pulled transitively by
+          Microsoft.AspNetCore.OpenApi 10.0.3 into the WebUi sample hosts. A patched Microsoft.OpenApi
+          (2.7.5+) EXISTS but cannot be force-upgraded here: AspNetCore.OpenApi 10.0.3's XML-comment
+          source generator is compiled against Microsoft.OpenApi Version=2.0.0.0 and fails to compile
+          (CS0012/CS0246 on OpenApiOperation/OpenApiSchema/IOpenApiParameter) against 2.7.x/2.9.x,
+          whose assembly identity and type surface changed. The real fix is an updated
+          Microsoft.AspNetCore.OpenApi from Microsoft; remove this suppression when that lands. -->
   <ItemGroup>
-    <PackageReference Include="Microsoft.SourceLink.GitHub" PrivateAssets="All" />
+    <NuGetAuditSuppress Include="https://github.com/advisories/GHSA-2m69-gcr7-jv3q" />
+    <NuGetAuditSuppress Include="https://github.com/advisories/GHSA-v5pm-xwqc-g5wc" />
   </ItemGroup>
 
   <ItemGroup Condition="'$(IsPackable)' != 'false'">

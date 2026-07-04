@@ -51,4 +51,13 @@ public interface IStorageReplicaRepairBacklog
     /// <param name="error">The <see cref="StorageError"/> describing the failure.</param>
     /// <param name="cancellationToken">A token to cancel the operation.</param>
     ValueTask MarkFailedAsync(string repairId, StorageError error, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Reverts the specified repair entry to <see cref="StorageReplicaRepairStatus.Pending"/> so it becomes
+    /// re-runnable. Used when an in-progress repair is interrupted (for example by host shutdown) and must not
+    /// be stranded in <see cref="StorageReplicaRepairStatus.InProgress"/> with no live task owning it.
+    /// </summary>
+    /// <param name="repairId">The unique identifier of the repair entry.</param>
+    /// <param name="cancellationToken">A token to cancel the operation.</param>
+    ValueTask RevertToPendingAsync(string repairId, CancellationToken cancellationToken = default);
 }

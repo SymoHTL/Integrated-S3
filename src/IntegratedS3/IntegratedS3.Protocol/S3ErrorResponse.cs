@@ -17,6 +17,9 @@ public sealed class S3ErrorResponse
     /// <summary>The request ID assigned by S3 for debugging purposes.</summary>
     public string? RequestId { get; init; }
 
+    /// <summary>The host ID (mirrors the <c>x-amz-id-2</c> response header) used for debugging.</summary>
+    public string? HostId { get; init; }
+
     /// <summary>The name of the bucket related to the error, if applicable.</summary>
     public string? BucketName { get; init; }
 

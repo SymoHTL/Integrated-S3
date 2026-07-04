@@ -57,6 +57,12 @@ public class MultipartUploadState
     public DateTimeOffset? ExpiresUtc { get; init; }
 
     /// <summary>
+    /// The raw, verbatim <c>Expires</c> header value specified at upload initiation, or
+    /// <see langword="null"/> if none. AWS treats <c>Expires</c> as an opaque string.
+    /// </summary>
+    public string? Expires { get; init; }
+
+    /// <summary>
     /// User-defined key-value metadata specified at upload initiation.
     /// </summary>
     public IReadOnlyDictionary<string, string>? Metadata { get; init; }
@@ -70,4 +76,9 @@ public class MultipartUploadState
     /// The checksum algorithm specified at upload initiation, or <see langword="null"/> if none was specified.
     /// </summary>
     public string? ChecksumAlgorithm { get; init; }
+
+    /// <summary>
+    /// The storage class specified at upload initiation, or <see langword="null"/> if none was specified.
+    /// </summary>
+    public string? StorageClass { get; init; }
 }

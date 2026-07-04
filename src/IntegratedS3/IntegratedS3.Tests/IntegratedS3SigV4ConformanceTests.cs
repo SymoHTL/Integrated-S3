@@ -137,6 +137,60 @@ public sealed class IntegratedS3SigV4ConformanceTests : IClassFixture<WebUiAppli
     }
 
     [Fact]
+    public async Task SigV4HeaderAuthentication_WithDateHeaderInsteadOfXAmzDate_AllowsRequests()
+    {
+        const string accessKeyId = "sigv4-date-header-access";
+        const string secretAccessKey = "sigv4-date-header-secret";
+        const string bucketName = "sigv4-date-header-bucket";
+
+        await using var isolatedClient = await CreateAuthenticatedClientAsync(accessKeyId, secretAccessKey);
+        using var client = isolatedClient.Client;
+
+        using var createBucketRequest = CreateSigV4DateHeaderSignedRequest(
+            HttpMethod.Put,
+            $"/integrated-s3/buckets/{bucketName}",
+            accessKeyId,
+            secretAccessKey);
+        Assert.False(createBucketRequest.Headers.Contains("x-amz-date"));
+        Assert.True(createBucketRequest.Headers.Contains("date"));
+        Assert.Equal(HttpStatusCode.Created, (await client.SendAsync(createBucketRequest)).StatusCode);
+
+        using var listBucketsRequest = CreateSigV4DateHeaderSignedRequest(
+            HttpMethod.Get,
+            "/integrated-s3/",
+            accessKeyId,
+            secretAccessKey);
+        Assert.Equal(HttpStatusCode.OK, (await client.SendAsync(listBucketsRequest)).StatusCode);
+    }
+
+    [Fact]
+    public async Task SigV4HeaderAuthentication_WithNeitherXAmzDateNorDate_ReturnsXmlError()
+    {
+        const string accessKeyId = "sigv4-nodate-header-access";
+        const string secretAccessKey = "sigv4-nodate-header-secret";
+
+        await using var isolatedClient = await CreateAuthenticatedClientAsync(accessKeyId, secretAccessKey);
+        using var client = isolatedClient.Client;
+
+        // Sign the standard Date header, then strip it so the request carries neither timestamp header.
+        using var request = CreateSigV4DateHeaderSignedRequest(
+            HttpMethod.Put,
+            "/integrated-s3/buckets/sigv4-nodate-header-bucket",
+            accessKeyId,
+            secretAccessKey);
+        request.Headers.Remove("date");
+        Assert.False(request.Headers.Contains("x-amz-date"));
+        Assert.False(request.Headers.Contains("date"));
+
+        var response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+        Assert.Equal("application/xml", response.Content.Headers.ContentType?.MediaType);
+        var errorDocument = XDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal("AccessDenied", GetRequiredElementValue(errorDocument, "Code"));
+    }
+
+    [Fact]
     public async Task SigV4HeaderAuthentication_MissingRequiredSessionToken_ReturnsXmlError()
     {
         const string accessKeyId = "sigv4-session-missing-access";
@@ -822,6 +876,93 @@ public sealed class IntegratedS3SigV4ConformanceTests : IClassFixture<WebUiAppli
             },
             includeTrailerSignature: true,
             trailerSignatureOverride: new string('0', 64));
+        var response = await client.SendAsync(putObjectRequest);
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+        Assert.Equal("application/xml", response.Content.Headers.ContentType?.MediaType);
+        var errorDocument = XDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal("SignatureDoesNotMatch", GetRequiredElementValue(errorDocument, "Code"));
+    }
+
+    [Fact]
+    public async Task SigV4HeaderAuthentication_TamperedAwsChunkedPayloadBytesWithValidChunkSignature_ReturnsSignatureDoesNotMatch()
+    {
+        // Regression for the per-chunk SigV4 signature-chain gap (issue #101): a signed streaming
+        // upload whose data-chunk bytes are flipped on the wire — but whose (originally valid)
+        // chunk-signature, final-chunk signature and trailer-signature are left untouched — must be
+        // rejected, because the server recomputes the chunk signature over the received bytes and it
+        // no longer matches. Before the fix the tampered body was accepted with all checks passing.
+        const string accessKeyId = "sigv4-chunked-payload-tamper-access";
+        const string secretAccessKey = "sigv4-chunked-payload-tamper-secret";
+        const string bucketName = "sigv4-chunked-payload-tamper-bucket";
+        const string objectKey = "docs/payload-tamper.txt";
+        const string payload = "hello from a signed aws chunked payload that will be tampered";
+
+        await using var isolatedClient = await CreateAuthenticatedClientAsync(accessKeyId, secretAccessKey);
+        using var client = isolatedClient.Client;
+
+        using var createBucketRequest = CreateSigV4HeaderSignedRequest(HttpMethod.Put, $"/integrated-s3/buckets/{bucketName}", accessKeyId, secretAccessKey);
+        Assert.Equal(HttpStatusCode.Created, (await client.SendAsync(createBucketRequest)).StatusCode);
+
+        var tamperedBytes = Encoding.UTF8.GetBytes(payload);
+        tamperedBytes[0] ^= 0xFF; // Flip a byte; same length keeps the chunk framing valid.
+
+        using var putObjectRequest = CreateSigV4AwsChunkedTrailerRequest(
+            $"/integrated-s3/buckets/{bucketName}/objects/{objectKey}",
+            accessKeyId,
+            secretAccessKey,
+            payload,
+            new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["x-amz-checksum-sha256"] = ComputeSha256Base64(payload)
+            },
+            includeTrailerSignature: true,
+            tamperedWirePayloadBytes: tamperedBytes);
+        var response = await client.SendAsync(putObjectRequest);
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+        Assert.Equal("application/xml", response.Content.Headers.ContentType?.MediaType);
+        var errorDocument = XDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal("SignatureDoesNotMatch", GetRequiredElementValue(errorDocument, "Code"));
+
+        // The tampered object must not have been stored.
+        using var getObjectRequest = CreateSigV4HeaderSignedRequest(
+            HttpMethod.Get,
+            $"/integrated-s3/buckets/{bucketName}/objects/{objectKey}",
+            accessKeyId,
+            secretAccessKey);
+        var getObjectResponse = await client.SendAsync(getObjectRequest);
+        Assert.Equal(HttpStatusCode.NotFound, getObjectResponse.StatusCode);
+    }
+
+    [Fact]
+    public async Task SigV4HeaderAuthentication_MutatedAwsChunkedDataChunkSignature_ReturnsSignatureDoesNotMatch()
+    {
+        // Regression for issue #101: mutating a data chunk's chunk-signature (bytes intact) must be
+        // rejected — the recomputed per-chunk signature no longer matches the supplied one.
+        const string accessKeyId = "sigv4-chunked-chunk-signature-mutated-access";
+        const string secretAccessKey = "sigv4-chunked-chunk-signature-mutated-secret";
+        const string bucketName = "sigv4-chunked-chunk-signature-mutated-bucket";
+        const string objectKey = "docs/chunk-signature-mutated.txt";
+        const string payload = "hello from a signed aws chunked chunk with a mutated chunk signature";
+
+        await using var isolatedClient = await CreateAuthenticatedClientAsync(accessKeyId, secretAccessKey);
+        using var client = isolatedClient.Client;
+
+        using var createBucketRequest = CreateSigV4HeaderSignedRequest(HttpMethod.Put, $"/integrated-s3/buckets/{bucketName}", accessKeyId, secretAccessKey);
+        Assert.Equal(HttpStatusCode.Created, (await client.SendAsync(createBucketRequest)).StatusCode);
+
+        using var putObjectRequest = CreateSigV4AwsChunkedTrailerRequest(
+            $"/integrated-s3/buckets/{bucketName}/objects/{objectKey}",
+            accessKeyId,
+            secretAccessKey,
+            payload,
+            new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["x-amz-checksum-sha256"] = ComputeSha256Base64(payload)
+            },
+            includeTrailerSignature: true,
+            dataChunkSignatureOverride: new string('0', 64));
         var response = await client.SendAsync(putObjectRequest);
 
         Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
@@ -1673,6 +1814,36 @@ public sealed class IntegratedS3SigV4ConformanceTests : IClassFixture<WebUiAppli
     }
 
     [Fact]
+    public async Task SigV4PresignedQueryAuthentication_ExpiredWithinClockSkewGrace_ReturnsXmlError()
+    {
+        // Regression for #132: the presigned expiry boundary is an absolute bound at
+        // SignedAtUtc + X-Amz-Expires. The clock-skew allowance must NOT extend it. With the
+        // default AllowedSignatureClockSkewMinutes = 5, a URL signed 1 minute ago with
+        // expiresSeconds: 1 is well past its stated lifetime, yet used to be accepted because
+        // the skew allowance was (incorrectly) added to the expiry window.
+        const string accessKeyId = "sigv4-skew-expiry-access";
+        const string secretAccessKey = "sigv4-skew-expiry-secret";
+
+        await using var isolatedClient = await CreateAuthenticatedClientAsync(accessKeyId, secretAccessKey);
+        using var client = isolatedClient.Client;
+
+        using var expiredRequest = CreateSigV4PresignedRequest(
+            HttpMethod.Get,
+            "/integrated-s3/buckets/skew-expiry-bucket/objects/docs/skew.txt",
+            accessKeyId,
+            secretAccessKey,
+            expiresSeconds: 1,
+            signedAtUtc: DateTimeOffset.UtcNow.AddMinutes(-1));
+        var response = await client.SendAsync(expiredRequest);
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+        Assert.Equal("application/xml", response.Content.Headers.ContentType?.MediaType);
+        var errorDocument = XDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal("AccessDenied", GetRequiredElementValue(errorDocument, "Code"));
+        Assert.Contains("expired", GetRequiredElementValue(errorDocument, "Message"), StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public async Task SigV4PresignedQueryAuthentication_ZeroExpiry_ReturnsXmlError()
     {
         const string accessKeyId = "sigv4-zero-expiry-access";
@@ -1772,6 +1943,96 @@ public sealed class IntegratedS3SigV4ConformanceTests : IClassFixture<WebUiAppli
         Assert.Contains("60", GetRequiredElementValue(errorDocument, "Message"), StringComparison.Ordinal);
     }
 
+    // Regression for #161: AWS S3 caps X-Amz-Expires at 604800 seconds (7 days) and rejects any
+    // larger value with AuthorizationQueryParametersError regardless of server configuration. The
+    // hard cap must apply even when the operator raises MaximumPresignedUrlExpirySeconds above it.
+    [Fact]
+    public async Task SigV4PresignedQueryAuthentication_ExpiryBeyondAwsHardCap_ReturnsXmlError()
+    {
+        const string accessKeyId = "sigv4-hardcap-access";
+        const string secretAccessKey = "sigv4-hardcap-secret";
+
+        await using var isolatedClient = await CreateAuthenticatedClientAsync(
+            accessKeyId,
+            secretAccessKey,
+            // Configure a maximum well above the AWS hard cap so only the hard cap can reject.
+            options => options.MaximumPresignedUrlExpirySeconds = 604800 * 4);
+        using var client = isolatedClient.Client;
+
+        using var request = CreateSigV4PresignedRequest(
+            HttpMethod.Get,
+            "/integrated-s3/buckets/hardcap-bucket/objects/docs/hardcap.txt",
+            accessKeyId,
+            secretAccessKey,
+            expiresSeconds: 604801);
+        var response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal("application/xml", response.Content.Headers.ContentType?.MediaType);
+        var hardCapErrorDocument = XDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal("AuthorizationQueryParametersError", GetRequiredElementValue(hardCapErrorDocument, "Code"));
+        Assert.Contains("604800", GetRequiredElementValue(hardCapErrorDocument, "Message"), StringComparison.Ordinal);
+    }
+
+    // Regression for #161: X-Amz-Expires exactly at the AWS hard cap (604800) must be accepted; the
+    // ceiling is inclusive. This guards the boundary against an off-by-one that would reject 7-day URLs.
+    [Fact]
+    public async Task SigV4PresignedQueryAuthentication_ExpiryExactlyAtAwsHardCap_IsAccepted()
+    {
+        const string accessKeyId = "sigv4-hardcap-boundary-access";
+        const string secretAccessKey = "sigv4-hardcap-boundary-secret";
+
+        await using var isolatedClient = await CreateAuthenticatedClientAsync(
+            accessKeyId,
+            secretAccessKey,
+            options => options.MaximumPresignedUrlExpirySeconds = 604800 * 4);
+        using var client = isolatedClient.Client;
+
+        await CreateBucketAsync(client, accessKeyId, secretAccessKey, "hardcap-boundary-bucket");
+
+        using var request = CreateSigV4PresignedRequest(
+            HttpMethod.Get,
+            "/integrated-s3/buckets/hardcap-boundary-bucket/objects/docs/missing.txt",
+            accessKeyId,
+            secretAccessKey,
+            expiresSeconds: 604800);
+        var response = await client.SendAsync(request);
+
+        // A 604800s expiry passes the auth cap; the request reaches storage and 404s on the missing
+        // object rather than being rejected at authorization with a 400 AuthorizationQueryParametersError.
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task SigV4HeaderAuthentication_TimestampWithinDefaultFifteenMinuteSkew_Succeeds()
+    {
+        // Regression for #161: the default AllowedSignatureClockSkewMinutes is 15 (AWS parity), not 5.
+        // A request signed ~10 minutes ago — which the old 5-minute default rejected — must now pass
+        // WITHOUT any explicit skew override on the options.
+        const string accessKeyId = "sigv4-default-skew-access";
+        const string secretAccessKey = "sigv4-default-skew-secret";
+
+        await using var isolatedClient = await CreateAuthenticatedClientAsync(accessKeyId, secretAccessKey);
+        using var client = isolatedClient.Client;
+
+        using var request = CreateSigV4HeaderSignedRequest(
+            HttpMethod.Get,
+            "/integrated-s3/",
+            accessKeyId,
+            secretAccessKey,
+            signedAtUtc: DateTimeOffset.UtcNow.AddMinutes(-10));
+        var response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+    }
+
+    [Fact]
+    public void IntegratedS3Options_AllowedSignatureClockSkewMinutes_DefaultsToAwsFifteenMinutes()
+    {
+        // Regression for #161: default clock-skew tolerance matches the AWS S3 ±15-minute window.
+        Assert.Equal(15, new IntegratedS3Options().AllowedSignatureClockSkewMinutes);
+    }
+
     [Fact]
     public async Task SigV4PresignedQueryAuthentication_FutureTimestampOutsideClockSkew_ReturnsXmlError()
     {
@@ -1798,6 +2059,91 @@ public sealed class IntegratedS3SigV4ConformanceTests : IClassFixture<WebUiAppli
         var errorDocument = XDocument.Parse(await response.Content.ReadAsStringAsync());
         Assert.Equal("RequestTimeTooSkewed", GetRequiredElementValue(errorDocument, "Code"));
         Assert.Contains("future", GetRequiredElementValue(errorDocument, "Message"), StringComparison.OrdinalIgnoreCase);
+    }
+
+    // Regression for #113: the primary (Authorization-header) SigV4 path must reject a request whose
+    // x-amz-date is too far in the PAST (a captured, replayed request). This freshness check is the
+    // only barrier against indefinite replay of a header-signed request, yet had zero coverage — the
+    // sole prior RequestTimeTooSkewed assertion drives the separate presigned-query future-only path.
+    [Fact]
+    public async Task SigV4HeaderAuthentication_StaleTimestampOutsideClockSkew_ReturnsRequestTimeTooSkewed()
+    {
+        const string accessKeyId = "sigv4-header-stale-access";
+        const string secretAccessKey = "sigv4-header-stale-secret";
+
+        await using var isolatedClient = await CreateAuthenticatedClientAsync(
+            accessKeyId,
+            secretAccessKey,
+            options => options.AllowedSignatureClockSkewMinutes = 1);
+        using var client = isolatedClient.Client;
+
+        using var request = CreateSigV4HeaderSignedRequest(
+            HttpMethod.Get,
+            "/integrated-s3/",
+            accessKeyId,
+            secretAccessKey,
+            signedAtUtc: DateTimeOffset.UtcNow.AddMinutes(-2));
+        var response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+        Assert.Equal("application/xml", response.Content.Headers.ContentType?.MediaType);
+        var errorDocument = XDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal("RequestTimeTooSkewed", GetRequiredElementValue(errorDocument, "Code"));
+    }
+
+    // Regression for #113: the symmetric ".Duration()" skew barrier must also reject a header request
+    // whose x-amz-date is too far in the FUTURE. A refactor that dropped ".Duration()" (checking only
+    // future skew) or inverted the comparison would be caught here but not by the stale-only case.
+    [Fact]
+    public async Task SigV4HeaderAuthentication_FutureTimestampOutsideClockSkew_ReturnsRequestTimeTooSkewed()
+    {
+        const string accessKeyId = "sigv4-header-future-access";
+        const string secretAccessKey = "sigv4-header-future-secret";
+
+        await using var isolatedClient = await CreateAuthenticatedClientAsync(
+            accessKeyId,
+            secretAccessKey,
+            options => options.AllowedSignatureClockSkewMinutes = 1);
+        using var client = isolatedClient.Client;
+
+        using var request = CreateSigV4HeaderSignedRequest(
+            HttpMethod.Get,
+            "/integrated-s3/",
+            accessKeyId,
+            secretAccessKey,
+            signedAtUtc: DateTimeOffset.UtcNow.AddMinutes(2));
+        var response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+        Assert.Equal("application/xml", response.Content.Headers.ContentType?.MediaType);
+        var errorDocument = XDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal("RequestTimeTooSkewed", GetRequiredElementValue(errorDocument, "Code"));
+    }
+
+    // Regression for #113: proves the skew barrier is a boundary and not a blanket rejection — a
+    // header request timestamped just INSIDE the allowed window must still authenticate successfully.
+    // Without this, the two rejection tests above could pass against code that rejects everything.
+    [Fact]
+    public async Task SigV4HeaderAuthentication_TimestampWithinClockSkew_Succeeds()
+    {
+        const string accessKeyId = "sigv4-header-within-skew-access";
+        const string secretAccessKey = "sigv4-header-within-skew-secret";
+
+        await using var isolatedClient = await CreateAuthenticatedClientAsync(
+            accessKeyId,
+            secretAccessKey,
+            options => options.AllowedSignatureClockSkewMinutes = 5);
+        using var client = isolatedClient.Client;
+
+        using var request = CreateSigV4HeaderSignedRequest(
+            HttpMethod.Get,
+            "/integrated-s3/",
+            accessKeyId,
+            secretAccessKey,
+            signedAtUtc: DateTimeOffset.UtcNow.AddMinutes(-2));
+        var response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
     }
 
     [Fact]
@@ -2980,7 +3326,9 @@ public sealed class IntegratedS3SigV4ConformanceTests : IClassFixture<WebUiAppli
         string? trailerSignatureOverride = null,
         string host = "localhost",
         DateTimeOffset? signedAtUtc = null,
-        string? securityToken = null)
+        string? securityToken = null,
+        byte[]? tamperedWirePayloadBytes = null,
+        string? dataChunkSignatureOverride = null)
     {
         var timestampUtc = signedAtUtc ?? DateTimeOffset.UtcNow;
         var payloadBytes = Encoding.UTF8.GetBytes(payload);
@@ -3021,7 +3369,9 @@ public sealed class IntegratedS3SigV4ConformanceTests : IClassFixture<WebUiAppli
                 payloadBytes,
                 trailerHeaders,
                 includeTrailerSignature,
-                trailerSignatureOverride);
+                trailerSignatureOverride,
+                tamperedWirePayloadBytes,
+                dataChunkSignatureOverride);
         request.Content = new ByteArrayContent(contentBytes);
         request.Content.Headers.TryAddWithoutValidation("Content-Type", "text/plain");
         request.Content.Headers.ContentEncoding.Add("aws-chunked");
@@ -3117,6 +3467,69 @@ public sealed class IntegratedS3SigV4ConformanceTests : IClassFixture<WebUiAppli
         request.Headers.TryAddWithoutValidation("Authorization", authorizationHeader);
     }
 
+    // Signs the standard HTTP `Date` header (RFC 1123) instead of `x-amz-date`, matching SigV4 clients
+    // that rely on the AWS fallback from x-amz-date to Date (issue #133). No `x-amz-date` header is sent.
+    private static HttpRequestMessage CreateSigV4DateHeaderSignedRequest(
+        HttpMethod method,
+        string pathAndQuery,
+        string accessKeyId,
+        string secretAccessKey,
+        string? body = null,
+        string? contentType = null,
+        string host = "localhost",
+        DateTimeOffset? signedAtUtc = null)
+    {
+        var request = new HttpRequestMessage(method, pathAndQuery);
+        if (body is not null) {
+            request.Content = new StringContent(body, Encoding.UTF8, contentType ?? "text/plain");
+        }
+
+        var timestampUtc = signedAtUtc ?? DateTimeOffset.UtcNow;
+        var dateHeaderValue = timestampUtc.ToUniversalTime().ToString("R", CultureInfo.InvariantCulture);
+        var payloadBytes = body is null ? Array.Empty<byte>() : Encoding.UTF8.GetBytes(body);
+        var payloadHash = Convert.ToHexStringLower(SHA256.HashData(payloadBytes));
+
+        request.Headers.Host = host;
+        request.Headers.TryAddWithoutValidation("date", dateHeaderValue);
+        request.Headers.TryAddWithoutValidation("x-amz-content-sha256", payloadHash);
+
+        var credentialScope = new S3SigV4CredentialScope
+        {
+            AccessKeyId = accessKeyId,
+            DateStamp = timestampUtc.ToUniversalTime().ToString("yyyyMMdd"),
+            Region = "us-east-1",
+            Service = "s3",
+            Terminator = "aws4_request"
+        };
+
+        var signedHeaders = new List<string> { "date", "host", "x-amz-content-sha256" };
+        var canonicalHeaders = signedHeaders
+            .Select(header => new KeyValuePair<string, string?>(header, header switch
+            {
+                "host" => host,
+                "date" => dateHeaderValue,
+                "x-amz-content-sha256" => payloadHash,
+                _ => throw new InvalidOperationException($"Unknown header: {header}")
+            }))
+            .ToList();
+
+        var requestUri = CreateUri(pathAndQuery, host);
+        var canonicalRequest = S3SigV4Signer.BuildCanonicalRequest(
+            method.Method,
+            requestUri.AbsolutePath,
+            EnumerateQueryParameters(requestUri),
+            canonicalHeaders,
+            signedHeaders,
+            payloadHash);
+
+        var stringToSign = S3SigV4Signer.BuildStringToSign("AWS4-HMAC-SHA256", timestampUtc, credentialScope, canonicalRequest.CanonicalRequestHashHex);
+        var signature = S3SigV4Signer.ComputeSignature(secretAccessKey, credentialScope, stringToSign);
+        var authorizationHeader = $"AWS4-HMAC-SHA256 Credential={accessKeyId}/{credentialScope.Scope}, SignedHeaders={string.Join(';', signedHeaders)}, Signature={signature}";
+        request.Headers.TryAddWithoutValidation("Authorization", authorizationHeader);
+
+        return request;
+    }
+
     private static string GetHeaderValue(HttpRequestMessage request, string headerName, string host)
     {
         if (string.Equals(headerName, "host", StringComparison.Ordinal)) {
@@ -3164,8 +3577,13 @@ public sealed class IntegratedS3SigV4ConformanceTests : IClassFixture<WebUiAppli
         byte[] payloadBytes,
         IReadOnlyDictionary<string, string> trailerHeaders,
         bool includeTrailerSignature,
-        string? trailerSignatureOverride)
+        string? trailerSignatureOverride,
+        byte[]? tamperedWirePayloadBytes = null,
+        string? dataChunkSignatureOverride = null)
     {
+        // The per-chunk signature is always computed over the ORIGINAL (signed) payload bytes.
+        // 'tamperedWirePayloadBytes' lets a test emit different bytes on the wire while keeping the
+        // otherwise-valid chunk-signature — modelling a MITM that flips body bytes without the key.
         var payloadChunkSignature = ComputeSigV4ChunkSignature(secretAccessKey, credentialScope, signedAtUtc, seedSignature, payloadBytes);
         var finalChunkSignature = ComputeSigV4ChunkSignature(secretAccessKey, credentialScope, signedAtUtc, payloadChunkSignature, Array.Empty<byte>());
         var trailerSignature = includeTrailerSignature || trailerSignatureOverride is not null
@@ -3173,9 +3591,12 @@ public sealed class IntegratedS3SigV4ConformanceTests : IClassFixture<WebUiAppli
                 ?? ComputeSigV4TrailerSignature(secretAccessKey, credentialScope, signedAtUtc, finalChunkSignature, trailerHeaders)
             : null;
 
+        var wirePayloadBytes = tamperedWirePayloadBytes ?? payloadBytes;
+        var emittedDataChunkSignature = dataChunkSignatureOverride ?? payloadChunkSignature;
+
         using var stream = new MemoryStream();
-        WriteAscii(stream, $"{payloadBytes.Length:x};chunk-signature={payloadChunkSignature}\r\n");
-        stream.Write(payloadBytes, 0, payloadBytes.Length);
+        WriteAscii(stream, $"{wirePayloadBytes.Length:x};chunk-signature={emittedDataChunkSignature}\r\n");
+        stream.Write(wirePayloadBytes, 0, wirePayloadBytes.Length);
         WriteAscii(stream, "\r\n");
         WriteAscii(stream, $"0;chunk-signature={finalChunkSignature}\r\n");
         foreach (var trailerHeader in trailerHeaders.OrderBy(static header => header.Key, StringComparer.Ordinal)) {

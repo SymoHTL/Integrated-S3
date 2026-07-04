@@ -33,14 +33,15 @@ internal sealed class IntegratedS3RequestAuthenticationEndpointFilter(
                         activity?.SetTag(IntegratedS3Observability.Tags.Result, "failure");
                         activity?.SetTag(IntegratedS3Observability.Tags.ErrorCode, authenticationResult.ErrorCode);
 
-                        return new XmlAuthenticationFailureResult(
+                        return new XmlErrorResult(
                             authenticationResult.StatusCode,
                             S3XmlResponseWriter.WriteError(new S3ErrorResponse
                             {
                                 Code = authenticationResult.ErrorCode ?? "AccessDenied",
                                 Message = authenticationResult.ErrorMessage ?? "Request authentication failed.",
                                 Resource = httpContext.Request.PathBase.Add(httpContext.Request.Path).Value,
-                                RequestId = httpContext.TraceIdentifier
+                                RequestId = httpContext.TraceIdentifier,
+                                HostId = httpContext.TraceIdentifier
                             }));
                     }
 
@@ -75,10 +76,31 @@ internal sealed class IntegratedS3RequestAuthenticationEndpointFilter(
             throw;
         }
         catch (Exception exception) {
+            var (statusCode, errorCode, message) = MapException(exception);
             activity?.SetStatus(ActivityStatusCode.Error, exception.Message);
             activity?.SetTag(IntegratedS3Observability.Tags.Result, "failure");
+            activity?.SetTag(IntegratedS3Observability.Tags.ErrorCode, errorCode);
             logger.LogError(exception, "IntegratedS3 request handling failed unexpectedly.");
-            throw;
+
+            // If the response has already begun streaming we can no longer emit a clean error
+            // body; rethrow and let the host abort the connection.
+            if (httpContext.Response.HasStarted) {
+                throw;
+            }
+
+            // Translate any otherwise-unhandled exception into a well-formed S3 <Error> XML
+            // response so SDK XML error parsers can read it (and retry on 5xx), instead of
+            // ASP.NET's default non-S3 error (empty/text body, no x-amz-request-id).
+            return new XmlErrorResult(
+                statusCode,
+                S3XmlResponseWriter.WriteError(new S3ErrorResponse
+                {
+                    Code = errorCode,
+                    Message = message,
+                    Resource = httpContext.Request.PathBase.Add(httpContext.Request.Path).Value,
+                    RequestId = httpContext.TraceIdentifier,
+                    HostId = httpContext.TraceIdentifier
+                }));
         }
     }
 
@@ -103,6 +125,54 @@ internal sealed class IntegratedS3RequestAuthenticationEndpointFilter(
         return httpContext.GetEndpoint()?.Metadata.GetMetadata<IAllowAnonymous>() is null;
     }
 
+    /// <summary>
+    /// Maps an otherwise-unhandled exception to the S3 status code, error code and message.
+    /// Framework request errors (e.g. Kestrel body-size limit exceeded) carry their own
+    /// intended HTTP status via <see cref="BadHttpRequestException"/>; everything else is a
+    /// server-side <c>InternalError</c> 500.
+    /// </summary>
+    private static (int StatusCode, string Code, string Message) MapException(Exception exception)
+    {
+        if (exception is ContentSha256MismatchException) {
+            return (
+                StatusCodes.Status400BadRequest,
+                "XAmzContentSHA256Mismatch",
+                "The provided 'x-amz-content-sha256' header does not match what was computed.");
+        }
+
+        if (exception is ChunkSignatureMismatchException) {
+            return (
+                StatusCodes.Status403Forbidden,
+                "SignatureDoesNotMatch",
+                "The request signature we calculated does not match the signature you provided.");
+        }
+
+        if (exception is BadHttpRequestException badRequest) {
+            return badRequest.StatusCode switch
+            {
+                StatusCodes.Status413PayloadTooLarge => (
+                    StatusCodes.Status413PayloadTooLarge,
+                    "EntityTooLarge",
+                    "Your proposed upload exceeds the maximum allowed object size."),
+                StatusCodes.Status400BadRequest => (
+                    StatusCodes.Status400BadRequest,
+                    "InvalidRequest",
+                    "The request could not be understood by the server."),
+                _ => (
+                    badRequest.StatusCode,
+                    "InvalidRequest",
+                    "The request could not be understood by the server."),
+            };
+        }
+
+        return (
+            StatusCodes.Status500InternalServerError,
+            InternalErrorCode,
+            "We encountered an internal error. Please try again.");
+    }
+
+    private const string InternalErrorCode = "InternalError";
+
     private sealed class XmlAuthenticationFailureResult(int statusCode, string content) : IResult
     {
         public async Task ExecuteAsync(HttpContext httpContext)
@@ -110,6 +180,21 @@ internal sealed class IntegratedS3RequestAuthenticationEndpointFilter(
             ArgumentNullException.ThrowIfNull(httpContext);
             httpContext.Response.StatusCode = statusCode;
             httpContext.Response.ContentType = "application/xml";
+            httpContext.Response.Headers["x-amz-request-id"] = httpContext.TraceIdentifier;
+            httpContext.Response.Headers["x-amz-id-2"] = httpContext.TraceIdentifier;
+            await httpContext.Response.WriteAsync(content, httpContext.RequestAborted);
+        }
+    }
+
+    private sealed class XmlErrorResult(int statusCode, string content) : IResult
+    {
+        public async Task ExecuteAsync(HttpContext httpContext)
+        {
+            ArgumentNullException.ThrowIfNull(httpContext);
+            httpContext.Response.StatusCode = statusCode;
+            httpContext.Response.ContentType = "application/xml";
+            httpContext.Response.Headers["x-amz-request-id"] = httpContext.TraceIdentifier;
+            httpContext.Response.Headers["x-amz-id-2"] = httpContext.TraceIdentifier;
             await httpContext.Response.WriteAsync(content, httpContext.RequestAborted);
         }
     }

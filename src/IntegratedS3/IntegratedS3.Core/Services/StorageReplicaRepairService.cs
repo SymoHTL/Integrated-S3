@@ -41,6 +41,7 @@ internal sealed class StorageReplicaRepairService(
                 or StorageOperationType.PutBucketRequestPayment
                 or StorageOperationType.PutBucketAccelerate
                 or StorageOperationType.PutBucketLifecycle or StorageOperationType.DeleteBucketLifecycle
+                or StorageOperationType.PutBucketPublicAccessBlock or StorageOperationType.DeleteBucketPublicAccessBlock
                 => await RepairReplicaBucketConfigFallbackAsync(primaryBackend, replicaBackend, entry.BucketName, entry, cancellationToken),
             StorageOperationType.DeleteBucket => await RepairReplicaBucketDeleteAsync(replicaBackend, entry.BucketName, cancellationToken),
             StorageOperationType.CopyObject or StorageOperationType.PutObject => string.IsNullOrWhiteSpace(entry.ObjectKey)
@@ -57,9 +58,12 @@ internal sealed class StorageReplicaRepairService(
                     Key = entry.ObjectKey,
                     VersionId = entry.VersionId
                 }, cancellationToken),
-            StorageOperationType.PutObjectRetention or StorageOperationType.PutObjectLegalHold => string.IsNullOrWhiteSpace(entry.ObjectKey)
+            StorageOperationType.PutObjectRetention => string.IsNullOrWhiteSpace(entry.ObjectKey)
                 ? CreateInvalidRepairTargetError(entry, "Object retention/legal-hold repairs require an object key.")
-                : await RepairReplicaObjectFromPrimaryAsync(primaryBackend, replicaBackend, entry.BucketName, entry.ObjectKey, entry.VersionId, cancellationToken),
+                : await RepairReplicaObjectRetentionFromPrimaryAsync(primaryBackend, replicaBackend, entry.BucketName, entry.ObjectKey, entry.VersionId, cancellationToken),
+            StorageOperationType.PutObjectLegalHold => string.IsNullOrWhiteSpace(entry.ObjectKey)
+                ? CreateInvalidRepairTargetError(entry, "Object retention/legal-hold repairs require an object key.")
+                : await RepairReplicaObjectLegalHoldFromPrimaryAsync(primaryBackend, replicaBackend, entry.BucketName, entry.ObjectKey, entry.VersionId, cancellationToken),
             _ => CreateUnsupportedRepairError(entry)
         };
     }
@@ -84,7 +88,9 @@ internal sealed class StorageReplicaRepairService(
         var replicaResult = await replicaBackend.CreateBucketAsync(request, cancellationToken);
         ObserveResult(replicaBackend, replicaResult);
         if (!replicaResult.IsSuccess) {
-            if (replicaResult.Error?.Code != StorageErrorCode.BucketAlreadyExists) {
+            // A replica bucket that already exists (regardless of ownership-specific code) is not a
+            // failure for repair — it is the idempotent case; fall through to refresh/versioning.
+            if (replicaResult.Error?.Code is not (StorageErrorCode.BucketAlreadyExists or StorageErrorCode.BucketAlreadyOwnedByYou)) {
                 return replicaResult.Error ?? CreateReplicaOperationError(replicaBackend, request.BucketName, objectKey: null, versionId: null, message: "Replica bucket create did not succeed.");
             }
 
@@ -282,6 +288,7 @@ internal sealed class StorageReplicaRepairService(
             ContentLength = sourceResponse.Object.ContentLength,
             ContentType = sourceResponse.Object.ContentType,
             Metadata = CloneMetadata(sourceResponse.Object.Metadata),
+            Tags = CloneTags(sourceResponse.Object.Tags),
             Checksums = CloneChecksums(sourceResponse.Object.Checksums),
             OverwriteIfExists = true
         }, cancellationToken);
@@ -342,6 +349,83 @@ internal sealed class StorageReplicaRepairService(
         }
 
         await RefreshCatalogObjectAsync(replicaBackend, bucketName, key, requestedVersionId, cancellationToken);
+        return null;
+    }
+
+    private async ValueTask<StorageError?> RepairReplicaObjectRetentionFromPrimaryAsync(
+        IStorageBackend primaryBackend,
+        IStorageBackend replicaBackend,
+        string bucketName,
+        string key,
+        string? requestedVersionId,
+        CancellationToken cancellationToken)
+    {
+        var primaryResult = await primaryBackend.GetObjectRetentionAsync(new GetObjectRetentionRequest
+        {
+            BucketName = bucketName,
+            Key = key,
+            VersionId = requestedVersionId
+        }, cancellationToken);
+        ObserveResult(primaryBackend, primaryResult);
+        if (!primaryResult.IsSuccess || primaryResult.Value is null) {
+            if (primaryResult.Error?.Code is StorageErrorCode.ObjectNotFound or StorageErrorCode.BucketNotFound) {
+                return await ReconcileReplicaObjectDeletionAsync(replicaBackend, bucketName, key, requestedVersionId, cancellationToken);
+            }
+
+            return primaryResult.Error ?? CreatePrimaryReplicationSourceError(primaryBackend, bucketName, key, requestedVersionId, "Primary object retention could not be resolved for replica repair.");
+        }
+
+        var replicaResult = await replicaBackend.PutObjectRetentionAsync(new PutObjectRetentionRequest
+        {
+            BucketName = bucketName,
+            Key = key,
+            VersionId = requestedVersionId,
+            Mode = primaryResult.Value.Mode,
+            RetainUntilDateUtc = primaryResult.Value.RetainUntilDateUtc
+        }, cancellationToken);
+        ObserveResult(replicaBackend, replicaResult);
+        if (!replicaResult.IsSuccess || replicaResult.Value is null) {
+            return replicaResult.Error ?? CreateReplicaOperationError(replicaBackend, bucketName, key, requestedVersionId, "Replica object retention repair did not return retention metadata.");
+        }
+
+        return null;
+    }
+
+    private async ValueTask<StorageError?> RepairReplicaObjectLegalHoldFromPrimaryAsync(
+        IStorageBackend primaryBackend,
+        IStorageBackend replicaBackend,
+        string bucketName,
+        string key,
+        string? requestedVersionId,
+        CancellationToken cancellationToken)
+    {
+        var primaryResult = await primaryBackend.GetObjectLegalHoldAsync(new GetObjectLegalHoldRequest
+        {
+            BucketName = bucketName,
+            Key = key,
+            VersionId = requestedVersionId
+        }, cancellationToken);
+        ObserveResult(primaryBackend, primaryResult);
+        if (!primaryResult.IsSuccess || primaryResult.Value is null) {
+            if (primaryResult.Error?.Code is StorageErrorCode.ObjectNotFound or StorageErrorCode.BucketNotFound) {
+                return await ReconcileReplicaObjectDeletionAsync(replicaBackend, bucketName, key, requestedVersionId, cancellationToken);
+            }
+
+            return primaryResult.Error ?? CreatePrimaryReplicationSourceError(primaryBackend, bucketName, key, requestedVersionId, "Primary object legal hold could not be resolved for replica repair.");
+        }
+
+        var replicaResult = await replicaBackend.PutObjectLegalHoldAsync(new PutObjectLegalHoldRequest
+        {
+            BucketName = bucketName,
+            Key = key,
+            VersionId = requestedVersionId,
+            Status = primaryResult.Value.Status ?? ObjectLegalHoldStatus.Off
+        }, cancellationToken);
+        ObserveResult(replicaBackend, replicaResult);
+        if (!replicaResult.IsSuccess || replicaResult.Value is null) {
+            return replicaResult.Error ?? CreateReplicaOperationError(replicaBackend, bucketName, key, requestedVersionId, "Replica object legal hold repair did not return legal hold metadata.");
+        }
+
         return null;
     }
 

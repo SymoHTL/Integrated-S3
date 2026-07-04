@@ -8,6 +8,8 @@ namespace IntegratedS3.Provider.Disk.Internal;
 [JsonSerializable(typeof(DiskBucketCorsRule))]
 [JsonSerializable(typeof(DiskMultipartUploadState))]
 [JsonSerializable(typeof(DiskBucketTaggingConfiguration))]
+[JsonSerializable(typeof(DiskBucketPublicAccessBlockConfiguration))]
+[JsonSerializable(typeof(DiskBucketOwnershipControlsConfiguration))]
 [JsonSerializable(typeof(DiskBucketLoggingConfiguration))]
 [JsonSerializable(typeof(DiskBucketWebsiteConfiguration))]
 [JsonSerializable(typeof(DiskBucketWebsiteRedirectAllRequestsTo))]

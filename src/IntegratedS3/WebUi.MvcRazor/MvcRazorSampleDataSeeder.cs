@@ -24,7 +24,7 @@ internal sealed class MvcRazorSampleDataSeeder(IStorageService storageService) :
             BucketName = MvcRazorSampleDefaults.BucketName
         }, cancellationToken);
 
-        if (!createBucketResult.IsSuccess && createBucketResult.Error?.Code != StorageErrorCode.BucketAlreadyExists) {
+        if (!createBucketResult.IsSuccess && createBucketResult.Error?.Code is not (StorageErrorCode.BucketAlreadyExists or StorageErrorCode.BucketAlreadyOwnedByYou)) {
             throw new InvalidOperationException($"Unable to seed bucket '{MvcRazorSampleDefaults.BucketName}': {createBucketResult.Error?.Message}");
         }
 

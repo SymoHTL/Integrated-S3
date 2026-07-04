@@ -141,6 +141,29 @@ internal sealed class InMemoryStorageReplicaRepairBacklog : IStorageReplicaRepai
         return ValueTask.CompletedTask;
     }
 
+    public ValueTask RevertToPendingAsync(string repairId, CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(repairId);
+        cancellationToken.ThrowIfCancellationRequested();
+
+        UpdateEntry(repairId, existing => existing with
+        {
+            Status = StorageReplicaRepairStatus.Pending,
+            LastErrorCode = null,
+            LastErrorMessage = null,
+            UpdatedAtUtc = _timeProvider.GetUtcNow()
+        });
+        if (_entries.TryGetValue(repairId, out var entry)) {
+            _logger.LogInformation(
+                "Replica repair {RepairId} for {ReplicaBackend} reverted to Pending after interruption. AttemptCount {AttemptCount}.",
+                repairId,
+                entry.ReplicaBackendName,
+                entry.AttemptCount);
+        }
+
+        return ValueTask.CompletedTask;
+    }
+
     private IEnumerable<Measurement<long>> ObserveBacklogSize()
     {
         return _entries.Values

@@ -118,6 +118,60 @@ internal sealed class AuthorizingStorageService(
         }, innerCancellationToken => inner.DeleteBucketDefaultEncryptionAsync(request, innerCancellationToken), cancellationToken);
     }
 
+    public ValueTask<StorageResult<BucketPublicAccessBlockConfiguration>> GetBucketPublicAccessBlockAsync(string bucketName, CancellationToken cancellationToken = default)
+    {
+        return ExecuteAuthorizedAsync(new StorageAuthorizationRequest
+        {
+            Operation = StorageOperationType.GetBucketPublicAccessBlock,
+            BucketName = bucketName
+        }, innerCancellationToken => inner.GetBucketPublicAccessBlockAsync(bucketName, innerCancellationToken), cancellationToken);
+    }
+
+    public ValueTask<StorageResult<BucketPublicAccessBlockConfiguration>> PutBucketPublicAccessBlockAsync(PutBucketPublicAccessBlockRequest request, CancellationToken cancellationToken = default)
+    {
+        return ExecuteAuthorizedAsync(new StorageAuthorizationRequest
+        {
+            Operation = StorageOperationType.PutBucketPublicAccessBlock,
+            BucketName = request.BucketName
+        }, innerCancellationToken => inner.PutBucketPublicAccessBlockAsync(request, innerCancellationToken), cancellationToken);
+    }
+
+    public ValueTask<StorageResult> DeleteBucketPublicAccessBlockAsync(DeleteBucketPublicAccessBlockRequest request, CancellationToken cancellationToken = default)
+    {
+        return ExecuteAuthorizedAsync(new StorageAuthorizationRequest
+        {
+            Operation = StorageOperationType.DeleteBucketPublicAccessBlock,
+            BucketName = request.BucketName
+        }, innerCancellationToken => inner.DeleteBucketPublicAccessBlockAsync(request, innerCancellationToken), cancellationToken);
+    }
+
+    public ValueTask<StorageResult<BucketOwnershipControlsConfiguration>> GetBucketOwnershipControlsAsync(string bucketName, CancellationToken cancellationToken = default)
+    {
+        return ExecuteAuthorizedAsync(new StorageAuthorizationRequest
+        {
+            Operation = StorageOperationType.GetBucketOwnershipControls,
+            BucketName = bucketName
+        }, innerCancellationToken => inner.GetBucketOwnershipControlsAsync(bucketName, innerCancellationToken), cancellationToken);
+    }
+
+    public ValueTask<StorageResult<BucketOwnershipControlsConfiguration>> PutBucketOwnershipControlsAsync(PutBucketOwnershipControlsRequest request, CancellationToken cancellationToken = default)
+    {
+        return ExecuteAuthorizedAsync(new StorageAuthorizationRequest
+        {
+            Operation = StorageOperationType.PutBucketOwnershipControls,
+            BucketName = request.BucketName
+        }, innerCancellationToken => inner.PutBucketOwnershipControlsAsync(request, innerCancellationToken), cancellationToken);
+    }
+
+    public ValueTask<StorageResult> DeleteBucketOwnershipControlsAsync(DeleteBucketOwnershipControlsRequest request, CancellationToken cancellationToken = default)
+    {
+        return ExecuteAuthorizedAsync(new StorageAuthorizationRequest
+        {
+            Operation = StorageOperationType.DeleteBucketOwnershipControls,
+            BucketName = request.BucketName
+        }, innerCancellationToken => inner.DeleteBucketOwnershipControlsAsync(request, innerCancellationToken), cancellationToken);
+    }
+
     public ValueTask<StorageResult<BucketInfo>> HeadBucketAsync(string bucketName, CancellationToken cancellationToken = default)
     {
         return ExecuteAuthorizedAsync(new StorageAuthorizationRequest

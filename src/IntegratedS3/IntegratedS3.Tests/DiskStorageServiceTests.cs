@@ -42,7 +42,9 @@ public sealed class DiskStorageServiceTests
         });
 
         Assert.True(putResult.IsSuccess);
-        Assert.False(string.IsNullOrWhiteSpace(putResult.Value!.VersionId));
+        // Unversioned bucket: the object uses the AWS "null" version, so no version id is minted
+        // and no x-amz-version-id header is emitted (see issue #151).
+        Assert.Null(putResult.Value!.VersionId);
         Assert.Equal("text/plain", putResult.Value!.ContentType);
         Assert.Equal("copilot", putResult.Value.Metadata!["author"]);
         Assert.Equal(ComputeSha256Base64("hello integrated s3"), putResult.Value.Checksums!["sha256"]);
@@ -88,6 +90,91 @@ public sealed class DiskStorageServiceTests
         });
 
         Assert.True(deleteBucket.IsSuccess);
+    }
+
+    [Fact]
+    public async Task DiskStorage_RoundTripsOpaqueExpiresVerbatim()
+    {
+        await using var fixture = new DiskStorageFixture();
+        var storageService = fixture.Services.GetRequiredService<IStorageBackend>();
+
+        Assert.True((await storageService.CreateBucketAsync(new CreateBucketRequest { BucketName = "expires-bucket" })).IsSuccess);
+
+        // A value that is not an HTTP date; AWS stores and returns Expires as an opaque string.
+        const string opaqueExpires = "opaque-not-a-date";
+        await using var uploadStream = new MemoryStream(Encoding.UTF8.GetBytes("payload"));
+        var putResult = await storageService.PutObjectAsync(new PutObjectRequest
+        {
+            BucketName = "expires-bucket",
+            Key = "docs/opaque.txt",
+            Content = uploadStream,
+            Expires = opaqueExpires
+        });
+        Assert.True(putResult.IsSuccess);
+
+        var head = await storageService.HeadObjectAsync(new HeadObjectRequest
+        {
+            BucketName = "expires-bucket",
+            Key = "docs/opaque.txt"
+        });
+        Assert.True(head.IsSuccess);
+        Assert.Equal(opaqueExpires, head.Value!.Expires);
+    }
+
+    [Fact]
+    public async Task DiskStorage_GetObjectAttributes_PopulatesObjectPartsForMultipartObject()
+    {
+        await using var fixture = new DiskStorageFixture();
+        var storageService = fixture.Services.GetRequiredService<IStorageBackend>();
+
+        Assert.True((await storageService.CreateBucketAsync(new CreateBucketRequest { BucketName = "mpu-attrs-bucket" })).IsSuccess);
+
+        var initiate = await storageService.InitiateMultipartUploadAsync(new InitiateMultipartUploadRequest
+        {
+            BucketName = "mpu-attrs-bucket",
+            Key = "docs/mpu.bin"
+        });
+        Assert.True(initiate.IsSuccess);
+        var uploadId = initiate.Value!.UploadId;
+
+        var firstPart = new byte[5 * 1024 * 1024];
+        var secondPart = Encoding.UTF8.GetBytes("tail");
+        Random.Shared.NextBytes(firstPart);
+
+        var completedParts = new List<MultipartUploadPart>();
+        foreach (var (partNumber, body) in new[] { (1, firstPart), (2, secondPart) }) {
+            await using var partStream = new MemoryStream(body);
+            var uploadPart = await storageService.UploadMultipartPartAsync(new UploadMultipartPartRequest
+            {
+                BucketName = "mpu-attrs-bucket",
+                Key = "docs/mpu.bin",
+                UploadId = uploadId,
+                PartNumber = partNumber,
+                Content = partStream
+            });
+            Assert.True(uploadPart.IsSuccess);
+            completedParts.Add(new MultipartUploadPart { PartNumber = partNumber, ETag = uploadPart.Value!.ETag });
+        }
+
+        var complete = await storageService.CompleteMultipartUploadAsync(new CompleteMultipartUploadRequest
+        {
+            BucketName = "mpu-attrs-bucket",
+            Key = "docs/mpu.bin",
+            UploadId = uploadId,
+            Parts = completedParts
+        });
+        Assert.True(complete.IsSuccess);
+
+        var attributes = await storageService.GetObjectAttributesAsync(new GetObjectAttributesRequest
+        {
+            BucketName = "mpu-attrs-bucket",
+            Key = "docs/mpu.bin",
+            ObjectAttributes = ["ObjectParts", "ObjectSize"]
+        });
+        Assert.True(attributes.IsSuccess);
+        Assert.NotNull(attributes.Value!.ObjectParts);
+        Assert.Equal(2, attributes.Value.ObjectParts!.TotalPartsCount);
+        Assert.False(attributes.Value.ObjectParts.IsTruncated);
     }
 
     [Fact]
@@ -373,7 +460,8 @@ public sealed class DiskStorageServiceTests
 
         Assert.True((await storageService.CreateBucketAsync(new CreateBucketRequest
         {
-            BucketName = "versions"
+            BucketName = "versions",
+            EnableVersioning = true
         })).IsSuccess);
 
         await using var uploadStream = new MemoryStream(Encoding.UTF8.GetBytes("versioned payload"));
@@ -816,6 +904,28 @@ public sealed class DiskStorageServiceTests
         Assert.True(objectLock.Value!.ObjectLockEnabled);
         Assert.Equal(ObjectRetentionMode.Governance, objectLock.Value.DefaultRetention!.Mode);
         Assert.Equal(2, objectLock.Value.DefaultRetention.Years);
+    }
+
+    [Fact]
+    public async Task DiskStorage_CreateBucket_WhenAlreadyExists_ReturnsBucketAlreadyOwnedByYou()
+    {
+        await using var fixture = new DiskStorageFixture();
+        var storageService = fixture.Services.GetRequiredService<IStorageBackend>();
+        const string bucketName = "owned-by-you";
+
+        Assert.True((await storageService.CreateBucketAsync(new CreateBucketRequest
+        {
+            BucketName = bucketName
+        })).IsSuccess);
+
+        var secondCreate = await storageService.CreateBucketAsync(new CreateBucketRequest
+        {
+            BucketName = bucketName
+        });
+
+        Assert.False(secondCreate.IsSuccess);
+        // Single-tenant disk backend: an owner re-create is BucketAlreadyOwnedByYou, not BucketAlreadyExists.
+        Assert.Equal(StorageErrorCode.BucketAlreadyOwnedByYou, secondCreate.Error!.Code);
     }
 
     [Fact]
@@ -1911,7 +2021,10 @@ public sealed class DiskStorageServiceTests
         Assert.False(copyResult.Value.Metadata.ContainsKey("source-only"));
         Assert.Equal(ComputeSha256Base64("copy me"), copyResult.Value.Checksums!["sha256"]);
         Assert.Equal(ComputeCrc32cBase64("copy me"), copyResult.Value.Checksums["crc32c"]);
-        Assert.NotEqual(putResult.Value!.VersionId, copyResult.Value.VersionId);
+        // Unversioned bucket: both the source PUT and the self-copy use the AWS "null" version, so
+        // neither carries a minted version id (see issue #151).
+        Assert.Null(putResult.Value!.VersionId);
+        Assert.Null(copyResult.Value.VersionId);
 
         var downloaded = await storageService.GetObjectAsync(new GetObjectRequest
         {
@@ -1940,9 +2053,10 @@ public sealed class DiskStorageServiceTests
 
         const string sourceKey = "docs/source.txt";
         const string destinationKey = "docs/copied.txt";
-        const string part1Payload = "hello ";
+        // The first (non-final) part must be at least the S3 minimum of 5 MiB.
+        var part1Payload = new string('a', 5 * 1024 * 1024);
         const string part2Payload = "world";
-        const string fullPayload = part1Payload + part2Payload;
+        var fullPayload = part1Payload + part2Payload;
 
         var initiateResult = await storageService.InitiateMultipartUploadAsync(new InitiateMultipartUploadRequest
         {
@@ -2783,7 +2897,9 @@ public sealed class DiskStorageServiceTests
 
         Assert.True(initiateResult.IsSuccess);
 
-        await using var part1Stream = new MemoryStream(Encoding.UTF8.GetBytes("hello "));
+        // The first (non-final) part must be at least the S3 minimum of 5 MiB.
+        var part1Payload = new string('a', 5 * 1024 * 1024);
+        await using var part1Stream = new MemoryStream(Encoding.UTF8.GetBytes(part1Payload));
         var part1 = await storageService.UploadMultipartPartAsync(new UploadMultipartPartRequest
         {
             BucketName = "multipart",
@@ -2830,10 +2946,137 @@ public sealed class DiskStorageServiceTests
         Assert.True(getResult.IsSuccess);
         await using var response = getResult.Value!;
         using var reader = new StreamReader(response.Content, Encoding.UTF8);
-        Assert.Equal("hello world", await reader.ReadToEndAsync());
+        Assert.Equal(part1Payload + "world", await reader.ReadToEndAsync());
         Assert.Equal("multipart", response.Object.Metadata!["source"]);
         Assert.Equal("multipart", response.Object.Tags!["upload"]);
         Assert.Equal(multipartChecksum, response.Object.Checksums!["sha256"]);
+    }
+
+    [Fact]
+    public async Task DiskStorage_MultipartUpload_RejectsUndersizedNonFinalPartWithEntityTooSmall()
+    {
+        await using var fixture = new DiskStorageFixture();
+        var storageService = fixture.Services.GetRequiredService<IStorageBackend>();
+        await storageService.CreateBucketAsync(new CreateBucketRequest { BucketName = "multipart-small" });
+
+        var initiateResult = await storageService.InitiateMultipartUploadAsync(new InitiateMultipartUploadRequest
+        {
+            BucketName = "multipart-small",
+            Key = "docs/tiny.bin",
+            ContentType = "application/octet-stream"
+        });
+
+        Assert.True(initiateResult.IsSuccess);
+
+        // Part 1 is a non-final part smaller than the S3 minimum of 5 MiB.
+        await using var part1Stream = new MemoryStream(new byte[1024]);
+        var part1 = await storageService.UploadMultipartPartAsync(new UploadMultipartPartRequest
+        {
+            BucketName = "multipart-small",
+            Key = "docs/tiny.bin",
+            UploadId = initiateResult.Value!.UploadId,
+            PartNumber = 1,
+            Content = part1Stream
+        });
+
+        await using var part2Stream = new MemoryStream(new byte[1024]);
+        var part2 = await storageService.UploadMultipartPartAsync(new UploadMultipartPartRequest
+        {
+            BucketName = "multipart-small",
+            Key = "docs/tiny.bin",
+            UploadId = initiateResult.Value!.UploadId,
+            PartNumber = 2,
+            Content = part2Stream
+        });
+
+        Assert.True(part1.IsSuccess);
+        Assert.True(part2.IsSuccess);
+
+        var completeResult = await storageService.CompleteMultipartUploadAsync(new CompleteMultipartUploadRequest
+        {
+            BucketName = "multipart-small",
+            Key = "docs/tiny.bin",
+            UploadId = initiateResult.Value!.UploadId,
+            Parts = [part1.Value!, part2.Value!]
+        });
+
+        Assert.False(completeResult.IsSuccess);
+        Assert.Equal(StorageErrorCode.MultipartConflict, completeResult.Error!.Code);
+        Assert.Equal(400, completeResult.Error.SuggestedHttpStatusCode);
+        Assert.Contains("minimum", completeResult.Error.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("'1'", completeResult.Error.Message, StringComparison.Ordinal);
+
+        // The object must not have been created.
+        var headResult = await storageService.HeadObjectAsync(new HeadObjectRequest
+        {
+            BucketName = "multipart-small",
+            Key = "docs/tiny.bin"
+        });
+
+        Assert.False(headResult.IsSuccess);
+        Assert.Equal(StorageErrorCode.ObjectNotFound, headResult.Error!.Code);
+    }
+
+    [Fact]
+    public async Task DiskStorage_MultipartUpload_AllowsSmallFinalPartWhenEarlierPartsMeetMinimum()
+    {
+        await using var fixture = new DiskStorageFixture();
+        var storageService = fixture.Services.GetRequiredService<IStorageBackend>();
+        await storageService.CreateBucketAsync(new CreateBucketRequest { BucketName = "multipart-lastsmall" });
+
+        var initiateResult = await storageService.InitiateMultipartUploadAsync(new InitiateMultipartUploadRequest
+        {
+            BucketName = "multipart-lastsmall",
+            Key = "docs/assembled.bin",
+            ContentType = "application/octet-stream"
+        });
+
+        Assert.True(initiateResult.IsSuccess);
+
+        // Part 1 exactly meets the 5 MiB minimum; part 2 (the last part) is deliberately tiny.
+        var firstPartBytes = new byte[5 * 1024 * 1024];
+        await using var part1Stream = new MemoryStream(firstPartBytes);
+        var part1 = await storageService.UploadMultipartPartAsync(new UploadMultipartPartRequest
+        {
+            BucketName = "multipart-lastsmall",
+            Key = "docs/assembled.bin",
+            UploadId = initiateResult.Value!.UploadId,
+            PartNumber = 1,
+            Content = part1Stream
+        });
+
+        await using var part2Stream = new MemoryStream(new byte[16]);
+        var part2 = await storageService.UploadMultipartPartAsync(new UploadMultipartPartRequest
+        {
+            BucketName = "multipart-lastsmall",
+            Key = "docs/assembled.bin",
+            UploadId = initiateResult.Value!.UploadId,
+            PartNumber = 2,
+            Content = part2Stream
+        });
+
+        Assert.True(part1.IsSuccess);
+        Assert.True(part2.IsSuccess);
+
+        var completeResult = await storageService.CompleteMultipartUploadAsync(new CompleteMultipartUploadRequest
+        {
+            BucketName = "multipart-lastsmall",
+            Key = "docs/assembled.bin",
+            UploadId = initiateResult.Value!.UploadId,
+            Parts = [part1.Value!, part2.Value!]
+        });
+
+        Assert.True(completeResult.IsSuccess);
+
+        var getResult = await storageService.GetObjectAsync(new GetObjectRequest
+        {
+            BucketName = "multipart-lastsmall",
+            Key = "docs/assembled.bin"
+        });
+
+        Assert.True(getResult.IsSuccess);
+        await using var response = getResult.Value!;
+        Assert.Equal((5 * 1024 * 1024) + 16, response.Object.ContentLength);
     }
 
     [Fact]
@@ -2853,7 +3096,8 @@ public sealed class DiskStorageServiceTests
 
         Assert.True(initiateResult.IsSuccess);
 
-        const string part1Payload = "hello ";
+        // The first (non-final) part must be at least the S3 minimum of 5 MiB.
+        var part1Payload = new string('a', 5 * 1024 * 1024);
         var part1Checksum = ComputeCrc32cBase64(part1Payload);
         await using var part1Stream = new MemoryStream(Encoding.UTF8.GetBytes(part1Payload));
         var part1 = await storageService.UploadMultipartPartAsync(new UploadMultipartPartRequest
@@ -2913,8 +3157,34 @@ public sealed class DiskStorageServiceTests
         Assert.True(getResult.IsSuccess);
         await using var response = getResult.Value!;
         using var reader = new StreamReader(response.Content, Encoding.UTF8);
-        Assert.Equal("hello world", await reader.ReadToEndAsync());
+        Assert.Equal(part1Payload + "world", await reader.ReadToEndAsync());
         Assert.Equal(compositeChecksum, response.Object.Checksums!["crc32c"]);
+    }
+
+    [Theory]
+    [InlineData("CRC64NVME")]
+    [InlineData("crc64nvme")]
+    public async Task DiskStorage_InitiateMultipartUpload_RejectsCrc64NvmeUpFront(string checksumAlgorithm)
+    {
+        // Regression for #119: CRC64NVME was accepted at InitiateMultipartUpload but rejected by every
+        // subsequent lifecycle operation, leaving the caller with an "accepted then dead" UploadId and a
+        // leaked on-disk upload directory. The accepted-algorithm set must be consistent across the whole
+        // lifecycle: because the multipart composite-checksum path cannot synthesize CRC64NVME, it must be
+        // rejected up front at initiate rather than accepted-then-dead.
+        await using var fixture = new DiskStorageFixture();
+        var storageService = fixture.Services.GetRequiredService<IStorageBackend>();
+        await storageService.CreateBucketAsync(new CreateBucketRequest { BucketName = "multipart-crc64nvme" });
+
+        var initiateResult = await storageService.InitiateMultipartUploadAsync(new InitiateMultipartUploadRequest
+        {
+            BucketName = "multipart-crc64nvme",
+            Key = "docs/assembled.txt",
+            ContentType = "text/plain",
+            ChecksumAlgorithm = checksumAlgorithm
+        });
+
+        Assert.False(initiateResult.IsSuccess);
+        Assert.Equal(StorageErrorCode.UnsupportedCapability, initiateResult.Error!.Code);
     }
 
     [Fact]
@@ -3215,7 +3485,180 @@ public sealed class DiskStorageServiceTests
         });
 
         Assert.False(completeResult.IsSuccess);
-        Assert.Equal(IntegratedS3.Abstractions.Errors.StorageErrorCode.MultipartConflict, completeResult.Error!.Code);
+        Assert.Equal(IntegratedS3.Abstractions.Errors.StorageErrorCode.NoSuchUpload, completeResult.Error!.Code);
+    }
+
+    [Fact]
+    public async Task DiskStorage_MultipartUpload_AbortTwice_IsIdempotent()
+    {
+        await using var fixture = new DiskStorageFixture();
+        var storageService = fixture.Services.GetRequiredService<IStorageBackend>();
+        await storageService.CreateBucketAsync(new CreateBucketRequest { BucketName = "multipart-abort-twice" });
+
+        var initiateResult = await storageService.InitiateMultipartUploadAsync(new InitiateMultipartUploadRequest
+        {
+            BucketName = "multipart-abort-twice",
+            Key = "docs/aborted.txt"
+        });
+        Assert.True(initiateResult.IsSuccess);
+
+        await using var partStream = new MemoryStream(Encoding.UTF8.GetBytes("temporary"));
+        var uploadPartResult = await storageService.UploadMultipartPartAsync(new UploadMultipartPartRequest
+        {
+            BucketName = "multipart-abort-twice",
+            Key = "docs/aborted.txt",
+            UploadId = initiateResult.Value!.UploadId,
+            PartNumber = 1,
+            Content = partStream
+        });
+        Assert.True(uploadPartResult.IsSuccess);
+
+        var firstAbort = await storageService.AbortMultipartUploadAsync(new AbortMultipartUploadRequest
+        {
+            BucketName = "multipart-abort-twice",
+            Key = "docs/aborted.txt",
+            UploadId = initiateResult.Value.UploadId
+        });
+        Assert.True(firstAbort.IsSuccess);
+
+        // A repeated Abort on an upload whose directory was already removed must not throw a
+        // DirectoryNotFoundException; it should return a deterministic NoSuchUpload failure.
+        var secondAbort = await storageService.AbortMultipartUploadAsync(new AbortMultipartUploadRequest
+        {
+            BucketName = "multipart-abort-twice",
+            Key = "docs/aborted.txt",
+            UploadId = initiateResult.Value.UploadId
+        });
+
+        Assert.False(secondAbort.IsSuccess);
+        Assert.Equal(IntegratedS3.Abstractions.Errors.StorageErrorCode.NoSuchUpload, secondAbort.Error!.Code);
+    }
+
+    [Fact]
+    public async Task DiskStorage_MultipartUpload_AbortAfterComplete_IsIdempotent()
+    {
+        await using var fixture = new DiskStorageFixture();
+        var storageService = fixture.Services.GetRequiredService<IStorageBackend>();
+        await storageService.CreateBucketAsync(new CreateBucketRequest { BucketName = "multipart-abort-after-complete" });
+
+        var initiateResult = await storageService.InitiateMultipartUploadAsync(new InitiateMultipartUploadRequest
+        {
+            BucketName = "multipart-abort-after-complete",
+            Key = "docs/assembled.txt"
+        });
+        Assert.True(initiateResult.IsSuccess);
+
+        await using var partStream = new MemoryStream(Encoding.UTF8.GetBytes("completed"));
+        var uploadPartResult = await storageService.UploadMultipartPartAsync(new UploadMultipartPartRequest
+        {
+            BucketName = "multipart-abort-after-complete",
+            Key = "docs/assembled.txt",
+            UploadId = initiateResult.Value!.UploadId,
+            PartNumber = 1,
+            Content = partStream
+        });
+        Assert.True(uploadPartResult.IsSuccess);
+
+        var completeResult = await storageService.CompleteMultipartUploadAsync(new CompleteMultipartUploadRequest
+        {
+            BucketName = "multipart-abort-after-complete",
+            Key = "docs/assembled.txt",
+            UploadId = initiateResult.Value.UploadId,
+            Parts = [uploadPartResult.Value!]
+        });
+        Assert.True(completeResult.IsSuccess);
+
+        // Complete already cleaned up the upload directory. A follow-up Abort (e.g. a client retry)
+        // must be a benign no-op returning NoSuchUpload rather than throwing on the missing directory.
+        var abortResult = await storageService.AbortMultipartUploadAsync(new AbortMultipartUploadRequest
+        {
+            BucketName = "multipart-abort-after-complete",
+            Key = "docs/assembled.txt",
+            UploadId = initiateResult.Value.UploadId
+        });
+
+        Assert.False(abortResult.IsSuccess);
+        Assert.Equal(IntegratedS3.Abstractions.Errors.StorageErrorCode.NoSuchUpload, abortResult.Error!.Code);
+    }
+
+    [Fact]
+    public async Task DiskStorage_MultipartUpload_ConcurrentAbortAndComplete_NeverThrowsAndStaysConsistent()
+    {
+        await using var fixture = new DiskStorageFixture();
+        var storageService = fixture.Services.GetRequiredService<IStorageBackend>();
+        await storageService.CreateBucketAsync(new CreateBucketRequest { BucketName = "multipart-abort-race" });
+
+        // Many iterations to shake out interleavings between a lock-holding Complete and a
+        // concurrent Abort on the same bucket/key/uploadId. Each iteration must terminate with a
+        // clean StorageResult on both operations — never a thrown DirectoryNotFoundException/500.
+        for (var iteration = 0; iteration < 60; iteration++)
+        {
+            var key = $"docs/race-{iteration}.txt";
+
+            var initiateResult = await storageService.InitiateMultipartUploadAsync(new InitiateMultipartUploadRequest
+            {
+                BucketName = "multipart-abort-race",
+                Key = key
+            });
+            Assert.True(initiateResult.IsSuccess);
+            var uploadId = initiateResult.Value!.UploadId;
+
+            await using (var partStream = new MemoryStream(Encoding.UTF8.GetBytes($"payload-{iteration}")))
+            {
+                var uploadPartResult = await storageService.UploadMultipartPartAsync(new UploadMultipartPartRequest
+                {
+                    BucketName = "multipart-abort-race",
+                    Key = key,
+                    UploadId = uploadId,
+                    PartNumber = 1,
+                    Content = partStream
+                });
+                Assert.True(uploadPartResult.IsSuccess);
+
+                var completeTask = Task.Run(async () => await storageService.CompleteMultipartUploadAsync(new CompleteMultipartUploadRequest
+                {
+                    BucketName = "multipart-abort-race",
+                    Key = key,
+                    UploadId = uploadId,
+                    Parts = [uploadPartResult.Value!]
+                }));
+
+                var abortTask = Task.Run(async () => await storageService.AbortMultipartUploadAsync(new AbortMultipartUploadRequest
+                {
+                    BucketName = "multipart-abort-race",
+                    Key = key,
+                    UploadId = uploadId
+                }));
+
+                // Neither operation may throw; both must resolve to a StorageResult. If either threw,
+                // Task.WhenAll rethrows here and the test fails, which is precisely the bug we guard.
+                var completeResult = await completeTask;
+                var abortResult = await abortTask;
+
+                // Every outcome must be either a clean success or a clean, well-defined failure.
+                Assert.True(
+                    completeResult.IsSuccess
+                        || completeResult.Error!.Code is IntegratedS3.Abstractions.Errors.StorageErrorCode.NoSuchUpload
+                            or IntegratedS3.Abstractions.Errors.StorageErrorCode.MultipartConflict
+                            or IntegratedS3.Abstractions.Errors.StorageErrorCode.InvalidPart,
+                    $"Unexpected Complete outcome: {completeResult.Error?.Code}");
+                Assert.True(
+                    abortResult.IsSuccess
+                        || abortResult.Error!.Code == IntegratedS3.Abstractions.Errors.StorageErrorCode.NoSuchUpload,
+                    $"Unexpected Abort outcome: {abortResult.Error?.Code}");
+            }
+
+            // A follow-up Abort of the same upload id must always be a clean no-op (NoSuchUpload),
+            // proving no orphaned upload directory/state survived the race.
+            var trailingAbort = await storageService.AbortMultipartUploadAsync(new AbortMultipartUploadRequest
+            {
+                BucketName = "multipart-abort-race",
+                Key = key,
+                UploadId = uploadId
+            });
+            Assert.False(trailingAbort.IsSuccess);
+            Assert.Equal(IntegratedS3.Abstractions.Errors.StorageErrorCode.NoSuchUpload, trailingAbort.Error!.Code);
+        }
     }
 
     [Fact]
@@ -4042,7 +4485,9 @@ public sealed class DiskStorageServiceTests
         Assert.Equal(uploadId, listedUpload.UploadId);
         Assert.Equal("docs/assembled.txt", listedUpload.Key);
 
-        await using var part1Stream = new MemoryStream(Encoding.UTF8.GetBytes("hello "));
+        // The first (non-final) part must be at least the S3 minimum of 5 MiB.
+        var part1Payload = new string('a', 5 * 1024 * 1024);
+        await using var part1Stream = new MemoryStream(Encoding.UTF8.GetBytes(part1Payload));
         var part1 = await storageService.UploadMultipartPartAsync(new UploadMultipartPartRequest
         {
             BucketName = "multipart-external",
@@ -4644,7 +5089,8 @@ public sealed class DiskStorageServiceTests
         });
 
         Assert.False(putObjectLock.IsSuccess);
-        Assert.Equal(StorageErrorCode.VersionConflict, putObjectLock.Error!.Code);
+        // AWS surfaces this precondition as InvalidBucketState (not OperationAborted / VersionConflict).
+        Assert.Equal(StorageErrorCode.InvalidBucketState, putObjectLock.Error!.Code);
         Assert.Equal(409, putObjectLock.Error.SuggestedHttpStatusCode);
         Assert.Contains("versioning", putObjectLock.Error.Message, StringComparison.OrdinalIgnoreCase);
 
@@ -4740,7 +5186,7 @@ public sealed class DiskStorageServiceTests
     }
 
     [Fact]
-    public async Task DiskStorage_PermanentDeleteOfLockedObject_AfterVersioningSuspended_IsRefused()
+    public async Task DiskStorage_DeleteAfterVersioningSuspended_InsertsNullDeleteMarkerAndRetainsLockedVersion()
     {
         await using var fixture = new DiskStorageFixture();
         var storageService = fixture.Services.GetRequiredService<IStorageBackend>();
@@ -4764,14 +5210,17 @@ public sealed class DiskStorageServiceTests
             }
         })).IsSuccess);
 
+        string lockedVersionId;
         await using (var content = new MemoryStream(Encoding.UTF8.GetBytes("suspended payload"))) {
-            Assert.True((await storageService.PutObjectAsync(new PutObjectRequest
+            var lockedPut = await storageService.PutObjectAsync(new PutObjectRequest
             {
                 BucketName = bucketName,
                 Key = key,
                 Content = content,
                 ContentType = "text/plain"
-            })).IsSuccess);
+            });
+            Assert.True(lockedPut.IsSuccess);
+            lockedVersionId = Assert.IsType<string>(lockedPut.Value!.VersionId);
         }
 
         Assert.True((await storageService.PutBucketVersioningAsync(new PutBucketVersioningRequest
@@ -4780,28 +5229,222 @@ public sealed class DiskStorageServiceTests
             Status = BucketVersioningStatus.Suspended
         })).IsSuccess);
 
-        // With versioning suspended a delete without a version id becomes a permanent
-        // delete, so the retention window must still refuse it.
-        var permanentDelete = await storageService.DeleteObjectAsync(new DeleteObjectRequest
+        // AWS semantics (issue #151): on a versioning-suspended bucket a delete without a version id
+        // inserts a "null"-version delete marker rather than permanently deleting the current object.
+        // The pre-existing locked version is retained, so Object Lock is not violated and the delete
+        // succeeds with the null version (no minted version id).
+        var suspendedDelete = await storageService.DeleteObjectAsync(new DeleteObjectRequest
         {
             BucketName = bucketName,
             Key = key
         });
 
-        Assert.False(permanentDelete.IsSuccess);
-        Assert.Equal(StorageErrorCode.ObjectLocked, permanentDelete.Error!.Code);
-        Assert.Equal(403, permanentDelete.Error.SuggestedHttpStatusCode);
+        Assert.True(suspendedDelete.IsSuccess);
+        Assert.True(suspendedDelete.Value!.IsDeleteMarker);
+        Assert.Null(suspendedDelete.Value.VersionId);
 
-        var stillReadable = await storageService.GetObjectAsync(new GetObjectRequest
+        // The current object now resolves to a delete marker.
+        var currentGet = await storageService.GetObjectAsync(new GetObjectRequest
         {
             BucketName = bucketName,
             Key = key
         });
+        Assert.False(currentGet.IsSuccess);
+        Assert.Equal(StorageErrorCode.ObjectNotFound, currentGet.Error!.Code);
 
-        Assert.True(stillReadable.IsSuccess);
-        await using var stillReadableResponse = stillReadable.Value!;
-        using var stillReadableReader = new StreamReader(stillReadableResponse.Content, Encoding.UTF8, leaveOpen: false);
-        Assert.Equal("suspended payload", await stillReadableReader.ReadToEndAsync());
+        // The locked version is preserved and still readable by its version id.
+        var lockedVersionGet = await storageService.GetObjectAsync(new GetObjectRequest
+        {
+            BucketName = bucketName,
+            Key = key,
+            VersionId = lockedVersionId
+        });
+        Assert.True(lockedVersionGet.IsSuccess);
+        await using (var lockedResponse = lockedVersionGet.Value!) {
+            using var lockedReader = new StreamReader(lockedResponse.Content, Encoding.UTF8, leaveOpen: false);
+            Assert.Equal("suspended payload", await lockedReader.ReadToEndAsync());
+        }
+
+        // The retention window still refuses a permanent delete of the locked version by id.
+        var lockedVersionDelete = await storageService.DeleteObjectAsync(new DeleteObjectRequest
+        {
+            BucketName = bucketName,
+            Key = key,
+            VersionId = lockedVersionId
+        });
+        Assert.False(lockedVersionDelete.IsSuccess);
+        Assert.Equal(StorageErrorCode.ObjectLocked, lockedVersionDelete.Error!.Code);
+        Assert.Equal(403, lockedVersionDelete.Error.SuggestedHttpStatusCode);
+    }
+
+    // Regression tests for issue #151: unversioned / suspended buckets must not stamp a minted
+    // x-amz-version-id, and suspended deletes must use the "null"-version delete-marker semantics.
+    [Fact]
+    public async Task DiskStorage_UnversionedBucket_PutAndDelete_UseNullVersionAndEmitNoVersionId()
+    {
+        await using var fixture = new DiskStorageFixture();
+        var storageService = fixture.Services.GetRequiredService<IStorageBackend>();
+        const string bucketName = "unversioned-null-version";
+        const string key = "docs/plain.txt";
+
+        Assert.True((await storageService.CreateBucketAsync(new CreateBucketRequest
+        {
+            BucketName = bucketName
+        })).IsSuccess);
+
+        await using (var v1 = new MemoryStream(Encoding.UTF8.GetBytes("first"))) {
+            var put1 = await storageService.PutObjectAsync(new PutObjectRequest
+            {
+                BucketName = bucketName,
+                Key = key,
+                Content = v1,
+                ContentType = "text/plain"
+            });
+            Assert.True(put1.IsSuccess);
+            // AWS returns no version id (the null version) for a bucket that never enabled versioning.
+            Assert.Null(put1.Value!.VersionId);
+        }
+
+        // Overwriting the object stays on the single null version; it never accumulates versions.
+        await using (var v2 = new MemoryStream(Encoding.UTF8.GetBytes("second"))) {
+            var put2 = await storageService.PutObjectAsync(new PutObjectRequest
+            {
+                BucketName = bucketName,
+                Key = key,
+                Content = v2,
+                ContentType = "text/plain"
+            });
+            Assert.True(put2.IsSuccess);
+            Assert.Null(put2.Value!.VersionId);
+        }
+
+        var head = await storageService.HeadObjectAsync(new HeadObjectRequest
+        {
+            BucketName = bucketName,
+            Key = key
+        });
+        Assert.True(head.IsSuccess);
+        Assert.Null(head.Value!.VersionId);
+
+        var versionsBeforeDelete = await storageService.ListObjectVersionsAsync(new ListObjectVersionsRequest
+        {
+            BucketName = bucketName
+        }).ToArrayAsync();
+        var onlyVersion = Assert.Single(versionsBeforeDelete);
+        Assert.Null(onlyVersion.VersionId);
+        Assert.False(onlyVersion.IsDeleteMarker);
+
+        // A delete with no version id on an unversioned bucket permanently removes the object; it
+        // must not create a delete marker and must not report a version id.
+        var delete = await storageService.DeleteObjectAsync(new DeleteObjectRequest
+        {
+            BucketName = bucketName,
+            Key = key
+        });
+        Assert.True(delete.IsSuccess);
+        Assert.False(delete.Value!.IsDeleteMarker);
+        Assert.Null(delete.Value.VersionId);
+
+        var afterDelete = await storageService.HeadObjectAsync(new HeadObjectRequest
+        {
+            BucketName = bucketName,
+            Key = key
+        });
+        Assert.False(afterDelete.IsSuccess);
+        Assert.Equal(StorageErrorCode.ObjectNotFound, afterDelete.Error!.Code);
+
+        var versionsAfterDelete = await storageService.ListObjectVersionsAsync(new ListObjectVersionsRequest
+        {
+            BucketName = bucketName
+        }).ToArrayAsync();
+        Assert.Empty(versionsAfterDelete);
+    }
+
+    [Fact]
+    public async Task DiskStorage_SuspendedBucket_DeleteMarker_UsesNullVersionAndOverwritesPriorNullDeleteMarker()
+    {
+        await using var fixture = new DiskStorageFixture();
+        var storageService = fixture.Services.GetRequiredService<IStorageBackend>();
+        const string bucketName = "suspended-null-delete-marker";
+        const string key = "docs/history.txt";
+
+        Assert.True((await storageService.CreateBucketAsync(new CreateBucketRequest
+        {
+            BucketName = bucketName,
+            EnableVersioning = true
+        })).IsSuccess);
+
+        // A real version minted while versioning is enabled must survive suspension.
+        string enabledVersionId;
+        await using (var enabled = new MemoryStream(Encoding.UTF8.GetBytes("enabled version"))) {
+            var enabledPut = await storageService.PutObjectAsync(new PutObjectRequest
+            {
+                BucketName = bucketName,
+                Key = key,
+                Content = enabled,
+                ContentType = "text/plain"
+            });
+            Assert.True(enabledPut.IsSuccess);
+            enabledVersionId = Assert.IsType<string>(enabledPut.Value!.VersionId);
+        }
+
+        Assert.True((await storageService.PutBucketVersioningAsync(new PutBucketVersioningRequest
+        {
+            BucketName = bucketName,
+            Status = BucketVersioningStatus.Suspended
+        })).IsSuccess);
+
+        // First suspended delete: inserts a null-version delete marker, preserving the real version.
+        var firstDelete = await storageService.DeleteObjectAsync(new DeleteObjectRequest
+        {
+            BucketName = bucketName,
+            Key = key
+        });
+        Assert.True(firstDelete.IsSuccess);
+        Assert.True(firstDelete.Value!.IsDeleteMarker);
+        Assert.Null(firstDelete.Value.VersionId);
+
+        var afterFirstDelete = await storageService.ListObjectVersionsAsync(new ListObjectVersionsRequest
+        {
+            BucketName = bucketName
+        }).ToArrayAsync();
+        // Exactly two entries: the retained real version + the single null-version delete marker.
+        Assert.Equal(2, afterFirstDelete.Length);
+        Assert.Single(afterFirstDelete, v => v.IsDeleteMarker && v.VersionId is null && v.IsLatest);
+        Assert.Single(afterFirstDelete, v => !v.IsDeleteMarker && v.VersionId == enabledVersionId);
+
+        // Re-write the null version, then delete again: the null-version delete marker is replaced in
+        // place (still exactly one null delete marker), never accumulating multiple null markers.
+        await using (var suspendedPut = new MemoryStream(Encoding.UTF8.GetBytes("suspended overwrite"))) {
+            var putBack = await storageService.PutObjectAsync(new PutObjectRequest
+            {
+                BucketName = bucketName,
+                Key = key,
+                Content = suspendedPut,
+                ContentType = "text/plain"
+            });
+            Assert.True(putBack.IsSuccess);
+            Assert.Null(putBack.Value!.VersionId);
+        }
+
+        var secondDelete = await storageService.DeleteObjectAsync(new DeleteObjectRequest
+        {
+            BucketName = bucketName,
+            Key = key
+        });
+        Assert.True(secondDelete.IsSuccess);
+        Assert.True(secondDelete.Value!.IsDeleteMarker);
+        Assert.Null(secondDelete.Value.VersionId);
+
+        var afterSecondDelete = await storageService.ListObjectVersionsAsync(new ListObjectVersionsRequest
+        {
+            BucketName = bucketName
+        }).ToArrayAsync();
+        // Still exactly one null-version delete marker (the prior one was overwritten), plus the
+        // retained enabled-era real version.
+        Assert.Equal(2, afterSecondDelete.Length);
+        Assert.Single(afterSecondDelete, v => v.IsDeleteMarker && v.VersionId is null && v.IsLatest);
+        Assert.Single(afterSecondDelete, v => !v.IsDeleteMarker && v.VersionId == enabledVersionId);
     }
 
     private static void AssertUnsupportedServerSideEncryption(StorageError? error, string bucketName, string objectKey)
@@ -4865,5 +5508,776 @@ public sealed class DiskStorageServiceTests
     private static string GetBucketMetadataPath(string rootPath, string bucketName)
     {
         return Path.Combine(rootPath, bucketName, ".integrateds3.bucket.json");
+    }
+
+    // ---- Regression tests for issue #147: multipart error family must map to distinct S3 codes ----
+
+    private static async Task<(string UploadId, MultipartUploadPart Part1, MultipartUploadPart Part2)> SeedTwoPartMultipartUploadAsync(
+        IStorageBackend storageService,
+        string bucketName,
+        string key)
+    {
+        await storageService.CreateBucketAsync(new CreateBucketRequest { BucketName = bucketName });
+
+        var initiate = await storageService.InitiateMultipartUploadAsync(new InitiateMultipartUploadRequest
+        {
+            BucketName = bucketName,
+            Key = key,
+            ContentType = "text/plain"
+        });
+        Assert.True(initiate.IsSuccess);
+
+        // The first (non-final) part must be at least the S3 minimum of 5 MiB so that
+        // completion reaches the caller's intended validation (missing part, ETag mismatch, ...).
+        await using var part1Stream = new MemoryStream(Encoding.UTF8.GetBytes(new string('a', 5 * 1024 * 1024)));
+        var part1 = await storageService.UploadMultipartPartAsync(new UploadMultipartPartRequest
+        {
+            BucketName = bucketName,
+            Key = key,
+            UploadId = initiate.Value!.UploadId,
+            PartNumber = 1,
+            Content = part1Stream
+        });
+        Assert.True(part1.IsSuccess);
+
+        await using var part2Stream = new MemoryStream(Encoding.UTF8.GetBytes("world"));
+        var part2 = await storageService.UploadMultipartPartAsync(new UploadMultipartPartRequest
+        {
+            BucketName = bucketName,
+            Key = key,
+            UploadId = initiate.Value.UploadId,
+            PartNumber = 2,
+            Content = part2Stream
+        });
+        Assert.True(part2.IsSuccess);
+
+        return (initiate.Value.UploadId, part1.Value!, part2.Value!);
+    }
+
+    [Fact]
+    public async Task DiskStorage_Complete_MissingPart_ReturnsInvalidPart()
+    {
+        await using var fixture = new DiskStorageFixture();
+        var storageService = fixture.Services.GetRequiredService<IStorageBackend>();
+        var (uploadId, part1, _) = await SeedTwoPartMultipartUploadAsync(storageService, "mp-invalidpart-missing", "docs/obj.txt");
+
+        // Reference a part number (3) that was never uploaded.
+        var completeResult = await storageService.CompleteMultipartUploadAsync(new CompleteMultipartUploadRequest
+        {
+            BucketName = "mp-invalidpart-missing",
+            Key = "docs/obj.txt",
+            UploadId = uploadId,
+            Parts =
+            [
+                part1,
+                new MultipartUploadPart { PartNumber = 3, ETag = "\"deadbeef\"", ContentLength = 0, LastModifiedUtc = default }
+            ]
+        });
+
+        Assert.False(completeResult.IsSuccess);
+        Assert.Equal(StorageErrorCode.InvalidPart, completeResult.Error!.Code);
+        Assert.Equal(400, completeResult.Error.SuggestedHttpStatusCode);
+    }
+
+    [Fact]
+    public async Task DiskStorage_Complete_ETagMismatch_ReturnsInvalidPart()
+    {
+        await using var fixture = new DiskStorageFixture();
+        var storageService = fixture.Services.GetRequiredService<IStorageBackend>();
+        var (uploadId, part1, part2) = await SeedTwoPartMultipartUploadAsync(storageService, "mp-invalidpart-etag", "docs/obj.txt");
+
+        var completeResult = await storageService.CompleteMultipartUploadAsync(new CompleteMultipartUploadRequest
+        {
+            BucketName = "mp-invalidpart-etag",
+            Key = "docs/obj.txt",
+            UploadId = uploadId,
+            Parts =
+            [
+                part1,
+                new MultipartUploadPart { PartNumber = part2.PartNumber, ETag = "\"0000000000000000000000000000ffff\"", ContentLength = 0, LastModifiedUtc = default }
+            ]
+        });
+
+        Assert.False(completeResult.IsSuccess);
+        Assert.Equal(StorageErrorCode.InvalidPart, completeResult.Error!.Code);
+        Assert.Equal(400, completeResult.Error.SuggestedHttpStatusCode);
+    }
+
+    [Fact]
+    public async Task DiskStorage_Complete_PartsNotAscending_ReturnsInvalidPartOrder()
+    {
+        await using var fixture = new DiskStorageFixture();
+        var storageService = fixture.Services.GetRequiredService<IStorageBackend>();
+        var (uploadId, part1, part2) = await SeedTwoPartMultipartUploadAsync(storageService, "mp-partorder-desc", "docs/obj.txt");
+
+        // Parts supplied in descending order must be rejected, not silently re-sorted.
+        var completeResult = await storageService.CompleteMultipartUploadAsync(new CompleteMultipartUploadRequest
+        {
+            BucketName = "mp-partorder-desc",
+            Key = "docs/obj.txt",
+            UploadId = uploadId,
+            Parts = [part2, part1]
+        });
+
+        Assert.False(completeResult.IsSuccess);
+        Assert.Equal(StorageErrorCode.InvalidPartOrder, completeResult.Error!.Code);
+        Assert.Equal(400, completeResult.Error.SuggestedHttpStatusCode);
+    }
+
+    [Fact]
+    public async Task DiskStorage_Complete_DuplicatePartNumbers_ReturnsInvalidPartOrder()
+    {
+        await using var fixture = new DiskStorageFixture();
+        var storageService = fixture.Services.GetRequiredService<IStorageBackend>();
+        var (uploadId, part1, _) = await SeedTwoPartMultipartUploadAsync(storageService, "mp-partorder-dup", "docs/obj.txt");
+
+        var completeResult = await storageService.CompleteMultipartUploadAsync(new CompleteMultipartUploadRequest
+        {
+            BucketName = "mp-partorder-dup",
+            Key = "docs/obj.txt",
+            UploadId = uploadId,
+            Parts = [part1, part1]
+        });
+
+        Assert.False(completeResult.IsSuccess);
+        Assert.Equal(StorageErrorCode.InvalidPartOrder, completeResult.Error!.Code);
+        Assert.Equal(400, completeResult.Error.SuggestedHttpStatusCode);
+    }
+
+    [Fact]
+    public async Task DiskStorage_UploadPart_PartNumberAboveMaximum_ReturnsInvalidArgument()
+    {
+        await using var fixture = new DiskStorageFixture();
+        var storageService = fixture.Services.GetRequiredService<IStorageBackend>();
+        await storageService.CreateBucketAsync(new CreateBucketRequest { BucketName = "mp-partrange" });
+
+        var initiate = await storageService.InitiateMultipartUploadAsync(new InitiateMultipartUploadRequest
+        {
+            BucketName = "mp-partrange",
+            Key = "docs/obj.txt"
+        });
+        Assert.True(initiate.IsSuccess);
+
+        await using var partStream = new MemoryStream(Encoding.UTF8.GetBytes("payload"));
+        var uploadResult = await storageService.UploadMultipartPartAsync(new UploadMultipartPartRequest
+        {
+            BucketName = "mp-partrange",
+            Key = "docs/obj.txt",
+            UploadId = initiate.Value!.UploadId,
+            PartNumber = 10001,
+            Content = partStream
+        });
+
+        Assert.False(uploadResult.IsSuccess);
+        Assert.Equal(StorageErrorCode.InvalidArgument, uploadResult.Error!.Code);
+        Assert.Equal(400, uploadResult.Error.SuggestedHttpStatusCode);
+    }
+
+    [Fact]
+    public async Task DiskStorage_UploadPart_UnknownUploadId_ReturnsNoSuchUpload()
+    {
+        await using var fixture = new DiskStorageFixture();
+        var storageService = fixture.Services.GetRequiredService<IStorageBackend>();
+        await storageService.CreateBucketAsync(new CreateBucketRequest { BucketName = "mp-nosuchupload-uploadpart" });
+
+        await using var partStream = new MemoryStream(Encoding.UTF8.GetBytes("payload"));
+        var uploadResult = await storageService.UploadMultipartPartAsync(new UploadMultipartPartRequest
+        {
+            BucketName = "mp-nosuchupload-uploadpart",
+            Key = "docs/obj.txt",
+            UploadId = "00000000000000000000000000000000",
+            PartNumber = 1,
+            Content = partStream
+        });
+
+        Assert.False(uploadResult.IsSuccess);
+        Assert.Equal(StorageErrorCode.NoSuchUpload, uploadResult.Error!.Code);
+        Assert.Equal(404, uploadResult.Error.SuggestedHttpStatusCode);
+    }
+
+    [Fact]
+    public async Task DiskStorage_Abort_UnknownUploadId_ReturnsNoSuchUpload()
+    {
+        await using var fixture = new DiskStorageFixture();
+        var storageService = fixture.Services.GetRequiredService<IStorageBackend>();
+        await storageService.CreateBucketAsync(new CreateBucketRequest { BucketName = "mp-nosuchupload-abort" });
+
+        var abortResult = await storageService.AbortMultipartUploadAsync(new AbortMultipartUploadRequest
+        {
+            BucketName = "mp-nosuchupload-abort",
+            Key = "docs/obj.txt",
+            UploadId = "00000000000000000000000000000000"
+        });
+
+        Assert.False(abortResult.IsSuccess);
+        Assert.Equal(StorageErrorCode.NoSuchUpload, abortResult.Error!.Code);
+        Assert.Equal(404, abortResult.Error.SuggestedHttpStatusCode);
+    }
+
+    [Fact]
+    public async Task DiskStorage_Complete_UnknownUploadId_ReturnsNoSuchUpload()
+    {
+        await using var fixture = new DiskStorageFixture();
+        var storageService = fixture.Services.GetRequiredService<IStorageBackend>();
+        await storageService.CreateBucketAsync(new CreateBucketRequest { BucketName = "mp-nosuchupload-complete" });
+
+        var completeResult = await storageService.CompleteMultipartUploadAsync(new CompleteMultipartUploadRequest
+        {
+            BucketName = "mp-nosuchupload-complete",
+            Key = "docs/obj.txt",
+            UploadId = "00000000000000000000000000000000",
+            Parts = [new MultipartUploadPart { PartNumber = 1, ETag = "\"deadbeef\"", ContentLength = 0, LastModifiedUtc = default }]
+        });
+
+        Assert.False(completeResult.IsSuccess);
+        Assert.Equal(StorageErrorCode.NoSuchUpload, completeResult.Error!.Code);
+        Assert.Equal(404, completeResult.Error.SuggestedHttpStatusCode);
+    }
+
+    // ---- Regression tests for issue #120: TOCTOU delete/overwrite races on lock-free reads ----
+
+    // Locates the on-disk content file for a freshly-Put object by finding the sibling of the
+    // metadata sidecar (content path == sidecar path minus the metadata suffix). This lets the
+    // test reproduce the exact TOCTOU window the provider races: metadata still present, but the
+    // content file deleted out from under the lock-free read/copy-source open.
+    private static string FindObjectContentPath(string rootPath, string bucketName)
+    {
+        var bucketPath = Path.Combine(rootPath, bucketName);
+        const string metadataSuffix = ".integrateds3.json";
+        var sidecar = Directory
+            .EnumerateFiles(bucketPath, "*" + metadataSuffix, SearchOption.AllDirectories)
+            .First(path => !Path.GetFileName(path).StartsWith(".integrateds3.", StringComparison.Ordinal));
+        return sidecar[..^metadataSuffix.Length];
+    }
+
+    [Fact]
+    public async Task DiskStorage_GetObject_ContentFileDeletedAfterResolve_ReturnsNoSuchKeyNot500()
+    {
+        await using var fixture = new DiskStorageFixture();
+        var storageService = fixture.Services.GetRequiredService<IStorageBackend>();
+        await storageService.CreateBucketAsync(new CreateBucketRequest { BucketName = "toctou-get" });
+
+        await using (var uploadStream = new MemoryStream(Encoding.UTF8.GetBytes("racy content"))) {
+            var put = await storageService.PutObjectAsync(new PutObjectRequest
+            {
+                BucketName = "toctou-get",
+                Key = "race.txt",
+                Content = uploadStream,
+                ContentType = "text/plain"
+            });
+            Assert.True(put.IsSuccess);
+        }
+
+        // Simulate a concurrent DeleteObject landing between ResolveStoredObjectAsync and the
+        // lock-free content-file open: remove only the content file, leaving metadata intact so
+        // the object still resolves. Before the fix the open threw FileNotFoundException, which
+        // surfaced as an InternalError (500); after the fix it must translate to NoSuchKey (404).
+        var contentPath = FindObjectContentPath(fixture.RootPath, "toctou-get");
+        File.Delete(contentPath);
+
+        var getResult = await storageService.GetObjectAsync(new GetObjectRequest
+        {
+            BucketName = "toctou-get",
+            Key = "race.txt"
+        });
+
+        Assert.False(getResult.IsSuccess);
+        Assert.Equal(StorageErrorCode.ObjectNotFound, getResult.Error!.Code);
+        Assert.Equal(404, getResult.Error.SuggestedHttpStatusCode);
+    }
+
+    [Fact]
+    public async Task DiskStorage_CopyObject_SourceContentFileDeletedAfterResolve_ReturnsNoSuchKeyNot500()
+    {
+        await using var fixture = new DiskStorageFixture();
+        var storageService = fixture.Services.GetRequiredService<IStorageBackend>();
+        await storageService.CreateBucketAsync(new CreateBucketRequest { BucketName = "toctou-copy" });
+
+        await using (var uploadStream = new MemoryStream(Encoding.UTF8.GetBytes("copy source"))) {
+            var put = await storageService.PutObjectAsync(new PutObjectRequest
+            {
+                BucketName = "toctou-copy",
+                Key = "src.txt",
+                Content = uploadStream,
+                ContentType = "text/plain"
+            });
+            Assert.True(put.IsSuccess);
+        }
+
+        // CopyObject opens the source content file while holding only the destination lock, never
+        // the source lock. Deleting the source content file (metadata intact) reproduces that race;
+        // the losing copy must return NoSuchKey (404) rather than an InternalError (500).
+        var sourceContentPath = FindObjectContentPath(fixture.RootPath, "toctou-copy");
+        File.Delete(sourceContentPath);
+
+        var copyResult = await storageService.CopyObjectAsync(new CopyObjectRequest
+        {
+            SourceBucketName = "toctou-copy",
+            SourceKey = "src.txt",
+            DestinationBucketName = "toctou-copy",
+            DestinationKey = "dst.txt"
+        });
+
+        Assert.False(copyResult.IsSuccess);
+        Assert.Equal(StorageErrorCode.ObjectNotFound, copyResult.Error!.Code);
+        Assert.Equal(404, copyResult.Error.SuggestedHttpStatusCode);
+    }
+
+    [Fact]
+    public async Task DiskStorage_GetObject_ReaderSharesDeleteSoUnderlyingFileCanBeRemovedWhileOpen()
+    {
+        await using var fixture = new DiskStorageFixture();
+        var storageService = fixture.Services.GetRequiredService<IStorageBackend>();
+        await storageService.CreateBucketAsync(new CreateBucketRequest { BucketName = "fileshare-delete" });
+
+        await using (var uploadStream = new MemoryStream(Encoding.UTF8.GetBytes("still readable"))) {
+            var put = await storageService.PutObjectAsync(new PutObjectRequest
+            {
+                BucketName = "fileshare-delete",
+                Key = "open.txt",
+                Content = uploadStream,
+                ContentType = "text/plain"
+            });
+            Assert.True(put.IsSuccess);
+        }
+
+        var getResult = await storageService.GetObjectAsync(new GetObjectRequest
+        {
+            BucketName = "fileshare-delete",
+            Key = "open.txt"
+        });
+        Assert.True(getResult.IsSuccess);
+
+        var contentPath = FindObjectContentPath(fixture.RootPath, "fileshare-delete");
+
+        await using var response = getResult.Value!;
+
+        // The read stream must have been opened with FileShare.Delete: on Windows, deleting (or a
+        // writer's File.Move overwrite of) the underlying file while a reader holds the handle only
+        // succeeds when the reader shares Delete. Without it this File.Delete throws IOException.
+        var exception = Record.Exception(() => File.Delete(contentPath));
+        Assert.Null(exception);
+
+        // The already-open reader keeps its handle and can still stream the full content even after
+        // the directory entry is unlinked.
+        using var reader = new StreamReader(response.Content, Encoding.UTF8, leaveOpen: false);
+        Assert.Equal("still readable", await reader.ReadToEndAsync());
+    }
+
+    private static string ComputeContentMd5Hex(byte[] content)
+    {
+        return Convert.ToHexStringLower(System.Security.Cryptography.MD5.HashData(content));
+    }
+
+    private static string ComputeContentMd5Hex(string content)
+    {
+        return ComputeContentMd5Hex(Encoding.UTF8.GetBytes(content));
+    }
+
+    [Fact]
+    public async Task DiskStorage_PutObject_ETagIsContentMd5Hex()
+    {
+        await using var fixture = new DiskStorageFixture();
+        var storageService = fixture.Services.GetRequiredService<IStorageBackend>();
+        await storageService.CreateBucketAsync(new CreateBucketRequest { BucketName = "etag-md5" });
+
+        const string payload = "hello integrated s3";
+        await using var uploadStream = new MemoryStream(Encoding.UTF8.GetBytes(payload));
+        var putResult = await storageService.PutObjectAsync(new PutObjectRequest
+        {
+            BucketName = "etag-md5",
+            Key = "docs/hello.txt",
+            Content = uploadStream,
+            ContentType = "text/plain"
+        });
+
+        Assert.True(putResult.IsSuccess);
+
+        // The single-part ETag must be the lowercase-hex MD5 of the content (S3 contract), not the
+        // old "<length:x>-<mtimeTicks:x>" string. This is a known-content -> known-MD5 assertion.
+        var expectedETag = ComputeContentMd5Hex(payload);
+        Assert.Equal(expectedETag, putResult.Value!.ETag);
+
+        // HeadObject must return the same persisted content ETag.
+        var headResult = await storageService.HeadObjectAsync(new HeadObjectRequest
+        {
+            BucketName = "etag-md5",
+            Key = "docs/hello.txt"
+        });
+        Assert.True(headResult.IsSuccess);
+        Assert.Equal(expectedETag, headResult.Value!.ETag);
+    }
+
+    // Regression for issue #122: PutObject hashes the body inline while streaming it to disk and
+    // computes only the requested checksum (plus the MD5 needed for the ETag), instead of a separate
+    // full re-read that computes all five digests. This exercises a multi-chunk payload larger than
+    // the 81920-byte streaming buffer so a broken inline tee (dropped/duplicated chunk, or a stale
+    // re-read) would corrupt the ETag/CRC or content and fail here.
+    [Fact]
+    public async Task DiskStorage_PutObject_WithRequestedChecksum_HashesInlineAndPersistsOnlyRequested()
+    {
+        await using var fixture = new DiskStorageFixture();
+        var storageService = fixture.Services.GetRequiredService<IStorageBackend>();
+        await storageService.CreateBucketAsync(new CreateBucketRequest { BucketName = "inline-hash" });
+
+        // Larger than the 81920-byte copy/hash buffer so the streaming tee loops over several chunks.
+        // Restrict to printable ASCII so the UTF-8 bytes equal the raw bytes, letting the shared
+        // string-based checksum helpers compute the expected digests over the same bytes on disk.
+        var builder = new StringBuilder(81920 * 2 + 12345);
+        const string alphabet = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+        for (var i = 0; i < 81920 * 2 + 12345; i++) {
+            builder.Append(alphabet[i % alphabet.Length]);
+        }
+        var payload = builder.ToString();
+        var payloadBytes = Encoding.UTF8.GetBytes(payload);
+        var expectedCrc32c = ComputeCrc32cBase64(payload);
+        var expectedETag = ComputeContentMd5Hex(payloadBytes);
+
+        await using var uploadStream = new MemoryStream(payloadBytes);
+        var putResult = await storageService.PutObjectAsync(new PutObjectRequest
+        {
+            BucketName = "inline-hash",
+            Key = "docs/large.bin",
+            Content = uploadStream,
+            ContentType = "application/octet-stream",
+            Checksums = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["crc32c"] = expectedCrc32c
+            }
+        });
+
+        Assert.True(putResult.IsSuccess);
+        // MD5 is still computed inline (never persisted here) so the ETag stays the content MD5.
+        Assert.Equal(expectedETag, putResult.Value!.ETag);
+        // Only the requested CRC32C digest is persisted, not all five.
+        Assert.NotNull(putResult.Value.Checksums);
+        Assert.Single(putResult.Value.Checksums!);
+        Assert.Equal(expectedCrc32c, putResult.Value.Checksums!["crc32c"]);
+        Assert.False(putResult.Value.Checksums.ContainsKey("sha256"));
+
+        // The bytes written by the inline tee must be exactly the uploaded content.
+        var getResult = await storageService.GetObjectAsync(new GetObjectRequest
+        {
+            BucketName = "inline-hash",
+            Key = "docs/large.bin"
+        });
+        Assert.True(getResult.IsSuccess);
+        await using var response = getResult.Value!;
+        await using var roundTrip = new MemoryStream();
+        await response.Content.CopyToAsync(roundTrip);
+        Assert.Equal(payloadBytes, roundTrip.ToArray());
+        Assert.Equal(expectedETag, response.Object.ETag);
+
+        // A mismatched CRC32C on an otherwise identical PUT must still be rejected (validation intact).
+        await using var mismatchStream = new MemoryStream(payloadBytes);
+        var mismatchResult = await storageService.PutObjectAsync(new PutObjectRequest
+        {
+            BucketName = "inline-hash",
+            Key = "docs/large.bin",
+            Content = mismatchStream,
+            ContentType = "application/octet-stream",
+            Checksums = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["crc32c"] = ComputeCrc32cBase64("not the payload")
+            }
+        });
+        Assert.False(mismatchResult.IsSuccess);
+        Assert.Equal(IntegratedS3.Abstractions.Errors.StorageErrorCode.InvalidChecksum, mismatchResult.Error!.Code);
+    }
+
+    [Fact]
+    public async Task DiskStorage_ObjectETag_IsStableAcrossFilesystemMtimeChange()
+    {
+        await using var fixture = new DiskStorageFixture();
+        var storageService = fixture.Services.GetRequiredService<IStorageBackend>();
+        await storageService.CreateBucketAsync(new CreateBucketRequest { BucketName = "etag-mtime" });
+
+        const string payload = "content that must keep its etag";
+        await using (var uploadStream = new MemoryStream(Encoding.UTF8.GetBytes(payload))) {
+            var putResult = await storageService.PutObjectAsync(new PutObjectRequest
+            {
+                BucketName = "etag-mtime",
+                Key = "docs/stable.txt",
+                Content = uploadStream,
+                ContentType = "text/plain"
+            });
+            Assert.True(putResult.IsSuccess);
+        }
+
+        var expectedETag = ComputeContentMd5Hex(payload);
+
+        // Simulate any external process (backup, AV, replication/copy) resetting the content file's
+        // last-write time. With a content-derived ETag the value must not move; the old size+mtime
+        // ETag would change here and break conditional requests and integrity checks.
+        var contentPath = FindObjectContentPath(fixture.RootPath, "etag-mtime");
+        File.SetLastWriteTimeUtc(contentPath, new DateTime(2000, 1, 1, 0, 0, 0, DateTimeKind.Utc));
+
+        var headResult = await storageService.HeadObjectAsync(new HeadObjectRequest
+        {
+            BucketName = "etag-mtime",
+            Key = "docs/stable.txt"
+        });
+
+        Assert.True(headResult.IsSuccess);
+        Assert.Equal(expectedETag, headResult.Value!.ETag);
+    }
+
+    [Fact]
+    public async Task DiskStorage_UploadPart_ETagIsPartContentMd5Hex()
+    {
+        await using var fixture = new DiskStorageFixture();
+        var storageService = fixture.Services.GetRequiredService<IStorageBackend>();
+        await storageService.CreateBucketAsync(new CreateBucketRequest { BucketName = "part-etag" });
+
+        var initiateResult = await storageService.InitiateMultipartUploadAsync(new InitiateMultipartUploadRequest
+        {
+            BucketName = "part-etag",
+            Key = "docs/assembled.bin",
+            ContentType = "application/octet-stream"
+        });
+        Assert.True(initiateResult.IsSuccess);
+
+        var partBytes = new byte[5 * 1024 * 1024];
+        for (var i = 0; i < partBytes.Length; i++) {
+            partBytes[i] = (byte)(i % 251);
+        }
+
+        await using var partStream = new MemoryStream(partBytes);
+        var part = await storageService.UploadMultipartPartAsync(new UploadMultipartPartRequest
+        {
+            BucketName = "part-etag",
+            Key = "docs/assembled.bin",
+            UploadId = initiateResult.Value!.UploadId,
+            PartNumber = 1,
+            Content = partStream
+        });
+
+        Assert.True(part.IsSuccess);
+        Assert.Equal(ComputeContentMd5Hex(partBytes), part.Value!.ETag);
+    }
+
+    [Fact]
+    public async Task DiskStorage_CompleteMultipart_ETagIsCompositeMd5WithPartCount()
+    {
+        await using var fixture = new DiskStorageFixture();
+        var storageService = fixture.Services.GetRequiredService<IStorageBackend>();
+        await storageService.CreateBucketAsync(new CreateBucketRequest { BucketName = "composite-etag" });
+
+        var initiateResult = await storageService.InitiateMultipartUploadAsync(new InitiateMultipartUploadRequest
+        {
+            BucketName = "composite-etag",
+            Key = "docs/assembled.bin",
+            ContentType = "application/octet-stream"
+        });
+        Assert.True(initiateResult.IsSuccess);
+
+        // Two parts: the first must meet the 5 MiB S3 minimum, the last may be small.
+        var part1Bytes = new byte[5 * 1024 * 1024];
+        for (var i = 0; i < part1Bytes.Length; i++) {
+            part1Bytes[i] = (byte)(i % 97);
+        }
+
+        var part2Bytes = Encoding.UTF8.GetBytes("final tiny part");
+
+        await using var part1Stream = new MemoryStream(part1Bytes);
+        var part1 = await storageService.UploadMultipartPartAsync(new UploadMultipartPartRequest
+        {
+            BucketName = "composite-etag",
+            Key = "docs/assembled.bin",
+            UploadId = initiateResult.Value!.UploadId,
+            PartNumber = 1,
+            Content = part1Stream
+        });
+
+        await using var part2Stream = new MemoryStream(part2Bytes);
+        var part2 = await storageService.UploadMultipartPartAsync(new UploadMultipartPartRequest
+        {
+            BucketName = "composite-etag",
+            Key = "docs/assembled.bin",
+            UploadId = initiateResult.Value!.UploadId,
+            PartNumber = 2,
+            Content = part2Stream
+        });
+
+        Assert.True(part1.IsSuccess);
+        Assert.True(part2.IsSuccess);
+
+        // Touch a part file's mtime before completion: with content-derived part ETags this must not
+        // produce a spurious InvalidPart, because part validation no longer depends on mtime.
+        var partsDirectory = Directory
+            .EnumerateDirectories(Path.Combine(fixture.RootPath, ".integrateds3-multipart"), "parts", SearchOption.AllDirectories)
+            .FirstOrDefault();
+        if (partsDirectory is not null) {
+            foreach (var partFile in Directory.EnumerateFiles(partsDirectory, "*.part")) {
+                File.SetLastWriteTimeUtc(partFile, new DateTime(2001, 2, 3, 4, 5, 6, DateTimeKind.Utc));
+            }
+        }
+
+        var completeResult = await storageService.CompleteMultipartUploadAsync(new CompleteMultipartUploadRequest
+        {
+            BucketName = "composite-etag",
+            Key = "docs/assembled.bin",
+            UploadId = initiateResult.Value!.UploadId,
+            Parts = [part1.Value!, part2.Value!]
+        });
+
+        Assert.True(completeResult.IsSuccess);
+
+        // Expected composite ETag: hex(MD5(concat(part MD5 bytes)))-<partCount>.
+        var concatenatedPartMd5 = System.Security.Cryptography.MD5.HashData(part1Bytes)
+            .Concat(System.Security.Cryptography.MD5.HashData(part2Bytes))
+            .ToArray();
+        var expectedETag = $"{Convert.ToHexStringLower(System.Security.Cryptography.MD5.HashData(concatenatedPartMd5))}-2";
+
+        Assert.Equal(expectedETag, completeResult.Value!.ETag);
+        Assert.Matches(@"^[0-9a-f]{32}-\d+$", completeResult.Value.ETag!);
+
+        // The persisted composite ETag must survive a re-read via HeadObject.
+        var headResult = await storageService.HeadObjectAsync(new HeadObjectRequest
+        {
+            BucketName = "composite-etag",
+            Key = "docs/assembled.bin"
+        });
+        Assert.True(headResult.IsSuccess);
+        Assert.Equal(expectedETag, headResult.Value!.ETag);
+    }
+
+    [Fact]
+    public async Task DiskStorage_ConcurrentSamePartNumberUploads_EachETagMatchesOwnBytesAndPersistedPartIsWhole()
+    {
+        // Regression for #124: two concurrent UploadPart calls for the same (uploadId, partNumber)
+        // with different payloads race on the shared, part-number-keyed final path. Previously the
+        // response ETag/checksum/length was derived by re-reading that shared path AFTER File.Move,
+        // so one caller could return metadata describing the OTHER caller's bytes (or a torn mix).
+        // The fix captures each call's metadata from its own exclusively-owned temp file before the
+        // atomic publish, so each response always describes the bytes that call wrote, and the
+        // persisted part is always exactly one caller's complete bytes (never torn).
+        await using var fixture = new DiskStorageFixture();
+        var storageService = fixture.Services.GetRequiredService<IStorageBackend>();
+        await storageService.CreateBucketAsync(new CreateBucketRequest { BucketName = "same-part-race" });
+
+        // Many iterations to reliably hit the interleaving window between the two publishes and the
+        // (previously) shared-path re-reads.
+        for (var iteration = 0; iteration < 80; iteration++)
+        {
+            var key = $"docs/race-{iteration}.txt";
+            var initiateResult = await storageService.InitiateMultipartUploadAsync(new InitiateMultipartUploadRequest
+            {
+                BucketName = "same-part-race",
+                Key = key,
+                ChecksumAlgorithm = "SHA256"
+            });
+            Assert.True(initiateResult.IsSuccess);
+            var uploadId = initiateResult.Value!.UploadId;
+
+            // Two distinct payloads of different lengths, so a torn/other-caller read is detectable
+            // via ETag, sha256, AND ContentLength.
+            var payloadA = $"AAAA-payload-alpha-{iteration}-{new string('a', 37)}";
+            var payloadB = $"BB-payload-beta-{iteration}";
+            var bytesA = Encoding.UTF8.GetBytes(payloadA);
+            var bytesB = Encoding.UTF8.GetBytes(payloadB);
+            var checksumA = ComputeSha256Base64(payloadA);
+            var checksumB = ComputeSha256Base64(payloadB);
+            var expectedEtagA = Convert.ToHexStringLower(System.Security.Cryptography.MD5.HashData(bytesA));
+            var expectedEtagB = Convert.ToHexStringLower(System.Security.Cryptography.MD5.HashData(bytesB));
+
+            var uploadA = Task.Run(async () =>
+            {
+                await using var stream = new MemoryStream(bytesA);
+                return await storageService.UploadMultipartPartAsync(new UploadMultipartPartRequest
+                {
+                    BucketName = "same-part-race",
+                    Key = key,
+                    UploadId = uploadId,
+                    PartNumber = 1,
+                    Content = stream,
+                    ChecksumAlgorithm = "SHA256",
+                    Checksums = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+                    {
+                        ["sha256"] = checksumA
+                    }
+                });
+            });
+
+            var uploadB = Task.Run(async () =>
+            {
+                await using var stream = new MemoryStream(bytesB);
+                return await storageService.UploadMultipartPartAsync(new UploadMultipartPartRequest
+                {
+                    BucketName = "same-part-race",
+                    Key = key,
+                    UploadId = uploadId,
+                    PartNumber = 1,
+                    Content = stream,
+                    ChecksumAlgorithm = "SHA256",
+                    Checksums = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+                    {
+                        ["sha256"] = checksumB
+                    }
+                });
+            });
+
+            var resultA = await uploadA;
+            var resultB = await uploadB;
+
+            Assert.True(resultA.IsSuccess, $"Upload A failed: {resultA.Error?.Code}");
+            Assert.True(resultB.IsSuccess, $"Upload B failed: {resultB.Error?.Code}");
+
+            // Core invariant: each response describes THIS call's own bytes — ETag, checksum, and
+            // length — regardless of who published last. On the pre-fix code, a lost race makes one
+            // of these assertions observe the other caller's bytes.
+            Assert.Equal(expectedEtagA, resultA.Value!.ETag);
+            Assert.Equal(bytesA.Length, resultA.Value.ContentLength);
+            Assert.Equal(ComputeSha256Base64(payloadA), resultA.Value.Checksums!["sha256"]);
+
+            Assert.Equal(expectedEtagB, resultB.Value!.ETag);
+            Assert.Equal(bytesB.Length, resultB.Value.ContentLength);
+            Assert.Equal(ComputeSha256Base64(payloadB), resultB.Value.Checksums!["sha256"]);
+
+            // The persisted part is exactly one caller's whole bytes (atomic rename => never torn).
+            // Completing with the winning caller's returned part must succeed and reproduce that
+            // caller's exact payload; the losing caller's ETag no longer matches the persisted part.
+            var completeWithA = await storageService.CompleteMultipartUploadAsync(new CompleteMultipartUploadRequest
+            {
+                BucketName = "same-part-race",
+                Key = key,
+                UploadId = uploadId,
+                Parts = [resultA.Value]
+            });
+
+            string winnerPayload;
+            if (completeWithA.IsSuccess)
+            {
+                winnerPayload = payloadA;
+            }
+            else
+            {
+                // A lost: its ETag must not match the persisted part; B won and must complete cleanly.
+                Assert.Equal(StorageErrorCode.InvalidPart, completeWithA.Error!.Code);
+                var completeWithB = await storageService.CompleteMultipartUploadAsync(new CompleteMultipartUploadRequest
+                {
+                    BucketName = "same-part-race",
+                    Key = key,
+                    UploadId = uploadId,
+                    Parts = [resultB.Value]
+                });
+                Assert.True(completeWithB.IsSuccess, $"Complete with B failed: {completeWithB.Error?.Code}");
+                winnerPayload = payloadB;
+            }
+
+            var getResult = await storageService.GetObjectAsync(new GetObjectRequest
+            {
+                BucketName = "same-part-race",
+                Key = key
+            });
+            Assert.True(getResult.IsSuccess);
+            await using (var response = getResult.Value!)
+            {
+                using var reader = new StreamReader(response.Content, Encoding.UTF8, leaveOpen: false);
+                var content = await reader.ReadToEndAsync();
+                // Persisted object is exactly one caller's whole payload — never a torn mix.
+                Assert.Equal(winnerPayload, content);
+            }
+        }
     }
 }

@@ -1,4 +1,7 @@
-using Amazon.S3;
+using System.IO;
+using System.Net.Http;
+using System.Net.Sockets;
+using Amazon.Runtime;
 using IntegratedS3.Abstractions.Errors;
 
 namespace IntegratedS3.Provider.S3.Internal;
@@ -6,7 +9,7 @@ namespace IntegratedS3.Provider.S3.Internal;
 internal static class S3ErrorTranslator
 {
     public static StorageError Translate(
-        AmazonS3Exception ex,
+        AmazonServiceException ex,
         string providerName,
         string? bucketName = null,
         string? objectKey = null)
@@ -34,7 +37,7 @@ internal static class S3ErrorTranslator
                  $"Bucket '{bucketName}' does not have a default encryption configuration."),
 
             "NoSuchUpload" =>
-                (StorageErrorCode.MultipartConflict,
+                (StorageErrorCode.NoSuchUpload,
                  $"Multipart upload for object '{objectKey}' in bucket '{bucketName}' does not exist or is no longer active."),
 
             "BucketAlreadyExists" =>
@@ -42,8 +45,8 @@ internal static class S3ErrorTranslator
                  $"Bucket '{bucketName}' already exists (owned by another account)."),
 
             "BucketAlreadyOwnedByYou" =>
-                (StorageErrorCode.BucketAlreadyExists,
-                 $"Bucket '{bucketName}' already exists and is owned by you."),
+                (StorageErrorCode.BucketAlreadyOwnedByYou,
+                 $"Your previous request to create the named bucket '{bucketName}' succeeded and you already own it."),
 
             "BadDigest" =>
                 (StorageErrorCode.InvalidChecksum,
@@ -65,6 +68,10 @@ internal static class S3ErrorTranslator
                 (StorageErrorCode.BucketNotEmpty,
                  $"Bucket '{bucketName}' is not empty and cannot be deleted."),
 
+            "OperationAborted" =>
+                (StorageErrorCode.VersionConflict,
+                 $"A conflicting operation prevented the request on bucket '{bucketName}' from completing: {ex.Message}"),
+
             "PreconditionFailed" =>
                 (StorageErrorCode.PreconditionFailed,
                  !string.IsNullOrEmpty(objectKey)
@@ -78,12 +85,18 @@ internal static class S3ErrorTranslator
                      : ex.Message),
 
             "InvalidPart" =>
-                (StorageErrorCode.MultipartConflict,
+                (StorageErrorCode.InvalidPart,
                  $"One or more multipart parts for object '{objectKey}' in bucket '{bucketName}' were missing or had mismatched ETags/checksums."),
 
             "InvalidPartOrder" =>
-                (StorageErrorCode.MultipartConflict,
+                (StorageErrorCode.InvalidPartOrder,
                  $"Multipart parts for object '{objectKey}' in bucket '{bucketName}' were not supplied in ascending part-number order."),
+
+            "InvalidArgument" =>
+                (StorageErrorCode.InvalidArgument,
+                 !string.IsNullOrEmpty(objectKey)
+                     ? $"An argument supplied for object '{objectKey}' in bucket '{bucketName}' was invalid: {ex.Message}"
+                     : ex.Message),
 
             "EntityTooSmall" =>
                 (StorageErrorCode.MultipartConflict,
@@ -125,9 +138,14 @@ internal static class S3ErrorTranslator
                 (StorageErrorCode.MultipartConflict,
                  $"A conflicting operation prevented the request for object '{objectKey}' in bucket '{bucketName}' from completing: {ex.Message}"),
 
+            // A bare 409 with no recognized S3 error code is a generic conflict — most commonly an
+            // aborted/conflicting operation on the bucket. It is NOT a bucket-name collision (those
+            // arrive as the named "BucketAlreadyExists"/"BucketAlreadyOwnedByYou" arms above), so it
+            // must not be relabeled as one. Route it to a neutral conflict code (surfaced on the wire
+            // as "OperationAborted") to keep the S3 code, message, and metrics accurate.
             _ when (int)ex.StatusCode == 409 =>
-                (StorageErrorCode.BucketAlreadyExists,
-                 $"Bucket '{bucketName}' already exists."),
+                (StorageErrorCode.VersionConflict,
+                 $"A conflicting operation prevented the request on bucket '{bucketName}' from completing: {ex.Message}"),
 
             _ when (int)ex.StatusCode == 503 =>
                 (StorageErrorCode.ProviderUnavailable,
@@ -136,6 +154,19 @@ internal static class S3ErrorTranslator
             _ when (int)ex.StatusCode == 429 =>
                 (StorageErrorCode.Throttled,
                  $"S3 provider '{providerName}' is throttling requests: {ex.Message}"),
+
+            // Any other 5xx from the upstream (including a bare AmazonServiceException with a
+            // 500-class status but no recognized S3 error code) is a transient provider fault.
+            _ when (int)ex.StatusCode >= 500 =>
+                (StorageErrorCode.ProviderUnavailable,
+                 $"S3 provider '{providerName}' is temporarily unavailable: {ex.Message}"),
+
+            // A service exception with no HTTP status (StatusCode == 0) means the request never
+            // completed against the upstream — a transport-level failure (connection reset,
+            // timeout, DNS/TLS error) surfaced by the AWS SDK as AmazonServiceException.
+            _ when (int)ex.StatusCode == 0 =>
+                (StorageErrorCode.ProviderUnavailable,
+                 $"S3 provider '{providerName}' could not be reached: {ex.Message}"),
 
             _ => (StorageErrorCode.Unknown, ex.Message)
         };
@@ -147,7 +178,73 @@ internal static class S3ErrorTranslator
             BucketName = bucketName,
             ObjectKey = objectKey,
             ProviderName = providerName,
-            SuggestedHttpStatusCode = (int)ex.StatusCode
+            SuggestedHttpStatusCode = MapSuggestedStatus(code, (int)ex.StatusCode)
+        };
+    }
+
+    /// <summary>
+    /// Translates a raw transport-layer exception (connection reset, timeout, DNS/TLS failure)
+    /// that the AWS SDK surfaced without an <see cref="AmazonServiceException"/> wrapper — for
+    /// example <see cref="HttpRequestException"/>, <see cref="IOException"/>,
+    /// <see cref="SocketException"/>, or a non-cancellation <see cref="TaskCanceledException"/>
+    /// (request timeout) — into a retryable <see cref="StorageErrorCode.ProviderUnavailable"/>
+    /// error. The originating exception is preserved in the message so it is not swallowed.
+    /// </summary>
+    public static StorageError TranslateTransport(
+        Exception ex,
+        string providerName,
+        string? bucketName = null,
+        string? objectKey = null)
+    {
+        return new StorageError
+        {
+            Code = StorageErrorCode.ProviderUnavailable,
+            Message = $"S3 provider '{providerName}' could not be reached: {ex.Message}",
+            BucketName = bucketName,
+            ObjectKey = objectKey,
+            ProviderName = providerName,
+            SuggestedHttpStatusCode = 503
+        };
+    }
+
+    /// <summary>
+    /// Determines whether <paramref name="ex"/> is a raw transport-layer failure that should be
+    /// translated into a retryable provider error rather than propagated untranslated. Returns
+    /// <see langword="false"/> for cancellation triggered by the caller's
+    /// <paramref name="cancellationToken"/> so that genuine caller cancellation is re-thrown and
+    /// not misreported as a provider fault.
+    /// </summary>
+    public static bool IsTransportFailure(Exception ex, CancellationToken cancellationToken)
+    {
+        // Caller-initiated cancellation must not be swallowed or reclassified as a provider fault.
+        if (ex is OperationCanceledException && cancellationToken.IsCancellationRequested)
+            return false;
+
+        return ex switch
+        {
+            HttpRequestException => true,
+            SocketException => true,
+            IOException => true,
+            // A TaskCanceledException whose cancellation was NOT requested by the caller is an
+            // HttpClient request timeout, i.e. a transport failure.
+            TaskCanceledException => true,
+            OperationCanceledException => true,
+            _ => false
+        };
+    }
+
+    private static int MapSuggestedStatus(StorageErrorCode code, int httpStatus)
+    {
+        // A recognized transient failure with no usable upstream status (0) should still map to a
+        // sensible retryable HTTP status for the S3-compatible facade.
+        if (httpStatus > 0)
+            return httpStatus;
+
+        return code switch
+        {
+            StorageErrorCode.Throttled => 429,
+            StorageErrorCode.ProviderUnavailable => 503,
+            _ => 500
         };
     }
 }
