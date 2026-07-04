@@ -155,9 +155,10 @@ public sealed class RcloneS3MultipartEncodingCompatibilityTests : IClassFixture<
         Assert.Equal(key, El(initiateDoc, "Key"));
         Assert.False(string.IsNullOrWhiteSpace(uploadId));
 
-        // Upload 3 distinct parts (~1KB each)
-        var part1Data = Repeat(0x41, 1024); // AAA...
-        var part2Data = Repeat(0x42, 1024); // BBB...
+        // Upload 3 distinct parts. Every non-final part must be at least the S3 minimum of 5 MiB;
+        // the last part may be smaller.
+        var part1Data = Repeat(0x41, 5 * 1024 * 1024); // AAA...
+        var part2Data = Repeat(0x42, 5 * 1024 * 1024); // BBB...
         var part3Data = Repeat(0x43, 1024); // CCC...
 
         var etag1 = await UploadPartAsync(client, bucket, key, uploadId, 1, part1Data);
@@ -198,7 +199,8 @@ public sealed class RcloneS3MultipartEncodingCompatibilityTests : IClassFixture<
             ["x-amz-meta-source"] = "rclone"
         });
 
-        var part1 = Repeat(0x61, 512);
+        // The first (non-final) part must be at least the S3 minimum of 5 MiB.
+        var part1 = Repeat(0x61, 5 * 1024 * 1024);
         var part2 = Repeat(0x62, 512);
         var etag1 = await UploadPartAsync(client, bucket, key, uploadId, 1, part1);
         var etag2 = await UploadPartAsync(client, bucket, key, uploadId, 2, part2);
@@ -373,8 +375,9 @@ public sealed class RcloneS3MultipartEncodingCompatibilityTests : IClassFixture<
         await CreateBucketAsync(client, bucket);
 
         var uploadId = await InitiateMultipartAsync(client, bucket, key);
-        var etag1 = await UploadPartAsync(client, bucket, key, uploadId, 1, Repeat(0x10, 512));
-        var etag2 = await UploadPartAsync(client, bucket, key, uploadId, 2, Repeat(0x20, 512));
+        // Every non-final part must be at least the S3 minimum of 5 MiB; the last part may be smaller.
+        var etag1 = await UploadPartAsync(client, bucket, key, uploadId, 1, Repeat(0x10, 5 * 1024 * 1024));
+        var etag2 = await UploadPartAsync(client, bucket, key, uploadId, 2, Repeat(0x20, 5 * 1024 * 1024));
         var etag3 = await UploadPartAsync(client, bucket, key, uploadId, 3, Repeat(0x30, 512));
 
         var completeResp = await CompleteMultipartAsync(client, bucket, key, uploadId,
@@ -678,8 +681,10 @@ public sealed class RcloneS3MultipartEncodingCompatibilityTests : IClassFixture<
         await CreateBucketAsync(client, bucket);
 
         var uploadId = await InitiateMultipartAsync(client, bucket, key);
-        var part1Data = Encoding.UTF8.GetBytes("FIRST");
-        var part2Data = Encoding.UTF8.GetBytes("SECOND");
+        // Parts 1 and 2 are non-final, so they must be at least the S3 minimum of 5 MiB; the
+        // last part may be smaller. Use distinct fill bytes so the reassembly check is meaningful.
+        var part1Data = Repeat(0x46, 5 * 1024 * 1024); // 'F'
+        var part2Data = Repeat(0x53, 5 * 1024 * 1024); // 'S'
         var part3Data = Encoding.UTF8.GetBytes("THIRD");
 
         var etag1 = await UploadPartAsync(client, bucket, key, uploadId, 1, part1Data);

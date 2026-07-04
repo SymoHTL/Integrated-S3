@@ -1487,13 +1487,15 @@ public abstract class StorageProviderContractTests
         Assert.Equal(initiatedUpload.UploadId, listedUpload.UploadId);
         Assert.Equal("docs/assembled.txt", listedUpload.Key);
 
+        // The first (non-final) part must be at least the S3 minimum of 5 MiB.
+        var part1Payload = new string('a', 5 * 1024 * 1024);
         var part1 = RequireSuccess(await storage.UploadMultipartPartAsync(new UploadMultipartPartRequest
         {
             BucketName = "contract-multipart",
             Key = "docs/assembled.txt",
             UploadId = initiatedUpload.UploadId,
             PartNumber = 1,
-            Content = CreateUtf8Stream("hello ")
+            Content = CreateUtf8Stream(part1Payload)
         }));
 
         var part2 = RequireSuccess(await storage.UploadMultipartPartAsync(new UploadMultipartPartRequest
@@ -1524,7 +1526,7 @@ public abstract class StorageProviderContractTests
             Key = "docs/assembled.txt"
         }));
         await using (assembledObject) {
-            Assert.Equal("hello world", await ReadUtf8Async(assembledObject));
+            Assert.Equal(part1Payload + "world", await ReadUtf8Async(assembledObject));
             if (Supports(capabilities.ObjectMetadata)) {
                 Assert.Equal("multipart", assembledObject.Object.Metadata!["source"]);
             }
@@ -1761,13 +1763,15 @@ public abstract class StorageProviderContractTests
         var listedUpload = Assert.Single(uploads);
         Assert.Equal(initiatedUpload.UploadId, listedUpload.UploadId);
 
+        // The first (non-final) part must be at least the S3 minimum of 5 MiB.
+        var part1Payload = new string('a', 5 * 1024 * 1024);
         var part1 = RequireSuccess(await storage.UploadMultipartPartAsync(new UploadMultipartPartRequest
         {
             BucketName = "contract-platform-multipart",
             Key = "docs/assembled.txt",
             UploadId = initiatedUpload.UploadId,
             PartNumber = 1,
-            Content = CreateUtf8Stream("hello ")
+            Content = CreateUtf8Stream(part1Payload)
         }));
 
         var part2 = RequireSuccess(await storage.UploadMultipartPartAsync(new UploadMultipartPartRequest

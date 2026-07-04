@@ -4484,7 +4484,8 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
         const string secretAccessKey = "first-party-presign-part-secret";
         const string bucketName = "first-party-presign-part-bucket";
         const string objectKey = "docs/client-presigned-multipart.bin";
-        const string firstPartPayload = "first presigned part payload|";
+        // The first (non-final) part must be at least the S3 minimum of 5 MiB.
+        var firstPartPayload = new string('a', 5 * 1024 * 1024);
         const string secondPartPayload = "second presigned part payload";
 
         await using var isolatedClient = await _factory.CreateIsolatedClientAsync(builder => {
@@ -5798,7 +5799,9 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
     {
         using var client = await _factory.CreateClientAsync();
         var expiresUtc = new DateTimeOffset(2026, 3, 14, 17, 0, 0, TimeSpan.Zero);
-        const string completedPayload = "hello world";
+        // The first (non-final) part must be at least the S3 minimum of 5 MiB.
+        var firstPartPayload = new string('a', 5 * 1024 * 1024);
+        var completedPayload = firstPartPayload + "world";
         var expectedChecksumSha256 = ComputeSha256Base64(completedPayload);
         var expectedChecksumCrc32c = ChecksumTestAlgorithms.ComputeCrc32cBase64(completedPayload);
 
@@ -5830,7 +5833,7 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
 
         var part1Response = await client.PutAsync(
                 $"/integrated-s3/multipart-bucket/docs/multipart.txt?partNumber=1&uploadId={Uri.EscapeDataString(uploadId)}",
-                new StringContent("hello ", Encoding.UTF8, "text/plain"));
+                new StringContent(firstPartPayload, Encoding.UTF8, "text/plain"));
         Assert.Equal(HttpStatusCode.OK, part1Response.StatusCode);
         var part1ETag = part1Response.Headers.ETag?.Tag ?? throw new Xunit.Sdk.XunitException("Expected multipart part ETag header.");
 
@@ -6829,7 +6832,8 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
 
         const string bucketName = "multipart-checksum-bucket";
         const string objectKey = "docs/checksum.txt";
-        const string part1Payload = "hello ";
+        // The first (non-final) part must be at least the S3 minimum of 5 MiB.
+        var part1Payload = new string('a', 5 * 1024 * 1024);
         const string part2Payload = "world";
 
         Assert.Equal(HttpStatusCode.Created, (await client.PutAsync($"/integrated-s3/buckets/{bucketName}", content: null)).StatusCode);
@@ -6917,7 +6921,8 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
 
         const string bucketName = "multipart-sha1-checksum-bucket";
         const string objectKey = "docs/sha1-checksum.txt";
-        const string part1Payload = "hello ";
+        // The first (non-final) part must be at least the S3 minimum of 5 MiB.
+        var part1Payload = new string('a', 5 * 1024 * 1024);
         const string part2Payload = "world";
 
         Assert.Equal(HttpStatusCode.Created, (await client.PutAsync($"/integrated-s3/buckets/{bucketName}", content: null)).StatusCode);
@@ -7013,7 +7018,8 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
 
         const string bucketName = "multipart-crc32c-checksum-bucket";
         const string objectKey = "docs/crc32c-checksum.txt";
-        const string part1Payload = "hello ";
+        // The first (non-final) part must be at least the S3 minimum of 5 MiB.
+        var part1Payload = new string('a', 5 * 1024 * 1024);
         const string part2Payload = "world";
 
         Assert.Equal(HttpStatusCode.Created, (await client.PutAsync($"/integrated-s3/buckets/{bucketName}", content: null)).StatusCode);
