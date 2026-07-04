@@ -1673,6 +1673,36 @@ public sealed class IntegratedS3SigV4ConformanceTests : IClassFixture<WebUiAppli
     }
 
     [Fact]
+    public async Task SigV4PresignedQueryAuthentication_ExpiredWithinClockSkewGrace_ReturnsXmlError()
+    {
+        // Regression for #132: the presigned expiry boundary is an absolute bound at
+        // SignedAtUtc + X-Amz-Expires. The clock-skew allowance must NOT extend it. With the
+        // default AllowedSignatureClockSkewMinutes = 5, a URL signed 1 minute ago with
+        // expiresSeconds: 1 is well past its stated lifetime, yet used to be accepted because
+        // the skew allowance was (incorrectly) added to the expiry window.
+        const string accessKeyId = "sigv4-skew-expiry-access";
+        const string secretAccessKey = "sigv4-skew-expiry-secret";
+
+        await using var isolatedClient = await CreateAuthenticatedClientAsync(accessKeyId, secretAccessKey);
+        using var client = isolatedClient.Client;
+
+        using var expiredRequest = CreateSigV4PresignedRequest(
+            HttpMethod.Get,
+            "/integrated-s3/buckets/skew-expiry-bucket/objects/docs/skew.txt",
+            accessKeyId,
+            secretAccessKey,
+            expiresSeconds: 1,
+            signedAtUtc: DateTimeOffset.UtcNow.AddMinutes(-1));
+        var response = await client.SendAsync(expiredRequest);
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+        Assert.Equal("application/xml", response.Content.Headers.ContentType?.MediaType);
+        var errorDocument = XDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal("AccessDenied", GetRequiredElementValue(errorDocument, "Code"));
+        Assert.Contains("expired", GetRequiredElementValue(errorDocument, "Message"), StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public async Task SigV4PresignedQueryAuthentication_ZeroExpiry_ReturnsXmlError()
     {
         const string accessKeyId = "sigv4-zero-expiry-access";

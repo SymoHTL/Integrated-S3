@@ -201,7 +201,10 @@ internal sealed class AwsSignatureV4RequestAuthenticator(
             return IntegratedS3RequestAuthenticationResult.Failure("RequestTimeTooSkewed", "The presigned request time is too far in the future.");
         }
 
-        if (nowUtc - presignedRequest.SignedAtUtc > TimeSpan.FromSeconds(presignedRequest.ExpiresSeconds) + TimeSpan.FromMinutes(settings.AllowedSignatureClockSkewMinutes)) {
+        // The presigned expiry boundary is an absolute bound at SignedAtUtc + X-Amz-Expires.
+        // Clock-skew tolerance applies only to the future-dated SignedAtUtc check above,
+        // not to lengthening the URL's stated lifetime (see issue #132).
+        if (nowUtc - presignedRequest.SignedAtUtc > TimeSpan.FromSeconds(presignedRequest.ExpiresSeconds)) {
             return IntegratedS3RequestAuthenticationResult.Failure("AccessDenied", "The presigned request has expired.");
         }
 
@@ -446,7 +449,10 @@ internal sealed class AwsSignatureV4RequestAuthenticator(
             return IntegratedS3RequestAuthenticationResult.Failure("RequestTimeTooSkewed", "The presigned request time is too far in the future.");
         }
 
-        if (nowUtc - presignedRequest.SignedAtUtc > TimeSpan.FromSeconds(presignedRequest.ExpiresSeconds) + TimeSpan.FromMinutes(settings.AllowedSignatureClockSkewMinutes)) {
+        // The presigned expiry boundary is an absolute bound at SignedAtUtc + X-Amz-Expires.
+        // Clock-skew tolerance applies only to the future-dated SignedAtUtc check above,
+        // not to lengthening the URL's stated lifetime (see issue #132).
+        if (nowUtc - presignedRequest.SignedAtUtc > TimeSpan.FromSeconds(presignedRequest.ExpiresSeconds)) {
             return IntegratedS3RequestAuthenticationResult.Failure("AccessDenied", "The presigned request has expired.");
         }
 
