@@ -411,6 +411,61 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
     }
 
     // -------------------------------------------------------------------------
+    // Bucket Ownership Controls
+    // -------------------------------------------------------------------------
+
+    public async ValueTask<StorageResult<BucketOwnershipControlsConfiguration>> GetBucketOwnershipControlsAsync(string bucketName, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var config = await _client.GetBucketOwnershipControlsAsync(bucketName, cancellationToken).ConfigureAwait(false);
+            return StorageResult<BucketOwnershipControlsConfiguration>.Success(config);
+        }
+        catch (AmazonServiceException ex)
+        {
+            return StorageResult<BucketOwnershipControlsConfiguration>.Failure(S3ErrorTranslator.Translate(ex, Name, bucketName));
+        }
+        catch (Exception ex) when (S3ErrorTranslator.IsTransportFailure(ex, cancellationToken))
+        {
+            return StorageResult<BucketOwnershipControlsConfiguration>.Failure(S3ErrorTranslator.TranslateTransport(ex, Name, bucketName));
+        }
+    }
+
+    public async ValueTask<StorageResult<BucketOwnershipControlsConfiguration>> PutBucketOwnershipControlsAsync(PutBucketOwnershipControlsRequest request, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var config = await _client.SetBucketOwnershipControlsAsync(request, cancellationToken).ConfigureAwait(false);
+            return StorageResult<BucketOwnershipControlsConfiguration>.Success(config);
+        }
+        catch (AmazonServiceException ex)
+        {
+            return StorageResult<BucketOwnershipControlsConfiguration>.Failure(S3ErrorTranslator.Translate(ex, Name, request.BucketName));
+        }
+        catch (Exception ex) when (S3ErrorTranslator.IsTransportFailure(ex, cancellationToken))
+        {
+            return StorageResult<BucketOwnershipControlsConfiguration>.Failure(S3ErrorTranslator.TranslateTransport(ex, Name, request.BucketName));
+        }
+    }
+
+    public async ValueTask<StorageResult> DeleteBucketOwnershipControlsAsync(DeleteBucketOwnershipControlsRequest request, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            await _client.DeleteBucketOwnershipControlsAsync(request.BucketName, cancellationToken).ConfigureAwait(false);
+            return StorageResult.Success();
+        }
+        catch (AmazonServiceException ex)
+        {
+            return StorageResult.Failure(S3ErrorTranslator.Translate(ex, Name, request.BucketName));
+        }
+        catch (Exception ex) when (S3ErrorTranslator.IsTransportFailure(ex, cancellationToken))
+        {
+            return StorageResult.Failure(S3ErrorTranslator.TranslateTransport(ex, Name, request.BucketName));
+        }
+    }
+
+    // -------------------------------------------------------------------------
     // Bucket Tagging
     // -------------------------------------------------------------------------
 

@@ -328,4 +328,19 @@ public enum StorageOperationType
 
     /// <summary>Delete the public access block configuration of a bucket.</summary>
     DeleteBucketPublicAccessBlock,
+
+    // ── Bucket ownership controls ───────────────────────────────────
+    // New members are appended so existing numeric values stay stable.
+
+    /// <summary>Retrieve the ownership controls configuration of a bucket.</summary>
+    GetBucketOwnershipControls,
+
+    /// <summary>Set the ownership controls configuration of a bucket.</summary>
+    PutBucketOwnershipControls,
+
+    /// <summary>Delete the ownership controls configuration of a bucket.</summary>
+    DeleteBucketOwnershipControls,
+
+    /// <summary>Retrieve the policy status (public/not) of a bucket.</summary>
+    GetBucketPolicyStatus,
 }

@@ -2042,6 +2042,7 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
     // so the (existing) handler was unreachable. It must now route through and surface the mapped 404.
     [InlineData("?intelligent-tiering&id=report", "NoSuchConfiguration")]
     [InlineData("?publicAccessBlock", "NoSuchPublicAccessBlockConfiguration")]
+    [InlineData("?ownershipControls", "OwnershipControlsNotFoundError")]
     public async Task S3CompatibleBucketSubresource_WhenConfigAbsent_ReturnsNoSuchCodeWithNotFoundStatus(string query, string expectedCode)
     {
         // Regression test for #152: absent bucket subresource configs must surface the specific
@@ -2052,6 +2053,139 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
         var response = await client.GetAsync($"/integrated-s3/absent-config-bucket{query}");
 
         await AssertErrorResponseAsync(response, HttpStatusCode.NotFound, expectedCode);
+    }
+
+    [Fact]
+    public async Task S3CompatibleBucketOwnershipControls_RoundTripsXmlPayload()
+    {
+        var storageService = new RecordingStorageService();
+        await using var isolatedClient = await CreateStorageServiceIsolatedClientAsync(storageService);
+        using var client = isolatedClient.Client;
+
+        using var putRequest = new HttpRequestMessage(HttpMethod.Put, "/integrated-s3/ownership-controls-bucket?ownershipControls")
+        {
+            Content = new StringContent("""
+<OwnershipControls>
+  <Rule>
+    <ObjectOwnership>BucketOwnerEnforced</ObjectOwnership>
+  </Rule>
+</OwnershipControls>
+""", Encoding.UTF8, "application/xml")
+        };
+
+        var putResponse = await client.SendAsync(putRequest);
+        Assert.Equal(HttpStatusCode.OK, putResponse.StatusCode);
+
+        var putOwnershipControls = storageService.LastPutBucketOwnershipControlsRequest
+            ?? throw new Xunit.Sdk.XunitException("Expected bucket ownership controls request to reach the storage service.");
+        Assert.Equal("BucketOwnerEnforced", putOwnershipControls.ObjectOwnership);
+
+        var getResponse = await client.GetAsync("/integrated-s3/ownership-controls-bucket?ownershipControls");
+        Assert.Equal(HttpStatusCode.OK, getResponse.StatusCode);
+        Assert.Equal("application/xml", getResponse.Content.Headers.ContentType?.MediaType);
+
+        var document = XDocument.Parse(await getResponse.Content.ReadAsStringAsync());
+        Assert.Equal("OwnershipControls", document.Root?.Name.LocalName);
+        var rule = document.Root!.Element(S3Ns + "Rule");
+        Assert.NotNull(rule);
+        Assert.Equal("BucketOwnerEnforced", rule!.Element(S3Ns + "ObjectOwnership")?.Value);
+
+        var deleteResponse = await client.DeleteAsync("/integrated-s3/ownership-controls-bucket?ownershipControls");
+        Assert.Equal(HttpStatusCode.NoContent, deleteResponse.StatusCode);
+
+        var missingResponse = await client.GetAsync("/integrated-s3/ownership-controls-bucket?ownershipControls");
+        await AssertErrorResponseAsync(missingResponse, HttpStatusCode.NotFound, "OwnershipControlsNotFoundError");
+    }
+
+    [Fact]
+    public async Task S3CompatibleBucketOwnershipControls_PersistsThroughDiskProvider()
+    {
+        using var client = await _factory.CreateClientAsync();
+        const string bucketName = "ownership-controls-disk-bucket";
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync($"/integrated-s3/buckets/{bucketName}", content: null)).StatusCode);
+
+        // GET before any config is set surfaces the specific NotFound error.
+        var missingBefore = await client.GetAsync($"/integrated-s3/{bucketName}?ownershipControls");
+        await AssertErrorResponseAsync(missingBefore, HttpStatusCode.NotFound, "OwnershipControlsNotFoundError");
+
+        using var putRequest = new HttpRequestMessage(HttpMethod.Put, $"/integrated-s3/{bucketName}?ownershipControls")
+        {
+            Content = new StringContent("""
+<OwnershipControls>
+  <Rule>
+    <ObjectOwnership>BucketOwnerPreferred</ObjectOwnership>
+  </Rule>
+</OwnershipControls>
+""", Encoding.UTF8, "application/xml")
+        };
+        Assert.Equal(HttpStatusCode.OK, (await client.SendAsync(putRequest)).StatusCode);
+
+        var getResponse = await client.GetAsync($"/integrated-s3/{bucketName}?ownershipControls");
+        Assert.Equal(HttpStatusCode.OK, getResponse.StatusCode);
+        var document = XDocument.Parse(await getResponse.Content.ReadAsStringAsync());
+        Assert.Equal("OwnershipControls", document.Root?.Name.LocalName);
+        Assert.Equal("BucketOwnerPreferred", document.Root!.Element(S3Ns + "Rule")?.Element(S3Ns + "ObjectOwnership")?.Value);
+
+        Assert.Equal(HttpStatusCode.NoContent, (await client.DeleteAsync($"/integrated-s3/{bucketName}?ownershipControls")).StatusCode);
+
+        var missingAfter = await client.GetAsync($"/integrated-s3/{bucketName}?ownershipControls");
+        await AssertErrorResponseAsync(missingAfter, HttpStatusCode.NotFound, "OwnershipControlsNotFoundError");
+    }
+
+    [Fact]
+    public async Task S3CompatibleBucketOwnershipControls_WithInvalidObjectOwnership_ReturnsMalformedXml()
+    {
+        var storageService = new RecordingStorageService();
+        await using var isolatedClient = await CreateStorageServiceIsolatedClientAsync(storageService);
+        using var client = isolatedClient.Client;
+
+        using var putRequest = new HttpRequestMessage(HttpMethod.Put, "/integrated-s3/ownership-controls-invalid-bucket?ownershipControls")
+        {
+            Content = new StringContent("""
+<OwnershipControls>
+  <Rule>
+    <ObjectOwnership>NotAValidValue</ObjectOwnership>
+  </Rule>
+</OwnershipControls>
+""", Encoding.UTF8, "application/xml")
+        };
+
+        var response = await client.SendAsync(putRequest);
+        await AssertErrorResponseAsync(response, HttpStatusCode.BadRequest, "MalformedXML");
+        Assert.Null(storageService.LastPutBucketOwnershipControlsRequest);
+    }
+
+    [Fact]
+    public async Task S3CompatibleBucketPolicyStatus_WhenNoPolicy_ReturnsIsPublicFalse()
+    {
+        using var client = await _factory.CreateClientAsync();
+        const string bucketName = "policy-status-bucket";
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync($"/integrated-s3/buckets/{bucketName}", content: null)).StatusCode);
+
+        var response = await client.GetAsync($"/integrated-s3/{bucketName}?policyStatus");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal("application/xml", response.Content.Headers.ContentType?.MediaType);
+
+        var document = XDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal("PolicyStatus", document.Root?.Name.LocalName);
+        Assert.Equal("false", document.Root!.Element(S3Ns + "IsPublic")?.Value);
+    }
+
+    [Fact]
+    public async Task S3CompatibleObjectTorrent_ReturnsNotImplemented()
+    {
+        using var client = await _factory.CreateClientAsync();
+        const string bucketName = "torrent-bucket";
+        const string objectKey = "torrent-object.txt";
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync($"/integrated-s3/buckets/{bucketName}", content: null)).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await client.PutAsync($"/integrated-s3/{bucketName}/{objectKey}", new StringContent("payload", Encoding.UTF8, "text/plain"))).StatusCode);
+
+        var response = await client.GetAsync($"/integrated-s3/{bucketName}/{objectKey}?torrent");
+
+        await AssertNotImplementedResponseAsync(response);
     }
 
     [Fact]
@@ -5750,7 +5884,7 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
     }
 
     [Theory]
-    [InlineData("ownershipControls")]
+    [InlineData("notarealsubresource")]
     [InlineData("versioning&list-type=2")]
     [InlineData("cors&versioning")]
     public async Task S3CompatibleBucketRoute_UnsupportedSubresource_ReturnsNotImplemented(string query)
@@ -10985,6 +11119,9 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
         public ValueTask<StorageResult<BucketPublicAccessBlockConfiguration>> GetBucketPublicAccessBlockAsync(string bucketName, CancellationToken cancellationToken = default)
             => ValueTask.FromResult(StorageResult<BucketPublicAccessBlockConfiguration>.Failure(NotFound(StorageErrorCode.PublicAccessBlockConfigurationNotFound, bucketName)));
 
+        public ValueTask<StorageResult<BucketOwnershipControlsConfiguration>> GetBucketOwnershipControlsAsync(string bucketName, CancellationToken cancellationToken = default)
+            => ValueTask.FromResult(StorageResult<BucketOwnershipControlsConfiguration>.Failure(NotFound(StorageErrorCode.OwnershipControlsNotFound, bucketName)));
+
         public ValueTask<StorageResult<BucketWebsiteConfiguration>> GetBucketWebsiteAsync(string bucketName, CancellationToken cancellationToken = default)
             => ValueTask.FromResult(StorageResult<BucketWebsiteConfiguration>.Failure(NotFound(StorageErrorCode.WebsiteConfigurationNotFound, bucketName)));
 
@@ -11288,6 +11425,10 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
 
         public DeleteBucketPublicAccessBlockRequest? LastDeleteBucketPublicAccessBlockRequest { get; private set; }
 
+        public PutBucketOwnershipControlsRequest? LastPutBucketOwnershipControlsRequest { get; private set; }
+
+        public DeleteBucketOwnershipControlsRequest? LastDeleteBucketOwnershipControlsRequest { get; private set; }
+
         public ObjectInfo? PutObjectResult { get; set; }
 
         public ObjectInfo? CopyObjectResult { get; set; }
@@ -11318,6 +11459,8 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
         private readonly Dictionary<string, BucketDefaultEncryptionConfiguration> _bucketDefaultEncryptions = new(StringComparer.Ordinal);
 
         private readonly Dictionary<string, BucketPublicAccessBlockConfiguration> _bucketPublicAccessBlocks = new(StringComparer.Ordinal);
+
+        private readonly Dictionary<string, BucketOwnershipControlsConfiguration> _bucketOwnershipControls = new(StringComparer.Ordinal);
 
         public IAsyncEnumerable<BucketInfo> ListBucketsAsync(CancellationToken cancellationToken = default) => throw new NotSupportedException();
 
@@ -11395,6 +11538,36 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
         {
             LastDeleteBucketPublicAccessBlockRequest = request;
             _bucketPublicAccessBlocks.Remove(request.BucketName);
+            return ValueTask.FromResult(StorageResult.Success());
+        }
+
+        public ValueTask<StorageResult<BucketOwnershipControlsConfiguration>> GetBucketOwnershipControlsAsync(string bucketName, CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            return ValueTask.FromResult(_bucketOwnershipControls.TryGetValue(bucketName, out var configuration)
+                ? StorageResult<BucketOwnershipControlsConfiguration>.Success(CloneOwnershipControls(bucketName, configuration))
+                : StorageResult<BucketOwnershipControlsConfiguration>.Failure(CreateOwnershipControlsNotFound(bucketName)));
+        }
+
+        public ValueTask<StorageResult<BucketOwnershipControlsConfiguration>> PutBucketOwnershipControlsAsync(PutBucketOwnershipControlsRequest request, CancellationToken cancellationToken = default)
+        {
+            LastPutBucketOwnershipControlsRequest = request;
+
+            var configuration = new BucketOwnershipControlsConfiguration
+            {
+                BucketName = request.BucketName,
+                ObjectOwnership = request.ObjectOwnership
+            };
+
+            _bucketOwnershipControls[request.BucketName] = configuration;
+            return ValueTask.FromResult(StorageResult<BucketOwnershipControlsConfiguration>.Success(CloneOwnershipControls(request.BucketName, configuration)));
+        }
+
+        public ValueTask<StorageResult> DeleteBucketOwnershipControlsAsync(DeleteBucketOwnershipControlsRequest request, CancellationToken cancellationToken = default)
+        {
+            LastDeleteBucketOwnershipControlsRequest = request;
+            _bucketOwnershipControls.Remove(request.BucketName);
             return ValueTask.FromResult(StorageResult.Success());
         }
 
@@ -11713,6 +11886,26 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
             {
                 Code = StorageErrorCode.PublicAccessBlockConfigurationNotFound,
                 Message = $"Bucket '{bucketName}' does not have a public access block configuration.",
+                BucketName = bucketName,
+                SuggestedHttpStatusCode = 404
+            };
+        }
+
+        private static BucketOwnershipControlsConfiguration CloneOwnershipControls(string bucketName, BucketOwnershipControlsConfiguration configuration)
+        {
+            return new BucketOwnershipControlsConfiguration
+            {
+                BucketName = bucketName,
+                ObjectOwnership = configuration.ObjectOwnership
+            };
+        }
+
+        private static StorageError CreateOwnershipControlsNotFound(string bucketName)
+        {
+            return new StorageError
+            {
+                Code = StorageErrorCode.OwnershipControlsNotFound,
+                Message = $"Bucket '{bucketName}' does not have an ownership controls configuration.",
                 BucketName = bucketName,
                 SuggestedHttpStatusCode = 404
             };

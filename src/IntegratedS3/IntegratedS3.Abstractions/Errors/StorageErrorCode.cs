@@ -115,4 +115,7 @@ public enum StorageErrorCode
 
     /// <summary>The object is protected by an object-lock retention policy or legal hold.</summary>
     ObjectLocked,
+
+    /// <summary>No ownership controls configuration exists for the bucket.</summary>
+    OwnershipControlsNotFound,
 }

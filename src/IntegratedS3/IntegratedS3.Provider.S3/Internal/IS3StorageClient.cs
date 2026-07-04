@@ -41,6 +41,14 @@ internal interface IS3StorageClient : IDisposable
     Task DeleteBucketPublicAccessBlockAsync(string bucketName, CancellationToken cancellationToken = default)
         => Task.FromException(new NotSupportedException("Bucket public access block is not implemented by this S3 storage client."));
 
+    // Bucket Ownership Controls
+    Task<BucketOwnershipControlsConfiguration> GetBucketOwnershipControlsAsync(string bucketName, CancellationToken cancellationToken = default)
+        => Task.FromException<BucketOwnershipControlsConfiguration>(new NotSupportedException("Bucket ownership controls are not implemented by this S3 storage client."));
+    Task<BucketOwnershipControlsConfiguration> SetBucketOwnershipControlsAsync(PutBucketOwnershipControlsRequest request, CancellationToken cancellationToken = default)
+        => Task.FromException<BucketOwnershipControlsConfiguration>(new NotSupportedException("Bucket ownership controls are not implemented by this S3 storage client."));
+    Task DeleteBucketOwnershipControlsAsync(string bucketName, CancellationToken cancellationToken = default)
+        => Task.FromException(new NotSupportedException("Bucket ownership controls are not implemented by this S3 storage client."));
+
     // Object listing
     Task<S3ObjectListPage> ListObjectsAsync(
         string bucketName,

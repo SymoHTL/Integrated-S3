@@ -50,6 +50,9 @@ internal sealed class DiskBucketMetadata
 
     [JsonPropertyName("publicAccessBlockConfiguration")]
     public DiskBucketPublicAccessBlockConfiguration? PublicAccessBlockConfiguration { get; init; }
+
+    [JsonPropertyName("ownershipControlsConfiguration")]
+    public DiskBucketOwnershipControlsConfiguration? OwnershipControlsConfiguration { get; init; }
 }
 
 internal sealed class DiskBucketCorsConfiguration
@@ -95,6 +98,14 @@ internal sealed class DiskBucketPublicAccessBlockConfiguration
 
     [JsonPropertyName("restrictPublicBuckets")]
     public bool RestrictPublicBuckets { get; init; }
+}
+
+// --- Ownership Controls ---
+
+internal sealed class DiskBucketOwnershipControlsConfiguration
+{
+    [JsonPropertyName("objectOwnership")]
+    public string ObjectOwnership { get; init; } = string.Empty;
 }
 
 // --- Logging ---
