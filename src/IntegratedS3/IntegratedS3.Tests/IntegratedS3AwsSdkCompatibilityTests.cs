@@ -109,6 +109,59 @@ public sealed class IntegratedS3AwsSdkCompatibilityTests : IClassFixture<WebUiAp
         Assert.Equal(System.Net.HttpStatusCode.NoContent, deleteObjectResponse.HttpStatusCode);
     }
 
+    // Regression for issue #233: a ranged GetObject returns 206 Partial Content. Previously the server
+    // attached the whole-object x-amz-checksum-* header to the partial body; the AWS SDK for .NET v4
+    // (checksum validation on by default) then recomputed the checksum over the returned slice and threw
+    // "Expected hash not equal to calculated hash". With the fix the partial 206 carries no whole-object
+    // checksum, so the ranged download succeeds without disabling checksum validation.
+    [Fact]
+    public async Task AmazonS3Client_RangedGetObject_SucceedsWithoutChecksumValidationFailure()
+    {
+        const string accessKeyId = "aws-sdk-range-checksum-access";
+        const string secretAccessKey = "aws-sdk-range-checksum-secret";
+
+        await using var isolatedClient = await CreateAuthenticatedLoopbackClientAsync(accessKeyId, secretAccessKey);
+        using var s3Client = CreateS3Client(isolatedClient.BaseAddress!, accessKeyId, secretAccessKey);
+
+        const string bucketName = "aws-sdk-range-checksum-bucket";
+        const string objectKey = "docs/ranged.bin";
+
+        // A payload large enough that a byte range is a genuine subset of the object.
+        var payloadBytes = new byte[300_000];
+        RandomNumberGenerator.Fill(payloadBytes);
+
+        Assert.Equal(HttpStatusCode.OK, (await s3Client.PutBucketAsync(new PutBucketRequest
+        {
+            BucketName = bucketName
+        })).HttpStatusCode);
+
+        using (var uploadStream = new MemoryStream(payloadBytes, writable: false)) {
+            var putResponse = await s3Client.PutObjectAsync(new PutObjectRequest
+            {
+                BucketName = bucketName,
+                Key = objectKey,
+                InputStream = uploadStream,
+                ContentType = "application/octet-stream",
+                UseChunkEncoding = false
+            });
+            Assert.Equal(HttpStatusCode.OK, putResponse.HttpStatusCode);
+        }
+
+        // The SDK validates the response checksum against the received bytes by default. Before the fix
+        // this call threw AmazonClientException: "Expected hash not equal to calculated hash".
+        var rangedGetResponse = await s3Client.GetObjectAsync(new GetObjectRequest
+        {
+            BucketName = bucketName,
+            Key = objectKey,
+            ByteRange = new ByteRange(100, 199)
+        });
+        Assert.Equal(HttpStatusCode.PartialContent, rangedGetResponse.HttpStatusCode);
+
+        using var rangedBuffer = new MemoryStream();
+        await rangedGetResponse.ResponseStream.CopyToAsync(rangedBuffer);
+        Assert.Equal(payloadBytes.AsSpan(100, 100).ToArray(), rangedBuffer.ToArray());
+    }
+
     [Fact]
     public async Task AmazonS3Client_PathStyleAwsChunkedPutObject_WorksAgainstIntegratedS3()
     {
