@@ -1974,7 +1974,17 @@ internal sealed class DiskStorageService(
             return StorageResult<GetObjectResponse>.Failure(rangeError);
         }
 
-        var stream = new FileStream(storedObject.ContentPath, FileMode.Open, FileAccess.Read, FileShare.Read, 81920, FileOptions.Asynchronous | FileOptions.SequentialScan);
+        // The content file is opened without holding the per-object mutation lock (reads are
+        // intentionally lock-free). A concurrent DeleteObject/overwrite can therefore land between
+        // ResolveStoredObjectAsync above and this open, causing FileNotFoundException/
+        // DirectoryNotFoundException. Translate that lost TOCTOU race to the S3-correct
+        // NoSuchKey (404) instead of surfacing an InternalError (500). The stream is opened with
+        // FileShare.Delete so a concurrent rename/delete of the file cannot fail a writer's
+        // File.Move on Windows while a reader keeps its handle.
+        var stream = TryOpenObjectReadStream(storedObject.ContentPath);
+        if (stream is null) {
+            return StorageResult<GetObjectResponse>.Failure(ObjectNotFound(request.BucketName, request.Key, request.VersionId));
+        }
 
         Stream responseStream = stream;
         ObjectInfo responseObject = objectInfo;
@@ -2164,7 +2174,17 @@ internal sealed class DiskStorageService(
 
         var tempDestinationPath = $"{destinationPath}.{Guid.NewGuid():N}.tmp";
         try {
-            await using (var sourceStream = new FileStream(sourcePath, FileMode.Open, FileAccess.Read, FileShare.Read, 81920, FileOptions.Asynchronous | FileOptions.SequentialScan))
+            // The source content file is opened while holding only the destination mutation lock,
+            // never the source lock, so a concurrent delete/overwrite of the source key can race
+            // this open. Translate a lost TOCTOU race (FileNotFound/DirectoryNotFound) to the
+            // S3-correct NoSuchKey (404) instead of an InternalError (500), and open with
+            // FileShare.Delete so a concurrent rename/delete of the source cannot fail on Windows.
+            var sourceStream = TryOpenObjectReadStream(sourcePath);
+            if (sourceStream is null) {
+                return StorageResult<ObjectInfo>.Failure(ObjectNotFound(request.SourceBucketName, request.SourceKey, request.SourceVersionId));
+            }
+
+            await using (sourceStream)
             await using (var destinationStream = new FileStream(tempDestinationPath, FileMode.CreateNew, FileAccess.Write, FileShare.None, 81920, FileOptions.Asynchronous | FileOptions.SequentialScan)) {
                 await sourceStream.CopyToAsync(destinationStream, cancellationToken);
                 await FlushToStableStorageAsync(destinationStream, cancellationToken);
@@ -2637,7 +2657,15 @@ internal sealed class DiskStorageService(
             }
 
             try {
-                await using (var sourceStream = new FileStream(sourceObject.ContentPath, FileMode.Open, FileAccess.Read, FileShare.Read, 81920, FileOptions.Asynchronous | FileOptions.SequentialScan))
+                // The copy source is opened lock-free, so a concurrent delete/overwrite of the
+                // source key can race this open. Translate a lost TOCTOU race to NoSuchKey (404)
+                // and open with FileShare.Delete so a concurrent rename/delete cannot fail on Windows.
+                var sourceStream = TryOpenObjectReadStream(sourceObject.ContentPath);
+                if (sourceStream is null) {
+                    return StorageResult<MultipartUploadPart>.Failure(ObjectNotFound(request.CopySourceBucketName!, request.CopySourceKey!, request.CopySourceVersionId));
+                }
+
+                await using (sourceStream)
                 await using (var tempStream = new FileStream(tempPartPath, FileMode.CreateNew, FileAccess.Write, FileShare.None, 81920, FileOptions.Asynchronous | FileOptions.SequentialScan)) {
                     if (normalizedRange is { Start: long start, End: long end }) {
                         sourceStream.Seek(start, SeekOrigin.Begin);
@@ -2792,7 +2820,15 @@ internal sealed class DiskStorageService(
         var partPath = GetMultipartPartPath(uploadDirectoryPath, request.PartNumber);
         var tempPartPath = $"{partPath}.{Guid.NewGuid():N}.tmp";
         try {
-            await using (var sourceStream = new FileStream(sourceObject.ContentPath, FileMode.Open, FileAccess.Read, FileShare.Read, 81920, FileOptions.Asynchronous | FileOptions.SequentialScan))
+            // The copy source is opened lock-free, so a concurrent delete/overwrite of the
+            // source key can race this open. Translate a lost TOCTOU race to NoSuchKey (404)
+            // and open with FileShare.Delete so a concurrent rename/delete cannot fail on Windows.
+            var sourceStream = TryOpenObjectReadStream(sourceObject.ContentPath);
+            if (sourceStream is null) {
+                return StorageResult<MultipartUploadPart>.Failure(ObjectNotFound(request.SourceBucketName, request.SourceKey, request.SourceVersionId));
+            }
+
+            await using (sourceStream)
             await using (var tempStream = new FileStream(tempPartPath, FileMode.CreateNew, FileAccess.Write, FileShare.None, 81920, FileOptions.Asynchronous | FileOptions.SequentialScan)) {
                 if (normalizedRange is { Start: { } start, End: { } end }) {
                     sourceStream.Seek(start, SeekOrigin.Begin);
@@ -5457,6 +5493,35 @@ internal sealed class DiskStorageService(
     private static string CreateVersionId()
     {
         return Guid.CreateVersion7().ToString("N");
+    }
+
+    /// <summary>
+    /// Opens an object content file for a lock-free read/copy-source stream. The file is opened
+    /// with <see cref="FileShare.Read"/> | <see cref="FileShare.Delete"/> so a concurrent
+    /// delete/rename of the underlying file (e.g. a writer publishing an overwrite via
+    /// <see cref="File.Move(string, string, bool)"/> on Windows) cannot fail the open or the
+    /// ongoing read while this reader keeps its handle. Returns <see langword="null"/> when the
+    /// file has already been removed by a concurrent delete (a lost TOCTOU race), so the caller
+    /// can translate it into an S3 <c>NoSuchKey</c> (404) rather than surfacing an
+    /// <see cref="IOException"/> as an <c>InternalError</c> (500).
+    /// </summary>
+    private static FileStream? TryOpenObjectReadStream(string contentPath)
+    {
+        try {
+            return new FileStream(
+                contentPath,
+                FileMode.Open,
+                FileAccess.Read,
+                FileShare.Read | FileShare.Delete,
+                81920,
+                FileOptions.Asynchronous | FileOptions.SequentialScan);
+        }
+        catch (FileNotFoundException) {
+            return null;
+        }
+        catch (DirectoryNotFoundException) {
+            return null;
+        }
     }
 
     private static async Task<IReadOnlyDictionary<string, string>> ComputeChecksumsAsync(string objectPath, CancellationToken cancellationToken)

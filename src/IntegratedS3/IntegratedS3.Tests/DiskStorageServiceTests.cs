@@ -5223,4 +5223,134 @@ public sealed class DiskStorageServiceTests
         Assert.Equal(StorageErrorCode.NoSuchUpload, completeResult.Error!.Code);
         Assert.Equal(404, completeResult.Error.SuggestedHttpStatusCode);
     }
+
+    // ---- Regression tests for issue #120: TOCTOU delete/overwrite races on lock-free reads ----
+
+    // Locates the on-disk content file for a freshly-Put object by finding the sibling of the
+    // metadata sidecar (content path == sidecar path minus the metadata suffix). This lets the
+    // test reproduce the exact TOCTOU window the provider races: metadata still present, but the
+    // content file deleted out from under the lock-free read/copy-source open.
+    private static string FindObjectContentPath(string rootPath, string bucketName)
+    {
+        var bucketPath = Path.Combine(rootPath, bucketName);
+        const string metadataSuffix = ".integrateds3.json";
+        var sidecar = Directory
+            .EnumerateFiles(bucketPath, "*" + metadataSuffix, SearchOption.AllDirectories)
+            .First(path => !Path.GetFileName(path).StartsWith(".integrateds3.", StringComparison.Ordinal));
+        return sidecar[..^metadataSuffix.Length];
+    }
+
+    [Fact]
+    public async Task DiskStorage_GetObject_ContentFileDeletedAfterResolve_ReturnsNoSuchKeyNot500()
+    {
+        await using var fixture = new DiskStorageFixture();
+        var storageService = fixture.Services.GetRequiredService<IStorageBackend>();
+        await storageService.CreateBucketAsync(new CreateBucketRequest { BucketName = "toctou-get" });
+
+        await using (var uploadStream = new MemoryStream(Encoding.UTF8.GetBytes("racy content"))) {
+            var put = await storageService.PutObjectAsync(new PutObjectRequest
+            {
+                BucketName = "toctou-get",
+                Key = "race.txt",
+                Content = uploadStream,
+                ContentType = "text/plain"
+            });
+            Assert.True(put.IsSuccess);
+        }
+
+        // Simulate a concurrent DeleteObject landing between ResolveStoredObjectAsync and the
+        // lock-free content-file open: remove only the content file, leaving metadata intact so
+        // the object still resolves. Before the fix the open threw FileNotFoundException, which
+        // surfaced as an InternalError (500); after the fix it must translate to NoSuchKey (404).
+        var contentPath = FindObjectContentPath(fixture.RootPath, "toctou-get");
+        File.Delete(contentPath);
+
+        var getResult = await storageService.GetObjectAsync(new GetObjectRequest
+        {
+            BucketName = "toctou-get",
+            Key = "race.txt"
+        });
+
+        Assert.False(getResult.IsSuccess);
+        Assert.Equal(StorageErrorCode.ObjectNotFound, getResult.Error!.Code);
+        Assert.Equal(404, getResult.Error.SuggestedHttpStatusCode);
+    }
+
+    [Fact]
+    public async Task DiskStorage_CopyObject_SourceContentFileDeletedAfterResolve_ReturnsNoSuchKeyNot500()
+    {
+        await using var fixture = new DiskStorageFixture();
+        var storageService = fixture.Services.GetRequiredService<IStorageBackend>();
+        await storageService.CreateBucketAsync(new CreateBucketRequest { BucketName = "toctou-copy" });
+
+        await using (var uploadStream = new MemoryStream(Encoding.UTF8.GetBytes("copy source"))) {
+            var put = await storageService.PutObjectAsync(new PutObjectRequest
+            {
+                BucketName = "toctou-copy",
+                Key = "src.txt",
+                Content = uploadStream,
+                ContentType = "text/plain"
+            });
+            Assert.True(put.IsSuccess);
+        }
+
+        // CopyObject opens the source content file while holding only the destination lock, never
+        // the source lock. Deleting the source content file (metadata intact) reproduces that race;
+        // the losing copy must return NoSuchKey (404) rather than an InternalError (500).
+        var sourceContentPath = FindObjectContentPath(fixture.RootPath, "toctou-copy");
+        File.Delete(sourceContentPath);
+
+        var copyResult = await storageService.CopyObjectAsync(new CopyObjectRequest
+        {
+            SourceBucketName = "toctou-copy",
+            SourceKey = "src.txt",
+            DestinationBucketName = "toctou-copy",
+            DestinationKey = "dst.txt"
+        });
+
+        Assert.False(copyResult.IsSuccess);
+        Assert.Equal(StorageErrorCode.ObjectNotFound, copyResult.Error!.Code);
+        Assert.Equal(404, copyResult.Error.SuggestedHttpStatusCode);
+    }
+
+    [Fact]
+    public async Task DiskStorage_GetObject_ReaderSharesDeleteSoUnderlyingFileCanBeRemovedWhileOpen()
+    {
+        await using var fixture = new DiskStorageFixture();
+        var storageService = fixture.Services.GetRequiredService<IStorageBackend>();
+        await storageService.CreateBucketAsync(new CreateBucketRequest { BucketName = "fileshare-delete" });
+
+        await using (var uploadStream = new MemoryStream(Encoding.UTF8.GetBytes("still readable"))) {
+            var put = await storageService.PutObjectAsync(new PutObjectRequest
+            {
+                BucketName = "fileshare-delete",
+                Key = "open.txt",
+                Content = uploadStream,
+                ContentType = "text/plain"
+            });
+            Assert.True(put.IsSuccess);
+        }
+
+        var getResult = await storageService.GetObjectAsync(new GetObjectRequest
+        {
+            BucketName = "fileshare-delete",
+            Key = "open.txt"
+        });
+        Assert.True(getResult.IsSuccess);
+
+        var contentPath = FindObjectContentPath(fixture.RootPath, "fileshare-delete");
+
+        await using var response = getResult.Value!;
+
+        // The read stream must have been opened with FileShare.Delete: on Windows, deleting (or a
+        // writer's File.Move overwrite of) the underlying file while a reader holds the handle only
+        // succeeds when the reader shares Delete. Without it this File.Delete throws IOException.
+        var exception = Record.Exception(() => File.Delete(contentPath));
+        Assert.Null(exception);
+
+        // The already-open reader keeps its handle and can still stream the full content even after
+        // the directory entry is unlinked.
+        using var reader = new StreamReader(response.Content, Encoding.UTF8, leaveOpen: false);
+        Assert.Equal("still readable", await reader.ReadToEndAsync());
+    }
 }
