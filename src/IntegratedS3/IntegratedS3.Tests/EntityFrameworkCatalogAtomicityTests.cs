@@ -244,6 +244,140 @@ public sealed class EntityFrameworkCatalogAtomicityTests : IDisposable
         Assert.Contains("LIMIT", objectSelect, StringComparison.OrdinalIgnoreCase);
     }
 
+    [Fact]
+    public async Task UpsertObjectAsync_RoundTripsMetadataTagsChecksums_ThroughSourceGeneratedJsonColumns()
+    {
+        // Issue #140: the Metadata/Tags/Checksums JSON columns are now (de)serialized through the
+        // source-generated EntityFrameworkCatalogJsonSerializerContext. Persisting an object with all three
+        // dictionaries populated and reading it back on a fresh scope/DbContext must return them intact, proving
+        // the generated serialize AND deserialize paths agree with each other end-to-end.
+        const string key = "docs/meta.txt";
+        var metadata = new Dictionary<string, string> { ["x-amz-meta-owner"] = "alice", ["x-amz-meta-team"] = "storage" };
+        var tags = new Dictionary<string, string> { ["env"] = "prod", ["tier"] = "hot" };
+        var checksums = new Dictionary<string, string> { ["CRC32"] = "AAAAAA==", ["SHA256"] = "deadbeef" };
+
+        await using (var seedProvider = BuildProvider()) {
+            var seedStore = seedProvider.GetRequiredService<IStorageCatalogStore>();
+            var @object = new ObjectInfo
+            {
+                BucketName = "catalog-bucket",
+                Key = key,
+                VersionId = "version-001",
+                IsLatest = true,
+                ContentLength = 16,
+                LastModifiedUtc = DateTimeOffset.Parse("2026-03-01T00:00:00Z"),
+                Metadata = metadata,
+                Tags = tags,
+                Checksums = checksums
+            };
+            await seedStore.UpsertObjectAsync("catalog-disk", @object);
+        }
+
+        // Read back on a brand-new provider so nothing is served from an in-memory cache.
+        await using var verifyProvider = BuildProvider();
+        var verifyStore = verifyProvider.GetRequiredService<IStorageCatalogStore>();
+        var stored = Assert.Single(await verifyStore.ListObjectsAsync("catalog-disk", "catalog-bucket"), o => o.Key == key);
+
+        Assert.NotNull(stored.Metadata);
+        Assert.NotNull(stored.Tags);
+        Assert.NotNull(stored.Checksums);
+        Assert.Equal(metadata, stored.Metadata!.ToDictionary(kvp => kvp.Key, kvp => kvp.Value));
+        Assert.Equal(tags, stored.Tags!.ToDictionary(kvp => kvp.Key, kvp => kvp.Value));
+        Assert.Equal(checksums, stored.Checksums!.ToDictionary(kvp => kvp.Key, kvp => kvp.Value));
+    }
+
+    [Fact]
+    public async Task UpsertObjectAsync_NullDictionaries_PersistAsNullColumns_AndReadBackAsNull()
+    {
+        // The write side must keep the JSON columns NULL when the source dictionaries are null (the source-gen
+        // helper returns null for a null source), and the read side must surface them as null rather than empty.
+        const string key = "docs/nometa.txt";
+
+        await using (var seedProvider = BuildProvider()) {
+            var seedStore = seedProvider.GetRequiredService<IStorageCatalogStore>();
+            await seedStore.UpsertObjectAsync("catalog-disk", NewObject(key, "version-001", isLatest: true));
+        }
+
+        await using var verifyProvider = BuildProvider();
+        var verifyStore = verifyProvider.GetRequiredService<IStorageCatalogStore>();
+        var stored = Assert.Single(await verifyStore.ListObjectsAsync("catalog-disk", "catalog-bucket"), o => o.Key == key);
+
+        Assert.Null(stored.Metadata);
+        Assert.Null(stored.Tags);
+        Assert.Null(stored.Checksums);
+    }
+
+    [Fact]
+    public async Task UpsertObjectAsync_PersistsMetadataJson_ByteIdenticalToReflectionBaseline()
+    {
+        // Issue #140 compat guarantee: routing through the source-generated context must not change the stored
+        // JSON shape. Read the raw MetadataJson column straight out of SQLite and assert it matches what the
+        // previous reflection-based System.Text.Json path (default options) would have produced for the same
+        // dictionary, so existing persisted rows keep round-tripping.
+        const string key = "docs/shape.txt";
+        var metadata = new Dictionary<string, string> { ["x-amz-meta-owner"] = "alice", ["x-amz-meta-team"] = "storage" };
+        var reflectionBaseline = System.Text.Json.JsonSerializer.Serialize(metadata);
+
+        await using var provider = BuildProvider();
+        var store = provider.GetRequiredService<IStorageCatalogStore>();
+        await store.UpsertObjectAsync("catalog-disk", new ObjectInfo
+        {
+            BucketName = "catalog-bucket",
+            Key = key,
+            VersionId = "version-001",
+            IsLatest = true,
+            ContentLength = 16,
+            LastModifiedUtc = DateTimeOffset.Parse("2026-03-01T00:00:00Z"),
+            Metadata = metadata
+        });
+
+        await using var scope = provider.CreateAsyncScope();
+        var dbContext = scope.ServiceProvider.GetRequiredService<TestCatalogDbContext>();
+        await using var connection = dbContext.Database.GetDbConnection();
+        await connection.OpenAsync();
+        await using var command = connection.CreateCommand();
+        command.CommandText = "SELECT MetadataJson FROM IntegratedS3Objects WHERE Key = $key";
+        var keyParameter = command.CreateParameter();
+        keyParameter.ParameterName = "$key";
+        keyParameter.Value = key;
+        command.Parameters.Add(keyParameter);
+        var persistedJson = (string?)await command.ExecuteScalarAsync();
+
+        Assert.Equal(reflectionBaseline, persistedJson);
+    }
+
+    [Fact]
+    public async Task MultipartUploadState_RoundTripsMetadataAndTags_ThroughSourceGeneratedJsonColumns()
+    {
+        // Issue #140: the multipart-state store's Metadata/Tags JSON columns route through the same source-generated
+        // context. Persist a state with both populated and read it back on a fresh scope to prove the round-trip.
+        var metadata = new Dictionary<string, string> { ["x-amz-meta-source"] = "upload" };
+        var tags = new Dictionary<string, string> { ["stage"] = "in-progress" };
+
+        await using (var seedProvider = BuildProvider()) {
+            var seedStore = seedProvider.GetRequiredService<IStorageMultipartStateStore>();
+            await seedStore.UpsertMultipartUploadStateAsync("catalog-disk", new MultipartUploadState
+            {
+                BucketName = "catalog-bucket",
+                Key = "docs/big.bin",
+                UploadId = "upload-001",
+                InitiatedAtUtc = DateTimeOffset.Parse("2026-03-01T00:00:00Z"),
+                Metadata = metadata,
+                Tags = tags
+            });
+        }
+
+        await using var verifyProvider = BuildProvider();
+        var verifyStore = verifyProvider.GetRequiredService<IStorageMultipartStateStore>();
+        var stored = await verifyStore.GetMultipartUploadStateAsync("catalog-disk", "catalog-bucket", "docs/big.bin", "upload-001");
+
+        Assert.NotNull(stored);
+        Assert.NotNull(stored!.Metadata);
+        Assert.NotNull(stored.Tags);
+        Assert.Equal(metadata, stored.Metadata!.ToDictionary(kvp => kvp.Key, kvp => kvp.Value));
+        Assert.Equal(tags, stored.Tags!.ToDictionary(kvp => kvp.Key, kvp => kvp.Value));
+    }
+
     private sealed class TestCatalogDbContext(DbContextOptions<TestCatalogDbContext> options) : DbContext(options)
     {
         protected override void OnModelCreating(ModelBuilder modelBuilder)
