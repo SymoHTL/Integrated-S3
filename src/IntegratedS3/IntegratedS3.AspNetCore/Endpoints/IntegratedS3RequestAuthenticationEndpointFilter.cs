@@ -37,7 +37,8 @@ internal sealed class IntegratedS3RequestAuthenticationEndpointFilter(
                                 Code = authenticationResult.ErrorCode ?? "AccessDenied",
                                 Message = authenticationResult.ErrorMessage ?? "Request authentication failed.",
                                 Resource = httpContext.Request.PathBase.Add(httpContext.Request.Path).Value,
-                                RequestId = httpContext.TraceIdentifier
+                                RequestId = httpContext.TraceIdentifier,
+                                HostId = httpContext.TraceIdentifier
                             }));
                     }
 
@@ -76,7 +77,8 @@ internal sealed class IntegratedS3RequestAuthenticationEndpointFilter(
                     Code = errorCode,
                     Message = message,
                     Resource = httpContext.Request.PathBase.Add(httpContext.Request.Path).Value,
-                    RequestId = httpContext.TraceIdentifier
+                    RequestId = httpContext.TraceIdentifier,
+                    HostId = httpContext.TraceIdentifier
                 }));
         }
     }

@@ -177,6 +177,10 @@ public static class S3XmlResponseWriter
             xmlWriter.WriteElementString("RequestId", response.RequestId);
         }
 
+        if (!string.IsNullOrWhiteSpace(response.HostId)) {
+            xmlWriter.WriteElementString("HostId", response.HostId);
+        }
+
         if (!string.IsNullOrWhiteSpace(response.BucketName)) {
             xmlWriter.WriteElementString("BucketName", response.BucketName);
         }
