@@ -3107,6 +3107,98 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
     }
 
     [Fact]
+    public async Task S3CompatibleBucketRoute_ListType2_WithMaxKeysAbove1000_ClampsMaxKeysToLimit()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        await client.PutAsync("/integrated-s3/buckets/maxkeys-clamp-v2-bucket", content: null);
+        await client.PutAsync("/integrated-s3/buckets/maxkeys-clamp-v2-bucket/objects/a.txt", new StringContent("A", Encoding.UTF8, "text/plain"));
+        await client.PutAsync("/integrated-s3/buckets/maxkeys-clamp-v2-bucket/objects/b.txt", new StringContent("B", Encoding.UTF8, "text/plain"));
+
+        var response = await client.GetAsync("/integrated-s3/maxkeys-clamp-v2-bucket?list-type=2&max-keys=5000");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var document = XDocument.Parse(await response.Content.ReadAsStringAsync());
+        S3XmlTestHelper.AssertRoot(document, "ListBucketResult");
+        Assert.Equal("1000", GetRequiredElementValue(document, "MaxKeys"));
+        Assert.Equal("false", GetRequiredElementValue(document, "IsTruncated"));
+        Assert.Equal("2", GetRequiredElementValue(document, "KeyCount"));
+    }
+
+    [Fact]
+    public async Task S3CompatibleBucketRoute_ListObjectsV1_WithMaxKeysAbove1000_ClampsMaxKeysToLimit()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        await client.PutAsync("/integrated-s3/buckets/maxkeys-clamp-v1-bucket", content: null);
+        await client.PutAsync("/integrated-s3/buckets/maxkeys-clamp-v1-bucket/objects/a.txt", new StringContent("A", Encoding.UTF8, "text/plain"));
+
+        var response = await client.GetAsync("/integrated-s3/maxkeys-clamp-v1-bucket?max-keys=5000");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var document = XDocument.Parse(await response.Content.ReadAsStringAsync());
+        S3XmlTestHelper.AssertRoot(document, "ListBucketResult");
+        Assert.Equal("1000", GetRequiredElementValue(document, "MaxKeys"));
+        Assert.Equal("false", GetRequiredElementValue(document, "IsTruncated"));
+    }
+
+    [Fact]
+    public async Task S3CompatibleBucketRoute_ListType2_WithMaxKeysZero_ReturnsEmptyPageWithOk()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        await client.PutAsync("/integrated-s3/buckets/maxkeys-zero-v2-bucket", content: null);
+        await client.PutAsync("/integrated-s3/buckets/maxkeys-zero-v2-bucket/objects/a.txt", new StringContent("A", Encoding.UTF8, "text/plain"));
+        await client.PutAsync("/integrated-s3/buckets/maxkeys-zero-v2-bucket/objects/b.txt", new StringContent("B", Encoding.UTF8, "text/plain"));
+
+        var response = await client.GetAsync("/integrated-s3/maxkeys-zero-v2-bucket?list-type=2&max-keys=0");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var document = XDocument.Parse(await response.Content.ReadAsStringAsync());
+        S3XmlTestHelper.AssertRoot(document, "ListBucketResult");
+        Assert.Equal("0", GetRequiredElementValue(document, "MaxKeys"));
+        Assert.Equal("0", GetRequiredElementValue(document, "KeyCount"));
+        Assert.Equal("true", GetRequiredElementValue(document, "IsTruncated"));
+        Assert.Empty(document.Root!.S3Elements("Contents"));
+    }
+
+    [Fact]
+    public async Task S3CompatibleBucketRoute_ListObjectsV1_WithMaxKeysZero_ReturnsEmptyPageWithOk()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        await client.PutAsync("/integrated-s3/buckets/maxkeys-zero-v1-bucket", content: null);
+        await client.PutAsync("/integrated-s3/buckets/maxkeys-zero-v1-bucket/objects/a.txt", new StringContent("A", Encoding.UTF8, "text/plain"));
+
+        var response = await client.GetAsync("/integrated-s3/maxkeys-zero-v1-bucket?max-keys=0");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var document = XDocument.Parse(await response.Content.ReadAsStringAsync());
+        S3XmlTestHelper.AssertRoot(document, "ListBucketResult");
+        Assert.Equal("0", GetRequiredElementValue(document, "MaxKeys"));
+        Assert.Equal("true", GetRequiredElementValue(document, "IsTruncated"));
+        Assert.Empty(document.Root!.S3Elements("Contents"));
+    }
+
+    [Fact]
+    public async Task S3CompatibleBucketRoute_ListObjectVersions_WithMaxKeysZero_ReturnsEmptyPageWithOk()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        await client.PutAsync("/integrated-s3/buckets/maxkeys-zero-versions-bucket", content: null);
+        await client.PutAsync("/integrated-s3/buckets/maxkeys-zero-versions-bucket/objects/a.txt", new StringContent("A", Encoding.UTF8, "text/plain"));
+
+        var response = await client.GetAsync("/integrated-s3/maxkeys-zero-versions-bucket?versions&max-keys=0");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var document = XDocument.Parse(await response.Content.ReadAsStringAsync());
+        S3XmlTestHelper.AssertRoot(document, "ListVersionsResult");
+        Assert.Equal("0", GetRequiredElementValue(document, "MaxKeys"));
+        Assert.Equal("true", GetRequiredElementValue(document, "IsTruncated"));
+        Assert.Empty(document.Root!.S3Elements("Version"));
+    }
+
+    [Fact]
     public async Task S3CompatibleBucketRoute_ListType2_WithFetchOwnerAndEncodingType_ReturnsOwnerMetadata()
     {
         using var client = await _factory.CreateClientAsync();
