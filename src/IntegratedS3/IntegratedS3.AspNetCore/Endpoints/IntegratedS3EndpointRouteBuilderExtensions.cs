@@ -1350,6 +1350,10 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
                             return destinationCustomerEncryptionError;
                         }
 
+                        if (!TryReadStorageClassHeader(httpContext, bucketName, key, out var copyStorageClass, out var copyStorageClassError)) {
+                            return copyStorageClassError!;
+                        }
+
                         var copyResult = await storageService.CopyObjectAsync(new CopyObjectRequest
                         {
                             SourceBucketName = copySource!.BucketName,
@@ -1377,7 +1381,7 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
                             DestinationServerSideEncryption = copyServerSideEncryption,
                             SourceCustomerEncryption = sourceCustomerEncryption,
                             DestinationCustomerEncryption = destinationCustomerEncryption,
-                            StorageClass = GetOptionalHeaderValue(request.Headers[StorageClassHeaderName].ToString())
+                            StorageClass = copyStorageClass
                         }, innerCancellationToken);
 
                         if (!copyResult.IsSuccess) {
@@ -1417,6 +1421,10 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
                             BuildObjectResource(bucketName, key), bucketName, key);
                     }
 
+                    if (!TryReadStorageClassHeader(httpContext, bucketName, key, out var putStorageClass, out var putStorageClassError)) {
+                        return putStorageClassError!;
+                    }
+
                     var result = await storageService.PutObjectAsync(new PutObjectRequest
                     {
                         BucketName = bucketName,
@@ -1435,7 +1443,7 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
                         Checksums = requestedChecksums,
                         ServerSideEncryption = serverSideEncryption,
                         CustomerEncryption = customerEncryption,
-                        StorageClass = GetOptionalHeaderValue(request.Headers[StorageClassHeaderName].ToString()),
+                        StorageClass = putStorageClass,
                         IfMatchETag = GetOptionalHeaderValue(request.Headers.IfMatch.ToString()),
                         IfNoneMatchETag = GetOptionalHeaderValue(request.Headers.IfNoneMatch.ToString())
                     }, innerCancellationToken);
@@ -2971,6 +2979,10 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
                         BuildObjectResource(bucketName, key), bucketName, key);
                 }
 
+                if (!TryReadStorageClassHeader(httpContext, bucketName, key, out var initiateStorageClass, out var initiateStorageClassError)) {
+                    return initiateStorageClassError!;
+                }
+
                 var result = await storageService.InitiateMultipartUploadAsync(new InitiateMultipartUploadRequest
                 {
                     BucketName = bucketName,
@@ -2987,7 +2999,7 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
                     ChecksumAlgorithm = checksumAlgorithm,
                     ServerSideEncryption = serverSideEncryption,
                     CustomerEncryption = customerEncryption,
-                    StorageClass = GetOptionalHeaderValue(httpContext.Request.Headers[StorageClassHeaderName].ToString())
+                    StorageClass = initiateStorageClass
                 }, innerCancellationToken);
 
                 if (!result.IsSuccess) {
@@ -3241,6 +3253,15 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
             return ToErrorResult(httpContext, StatusCodes.Status400BadRequest, "InvalidArgument", uploadIdError!, BuildObjectResource(bucketName, key), bucketName, key);
         }
 
+        // Modern SDKs signal a whole-object multipart completion with x-amz-checksum-type: FULL_OBJECT
+        // (plus a full-object x-amz-checksum-* value). Validate the type up front so an unknown value
+        // fails fast with 400 InvalidRequest before any storage mutation occurs.
+        if (!TryParseRequestChecksumType(httpContext.Request, BuildObjectResource(bucketName, key), bucketName, key, out var requestedChecksumType, out var checksumTypeError)) {
+            return checksumTypeError!;
+        }
+
+        var requestFullObjectChecksum = GetRequestFullObjectChecksum(httpContext.Request);
+
         S3CompleteMultipartUploadRequest requestBody;
         try {
             requestBody = await S3XmlRequestReader.ReadCompleteMultipartUploadRequestAsync(httpContext.Request.Body, cancellationToken);
@@ -3288,6 +3309,21 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
                 // the ETag lives inside the <CompleteMultipartUploadResult> body because the body
                 // may instead carry a delayed error after the 200 status line.
                 httpContext.Response.Headers.Remove(HeaderNames.ETag);
+
+                // Determine the checksum type to report. AWS echoes the client-declared type when the
+                // request carried an explicit x-amz-checksum-type header; otherwise it derives the type
+                // from the completed object's checksum shape (COMPOSITE for a "-N" suffixed value,
+                // FULL_OBJECT for a whole-object value).
+                var derivedChecksumType = GetChecksumType(completedObject.Checksums);
+                var responseChecksumType = requestedChecksumType ?? derivedChecksumType;
+
+                // For a FULL_OBJECT completion the client supplies the whole-object checksum on the
+                // Complete request itself; surface it in the response when the server did not compute
+                // an equivalent whole-object value of its own.
+                var responseCrc32 = requestFullObjectChecksum?.Crc32 ?? GetChecksumValue(completedObject.Checksums, "crc32");
+                var responseCrc32c = requestFullObjectChecksum?.Crc32c ?? GetChecksumValue(completedObject.Checksums, "crc32c");
+                var responseCrc64Nvme = requestFullObjectChecksum?.Crc64Nvme ?? GetChecksumValue(completedObject.Checksums, "crc64nvme");
+
                 return new XmlContentResult(
                     S3XmlResponseWriter.WriteCompleteMultipartUploadResult(new S3CompleteMultipartUploadResult
                     {
@@ -3295,12 +3331,12 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
                         Bucket = bucketName,
                         Key = key,
                         ETag = completedObject.ETag ?? string.Empty,
-                        ChecksumCrc32 = GetChecksumValue(completedObject.Checksums, "crc32"),
-                        ChecksumCrc32c = GetChecksumValue(completedObject.Checksums, "crc32c"),
-                        ChecksumCrc64Nvme = GetChecksumValue(completedObject.Checksums, "crc64nvme"),
+                        ChecksumCrc32 = responseCrc32,
+                        ChecksumCrc32c = responseCrc32c,
+                        ChecksumCrc64Nvme = responseCrc64Nvme,
                         ChecksumSha1 = GetChecksumValue(completedObject.Checksums, "sha1"),
                         ChecksumSha256 = GetChecksumValue(completedObject.Checksums, "sha256"),
-                        ChecksumType = GetChecksumType(completedObject.Checksums)
+                        ChecksumType = responseChecksumType
                     }),
                     StatusCodes.Status200OK,
                     XmlContentType);
@@ -4740,6 +4776,7 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
                     ETag = entry.Object.ETag,
                     Size = entry.Object.ContentLength,
                     LastModifiedUtc = entry.Object.LastModifiedUtc,
+                    StorageClass = StorageClass.NormalizeForEcho(entry.Object.StorageClass),
                     Owner = includeOwner ? owner : null
                 })
                 .ToArray(),
@@ -4831,6 +4868,7 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
                     ETag = entry.Version.ETag,
                     Size = entry.Version.ContentLength,
                     LastModifiedUtc = entry.Version.LastModifiedUtc,
+                    StorageClass = StorageClass.NormalizeForEcho(entry.Version.StorageClass),
                     Owner = owner
                 })
                 .ToArray(),
@@ -8445,7 +8483,24 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
         // after the multiple-checksum-type validation.
         var contentMd5 = request.Headers[HeaderNames.ContentMD5].ToString();
         if (!string.IsNullOrWhiteSpace(contentMd5)) {
-            parsedChecksums["md5"] = contentMd5.Trim();
+            var normalizedContentMd5 = contentMd5.Trim();
+
+            // AWS rejects a syntactically invalid Content-MD5 (not base64, or not a 16-byte digest)
+            // with 400 InvalidDigest, which is distinct from the 400 BadDigest that a well-formed but
+            // mismatched digest yields downstream. Validate the format here, before the value is
+            // handed to the provider for body-hash comparison.
+            if (!IsValidMd5Digest(normalizedContentMd5)) {
+                checksums = null;
+                errorResult = ToErrorResult(
+                    request.HttpContext,
+                    StatusCodes.Status400BadRequest,
+                    "InvalidDigest",
+                    "The Content-MD5 you specified is not valid.",
+                    resource: null);
+                return false;
+            }
+
+            parsedChecksums["md5"] = normalizedContentMd5;
         }
 
         if (parsedChecksums.Count == 0) {
@@ -9037,6 +9092,35 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
             : rawValue;
     }
 
+    /// <summary>
+    /// Validates the optional <c>x-amz-storage-class</c> request header. Returns the parsed value (or
+    /// null when absent) via <paramref name="storageClass"/>; when the supplied value is not a known
+    /// storage class, produces an <c>InvalidStorageClass</c> (400) error result and returns false.
+    /// </summary>
+    private static bool TryReadStorageClassHeader(
+        HttpContext httpContext,
+        string bucketName,
+        string key,
+        out string? storageClass,
+        out IResult? errorResult)
+    {
+        storageClass = GetOptionalHeaderValue(httpContext.Request.Headers[StorageClassHeaderName].ToString());
+        if (!StorageClass.IsKnown(storageClass)) {
+            errorResult = ToErrorResult(
+                httpContext,
+                StatusCodes.Status400BadRequest,
+                "InvalidStorageClass",
+                "The storage class you specified is not valid.",
+                BuildObjectResource(bucketName, key),
+                bucketName,
+                key);
+            return false;
+        }
+
+        errorResult = null;
+        return true;
+    }
+
     private static void ApplyDeleteObjectHeaders(HttpResponse httpResponse, DeleteObjectResult result)
     {
         ApplyVersionIdHeader(httpResponse, result.VersionId);
@@ -9241,6 +9325,12 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
         else if (objectInfo.ExpiresUtc is { } expiresUtc) {
             httpResponse.Headers.Expires = expiresUtc.ToString("R");
         }
+
+        // AWS omits x-amz-storage-class on GET/HEAD for STANDARD objects and emits it only for
+        // non-STANDARD storage classes.
+        if (StorageClass.IsNonStandard(objectInfo.StorageClass)) {
+            httpResponse.Headers[StorageClassHeaderName] = StorageClass.NormalizeForEcho(objectInfo.StorageClass);
+        }
     }
 
     private static void ApplyObjectTaggingCountHeader(HttpResponse httpResponse, ObjectInfo objectInfo)
@@ -9416,14 +9506,95 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
             return null;
         }
 
+        var hasChecksumValue = false;
         foreach (var checksum in checksums.Values) {
+            if (string.IsNullOrWhiteSpace(checksum)) {
+                continue;
+            }
+
+            // A composite checksum carries a "-<partCount>" suffix; a whole-object checksum does not.
+            // AWS reports the former as COMPOSITE and the latter as FULL_OBJECT.
             if (IsCompositeChecksumValue(checksum)) {
                 return "COMPOSITE";
             }
+
+            hasChecksumValue = true;
         }
 
-        return null;
+        return hasChecksumValue ? "FULL_OBJECT" : null;
     }
+
+    /// <summary>
+    /// Validates an optional request-supplied <c>x-amz-checksum-type</c> header. AWS accepts only
+    /// <c>FULL_OBJECT</c> and <c>COMPOSITE</c> (case-insensitive); any other value is a 400
+    /// InvalidRequest. Returns the normalized, upper-cased value (or <see langword="null"/> when the
+    /// header is absent) in <paramref name="checksumType"/>.
+    /// </summary>
+    private static bool TryParseRequestChecksumType(
+        HttpRequest request,
+        string? resource,
+        string? bucketName,
+        string? key,
+        out string? checksumType,
+        out IResult? errorResult)
+    {
+        var rawChecksumType = request.Headers[ChecksumTypeHeaderName].ToString();
+        if (string.IsNullOrWhiteSpace(rawChecksumType)) {
+            checksumType = null;
+            errorResult = null;
+            return true;
+        }
+
+        var normalized = rawChecksumType.Trim();
+        if (string.Equals(normalized, "FULL_OBJECT", StringComparison.OrdinalIgnoreCase)) {
+            checksumType = "FULL_OBJECT";
+            errorResult = null;
+            return true;
+        }
+
+        if (string.Equals(normalized, "COMPOSITE", StringComparison.OrdinalIgnoreCase)) {
+            checksumType = "COMPOSITE";
+            errorResult = null;
+            return true;
+        }
+
+        checksumType = null;
+        errorResult = ToErrorResult(
+            request.HttpContext,
+            StatusCodes.Status400BadRequest,
+            "InvalidRequest",
+            $"The '{ChecksumTypeHeaderName}' header value '{normalized}' is not valid. Valid values are 'FULL_OBJECT' and 'COMPOSITE'.",
+            resource,
+            bucketName,
+            key);
+        return false;
+    }
+
+    /// <summary>
+    /// Reads the whole-object CRC checksum headers a client may send on a FULL_OBJECT
+    /// CompleteMultipartUpload request. Only the CRC algorithms support full-object multipart
+    /// checksums; SHA algorithms are composite-only, so they are intentionally ignored here.
+    /// Returns <see langword="null"/> when no full-object CRC header is present.
+    /// </summary>
+    private static RequestFullObjectChecksum? GetRequestFullObjectChecksum(HttpRequest request)
+    {
+        var crc32 = request.Headers[ChecksumCrc32HeaderName].ToString();
+        var crc32c = request.Headers[ChecksumCrc32cHeaderName].ToString();
+        var crc64Nvme = request.Headers[ChecksumCrc64NvmeHeaderName].ToString();
+
+        if (string.IsNullOrWhiteSpace(crc32)
+            && string.IsNullOrWhiteSpace(crc32c)
+            && string.IsNullOrWhiteSpace(crc64Nvme)) {
+            return null;
+        }
+
+        return new RequestFullObjectChecksum(
+            string.IsNullOrWhiteSpace(crc32) ? null : crc32.Trim(),
+            string.IsNullOrWhiteSpace(crc32c) ? null : crc32c.Trim(),
+            string.IsNullOrWhiteSpace(crc64Nvme) ? null : crc64Nvme.Trim());
+    }
+
+    private sealed record RequestFullObjectChecksum(string? Crc32, string? Crc32c, string? Crc64Nvme);
 
     private static string? GetResponseChecksumAlgorithm(IReadOnlyDictionary<string, string>? checksums)
     {

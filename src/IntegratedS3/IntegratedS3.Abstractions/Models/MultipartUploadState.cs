@@ -76,4 +76,9 @@ public class MultipartUploadState
     /// The checksum algorithm specified at upload initiation, or <see langword="null"/> if none was specified.
     /// </summary>
     public string? ChecksumAlgorithm { get; init; }
+
+    /// <summary>
+    /// The storage class specified at upload initiation, or <see langword="null"/> if none was specified.
+    /// </summary>
+    public string? StorageClass { get; init; }
 }

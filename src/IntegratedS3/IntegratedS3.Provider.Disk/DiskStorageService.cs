@@ -2526,7 +2526,10 @@ internal sealed class DiskStorageService(
                 contentEncoding: useReplacementMetadata ? request.ContentEncoding : sourceMetadata.ContentEncoding,
                 contentLanguage: useReplacementMetadata ? request.ContentLanguage : sourceMetadata.ContentLanguage,
                 expiresUtc: useReplacementMetadata ? request.ExpiresUtc : sourceMetadata.ExpiresUtc,
-                expires: useReplacementMetadata ? request.Expires : sourceMetadata.Expires);
+                expires: useReplacementMetadata ? request.Expires : sourceMetadata.Expires,
+                // AWS applies the request's storage class to the copy (defaulting to STANDARD); it does
+                // not preserve the source object's class unless the request repeats it.
+                storageClass: NormalizeStoredStorageClass(request.StorageClass));
         }
         finally {
             if (File.Exists(tempDestinationPath)) {
@@ -2658,7 +2661,8 @@ internal sealed class DiskStorageService(
                 contentEncoding: request.ContentEncoding,
                 contentLanguage: request.ContentLanguage,
                 expiresUtc: request.ExpiresUtc,
-                expires: request.Expires);
+                expires: request.Expires,
+                storageClass: NormalizeStoredStorageClass(request.StorageClass));
         }
         finally {
             if (File.Exists(tempFilePath)) {
@@ -3418,7 +3422,8 @@ internal sealed class DiskStorageService(
                 contentLanguage: uploadState.State.ContentLanguage,
                 expiresUtc: uploadState.State.ExpiresUtc,
                 expires: uploadState.State.Expires,
-                etag: multipartETag);
+                etag: multipartETag,
+                storageClass: NormalizeStoredStorageClass(uploadState.State.StorageClass));
 
             await DeleteStoredMultipartStateAsync(request.BucketName, request.Key, request.UploadId, uploadState.UploadDirectoryPath, cancellationToken);
             DeleteDirectoryIfExists(uploadState.UploadDirectoryPath);
@@ -3499,7 +3504,7 @@ internal sealed class DiskStorageService(
             LastModifiedUtc = obj.LastModifiedUtc,
             ETag = attrs.Any(a => string.Equals(a, "ETag", StringComparison.OrdinalIgnoreCase)) ? obj.ETag : null,
             ObjectSize = attrs.Any(a => string.Equals(a, "ObjectSize", StringComparison.OrdinalIgnoreCase)) ? obj.ContentLength : null,
-            StorageClass = attrs.Any(a => string.Equals(a, "StorageClass", StringComparison.OrdinalIgnoreCase)) ? "STANDARD" : null,
+            StorageClass = attrs.Any(a => string.Equals(a, "StorageClass", StringComparison.OrdinalIgnoreCase)) ? StorageClass.NormalizeForEcho(obj.StorageClass) : null,
             Checksums = attrs.Any(a => string.Equals(a, "Checksum", StringComparison.OrdinalIgnoreCase)) ? obj.Checksums : null,
             ObjectParts = objectParts,
         };
@@ -4183,7 +4188,8 @@ internal sealed class DiskStorageService(
             LastModifiedUtc = lastModifiedUtc,
             Metadata = metadata.Metadata,
             Tags = metadata.Tags,
-            Checksums = metadata.Checksums
+            Checksums = metadata.Checksums,
+            StorageClass = metadata.IsDeleteMarker ? null : StorageClass.NormalizeForEcho(metadata.StorageClass)
         };
     }
 
@@ -4337,7 +4343,8 @@ internal sealed class DiskStorageService(
         string? contentLanguage = null,
         DateTimeOffset? expiresUtc = null,
         string? expires = null,
-        string? etag = null)
+        string? etag = null,
+        string? storageClass = null)
     {
         // Persist the S3 content ETag so it never depends on filesystem mtime. Multipart callers
         // pass the composite "<md5>-<partCount>" form explicitly; every other write path stores a
@@ -4364,7 +4371,8 @@ internal sealed class DiskStorageService(
                 Expires = isDeleteMarker ? null : expires,
                 Metadata = metadata is null ? null : new Dictionary<string, string>(metadata, StringComparer.Ordinal),
                 Tags = tags is null ? null : new Dictionary<string, string>(tags, StringComparer.Ordinal),
-                Checksums = checksums is null ? null : new Dictionary<string, string>(checksums, StringComparer.OrdinalIgnoreCase)
+                Checksums = checksums is null ? null : new Dictionary<string, string>(checksums, StringComparer.OrdinalIgnoreCase),
+                StorageClass = isDeleteMarker ? null : storageClass
             }, cancellationToken);
 
             return;
@@ -4393,7 +4401,8 @@ internal sealed class DiskStorageService(
             LastModifiedUtc = lastModifiedUtc ?? fileInfo?.LastWriteTimeUtc ?? DateTimeOffset.UtcNow,
             Metadata = metadata is null ? null : new Dictionary<string, string>(metadata, StringComparer.Ordinal),
             Tags = tags is null ? null : new Dictionary<string, string>(tags, StringComparer.Ordinal),
-            Checksums = checksums is null ? null : new Dictionary<string, string>(checksums, StringComparer.OrdinalIgnoreCase)
+            Checksums = checksums is null ? null : new Dictionary<string, string>(checksums, StringComparer.OrdinalIgnoreCase),
+            StorageClass = isDeleteMarker ? null : storageClass
         }, cancellationToken);
 
         DeleteMetadataFileIfPresent(objectPath);
@@ -5053,7 +5062,8 @@ internal sealed class DiskStorageService(
             Expires = diskState.Expires,
             Metadata = diskState.Metadata,
             Tags = NormalizeTags(diskState.Tags),
-            ChecksumAlgorithm = diskState.ChecksumAlgorithm
+            ChecksumAlgorithm = diskState.ChecksumAlgorithm,
+            StorageClass = diskState.StorageClass
         };
     }
 
@@ -5074,7 +5084,8 @@ internal sealed class DiskStorageService(
             Expires = state.Expires,
             Metadata = state.Metadata is null ? null : new Dictionary<string, string>(state.Metadata, StringComparer.Ordinal),
             Tags = NormalizeTags(state.Tags) is { } tags ? new Dictionary<string, string>(tags, StringComparer.Ordinal) : null,
-            ChecksumAlgorithm = state.ChecksumAlgorithm
+            ChecksumAlgorithm = state.ChecksumAlgorithm,
+            StorageClass = state.StorageClass
         };
     }
 
@@ -5101,6 +5112,14 @@ internal sealed class DiskStorageService(
         }
     }
 
+    /// <summary>
+    /// Normalizes a request storage class for persistence: an unspecified or <c>STANDARD</c> value is
+    /// stored as <see langword="null"/> (read paths report <c>STANDARD</c>), and any other recognized
+    /// value is stored verbatim. Validation of unknown values happens at the HTTP boundary.
+    /// </summary>
+    private static string? NormalizeStoredStorageClass(string? storageClass)
+        => IntegratedS3.Abstractions.Models.StorageClass.IsNonStandard(storageClass) ? storageClass : null;
+
     private static DiskObjectMetadata ToDiskObjectMetadata(ObjectInfo? objectInfo)
     {
         return objectInfo is null
@@ -5121,7 +5140,8 @@ internal sealed class DiskStorageService(
                 Expires = objectInfo.Expires,
                 Metadata = objectInfo.Metadata is null ? null : new Dictionary<string, string>(objectInfo.Metadata, StringComparer.Ordinal),
                 Tags = objectInfo.Tags is null ? null : new Dictionary<string, string>(objectInfo.Tags, StringComparer.Ordinal),
-                Checksums = objectInfo.Checksums is null ? null : new Dictionary<string, string>(objectInfo.Checksums, StringComparer.OrdinalIgnoreCase)
+                Checksums = objectInfo.Checksums is null ? null : new Dictionary<string, string>(objectInfo.Checksums, StringComparer.OrdinalIgnoreCase),
+                StorageClass = objectInfo.StorageClass
             };
     }
 
@@ -5836,7 +5856,8 @@ internal sealed class DiskStorageService(
             Expires = request.Expires,
             Metadata = request.Metadata is null ? null : new Dictionary<string, string>(request.Metadata),
             Tags = NormalizeTags(request.Tags),
-            ChecksumAlgorithm = uploadInfo.ChecksumAlgorithm
+            ChecksumAlgorithm = uploadInfo.ChecksumAlgorithm,
+            StorageClass = NormalizeStoredStorageClass(request.StorageClass)
         };
 
         var statePath = GetMultipartStatePath(uploadDirectoryPath);

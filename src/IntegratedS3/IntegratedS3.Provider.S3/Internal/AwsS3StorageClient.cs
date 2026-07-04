@@ -484,7 +484,8 @@ internal sealed class AwsS3StorageClient : IS3StorageClient
                     ETag: o.ETag,
                     LastModifiedUtc: ToDateTimeOffset(o.LastModified),
                     Metadata: null,
-                    VersionId: null))
+                    VersionId: null,
+                    StorageClass: o.StorageClass?.Value))
                 .ToList();
 
             var result = new S3ObjectListPage(
@@ -554,7 +555,8 @@ internal sealed class AwsS3StorageClient : IS3StorageClient
                     Metadata: null,
                     VersionId: v.VersionId,
                     IsLatest: v.IsLatest == true,
-                    IsDeleteMarker: v.IsDeleteMarker == true))
+                    IsDeleteMarker: v.IsDeleteMarker == true,
+                    StorageClass: v.StorageClass?.Value))
                 .ToList();
 
             var result = new S3ObjectVersionListPage(
@@ -635,7 +637,8 @@ internal sealed class AwsS3StorageClient : IS3StorageClient
                 LegalHoldStatus: S3ObjectLockMapper.ToLegalHoldStatus(response.ObjectLockLegalHoldStatus),
                 CustomerEncryption: S3ServerSideEncryptionMapper.ToCustomerEncryptionInfo(
                     response.ServerSideEncryptionCustomerMethod,
-                    response.ServerSideEncryptionCustomerProvidedKeyMD5));
+                    response.ServerSideEncryptionCustomerProvidedKeyMD5),
+                StorageClass: response.StorageClass?.Value);
 
             sw.Stop();
             S3StorageTelemetry.RecordSuccess("HeadObject", sw.Elapsed);
@@ -854,7 +857,8 @@ internal sealed class AwsS3StorageClient : IS3StorageClient
                 LegalHoldStatus: S3ObjectLockMapper.ToLegalHoldStatus(response.ObjectLockLegalHoldStatus),
                 CustomerEncryption: S3ServerSideEncryptionMapper.ToCustomerEncryptionInfo(
                     response.ServerSideEncryptionCustomerMethod,
-                    response.ServerSideEncryptionCustomerProvidedKeyMD5));
+                    response.ServerSideEncryptionCustomerProvidedKeyMD5),
+                StorageClass: response.StorageClass?.Value);
 
             long totalContentLength = TryParseContentRangeTotal(response.ContentRange)
                 ?? response.ContentLength;
@@ -1083,7 +1087,8 @@ internal sealed class AwsS3StorageClient : IS3StorageClient
                     response.BucketKeyEnabled),
                 CustomerEncryption: S3ServerSideEncryptionMapper.ToCustomerEncryptionInfo(
                     response.ServerSideEncryptionCustomerMethod,
-                    response.ServerSideEncryptionCustomerProvidedKeyMD5));
+                    response.ServerSideEncryptionCustomerProvidedKeyMD5),
+                StorageClass: storageClass);
 
             sw.Stop();
             S3StorageTelemetry.RecordSuccess("PutObject", sw.Elapsed);
@@ -1276,7 +1281,8 @@ internal sealed class AwsS3StorageClient : IS3StorageClient
                     response.BucketKeyEnabled),
                 CustomerEncryption: S3ServerSideEncryptionMapper.ToCustomerEncryptionInfo(
                     response.ServerSideEncryptionCustomerMethod,
-                    response.ServerSideEncryptionCustomerProvidedKeyMD5));
+                    response.ServerSideEncryptionCustomerProvidedKeyMD5),
+                StorageClass: storageClass);
 
             sw.Stop();
             S3StorageTelemetry.RecordSuccess("CopyObject", sw.Elapsed);

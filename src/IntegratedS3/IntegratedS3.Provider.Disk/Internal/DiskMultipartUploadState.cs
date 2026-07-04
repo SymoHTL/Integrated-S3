@@ -33,4 +33,10 @@ internal sealed class DiskMultipartUploadState
     public Dictionary<string, string>? Tags { get; init; }
 
     public string? ChecksumAlgorithm { get; init; }
+
+    /// <summary>
+    /// The storage class supplied at upload initiation, applied to the completed object. Null for
+    /// legacy state written before this field existed.
+    /// </summary>
+    public string? StorageClass { get; init; }
 }

@@ -2164,7 +2164,8 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
         RetainUntilDateUtc = entry.RetainUntilDateUtc,
         LegalHoldStatus = entry.LegalHoldStatus,
         ServerSideEncryption = entry.ServerSideEncryption,
-        CustomerEncryption = entry.CustomerEncryption
+        CustomerEncryption = entry.CustomerEncryption,
+        StorageClass = StorageClass.NormalizeForEcho(entry.StorageClass)
     };
 
     private async Task<S3ObjectEntry> EnrichObjectEntryAsync(

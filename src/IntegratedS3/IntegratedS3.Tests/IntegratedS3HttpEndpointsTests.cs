@@ -159,6 +159,181 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
     }
 
     [Fact]
+    public async Task PutObject_WithNonStandardStorageClass_PersistsAndEchoesOnGetHeadAndList()
+    {
+        using var client = await _factory.CreateClientAsync();
+        const string bucketName = "storage-class-bucket";
+        const string objectKey = "docs/cold.txt";
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync($"/integrated-s3/buckets/{bucketName}", content: null)).StatusCode);
+
+        using (var putRequest = new HttpRequestMessage(HttpMethod.Put, $"/integrated-s3/{bucketName}/{objectKey}")
+        {
+            Content = new StringContent("cold payload", Encoding.UTF8, "text/plain")
+        }) {
+            putRequest.Headers.TryAddWithoutValidation("x-amz-storage-class", "STANDARD_IA");
+            Assert.Equal(HttpStatusCode.OK, (await client.SendAsync(putRequest)).StatusCode);
+        }
+
+        // AWS emits x-amz-storage-class on GET/HEAD only for non-STANDARD classes.
+        var getResponse = await client.GetAsync($"/integrated-s3/{bucketName}/{objectKey}");
+        Assert.Equal(HttpStatusCode.OK, getResponse.StatusCode);
+        Assert.Equal("STANDARD_IA", Assert.Single(getResponse.Headers.GetValues("x-amz-storage-class")));
+
+        using var headRequest = new HttpRequestMessage(HttpMethod.Head, $"/integrated-s3/{bucketName}/{objectKey}");
+        var headResponse = await client.SendAsync(headRequest);
+        Assert.Equal(HttpStatusCode.OK, headResponse.StatusCode);
+        Assert.Equal("STANDARD_IA", Assert.Single(headResponse.Headers.GetValues("x-amz-storage-class")));
+
+        // ListObjects V2 always reports <StorageClass> for each entry.
+        var listResponse = await client.GetAsync($"/integrated-s3/{bucketName}?list-type=2");
+        Assert.Equal(HttpStatusCode.OK, listResponse.StatusCode);
+        var listDocument = XDocument.Parse(await listResponse.Content.ReadAsStringAsync());
+        var listedObject = Assert.Single(listDocument.Root!.S3Elements("Contents"));
+        Assert.Equal("STANDARD_IA", listedObject.S3Element("StorageClass")?.Value);
+
+        // ListObjects V1 too.
+        var listV1Response = await client.GetAsync($"/integrated-s3/{bucketName}");
+        Assert.Equal(HttpStatusCode.OK, listV1Response.StatusCode);
+        var listV1Document = XDocument.Parse(await listV1Response.Content.ReadAsStringAsync());
+        Assert.Equal("STANDARD_IA", Assert.Single(listV1Document.Root!.S3Elements("Contents")).S3Element("StorageClass")?.Value);
+
+        // GetObjectAttributes reports the persisted storage class rather than a hard-coded STANDARD.
+        using var attributesRequest = new HttpRequestMessage(HttpMethod.Get, $"/integrated-s3/{bucketName}/{objectKey}?attributes");
+        attributesRequest.Headers.TryAddWithoutValidation("x-amz-object-attributes", "StorageClass");
+        var attributesResponse = await client.SendAsync(attributesRequest);
+        Assert.Equal(HttpStatusCode.OK, attributesResponse.StatusCode);
+        var attributesDocument = XDocument.Parse(await attributesResponse.Content.ReadAsStringAsync());
+        Assert.Equal("STANDARD_IA", attributesDocument.Root!.S3Element("StorageClass")?.Value);
+    }
+
+    [Fact]
+    public async Task PutObject_WithStandardStorageClass_OmitsHeaderOnGetAndListsStandard()
+    {
+        using var client = await _factory.CreateClientAsync();
+        const string bucketName = "storage-class-standard-bucket";
+        const string objectKey = "docs/warm.txt";
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync($"/integrated-s3/buckets/{bucketName}", content: null)).StatusCode);
+
+        // PUT with no storage-class header at all -> defaults to STANDARD.
+        using (var putRequest = new HttpRequestMessage(HttpMethod.Put, $"/integrated-s3/{bucketName}/{objectKey}")
+        {
+            Content = new StringContent("warm payload", Encoding.UTF8, "text/plain")
+        }) {
+            Assert.Equal(HttpStatusCode.OK, (await client.SendAsync(putRequest)).StatusCode);
+        }
+
+        // AWS omits the header entirely for STANDARD objects.
+        var getResponse = await client.GetAsync($"/integrated-s3/{bucketName}/{objectKey}");
+        Assert.Equal(HttpStatusCode.OK, getResponse.StatusCode);
+        Assert.False(getResponse.Headers.Contains("x-amz-storage-class"));
+
+        using var headRequest = new HttpRequestMessage(HttpMethod.Head, $"/integrated-s3/{bucketName}/{objectKey}");
+        var headResponse = await client.SendAsync(headRequest);
+        Assert.Equal(HttpStatusCode.OK, headResponse.StatusCode);
+        Assert.False(headResponse.Headers.Contains("x-amz-storage-class"));
+
+        // List entries still report STANDARD explicitly (AWS always includes <StorageClass>).
+        var listResponse = await client.GetAsync($"/integrated-s3/{bucketName}?list-type=2");
+        Assert.Equal(HttpStatusCode.OK, listResponse.StatusCode);
+        var listDocument = XDocument.Parse(await listResponse.Content.ReadAsStringAsync());
+        Assert.Equal("STANDARD", Assert.Single(listDocument.Root!.S3Elements("Contents")).S3Element("StorageClass")?.Value);
+    }
+
+    [Fact]
+    public async Task PutObject_WithUnknownStorageClass_ReturnsInvalidStorageClass()
+    {
+        using var client = await _factory.CreateClientAsync();
+        const string bucketName = "storage-class-invalid-bucket";
+        const string objectKey = "docs/bogus.txt";
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync($"/integrated-s3/buckets/{bucketName}", content: null)).StatusCode);
+
+        using var putRequest = new HttpRequestMessage(HttpMethod.Put, $"/integrated-s3/{bucketName}/{objectKey}")
+        {
+            Content = new StringContent("bogus payload", Encoding.UTF8, "text/plain")
+        };
+        putRequest.Headers.TryAddWithoutValidation("x-amz-storage-class", "TOTALLY_BOGUS");
+
+        var response = await client.SendAsync(putRequest);
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal("InvalidStorageClass", GetRequiredElementValue(XDocument.Parse(await response.Content.ReadAsStringAsync()), "Code"));
+    }
+
+    [Fact]
+    public async Task ListObjectVersions_ReportsPersistedStorageClass()
+    {
+        using var client = await _factory.CreateClientAsync();
+        const string bucketName = "storage-class-versions-bucket";
+        const string objectKey = "docs/versioned.txt";
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync($"/integrated-s3/buckets/{bucketName}", content: null)).StatusCode);
+
+        using (var putRequest = new HttpRequestMessage(HttpMethod.Put, $"/integrated-s3/{bucketName}/{objectKey}")
+        {
+            Content = new StringContent("glacier payload", Encoding.UTF8, "text/plain")
+        }) {
+            putRequest.Headers.TryAddWithoutValidation("x-amz-storage-class", "GLACIER");
+            Assert.Equal(HttpStatusCode.OK, (await client.SendAsync(putRequest)).StatusCode);
+        }
+
+        var response = await client.GetAsync($"/integrated-s3/{bucketName}?versions");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var document = XDocument.Parse(await response.Content.ReadAsStringAsync());
+        var version = Assert.Single(document.Root!.S3Elements("Version"));
+        Assert.Equal("GLACIER", version.S3Element("StorageClass")?.Value);
+    }
+
+    [Fact]
+    public async Task MultipartUpload_WithNonStandardStorageClass_EchoesOnGetAndList()
+    {
+        using var client = await _factory.CreateClientAsync();
+        const string bucketName = "storage-class-multipart-bucket";
+        const string objectKey = "docs/multipart-cold.txt";
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync($"/integrated-s3/buckets/{bucketName}", content: null)).StatusCode);
+
+        using var initiateRequest = new HttpRequestMessage(HttpMethod.Post, $"/integrated-s3/{bucketName}/{objectKey}?uploads")
+        {
+            Content = new ByteArrayContent([])
+        };
+        initiateRequest.Headers.TryAddWithoutValidation("x-amz-storage-class", "ONEZONE_IA");
+        initiateRequest.Content.Headers.ContentType = new MediaTypeHeaderValue("text/plain");
+        var initiateResponse = await client.SendAsync(initiateRequest);
+        Assert.Equal(HttpStatusCode.OK, initiateResponse.StatusCode);
+        var uploadId = GetRequiredElementValue(XDocument.Parse(await initiateResponse.Content.ReadAsStringAsync()), "UploadId");
+
+        string partETag;
+        using (var partRequest = new HttpRequestMessage(HttpMethod.Put, $"/integrated-s3/{bucketName}/{objectKey}?partNumber=1&uploadId={Uri.EscapeDataString(uploadId)}")
+        {
+            Content = new StringContent("multipart cold body", Encoding.UTF8, "text/plain")
+        }) {
+            var partResponse = await client.SendAsync(partRequest);
+            Assert.Equal(HttpStatusCode.OK, partResponse.StatusCode);
+            partETag = partResponse.Headers.ETag?.Tag ?? throw new Xunit.Sdk.XunitException("Expected multipart part ETag header.");
+        }
+
+        var completeBody = $"<CompleteMultipartUpload><Part><PartNumber>1</PartNumber><ETag>{partETag}</ETag></Part></CompleteMultipartUpload>";
+        using (var completeRequest = new HttpRequestMessage(HttpMethod.Post, $"/integrated-s3/{bucketName}/{objectKey}?uploadId={Uri.EscapeDataString(uploadId)}")
+        {
+            Content = new StringContent(completeBody, Encoding.UTF8, "application/xml")
+        }) {
+            var completeResponse = await client.SendAsync(completeRequest);
+            Assert.Equal(HttpStatusCode.OK, completeResponse.StatusCode);
+        }
+
+        var getResponse = await client.GetAsync($"/integrated-s3/{bucketName}/{objectKey}");
+        Assert.Equal(HttpStatusCode.OK, getResponse.StatusCode);
+        Assert.Equal("ONEZONE_IA", Assert.Single(getResponse.Headers.GetValues("x-amz-storage-class")));
+
+        var listResponse = await client.GetAsync($"/integrated-s3/{bucketName}?list-type=2");
+        Assert.Equal(HttpStatusCode.OK, listResponse.StatusCode);
+        var listDocument = XDocument.Parse(await listResponse.Content.ReadAsStringAsync());
+        Assert.Equal("ONEZONE_IA", Assert.Single(listDocument.Root!.S3Elements("Contents")).S3Element("StorageClass")?.Value);
+    }
+
+    [Fact]
     public async Task PutObject_WithoutContentType_DefaultsToBinaryOctetStreamOnGetAndHead()
     {
         using var client = await _factory.CreateClientAsync();
@@ -12444,6 +12619,183 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
             LastErrorCode = lastError?.Code,
             LastErrorMessage = lastError?.Message
         };
+    }
+
+    [Fact]
+    public async Task PutObject_WithMalformedContentMd5_ReturnsInvalidDigest()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync("/integrated-s3/buckets/malformed-md5-bucket", content: null)).StatusCode);
+
+        // A Content-MD5 that is not valid base64 is syntactically invalid and must yield InvalidDigest,
+        // never BadDigest (which is reserved for a well-formed digest that fails to match the body).
+        using var putRequest = new HttpRequestMessage(HttpMethod.Put, "/integrated-s3/malformed-md5-bucket/docs/bad-md5.txt")
+        {
+            Content = new StringContent("content md5 format check", Encoding.UTF8, "text/plain")
+        };
+        putRequest.Content.Headers.TryAddWithoutValidation("Content-MD5", "not-valid-base64!!!");
+
+        var response = await client.SendAsync(putRequest);
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal("application/xml", response.Content.Headers.ContentType?.MediaType);
+
+        var document = XDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal("InvalidDigest", GetRequiredElementValue(document, "Code"));
+        Assert.Equal("The Content-MD5 you specified is not valid.", GetRequiredElementValue(document, "Message"));
+    }
+
+    [Fact]
+    public async Task PutObject_WithWrongLengthContentMd5_ReturnsInvalidDigest()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync("/integrated-s3/buckets/wrong-length-md5-bucket", content: null)).StatusCode);
+
+        // Valid base64 but the decoded value is not a 16-byte MD5 digest -> still InvalidDigest.
+        var wrongLengthMd5 = Convert.ToBase64String(new byte[8]);
+
+        using var putRequest = new HttpRequestMessage(HttpMethod.Put, "/integrated-s3/wrong-length-md5-bucket/docs/short-md5.txt")
+        {
+            Content = new StringContent("content md5 length check", Encoding.UTF8, "text/plain")
+        };
+        putRequest.Content.Headers.TryAddWithoutValidation("Content-MD5", wrongLengthMd5);
+
+        var response = await client.SendAsync(putRequest);
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+
+        var document = XDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal("InvalidDigest", GetRequiredElementValue(document, "Code"));
+        Assert.Equal("The Content-MD5 you specified is not valid.", GetRequiredElementValue(document, "Message"));
+    }
+
+    [Fact]
+    public async Task PutObject_WithValidContentMd5_Succeeds()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync("/integrated-s3/buckets/valid-md5-bucket", content: null)).StatusCode);
+
+        const string payload = "content md5 happy path";
+
+        using var putRequest = new HttpRequestMessage(HttpMethod.Put, "/integrated-s3/valid-md5-bucket/docs/good-md5.txt")
+        {
+            Content = new StringContent(payload, Encoding.UTF8, "text/plain")
+        };
+        putRequest.Content.Headers.TryAddWithoutValidation("Content-MD5", ComputeContentMd5Base64(payload));
+
+        var response = await client.SendAsync(putRequest);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        var getResponse = await client.GetAsync("/integrated-s3/valid-md5-bucket/docs/good-md5.txt");
+        Assert.Equal(HttpStatusCode.OK, getResponse.StatusCode);
+        Assert.Equal(payload, await getResponse.Content.ReadAsStringAsync());
+    }
+
+    [Fact]
+    public async Task CompleteMultipartUpload_WithInvalidChecksumType_ReturnsInvalidRequest()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        const string bucketName = "mpu-invalid-checksum-type-bucket";
+        const string objectKey = "docs/invalid-type.txt";
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync($"/integrated-s3/buckets/{bucketName}", content: null)).StatusCode);
+
+        using var initiateRequest = new HttpRequestMessage(HttpMethod.Post, $"/integrated-s3/{bucketName}/{objectKey}?uploads");
+        var initiateResponse = await client.SendAsync(initiateRequest);
+        Assert.Equal(HttpStatusCode.OK, initiateResponse.StatusCode);
+        var initiateDocument = XDocument.Parse(await initiateResponse.Content.ReadAsStringAsync());
+        var uploadId = GetRequiredElementValue(initiateDocument, "UploadId");
+
+        var completeBody = """
+<CompleteMultipartUpload>
+    <Part>
+        <PartNumber>1</PartNumber>
+        <ETag>"whatever"</ETag>
+    </Part>
+</CompleteMultipartUpload>
+""";
+
+        using var completeRequest = new HttpRequestMessage(HttpMethod.Post, $"/integrated-s3/{bucketName}/{objectKey}?uploadId={Uri.EscapeDataString(uploadId)}")
+        {
+            Content = new StringContent(completeBody, Encoding.UTF8, "application/xml")
+        };
+        completeRequest.Headers.TryAddWithoutValidation("x-amz-checksum-type", "BOGUS");
+
+        var completeResponse = await client.SendAsync(completeRequest);
+        Assert.Equal(HttpStatusCode.BadRequest, completeResponse.StatusCode);
+
+        var errorDocument = XDocument.Parse(await completeResponse.Content.ReadAsStringAsync());
+        Assert.Equal("InvalidRequest", GetRequiredElementValue(errorDocument, "Code"));
+    }
+
+    [Fact]
+    public async Task CompleteMultipartUpload_WithFullObjectChecksumType_EchoesFullObjectChecksum()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        const string bucketName = "mpu-full-object-bucket";
+        const string objectKey = "docs/full-object.txt";
+        // The first (non-final) part must be at least the S3 minimum of 5 MiB.
+        var part1Payload = new string('a', 5 * 1024 * 1024);
+        const string part2Payload = "world";
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync($"/integrated-s3/buckets/{bucketName}", content: null)).StatusCode);
+
+        using var initiateRequest = new HttpRequestMessage(HttpMethod.Post, $"/integrated-s3/{bucketName}/{objectKey}?uploads");
+        initiateRequest.Headers.TryAddWithoutValidation("Content-Type", "text/plain");
+        var initiateResponse = await client.SendAsync(initiateRequest);
+        Assert.Equal(HttpStatusCode.OK, initiateResponse.StatusCode);
+        var initiateDocument = XDocument.Parse(await initiateResponse.Content.ReadAsStringAsync());
+        var uploadId = GetRequiredElementValue(initiateDocument, "UploadId");
+
+        using var part1Request = new HttpRequestMessage(HttpMethod.Put, $"/integrated-s3/{bucketName}/{objectKey}?partNumber=1&uploadId={Uri.EscapeDataString(uploadId)}")
+        {
+            Content = new StringContent(part1Payload, Encoding.UTF8, "text/plain")
+        };
+        var part1Response = await client.SendAsync(part1Request);
+        Assert.Equal(HttpStatusCode.OK, part1Response.StatusCode);
+        var part1ETag = part1Response.Headers.ETag?.Tag ?? throw new Xunit.Sdk.XunitException("Expected multipart part ETag header.");
+
+        using var part2Request = new HttpRequestMessage(HttpMethod.Put, $"/integrated-s3/{bucketName}/{objectKey}?partNumber=2&uploadId={Uri.EscapeDataString(uploadId)}")
+        {
+            Content = new StringContent(part2Payload, Encoding.UTF8, "text/plain")
+        };
+        var part2Response = await client.SendAsync(part2Request);
+        Assert.Equal(HttpStatusCode.OK, part2Response.StatusCode);
+        var part2ETag = part2Response.Headers.ETag?.Tag ?? throw new Xunit.Sdk.XunitException("Expected multipart part ETag header.");
+
+        // FULL_OBJECT multipart completions carry a whole-object CRC computed over the assembled object.
+        var fullObjectCrc32c = ChecksumTestAlgorithms.ComputeCrc32cBase64(part1Payload + part2Payload);
+
+        var completeBody = $"""
+<CompleteMultipartUpload>
+    <Part>
+        <PartNumber>1</PartNumber>
+        <ETag>{part1ETag}</ETag>
+    </Part>
+    <Part>
+        <PartNumber>2</PartNumber>
+        <ETag>{part2ETag}</ETag>
+    </Part>
+</CompleteMultipartUpload>
+""";
+
+        using var completeRequest = new HttpRequestMessage(HttpMethod.Post, $"/integrated-s3/{bucketName}/{objectKey}?uploadId={Uri.EscapeDataString(uploadId)}")
+        {
+            Content = new StringContent(completeBody, Encoding.UTF8, "application/xml")
+        };
+        completeRequest.Headers.TryAddWithoutValidation("x-amz-checksum-type", "FULL_OBJECT");
+        completeRequest.Headers.TryAddWithoutValidation("x-amz-checksum-crc32c", fullObjectCrc32c);
+
+        var completeResponse = await client.SendAsync(completeRequest);
+        Assert.Equal(HttpStatusCode.OK, completeResponse.StatusCode);
+
+        var completeDocument = XDocument.Parse(await completeResponse.Content.ReadAsStringAsync());
+        S3XmlTestHelper.AssertRoot(completeDocument, "CompleteMultipartUploadResult");
+        Assert.Equal("FULL_OBJECT", GetRequiredElementValue(completeDocument, "ChecksumType"));
+        Assert.Equal(fullObjectCrc32c, GetRequiredElementValue(completeDocument, "ChecksumCRC32C"));
     }
 
     private static string ComputeSha1Base64(string content)
