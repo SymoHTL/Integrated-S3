@@ -5750,4 +5750,143 @@ public sealed class DiskStorageServiceTests
         Assert.True(headResult.IsSuccess);
         Assert.Equal(expectedETag, headResult.Value!.ETag);
     }
+
+    [Fact]
+    public async Task DiskStorage_ConcurrentSamePartNumberUploads_EachETagMatchesOwnBytesAndPersistedPartIsWhole()
+    {
+        // Regression for #124: two concurrent UploadPart calls for the same (uploadId, partNumber)
+        // with different payloads race on the shared, part-number-keyed final path. Previously the
+        // response ETag/checksum/length was derived by re-reading that shared path AFTER File.Move,
+        // so one caller could return metadata describing the OTHER caller's bytes (or a torn mix).
+        // The fix captures each call's metadata from its own exclusively-owned temp file before the
+        // atomic publish, so each response always describes the bytes that call wrote, and the
+        // persisted part is always exactly one caller's complete bytes (never torn).
+        await using var fixture = new DiskStorageFixture();
+        var storageService = fixture.Services.GetRequiredService<IStorageBackend>();
+        await storageService.CreateBucketAsync(new CreateBucketRequest { BucketName = "same-part-race" });
+
+        // Many iterations to reliably hit the interleaving window between the two publishes and the
+        // (previously) shared-path re-reads.
+        for (var iteration = 0; iteration < 80; iteration++)
+        {
+            var key = $"docs/race-{iteration}.txt";
+            var initiateResult = await storageService.InitiateMultipartUploadAsync(new InitiateMultipartUploadRequest
+            {
+                BucketName = "same-part-race",
+                Key = key,
+                ChecksumAlgorithm = "SHA256"
+            });
+            Assert.True(initiateResult.IsSuccess);
+            var uploadId = initiateResult.Value!.UploadId;
+
+            // Two distinct payloads of different lengths, so a torn/other-caller read is detectable
+            // via ETag, sha256, AND ContentLength.
+            var payloadA = $"AAAA-payload-alpha-{iteration}-{new string('a', 37)}";
+            var payloadB = $"BB-payload-beta-{iteration}";
+            var bytesA = Encoding.UTF8.GetBytes(payloadA);
+            var bytesB = Encoding.UTF8.GetBytes(payloadB);
+            var checksumA = ComputeSha256Base64(payloadA);
+            var checksumB = ComputeSha256Base64(payloadB);
+            var expectedEtagA = Convert.ToHexStringLower(System.Security.Cryptography.MD5.HashData(bytesA));
+            var expectedEtagB = Convert.ToHexStringLower(System.Security.Cryptography.MD5.HashData(bytesB));
+
+            var uploadA = Task.Run(async () =>
+            {
+                await using var stream = new MemoryStream(bytesA);
+                return await storageService.UploadMultipartPartAsync(new UploadMultipartPartRequest
+                {
+                    BucketName = "same-part-race",
+                    Key = key,
+                    UploadId = uploadId,
+                    PartNumber = 1,
+                    Content = stream,
+                    ChecksumAlgorithm = "SHA256",
+                    Checksums = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+                    {
+                        ["sha256"] = checksumA
+                    }
+                });
+            });
+
+            var uploadB = Task.Run(async () =>
+            {
+                await using var stream = new MemoryStream(bytesB);
+                return await storageService.UploadMultipartPartAsync(new UploadMultipartPartRequest
+                {
+                    BucketName = "same-part-race",
+                    Key = key,
+                    UploadId = uploadId,
+                    PartNumber = 1,
+                    Content = stream,
+                    ChecksumAlgorithm = "SHA256",
+                    Checksums = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+                    {
+                        ["sha256"] = checksumB
+                    }
+                });
+            });
+
+            var resultA = await uploadA;
+            var resultB = await uploadB;
+
+            Assert.True(resultA.IsSuccess, $"Upload A failed: {resultA.Error?.Code}");
+            Assert.True(resultB.IsSuccess, $"Upload B failed: {resultB.Error?.Code}");
+
+            // Core invariant: each response describes THIS call's own bytes — ETag, checksum, and
+            // length — regardless of who published last. On the pre-fix code, a lost race makes one
+            // of these assertions observe the other caller's bytes.
+            Assert.Equal(expectedEtagA, resultA.Value!.ETag);
+            Assert.Equal(bytesA.Length, resultA.Value.ContentLength);
+            Assert.Equal(ComputeSha256Base64(payloadA), resultA.Value.Checksums!["sha256"]);
+
+            Assert.Equal(expectedEtagB, resultB.Value!.ETag);
+            Assert.Equal(bytesB.Length, resultB.Value.ContentLength);
+            Assert.Equal(ComputeSha256Base64(payloadB), resultB.Value.Checksums!["sha256"]);
+
+            // The persisted part is exactly one caller's whole bytes (atomic rename => never torn).
+            // Completing with the winning caller's returned part must succeed and reproduce that
+            // caller's exact payload; the losing caller's ETag no longer matches the persisted part.
+            var completeWithA = await storageService.CompleteMultipartUploadAsync(new CompleteMultipartUploadRequest
+            {
+                BucketName = "same-part-race",
+                Key = key,
+                UploadId = uploadId,
+                Parts = [resultA.Value]
+            });
+
+            string winnerPayload;
+            if (completeWithA.IsSuccess)
+            {
+                winnerPayload = payloadA;
+            }
+            else
+            {
+                // A lost: its ETag must not match the persisted part; B won and must complete cleanly.
+                Assert.Equal(StorageErrorCode.InvalidPart, completeWithA.Error!.Code);
+                var completeWithB = await storageService.CompleteMultipartUploadAsync(new CompleteMultipartUploadRequest
+                {
+                    BucketName = "same-part-race",
+                    Key = key,
+                    UploadId = uploadId,
+                    Parts = [resultB.Value]
+                });
+                Assert.True(completeWithB.IsSuccess, $"Complete with B failed: {completeWithB.Error?.Code}");
+                winnerPayload = payloadB;
+            }
+
+            var getResult = await storageService.GetObjectAsync(new GetObjectRequest
+            {
+                BucketName = "same-part-race",
+                Key = key
+            });
+            Assert.True(getResult.IsSuccess);
+            await using (var response = getResult.Value!)
+            {
+                using var reader = new StreamReader(response.Content, Encoding.UTF8, leaveOpen: false);
+                var content = await reader.ReadToEndAsync();
+                // Persisted object is exactly one caller's whole payload — never a torn mix.
+                Assert.Equal(winnerPayload, content);
+            }
+        }
+    }
 }
