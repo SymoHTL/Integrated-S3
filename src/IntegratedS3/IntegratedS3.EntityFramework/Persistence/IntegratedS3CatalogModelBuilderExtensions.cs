@@ -38,6 +38,7 @@ public static class IntegratedS3CatalogModelBuilderExtensions
             entity.Property(static @object => @object.BucketName).IsRequired().HasMaxLength(63);
             entity.Property(static @object => @object.Key).IsRequired().HasMaxLength(1024);
             entity.Property(static @object => @object.VersionId).HasMaxLength(128);
+            entity.Property(static @object => @object.PrimaryVersionId).HasMaxLength(128);
             entity.Property(static @object => @object.ContentType).HasMaxLength(256);
             entity.Property(static @object => @object.CacheControl).HasMaxLength(256);
             entity.Property(static @object => @object.ContentDisposition).HasMaxLength(512);
@@ -61,6 +62,11 @@ public static class IntegratedS3CatalogModelBuilderExtensions
                 .HasFilter("\"IsLatest\" = 1")
                 .HasDatabaseName("IX_IntegratedS3Objects_SingleLatestPerKey");
             entity.HasIndex(static @object => new { @object.ProviderName, @object.BucketName, @object.Key, @object.IsLatest });
+            // Supports the primary→replica version translation lookup (#126): resolve a replica row from the
+            // primary version id it mirrors. Non-unique because a primary version could, in principle, be mapped
+            // after a re-repair; the lookup takes the latest match. Rows with a null PrimaryVersionId (primary rows,
+            // unversioned objects, legacy replica rows) do not participate meaningfully but are harmless.
+            entity.HasIndex(static @object => new { @object.ProviderName, @object.BucketName, @object.Key, @object.PrimaryVersionId });
         });
 
         modelBuilder.Entity<MultipartUploadCatalogRecord>(entity => {

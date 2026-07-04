@@ -453,7 +453,7 @@ internal sealed class OrchestratedStorageService(
                     request.BucketName,
                     request.Key,
                     result.Value.VersionId,
-                    writeThroughOperation: (replicaBackend, ct) => WriteReplicaBufferedObjectAsync(replicaBackend, request, tempFilePath, ct),
+                    writeThroughOperation: (replicaBackend, ct) => WriteReplicaBufferedObjectAsync(replicaBackend, request, tempFilePath, result.Value.VersionId, ct),
                     CancellationToken.None);
                 if (replicationError is not null) {
                     return StorageResult<ObjectInfo>.Failure(replicationError);
@@ -508,13 +508,13 @@ internal sealed class OrchestratedStorageService(
                 request.BucketName,
                 request.Key,
                 request.VersionId,
-                writeThroughOperation: (replicaBackend, ct) => WriteReplicaPutObjectTagsAsync(replicaBackend, new PutObjectTagsRequest
-                {
-                    BucketName = request.BucketName,
-                    Key = request.Key,
-                    VersionId = request.VersionId,
-                    Tags = CloneTags(request.Tags) ?? new Dictionary<string, string>(StringComparer.Ordinal)
-                }, ct),
+                writeThroughOperation: (replicaBackend, ct) => WriteReplicaPutObjectTagsAsync(
+                    replicaBackend,
+                    request.BucketName,
+                    request.Key,
+                    request.VersionId,
+                    CloneTags(request.Tags) ?? new Dictionary<string, string>(StringComparer.Ordinal),
+                    ct),
                 CancellationToken.None);
             if (replicationError is not null) {
                 return StorageResult<ObjectTagSet>.Failure(replicationError);
@@ -544,12 +544,12 @@ internal sealed class OrchestratedStorageService(
                 request.BucketName,
                 request.Key,
                 request.VersionId,
-                writeThroughOperation: (replicaBackend, ct) => WriteReplicaDeleteObjectTagsAsync(replicaBackend, new DeleteObjectTagsRequest
-                {
-                    BucketName = request.BucketName,
-                    Key = request.Key,
-                    VersionId = request.VersionId
-                }, ct),
+                writeThroughOperation: (replicaBackend, ct) => WriteReplicaDeleteObjectTagsAsync(
+                    replicaBackend,
+                    request.BucketName,
+                    request.Key,
+                    request.VersionId,
+                    ct),
                 CancellationToken.None);
             if (replicationError is not null) {
                 return StorageResult<ObjectTagSet>.Failure(replicationError);
@@ -2120,6 +2120,7 @@ internal sealed class OrchestratedStorageService(
                     sourceResponse.Object.Tags,
                     sourceResponse.Object.Checksums,
                     request.OverwriteIfExists,
+                    versionId,
                     ct),
                 cancellationToken);
         }
@@ -2359,7 +2360,7 @@ internal sealed class OrchestratedStorageService(
         return primaryEncryptionResult.Error ?? CreatePrimaryReplicationSourceError(primaryBackend, bucketName, objectKey: null, versionId: null, message: "Primary bucket default encryption configuration could not be resolved for replica repair.");
     }
 
-    private ValueTask<StorageError?> WriteReplicaBufferedObjectAsync(IStorageBackend replicaBackend, PutObjectRequest request, string tempFilePath, CancellationToken cancellationToken)
+    private ValueTask<StorageError?> WriteReplicaBufferedObjectAsync(IStorageBackend replicaBackend, PutObjectRequest request, string tempFilePath, string? primaryVersionId, CancellationToken cancellationToken)
     {
         return WriteReplicaBufferedObjectAsync(
             replicaBackend,
@@ -2372,6 +2373,7 @@ internal sealed class OrchestratedStorageService(
             request.Tags,
             request.Checksums,
             request.OverwriteIfExists,
+            primaryVersionId,
             cancellationToken);
     }
 
@@ -2386,6 +2388,7 @@ internal sealed class OrchestratedStorageService(
         IReadOnlyDictionary<string, string>? tags,
         IReadOnlyDictionary<string, string>? checksums,
         bool overwriteIfExists,
+        string? primaryVersionId,
         CancellationToken cancellationToken)
     {
         var replicaResult = await PutBufferedObjectAsync(
@@ -2406,6 +2409,7 @@ internal sealed class OrchestratedStorageService(
         }
 
         await catalogStore.UpsertObjectAsync(replicaBackend.Name, replicaResult.Value, cancellationToken);
+        await RecordReplicaVersionMappingAsync(replicaBackend, bucketName, key, primaryVersionId, replicaResult.Value.VersionId, cancellationToken);
         return null;
     }
 
@@ -2449,31 +2453,86 @@ internal sealed class OrchestratedStorageService(
         }
 
         await catalogStore.UpsertObjectAsync(replicaBackend.Name, replicaResult.Value, cancellationToken);
+        await RecordReplicaVersionMappingAsync(replicaBackend, bucketName, key, versionId, replicaResult.Value.VersionId, cancellationToken);
         return null;
     }
 
-    private async ValueTask<StorageError?> WriteReplicaPutObjectTagsAsync(IStorageBackend replicaBackend, PutObjectTagsRequest request, CancellationToken cancellationToken)
+    private async ValueTask<StorageError?> WriteReplicaPutObjectTagsAsync(
+        IStorageBackend replicaBackend,
+        string bucketName,
+        string key,
+        string? requestedVersionId,
+        IReadOnlyDictionary<string, string> tags,
+        CancellationToken cancellationToken)
     {
-        var replicaResult = await replicaBackend.PutObjectTagsAsync(request, cancellationToken);
-        ObserveResult(replicaBackend, replicaResult);
-        if (!replicaResult.IsSuccess || replicaResult.Value is null) {
-            return replicaResult.Error ?? CreateReplicaOperationError(replicaBackend, request.BucketName, request.Key, request.VersionId, "Replica object tag update did not return tag metadata.");
+        // #126: translate the PRIMARY version id to this replica's own version. Null passes through (latest); an
+        // explicit-but-unmapped version is skipped so the primary op still succeeds and no wrong version is tagged.
+        var translation = await TranslateReplicaTagVersionAsync(replicaBackend, bucketName, key, requestedVersionId, cancellationToken);
+        if (!translation.HasMapping) {
+            LogSkippedUnmappedReplicaTagWrite(StorageOperationType.PutObjectTags, replicaBackend, bucketName, key, requestedVersionId);
+            return null;
         }
 
-        await RefreshCatalogObjectAsync(replicaBackend, request.BucketName, request.Key, request.VersionId, cancellationToken);
+        var replicaVersionId = translation.ReplicaVersionId;
+        var replicaResult = await replicaBackend.PutObjectTagsAsync(new PutObjectTagsRequest
+        {
+            BucketName = bucketName,
+            Key = key,
+            VersionId = replicaVersionId,
+            Tags = CloneTags(tags) ?? new Dictionary<string, string>(StringComparer.Ordinal)
+        }, cancellationToken);
+        ObserveResult(replicaBackend, replicaResult);
+        if (!replicaResult.IsSuccess || replicaResult.Value is null) {
+            return replicaResult.Error ?? CreateReplicaOperationError(replicaBackend, bucketName, key, replicaVersionId, "Replica object tag update did not return tag metadata.");
+        }
+
+        await RefreshCatalogObjectAsync(replicaBackend, bucketName, key, replicaVersionId, cancellationToken);
         return null;
     }
 
-    private async ValueTask<StorageError?> WriteReplicaDeleteObjectTagsAsync(IStorageBackend replicaBackend, DeleteObjectTagsRequest request, CancellationToken cancellationToken)
+    private async ValueTask<StorageError?> WriteReplicaDeleteObjectTagsAsync(
+        IStorageBackend replicaBackend,
+        string bucketName,
+        string key,
+        string? requestedVersionId,
+        CancellationToken cancellationToken)
     {
-        var replicaResult = await replicaBackend.DeleteObjectTagsAsync(request, cancellationToken);
-        ObserveResult(replicaBackend, replicaResult);
-        if (!replicaResult.IsSuccess || replicaResult.Value is null) {
-            return replicaResult.Error ?? CreateReplicaOperationError(replicaBackend, request.BucketName, request.Key, request.VersionId, "Replica object tag delete did not return tag metadata.");
+        // #126: translate the PRIMARY version id to this replica's own version (see WriteReplicaPutObjectTagsAsync).
+        var translation = await TranslateReplicaTagVersionAsync(replicaBackend, bucketName, key, requestedVersionId, cancellationToken);
+        if (!translation.HasMapping) {
+            LogSkippedUnmappedReplicaTagWrite(StorageOperationType.DeleteObjectTags, replicaBackend, bucketName, key, requestedVersionId);
+            return null;
         }
 
-        await RefreshCatalogObjectAsync(replicaBackend, request.BucketName, request.Key, request.VersionId, cancellationToken);
+        var replicaVersionId = translation.ReplicaVersionId;
+        var replicaResult = await replicaBackend.DeleteObjectTagsAsync(new DeleteObjectTagsRequest
+        {
+            BucketName = bucketName,
+            Key = key,
+            VersionId = replicaVersionId
+        }, cancellationToken);
+        ObserveResult(replicaBackend, replicaResult);
+        if (!replicaResult.IsSuccess || replicaResult.Value is null) {
+            return replicaResult.Error ?? CreateReplicaOperationError(replicaBackend, bucketName, key, replicaVersionId, "Replica object tag delete did not return tag metadata.");
+        }
+
+        await RefreshCatalogObjectAsync(replicaBackend, bucketName, key, replicaVersionId, cancellationToken);
         return null;
+    }
+
+    /// <summary>
+    /// Logs that a synchronous replica tag write was skipped because no primary→replica version mapping exists for
+    /// an explicit version (#126). The primary operation still succeeds; the async repair backlog reconciles later.
+    /// </summary>
+    private void LogSkippedUnmappedReplicaTagWrite(StorageOperationType operation, IStorageBackend replicaBackend, string bucketName, string key, string? requestedVersionId)
+    {
+        logger.LogInformation(
+            "Skipping synchronous {StorageOperation} on replica {ReplicaProvider} for bucket {Bucket} key {Key} version {Version}: no primary->replica version mapping recorded. The async repair backlog will reconcile the replica.",
+            operation,
+            replicaBackend.Name,
+            bucketName,
+            key,
+            requestedVersionId);
     }
 
     private async ValueTask<StorageError?> RepairReplicaObjectTagsFromPrimaryAsync(
@@ -3556,6 +3615,105 @@ internal sealed class OrchestratedStorageService(
         return string.IsNullOrWhiteSpace(resolvedVersionId)
             ? requestedVersionId
             : resolvedVersionId;
+    }
+
+    /// <summary>
+    /// Records a primary→replica version mapping (#126) when both the primary version id and the replica's freshly
+    /// minted version id are concrete (versioned buckets). For unversioned/suspended writes — where either side is
+    /// null/blank — no mapping is meaningful and this is a no-op. Failures to record the mapping are swallowed and
+    /// logged so a mapping bookkeeping problem can never fail the object write it accompanies; the async repair path
+    /// will re-establish the mapping on the next pass.
+    /// </summary>
+    private async ValueTask RecordReplicaVersionMappingAsync(
+        IStorageBackend replicaBackend,
+        string bucketName,
+        string key,
+        string? primaryVersionId,
+        string? replicaVersionId,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(primaryVersionId) || string.IsNullOrWhiteSpace(replicaVersionId)) {
+            return;
+        }
+
+        try {
+            await catalogStore.RecordReplicaVersionMappingAsync(
+                replicaBackend.Name,
+                bucketName,
+                key,
+                primaryVersionId,
+                replicaVersionId,
+                cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) {
+            throw;
+        }
+        catch (Exception ex) {
+            logger.LogWarning(
+                ex,
+                "Failed to record primary->replica version mapping for {ReplicaProvider} bucket {Bucket} key {Key} (primary {PrimaryVersion} -> replica {ReplicaVersion}). Version-specific tag replication may fall back to async repair.",
+                replicaBackend.Name,
+                bucketName,
+                key,
+                primaryVersionId,
+                replicaVersionId);
+        }
+    }
+
+    /// <summary>
+    /// Translates a PRIMARY version id to the replica's own version id for a version-specific tag operation (#126).
+    /// A null/blank <paramref name="requestedVersionId"/> means "operate on the latest version" and is passed through
+    /// unchanged so the replica tags its own latest version. An explicit primary version is looked up via the recorded
+    /// mapping; when no mapping exists (legacy or not-yet-replicated replica) the result is a sentinel indicating the
+    /// synchronous replica tag write must be skipped so the primary operation still succeeds and no wrong version is
+    /// tagged — the async repair backlog reconciles the replica later.
+    /// </summary>
+    private async ValueTask<ReplicaVersionTranslation> TranslateReplicaTagVersionAsync(
+        IStorageBackend replicaBackend,
+        string bucketName,
+        string key,
+        string? requestedVersionId,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(requestedVersionId)) {
+            // Latest-version tag/delete: the replica must operate on ITS OWN latest version, so pass null through.
+            return ReplicaVersionTranslation.Mapped(null);
+        }
+
+        var replicaVersionId = await catalogStore.GetReplicaVersionIdForPrimaryAsync(
+            replicaBackend.Name,
+            bucketName,
+            key,
+            requestedVersionId,
+            cancellationToken);
+
+        return string.IsNullOrWhiteSpace(replicaVersionId)
+            ? ReplicaVersionTranslation.Unmapped
+            : ReplicaVersionTranslation.Mapped(replicaVersionId);
+    }
+
+    /// <summary>
+    /// Outcome of translating a primary version id to a replica version id for a version-specific replica tag write.
+    /// </summary>
+    private readonly struct ReplicaVersionTranslation
+    {
+        private ReplicaVersionTranslation(bool hasMapping, string? replicaVersionId)
+        {
+            HasMapping = hasMapping;
+            ReplicaVersionId = replicaVersionId;
+        }
+
+        /// <summary>Whether a usable target version was resolved (true also for the latest/null-passthrough case).</summary>
+        public bool HasMapping { get; }
+
+        /// <summary>The replica version id to write (null means "latest" when <see cref="HasMapping"/> is true).</summary>
+        public string? ReplicaVersionId { get; }
+
+        /// <summary>A resolved translation, targeting <paramref name="replicaVersionId"/> (null = replica's latest).</summary>
+        public static ReplicaVersionTranslation Mapped(string? replicaVersionId) => new(hasMapping: true, replicaVersionId);
+
+        /// <summary>No mapping exists for the requested explicit primary version; the replica write must be skipped.</summary>
+        public static ReplicaVersionTranslation Unmapped { get; } = new(hasMapping: false, replicaVersionId: null);
     }
 
     private async ValueTask RefreshCatalogObjectAsync(IStorageBackend backend, string bucketName, string key, CancellationToken cancellationToken)

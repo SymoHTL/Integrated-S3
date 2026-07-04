@@ -22,6 +22,14 @@ public sealed class ObjectCatalogRecord
     /// <summary>Gets or sets the version identifier, or <see langword="null"/> for unversioned objects.</summary>
     public string? VersionId { get; set; }
 
+    /// <summary>
+    /// For a REPLICA row, gets or sets the PRIMARY version id that this replica version mirrors, enabling a
+    /// primary→replica version translation for version-specific operations (e.g. tagging a historical version).
+    /// It is <see langword="null"/> for primary rows, for unversioned objects, and for legacy replica rows written
+    /// before this mapping existed. Reads tolerate its absence so an unmapped lookup simply returns no match.
+    /// </summary>
+    public string? PrimaryVersionId { get; set; }
+
     /// <summary>Gets or sets a value indicating whether this is the latest version of the object.</summary>
     public bool IsLatest { get; set; }
 

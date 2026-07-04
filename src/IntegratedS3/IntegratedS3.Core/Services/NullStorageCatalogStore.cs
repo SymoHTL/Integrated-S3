@@ -30,6 +30,16 @@ internal sealed class NullStorageCatalogStore : IStorageCatalogStore
         return ValueTask.CompletedTask;
     }
 
+    public ValueTask RecordReplicaVersionMappingAsync(string replicaProviderName, string bucketName, string key, string primaryVersionId, string replicaVersionId, CancellationToken cancellationToken = default)
+    {
+        return ValueTask.CompletedTask;
+    }
+
+    public ValueTask<string?> GetReplicaVersionIdForPrimaryAsync(string replicaProviderName, string bucketName, string key, string primaryVersionId, CancellationToken cancellationToken = default)
+    {
+        return ValueTask.FromResult<string?>(null);
+    }
+
     public ValueTask<StoredObjectEntry?> GetObjectAsync(string providerName, string bucketName, string key, string? versionId = null, CancellationToken cancellationToken = default)
     {
         return ValueTask.FromResult<StoredObjectEntry?>(null);

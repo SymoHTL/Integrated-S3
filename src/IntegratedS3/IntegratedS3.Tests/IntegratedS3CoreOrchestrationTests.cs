@@ -3031,6 +3031,323 @@ public sealed class IntegratedS3CoreOrchestrationTests
         Assert.Null(currentCatalogObject.Tags);
     }
 
+    /// <summary>
+    /// #126: builds a write-through versioned fixture with a replica disk backend and returns the fixture plus the
+    /// primary/replica backends. The replica mints its own version ids, so a naive "pass request.VersionId to the
+    /// replica" would tag the wrong (nonexistent) replica version.
+    /// </summary>
+    private static CoreStorageFixture CreateWriteThroughReplicaFixture(out string replicaRootPath)
+    {
+        var capturedReplicaRoot = Path.Combine(Path.GetTempPath(), "IntegratedS3.Core.Tests", Guid.NewGuid().ToString("N"));
+        replicaRootPath = capturedReplicaRoot;
+        return new CoreStorageFixture(configureServices: services => {
+            services.Configure<IntegratedS3CoreOptions>(options => {
+                options.ConsistencyMode = StorageConsistencyMode.WriteThroughAll;
+            });
+            services.AddDiskStorage(new DiskStorageOptions
+            {
+                ProviderName = "replica-disk",
+                RootPath = capturedReplicaRoot,
+                CreateRootDirectory = true,
+                IsPrimary = false
+            });
+        });
+    }
+
+    [Fact]
+    public async Task OrchestratedStorageService_ExplicitVersionPutTags_TagsTranslatedReplicaVersionOnly()
+    {
+        await using var fixture = CreateWriteThroughReplicaFixture(out _);
+        var storageService = fixture.Services.GetRequiredService<IStorageService>();
+        var catalogStore = fixture.Services.GetRequiredService<IStorageCatalogStore>();
+        var replicaBackend = fixture.Services.GetServices<IStorageBackend>().Single(static backend => backend.Name == "replica-disk");
+
+        Assert.True((await storageService.CreateBucketAsync(new CreateBucketRequest
+        {
+            BucketName = "vbucket",
+            EnableVersioning = true
+        })).IsSuccess);
+
+        await using var v1Stream = new MemoryStream(Encoding.UTF8.GetBytes("version one"));
+        var v1Put = await storageService.PutObjectAsync(new PutObjectRequest
+        {
+            BucketName = "vbucket",
+            Key = "docs/f.txt",
+            Content = v1Stream,
+            ContentType = "text/plain"
+        });
+        Assert.True(v1Put.IsSuccess);
+        var primaryV1 = Assert.IsType<string>(v1Put.Value!.VersionId);
+
+        await using var v2Stream = new MemoryStream(Encoding.UTF8.GetBytes("version two"));
+        var v2Put = await storageService.PutObjectAsync(new PutObjectRequest
+        {
+            BucketName = "vbucket",
+            Key = "docs/f.txt",
+            Content = v2Stream,
+            ContentType = "text/plain"
+        });
+        Assert.True(v2Put.IsSuccess);
+        var primaryV2 = Assert.IsType<string>(v2Put.Value!.VersionId);
+
+        // The replica minted its own independent version ids; resolve them via the recorded mapping.
+        var replicaV1 = await catalogStore.GetReplicaVersionIdForPrimaryAsync("replica-disk", "vbucket", "docs/f.txt", primaryV1);
+        var replicaV2 = await catalogStore.GetReplicaVersionIdForPrimaryAsync("replica-disk", "vbucket", "docs/f.txt", primaryV2);
+        Assert.False(string.IsNullOrWhiteSpace(replicaV1));
+        Assert.False(string.IsNullOrWhiteSpace(replicaV2));
+        Assert.NotEqual(replicaV1, replicaV2);
+        // The mapping must actually translate: the replica version must differ from the primary version it mirrors.
+        Assert.NotEqual(primaryV1, replicaV1);
+
+        // Tag the PRIMARY's explicit historical version (v1).
+        var putTags = await storageService.PutObjectTagsAsync(new PutObjectTagsRequest
+        {
+            BucketName = "vbucket",
+            Key = "docs/f.txt",
+            VersionId = primaryV1,
+            Tags = new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["gen"] = "one"
+            }
+        });
+        Assert.True(putTags.IsSuccess);
+
+        // The replica version that mirrors primary v1 must carry the tags...
+        var replicaV1Tags = await replicaBackend.GetObjectTagsAsync(new GetObjectTagsRequest
+        {
+            BucketName = "vbucket",
+            Key = "docs/f.txt",
+            VersionId = replicaV1
+        });
+        Assert.True(replicaV1Tags.IsSuccess);
+        Assert.Equal("one", replicaV1Tags.Value!.Tags["gen"]);
+
+        // ...and the replica version that mirrors primary v2 must NOT be touched.
+        var replicaV2Tags = await replicaBackend.GetObjectTagsAsync(new GetObjectTagsRequest
+        {
+            BucketName = "vbucket",
+            Key = "docs/f.txt",
+            VersionId = replicaV2
+        });
+        Assert.True(replicaV2Tags.IsSuccess);
+        Assert.Empty(replicaV2Tags.Value!.Tags);
+    }
+
+    [Fact]
+    public async Task OrchestratedStorageService_ExplicitVersionDeleteTags_RemovesFromCorrectReplicaVersionOnly()
+    {
+        await using var fixture = CreateWriteThroughReplicaFixture(out _);
+        var storageService = fixture.Services.GetRequiredService<IStorageService>();
+        var catalogStore = fixture.Services.GetRequiredService<IStorageCatalogStore>();
+        var replicaBackend = fixture.Services.GetServices<IStorageBackend>().Single(static backend => backend.Name == "replica-disk");
+
+        Assert.True((await storageService.CreateBucketAsync(new CreateBucketRequest
+        {
+            BucketName = "vbucket",
+            EnableVersioning = true
+        })).IsSuccess);
+
+        await using var v1Stream = new MemoryStream(Encoding.UTF8.GetBytes("version one"));
+        var v1Put = await storageService.PutObjectAsync(new PutObjectRequest
+        {
+            BucketName = "vbucket",
+            Key = "docs/f.txt",
+            Content = v1Stream,
+            ContentType = "text/plain"
+        });
+        Assert.True(v1Put.IsSuccess);
+        var primaryV1 = Assert.IsType<string>(v1Put.Value!.VersionId);
+
+        await using var v2Stream = new MemoryStream(Encoding.UTF8.GetBytes("version two"));
+        var v2Put = await storageService.PutObjectAsync(new PutObjectRequest
+        {
+            BucketName = "vbucket",
+            Key = "docs/f.txt",
+            Content = v2Stream,
+            ContentType = "text/plain"
+        });
+        Assert.True(v2Put.IsSuccess);
+        var primaryV2 = Assert.IsType<string>(v2Put.Value!.VersionId);
+
+        // Tag BOTH primary versions (each write-through translates to the matching replica version).
+        foreach (var primaryVersion in new[] { primaryV1, primaryV2 }) {
+            Assert.True((await storageService.PutObjectTagsAsync(new PutObjectTagsRequest
+            {
+                BucketName = "vbucket",
+                Key = "docs/f.txt",
+                VersionId = primaryVersion,
+                Tags = new Dictionary<string, string>(StringComparer.Ordinal)
+                {
+                    ["keep"] = "yes"
+                }
+            })).IsSuccess);
+        }
+
+        var replicaV1 = await catalogStore.GetReplicaVersionIdForPrimaryAsync("replica-disk", "vbucket", "docs/f.txt", primaryV1);
+        var replicaV2 = await catalogStore.GetReplicaVersionIdForPrimaryAsync("replica-disk", "vbucket", "docs/f.txt", primaryV2);
+        Assert.False(string.IsNullOrWhiteSpace(replicaV1));
+        Assert.False(string.IsNullOrWhiteSpace(replicaV2));
+
+        // Delete tags on the PRIMARY's explicit v1 only.
+        Assert.True((await storageService.DeleteObjectTagsAsync(new DeleteObjectTagsRequest
+        {
+            BucketName = "vbucket",
+            Key = "docs/f.txt",
+            VersionId = primaryV1
+        })).IsSuccess);
+
+        var replicaV1Tags = await replicaBackend.GetObjectTagsAsync(new GetObjectTagsRequest
+        {
+            BucketName = "vbucket",
+            Key = "docs/f.txt",
+            VersionId = replicaV1
+        });
+        Assert.True(replicaV1Tags.IsSuccess);
+        Assert.Empty(replicaV1Tags.Value!.Tags);
+
+        // The replica version mirroring primary v2 must still carry its tag.
+        var replicaV2Tags = await replicaBackend.GetObjectTagsAsync(new GetObjectTagsRequest
+        {
+            BucketName = "vbucket",
+            Key = "docs/f.txt",
+            VersionId = replicaV2
+        });
+        Assert.True(replicaV2Tags.IsSuccess);
+        Assert.Equal("yes", replicaV2Tags.Value!.Tags["keep"]);
+    }
+
+    [Fact]
+    public async Task OrchestratedStorageService_NullVersionPutTags_TagsReplicaLatestVersion()
+    {
+        await using var fixture = CreateWriteThroughReplicaFixture(out _);
+        var storageService = fixture.Services.GetRequiredService<IStorageService>();
+        var replicaBackend = fixture.Services.GetServices<IStorageBackend>().Single(static backend => backend.Name == "replica-disk");
+
+        Assert.True((await storageService.CreateBucketAsync(new CreateBucketRequest
+        {
+            BucketName = "vbucket",
+            EnableVersioning = true
+        })).IsSuccess);
+
+        await using var v1Stream = new MemoryStream(Encoding.UTF8.GetBytes("version one"));
+        Assert.True((await storageService.PutObjectAsync(new PutObjectRequest
+        {
+            BucketName = "vbucket",
+            Key = "docs/f.txt",
+            Content = v1Stream,
+            ContentType = "text/plain"
+        })).IsSuccess);
+
+        await using var v2Stream = new MemoryStream(Encoding.UTF8.GetBytes("version two"));
+        var v2Put = await storageService.PutObjectAsync(new PutObjectRequest
+        {
+            BucketName = "vbucket",
+            Key = "docs/f.txt",
+            Content = v2Stream,
+            ContentType = "text/plain"
+        });
+        Assert.True(v2Put.IsSuccess);
+
+        // Tag the LATEST version (null VersionId): the replica must tag ITS OWN latest, not fail or mis-target.
+        Assert.True((await storageService.PutObjectTagsAsync(new PutObjectTagsRequest
+        {
+            BucketName = "vbucket",
+            Key = "docs/f.txt",
+            Tags = new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["latest"] = "true"
+            }
+        })).IsSuccess);
+
+        var replicaLatestTags = await replicaBackend.GetObjectTagsAsync(new GetObjectTagsRequest
+        {
+            BucketName = "vbucket",
+            Key = "docs/f.txt"
+        });
+        Assert.True(replicaLatestTags.IsSuccess);
+        Assert.Equal("true", replicaLatestTags.Value!.Tags["latest"]);
+    }
+
+    [Fact]
+    public async Task OrchestratedStorageService_UnmappedExplicitVersionTags_PrimarySucceedsReplicaNotMisTagged()
+    {
+        await using var fixture = CreateWriteThroughReplicaFixture(out _);
+        var storageService = fixture.Services.GetRequiredService<IStorageService>();
+        var backends = fixture.Services.GetServices<IStorageBackend>().ToArray();
+        var primaryBackend = backends.Single(static backend => backend.Name == "catalog-disk");
+        var replicaBackend = backends.Single(static backend => backend.Name == "replica-disk");
+
+        Assert.True((await storageService.CreateBucketAsync(new CreateBucketRequest
+        {
+            BucketName = "vbucket",
+            EnableVersioning = true
+        })).IsSuccess);
+
+        // Replicated version (mapping recorded) — this is the version that must stay untouched.
+        await using var replicatedStream = new MemoryStream(Encoding.UTF8.GetBytes("replicated version"));
+        var replicated = await storageService.PutObjectAsync(new PutObjectRequest
+        {
+            BucketName = "vbucket",
+            Key = "docs/f.txt",
+            Content = replicatedStream,
+            ContentType = "text/plain"
+        });
+        Assert.True(replicated.IsSuccess);
+
+        // Write a NEW version directly to the PRIMARY backend, bypassing the orchestrator, so no primary->replica
+        // mapping is recorded for it. Tagging this explicit primary version must not mis-tag any replica version.
+        await using var orphanStream = new MemoryStream(Encoding.UTF8.GetBytes("primary-only version"));
+        var orphan = await primaryBackend.PutObjectAsync(new PutObjectRequest
+        {
+            BucketName = "vbucket",
+            Key = "docs/f.txt",
+            Content = orphanStream,
+            ContentType = "text/plain"
+        });
+        Assert.True(orphan.IsSuccess);
+        var orphanVersion = Assert.IsType<string>(orphan.Value!.VersionId);
+
+        // Tag the primary-only version explicitly. Primary op must succeed; the unmapped replica write is skipped.
+        var putTags = await storageService.PutObjectTagsAsync(new PutObjectTagsRequest
+        {
+            BucketName = "vbucket",
+            Key = "docs/f.txt",
+            VersionId = orphanVersion,
+            Tags = new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["orphan"] = "yes"
+            }
+        });
+        Assert.True(putTags.IsSuccess);
+
+        // The primary carries the tag on the orphan version.
+        var primaryTags = await primaryBackend.GetObjectTagsAsync(new GetObjectTagsRequest
+        {
+            BucketName = "vbucket",
+            Key = "docs/f.txt",
+            VersionId = orphanVersion
+        });
+        Assert.True(primaryTags.IsSuccess);
+        Assert.Equal("yes", primaryTags.Value!.Tags["orphan"]);
+
+        // No replica version was tagged with the orphan tag (the orphan version does not exist on the replica, and
+        // the replicated version must remain tag-free).
+        await foreach (var replicaVersion in replicaBackend.ListObjectVersionsAsync(new ListObjectVersionsRequest
+        {
+            BucketName = "vbucket",
+            Prefix = "docs/f.txt"
+        })) {
+            var versionTags = await replicaBackend.GetObjectTagsAsync(new GetObjectTagsRequest
+            {
+                BucketName = "vbucket",
+                Key = "docs/f.txt",
+                VersionId = replicaVersion.VersionId
+            });
+            Assert.True(versionTags.IsSuccess);
+            Assert.False(versionTags.Value!.Tags.ContainsKey("orphan"));
+        }
+    }
+
     [Fact]
     public async Task OrchestratedStorageService_DeleteMissingObject_InVersionedBucketCreatesDeleteMarkerAndCatalogEntry()
     {
@@ -5281,6 +5598,31 @@ public sealed class IntegratedS3CoreOrchestrationTests
                     && string.Equals(existing.Key, key, StringComparison.Ordinal)
                     && string.Equals(existing.VersionId, versionId, StringComparison.Ordinal));
             return ValueTask.FromResult(entry);
+        }
+
+        /// <summary>Records the primary→replica version mapping keyed by (provider, bucket, key, primaryVersionId).</summary>
+        public List<(string ProviderName, string BucketName, string Key, string PrimaryVersionId, string ReplicaVersionId)> VersionMappings { get; } = [];
+
+        public ValueTask RecordReplicaVersionMappingAsync(string replicaProviderName, string bucketName, string key, string primaryVersionId, string replicaVersionId, CancellationToken cancellationToken = default)
+        {
+            VersionMappings.RemoveAll(existing => existing.ProviderName == replicaProviderName
+                && existing.BucketName == bucketName
+                && string.Equals(existing.Key, key, StringComparison.Ordinal)
+                && string.Equals(existing.PrimaryVersionId, primaryVersionId, StringComparison.Ordinal));
+            VersionMappings.Add((replicaProviderName, bucketName, key, primaryVersionId, replicaVersionId));
+            return ValueTask.CompletedTask;
+        }
+
+        public ValueTask<string?> GetReplicaVersionIdForPrimaryAsync(string replicaProviderName, string bucketName, string key, string primaryVersionId, CancellationToken cancellationToken = default)
+        {
+            var match = VersionMappings
+                .Where(existing => existing.ProviderName == replicaProviderName
+                    && existing.BucketName == bucketName
+                    && string.Equals(existing.Key, key, StringComparison.Ordinal)
+                    && string.Equals(existing.PrimaryVersionId, primaryVersionId, StringComparison.Ordinal))
+                .Select(existing => existing.ReplicaVersionId)
+                .LastOrDefault();
+            return ValueTask.FromResult<string?>(match);
         }
 
         public ValueTask<IReadOnlyList<StoredObjectEntry>> ListObjectsAsync(string? providerName = null, string? bucketName = null, string? keyPrefix = null, CancellationToken cancellationToken = default)
