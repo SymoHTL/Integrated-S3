@@ -15,8 +15,63 @@ internal sealed class EntityFrameworkStorageCatalogStore<TDbContext>(
     IOptions<EntityFrameworkCatalogOptions> options) : IStorageCatalogStore
     where TDbContext : DbContext
 {
+    /// <summary>
+    /// Maximum number of times <see cref="UpsertObjectAsync"/> re-runs its unit of work after a detected
+    /// concurrency conflict before surfacing the failure to the caller.
+    /// </summary>
+    private const int MaxUpsertConcurrencyRetries = 16;
+
     private readonly SemaphoreSlim _initializationLock = new(1, 1);
     private bool _initialized;
+
+    /// <summary>
+    /// Determines whether <paramref name="exception"/> represents a recoverable optimistic-concurrency conflict:
+    /// either EF's concurrency-token check failing, or a unique-index violation from the filtered "single latest
+    /// per key" index when two writers raced to insert a new latest version for the same key.
+    /// </summary>
+    private static bool IsConcurrencyConflict(Exception exception)
+        => exception is DbUpdateConcurrencyException
+           || (exception is DbUpdateException dbUpdate && IsUniqueConstraintViolation(dbUpdate))
+           || IsTransientLockConflict(exception);
+
+    /// <summary>
+    /// Detects a transient database-lock / write-serialization conflict (e.g. SQLite <c>database is locked</c> /
+    /// <c>SQLITE_BUSY</c>) that resolves on retry, in a provider-agnostic way.
+    /// </summary>
+    private static bool IsTransientLockConflict(Exception exception)
+    {
+        for (Exception? current = exception; current is not null; current = current.InnerException) {
+            var message = current.Message;
+            if (message.Contains("database is locked", StringComparison.OrdinalIgnoreCase)
+                || message.Contains("database table is locked", StringComparison.OrdinalIgnoreCase)
+                || message.Contains("SQLITE_BUSY", StringComparison.OrdinalIgnoreCase)
+                || message.Contains("deadlock", StringComparison.OrdinalIgnoreCase)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Heuristically detects a unique-constraint / unique-index violation from a <see cref="DbUpdateException"/>
+    /// in a provider-agnostic way (the concrete DB exception type differs per provider).
+    /// </summary>
+    private static bool IsUniqueConstraintViolation(DbUpdateException exception)
+    {
+        for (Exception? current = exception; current is not null; current = current.InnerException) {
+            var message = current.Message;
+            if (message.Contains("UNIQUE constraint failed", StringComparison.OrdinalIgnoreCase)
+                || message.Contains("duplicate key", StringComparison.OrdinalIgnoreCase)
+                || message.Contains("unique index", StringComparison.OrdinalIgnoreCase)
+                || message.Contains("unique constraint", StringComparison.OrdinalIgnoreCase)
+                || message.Contains("violation of unique", StringComparison.OrdinalIgnoreCase)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
 
     public async ValueTask UpsertBucketAsync(string providerName, BucketInfo bucket, CancellationToken cancellationToken = default)
     {
@@ -58,13 +113,23 @@ internal sealed class EntityFrameworkStorageCatalogStore<TDbContext>(
         await using var scope = serviceProvider.CreateAsyncScope();
         var dbContext = ResolveDbContext(scope);
 
-        await dbContext.Set<ObjectCatalogRecord>()
-            .Where(existing => existing.ProviderName == providerName && existing.BucketName == bucketName)
-            .ExecuteDeleteAsync(cancellationToken);
+        // Delete the object rows and the bucket row inside a single transaction so a mid-operation failure
+        // (crash, dropped connection, timeout) can never leave the bucket row present with its objects gone.
+        // The execution strategy owns the transaction boundary so it composes with connection-resiliency retries.
+        var strategy = dbContext.Database.CreateExecutionStrategy();
+        await strategy.ExecuteAsync(async ct => {
+            await using var transaction = await dbContext.Database.BeginTransactionAsync(ct);
 
-        await dbContext.Set<BucketCatalogRecord>()
-            .Where(existing => existing.ProviderName == providerName && existing.BucketName == bucketName)
-            .ExecuteDeleteAsync(cancellationToken);
+            await dbContext.Set<ObjectCatalogRecord>()
+                .Where(existing => existing.ProviderName == providerName && existing.BucketName == bucketName)
+                .ExecuteDeleteAsync(ct);
+
+            await dbContext.Set<BucketCatalogRecord>()
+                .Where(existing => existing.ProviderName == providerName && existing.BucketName == bucketName)
+                .ExecuteDeleteAsync(ct);
+
+            await transaction.CommitAsync(ct);
+        }, cancellationToken);
     }
 
     public async ValueTask<IReadOnlyList<StoredBucketEntry>> ListBucketsAsync(string? providerName = null, CancellationToken cancellationToken = default)
@@ -97,85 +162,124 @@ internal sealed class EntityFrameworkStorageCatalogStore<TDbContext>(
     {
         await EnsureInitializedAsync(cancellationToken);
 
+        // The demote-existing-latest + insert-new-latest sequence is a read-modify-write that must be atomic and
+        // concurrency-safe. On a conflict (a concurrent writer demoted/inserted between our read and write) EF raises
+        // a DbUpdateConcurrencyException (concurrency token) or a unique-index violation (filtered single-latest
+        // index). We retry the whole unit of work on a fresh DbContext up to a bounded number of times; exhausting
+        // the budget surfaces the underlying exception rather than silently losing the update.
+        for (var attempt = 0; ; attempt++) {
+            try {
+                await UpsertObjectCoreAsync(providerName, @object, cancellationToken);
+                return;
+            }
+            catch (Exception ex) when (attempt < MaxUpsertConcurrencyRetries && IsConcurrencyConflict(ex)) {
+                // Transient concurrency conflict: back off (capped, jittered), then retry on a fresh scope/DbContext.
+                var backoffMs = Math.Min(200, 5 * (attempt + 1)) + Random.Shared.Next(0, 15);
+                await Task.Delay(TimeSpan.FromMilliseconds(backoffMs), cancellationToken);
+            }
+        }
+    }
+
+    private async ValueTask UpsertObjectCoreAsync(string providerName, ObjectInfo @object, CancellationToken cancellationToken)
+    {
         await using var scope = serviceProvider.CreateAsyncScope();
         var dbContext = ResolveDbContext(scope);
 
-        var buckets = dbContext.Set<BucketCatalogRecord>();
-        var objects = dbContext.Set<ObjectCatalogRecord>();
+        // Wrap the demote + insert in a single transaction so a partial failure can never leave the key with no
+        // latest version (old row already demoted, new row never inserted) or an inconsistent bucket/object state.
+        var strategy = dbContext.Database.CreateExecutionStrategy();
+        await strategy.ExecuteAsync(async ct => {
+            await using var transaction = await dbContext.Database.BeginTransactionAsync(ct);
 
-        var bucketRecord = await buckets.SingleOrDefaultAsync(
-            existing => existing.ProviderName == providerName && existing.BucketName == @object.BucketName,
-            cancellationToken);
+            var buckets = dbContext.Set<BucketCatalogRecord>();
+            var objects = dbContext.Set<ObjectCatalogRecord>();
 
-        if (bucketRecord is null) {
-            bucketRecord = new BucketCatalogRecord
+            var bucketRecord = await buckets.SingleOrDefaultAsync(
+                existing => existing.ProviderName == providerName && existing.BucketName == @object.BucketName,
+                ct);
+
+            if (bucketRecord is null) {
+                bucketRecord = new BucketCatalogRecord
+                {
+                    ProviderName = providerName,
+                    BucketName = @object.BucketName,
+                    CreatedAtUtc = @object.LastModifiedUtc,
+                    VersioningEnabled = false,
+                    LastSyncedAtUtc = DateTimeOffset.UtcNow
+                };
+                buckets.Add(bucketRecord);
+            }
+            else {
+                bucketRecord.LastSyncedAtUtc = DateTimeOffset.UtcNow;
+                dbContext.Update(bucketRecord);
+            }
+
+            if (@object.IsLatest) {
+                await objects
+                    .Where(existing => existing.ProviderName == providerName
+                        && existing.BucketName == @object.BucketName
+                        && existing.Key == @object.Key
+                        && existing.IsLatest)
+                    .ExecuteUpdateAsync(setters => setters
+                        .SetProperty(static existing => existing.IsLatest, false), ct);
+            }
+
+            var record = await objects.SingleOrDefaultAsync(
+                existing => existing.ProviderName == providerName
+                    && existing.BucketName == @object.BucketName
+                    && existing.Key == @object.Key
+                    && existing.VersionId == @object.VersionId,
+                ct);
+
+            var isNewObject = record is null;
+            // The record was read with NoTracking, so EF has no original-value baseline for the concurrency
+            // check. Capture the token value that was actually persisted so the update's WHERE clause targets it.
+            var originalVersion = record?.Version ?? 0;
+            record ??= new ObjectCatalogRecord
             {
                 ProviderName = providerName,
                 BucketName = @object.BucketName,
-                CreatedAtUtc = @object.LastModifiedUtc,
-                VersioningEnabled = false,
-                LastSyncedAtUtc = DateTimeOffset.UtcNow
+                Key = @object.Key
             };
-            buckets.Add(bucketRecord);
-        }
-        else {
-            bucketRecord.LastSyncedAtUtc = DateTimeOffset.UtcNow;
-            dbContext.Update(bucketRecord);
-        }
 
-        if (@object.IsLatest) {
-            await objects
-                .Where(existing => existing.ProviderName == providerName
-                    && existing.BucketName == @object.BucketName
-                    && existing.Key == @object.Key
-                    && existing.IsLatest)
-                .ExecuteUpdateAsync(setters => setters
-                    .SetProperty(static existing => existing.IsLatest, false), cancellationToken);
-        }
+            record.VersionId = @object.VersionId;
+            record.IsLatest = @object.IsLatest;
+            record.IsDeleteMarker = @object.IsDeleteMarker;
+            record.ContentLength = @object.ContentLength;
+            record.ContentType = @object.ContentType;
+            record.CacheControl = @object.CacheControl;
+            record.ContentDisposition = @object.ContentDisposition;
+            record.ContentEncoding = @object.ContentEncoding;
+            record.ContentLanguage = @object.ContentLanguage;
+            record.ExpiresUtc = @object.ExpiresUtc;
+            record.ETag = @object.ETag;
+            record.LastModifiedUtc = @object.LastModifiedUtc;
+            record.MetadataJson = @object.Metadata is null ? null : JsonSerializer.Serialize(@object.Metadata);
+            record.TagsJson = @object.Tags is null ? null : JsonSerializer.Serialize(@object.Tags);
+            record.ChecksumsJson = @object.Checksums is null ? null : JsonSerializer.Serialize(@object.Checksums);
+            record.RetentionMode = @object.RetentionMode;
+            record.RetainUntilDateUtc = @object.RetainUntilDateUtc;
+            record.LegalHoldStatus = @object.LegalHoldStatus;
+            record.ServerSideEncryptionAlgorithm = @object.ServerSideEncryption?.Algorithm;
+            record.ServerSideEncryptionKeyId = @object.ServerSideEncryption?.KeyId;
+            record.LastSyncedAtUtc = DateTimeOffset.UtcNow;
+            // Advance the optimistic-concurrency token so a concurrent update to the same version is detected.
+            record.Version = originalVersion + 1;
 
-        var record = await objects.SingleOrDefaultAsync(
-            existing => existing.ProviderName == providerName
-                && existing.BucketName == @object.BucketName
-                && existing.Key == @object.Key
-                && existing.VersionId == @object.VersionId,
-            cancellationToken);
+            if (isNewObject) {
+                objects.Add(record);
+            }
+            else {
+                dbContext.Update(record);
+                // Update() (with NoTracking reads) treats the new Version as the original value, which would make
+                // the concurrency WHERE clause target the incremented token and match zero rows even without a
+                // concurrent writer. Pin the original value to what was actually read from the database.
+                dbContext.Entry(record).Property(static existing => existing.Version).OriginalValue = originalVersion;
+            }
 
-        var isNewObject = record is null;
-        record ??= new ObjectCatalogRecord
-        {
-            ProviderName = providerName,
-            BucketName = @object.BucketName,
-            Key = @object.Key
-        };
-
-        record.VersionId = @object.VersionId;
-        record.IsLatest = @object.IsLatest;
-        record.IsDeleteMarker = @object.IsDeleteMarker;
-        record.ContentLength = @object.ContentLength;
-        record.ContentType = @object.ContentType;
-        record.CacheControl = @object.CacheControl;
-        record.ContentDisposition = @object.ContentDisposition;
-        record.ContentEncoding = @object.ContentEncoding;
-        record.ContentLanguage = @object.ContentLanguage;
-        record.ExpiresUtc = @object.ExpiresUtc;
-        record.ETag = @object.ETag;
-        record.LastModifiedUtc = @object.LastModifiedUtc;
-        record.MetadataJson = @object.Metadata is null ? null : JsonSerializer.Serialize(@object.Metadata);
-        record.TagsJson = @object.Tags is null ? null : JsonSerializer.Serialize(@object.Tags);
-        record.ChecksumsJson = @object.Checksums is null ? null : JsonSerializer.Serialize(@object.Checksums);
-        record.RetentionMode = @object.RetentionMode;
-        record.RetainUntilDateUtc = @object.RetainUntilDateUtc;
-        record.LegalHoldStatus = @object.LegalHoldStatus;
-        record.ServerSideEncryptionAlgorithm = @object.ServerSideEncryption?.Algorithm;
-        record.ServerSideEncryptionKeyId = @object.ServerSideEncryption?.KeyId;
-        record.LastSyncedAtUtc = DateTimeOffset.UtcNow;
-
-        if (isNewObject)
-            objects.Add(record);
-        else
-            dbContext.Update(record);
-
-        await dbContext.SaveChangesAsync(cancellationToken);
+            await dbContext.SaveChangesAsync(ct);
+            await transaction.CommitAsync(ct);
+        }, cancellationToken);
     }
 
     public async ValueTask RemoveObjectAsync(string providerName, string bucketName, string key, string? versionId = null, CancellationToken cancellationToken = default)

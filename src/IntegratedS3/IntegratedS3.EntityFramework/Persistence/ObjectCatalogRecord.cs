@@ -81,4 +81,13 @@ public sealed class ObjectCatalogRecord
 
     /// <summary>Gets or sets the UTC timestamp of the last catalog synchronization for this object.</summary>
     public DateTimeOffset LastSyncedAtUtc { get; set; }
+
+    /// <summary>
+    /// Gets or sets the optimistic-concurrency token for this record. It is mapped as a concurrency
+    /// token and incremented on every update so that concurrent writers to the same version surface a
+    /// <see cref="Microsoft.EntityFrameworkCore.DbUpdateConcurrencyException"/> (last-writer-wins is prevented).
+    /// A plain incrementing integer is used instead of a provider-specific <c>rowversion</c> so the guard
+    /// works across every EF Core relational provider (including SQLite).
+    /// </summary>
+    public int Version { get; set; }
 }
