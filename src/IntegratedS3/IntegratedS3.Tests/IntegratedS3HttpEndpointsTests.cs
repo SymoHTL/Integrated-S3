@@ -902,6 +902,115 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
     }
 
     [Fact]
+    public async Task PutObject_WithSignedContentSha256MatchingBody_Persists()
+    {
+        const string accessKeyId = "sigv4-content-sha256-match-access";
+        const string secretAccessKey = "sigv4-content-sha256-match-secret";
+        const string bucketName = "content-sha256-match-bucket";
+        const string objectKey = "docs/content-sha256-match.txt";
+        var payloadBytes = Encoding.UTF8.GetBytes("hello from a correctly hashed payload");
+
+        await using var isolatedClient = await CreateSigV4AuthenticatedClientAsync(accessKeyId, secretAccessKey);
+        using var client = isolatedClient.Client;
+
+        using var createBucketRequest = CreateSigV4HeaderSignedRequest(HttpMethod.Put, $"/integrated-s3/buckets/{bucketName}", accessKeyId, secretAccessKey);
+        Assert.Equal(HttpStatusCode.Created, (await client.SendAsync(createBucketRequest)).StatusCode);
+
+        var correctHash = Convert.ToHexStringLower(SHA256.HashData(payloadBytes));
+        using var putRequest = CreateSigV4BodySignedRequestWithContentSha256(
+            $"/integrated-s3/{bucketName}/{objectKey}", accessKeyId, secretAccessKey, payloadBytes, correctHash);
+
+        var putResponse = await client.SendAsync(putRequest);
+        Assert.Equal(HttpStatusCode.OK, putResponse.StatusCode);
+
+        using var getRequest = CreateSigV4HeaderSignedRequest(HttpMethod.Get, $"/integrated-s3/{bucketName}/{objectKey}", accessKeyId, secretAccessKey);
+        var getResponse = await client.SendAsync(getRequest);
+        Assert.Equal(HttpStatusCode.OK, getResponse.StatusCode);
+        Assert.Equal(payloadBytes, await getResponse.Content.ReadAsByteArrayAsync());
+    }
+
+    [Fact]
+    public async Task PutObject_WithSignedContentSha256NotMatchingBody_ReturnsXAmzContentSHA256Mismatch()
+    {
+        const string accessKeyId = "sigv4-content-sha256-mismatch-access";
+        const string secretAccessKey = "sigv4-content-sha256-mismatch-secret";
+        const string bucketName = "content-sha256-mismatch-bucket";
+        const string objectKey = "docs/content-sha256-mismatch.txt";
+        var payloadBytes = Encoding.UTF8.GetBytes("this is the body that will actually be sent");
+
+        await using var isolatedClient = await CreateSigV4AuthenticatedClientAsync(accessKeyId, secretAccessKey);
+        using var client = isolatedClient.Client;
+
+        using var createBucketRequest = CreateSigV4HeaderSignedRequest(HttpMethod.Put, $"/integrated-s3/buckets/{bucketName}", accessKeyId, secretAccessKey);
+        Assert.Equal(HttpStatusCode.Created, (await client.SendAsync(createBucketRequest)).StatusCode);
+
+        // Sign the request with a concrete SHA256 of a *different* payload. The signature is
+        // internally consistent (it covers the wrong hash), so only recomputing the body digest
+        // detects the divergence — exactly the XAmzContentSHA256Mismatch case.
+        var wrongHash = Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes("a different payload")));
+        using var putRequest = CreateSigV4BodySignedRequestWithContentSha256(
+            $"/integrated-s3/{bucketName}/{objectKey}", accessKeyId, secretAccessKey, payloadBytes, wrongHash);
+
+        var response = await client.SendAsync(putRequest);
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal("application/xml", response.Content.Headers.ContentType?.MediaType);
+
+        var document = XDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal("XAmzContentSHA256Mismatch", GetRequiredElementValue(document, "Code"));
+
+        // The object must not have been persisted.
+        using var getRequest = CreateSigV4HeaderSignedRequest(HttpMethod.Get, $"/integrated-s3/{bucketName}/{objectKey}", accessKeyId, secretAccessKey);
+        Assert.Equal(HttpStatusCode.NotFound, (await client.SendAsync(getRequest)).StatusCode);
+    }
+
+    [Fact]
+    public async Task PutObject_WithUnsignedPayloadSentinel_SkipsContentSha256Verification()
+    {
+        const string accessKeyId = "sigv4-content-sha256-unsigned-access";
+        const string secretAccessKey = "sigv4-content-sha256-unsigned-secret";
+        const string bucketName = "content-sha256-unsigned-bucket";
+        const string objectKey = "docs/content-sha256-unsigned.txt";
+        var payloadBytes = Encoding.UTF8.GetBytes("body sent under UNSIGNED-PAYLOAD sentinel");
+
+        await using var isolatedClient = await CreateSigV4AuthenticatedClientAsync(accessKeyId, secretAccessKey);
+        using var client = isolatedClient.Client;
+
+        using var createBucketRequest = CreateSigV4HeaderSignedRequest(HttpMethod.Put, $"/integrated-s3/buckets/{bucketName}", accessKeyId, secretAccessKey);
+        Assert.Equal(HttpStatusCode.Created, (await client.SendAsync(createBucketRequest)).StatusCode);
+
+        // UNSIGNED-PAYLOAD is a sentinel, not a concrete digest, so the body is stored without a
+        // digest comparison even though the bytes obviously do not hash to that literal string.
+        using var putRequest = CreateSigV4BodySignedRequestWithContentSha256(
+            $"/integrated-s3/{bucketName}/{objectKey}", accessKeyId, secretAccessKey, payloadBytes, "UNSIGNED-PAYLOAD");
+
+        var putResponse = await client.SendAsync(putRequest);
+        Assert.Equal(HttpStatusCode.OK, putResponse.StatusCode);
+
+        using var getRequest = CreateSigV4HeaderSignedRequest(HttpMethod.Get, $"/integrated-s3/{bucketName}/{objectKey}", accessKeyId, secretAccessKey);
+        var getResponse = await client.SendAsync(getRequest);
+        Assert.Equal(HttpStatusCode.OK, getResponse.StatusCode);
+        Assert.Equal(payloadBytes, await getResponse.Content.ReadAsByteArrayAsync());
+    }
+
+    private static HttpRequestMessage CreateSigV4BodySignedRequestWithContentSha256(
+        string pathAndQuery,
+        string accessKeyId,
+        string secretAccessKey,
+        byte[] payloadBytes,
+        string contentSha256HeaderValue,
+        string host = "localhost")
+    {
+        var request = new HttpRequestMessage(HttpMethod.Put, pathAndQuery)
+        {
+            Content = new ByteArrayContent(payloadBytes)
+        };
+        request.Content.Headers.TryAddWithoutValidation("Content-Type", "text/plain");
+
+        SignSigV4HeaderRequest(request, pathAndQuery, accessKeyId, secretAccessKey, contentSha256HeaderValue, host: host);
+        return request;
+    }
+
+    [Fact]
     public async Task PutObject_WithAwsChunkedTrailerChecksumWithoutTrailerDeclaration_ReturnsInvalidRequest()
     {
         using var client = await _factory.CreateClientAsync();
