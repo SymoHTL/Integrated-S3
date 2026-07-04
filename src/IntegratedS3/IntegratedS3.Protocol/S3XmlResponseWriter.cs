@@ -465,13 +465,10 @@ public static class S3XmlResponseWriter
             xmlWriter.WriteElementString("Delimiter", EncodeS3ListValue(response.Delimiter, response.EncodingType));
         }
 
-        if (!string.IsNullOrWhiteSpace(response.KeyMarker)) {
-            xmlWriter.WriteElementString("KeyMarker", EncodeS3ListValue(response.KeyMarker, response.EncodingType));
-        }
-
-        if (!string.IsNullOrWhiteSpace(response.VersionIdMarker)) {
-            xmlWriter.WriteElementString("VersionIdMarker", response.VersionIdMarker);
-        }
+        // AWS always emits KeyMarker and VersionIdMarker in ListVersionsResult,
+        // present-but-empty on the first page (no marker supplied).
+        xmlWriter.WriteElementString("KeyMarker", EncodeS3ListValue(response.KeyMarker ?? string.Empty, response.EncodingType));
+        xmlWriter.WriteElementString("VersionIdMarker", response.VersionIdMarker ?? string.Empty);
 
         if (!string.IsNullOrWhiteSpace(response.NextKeyMarker)) {
             xmlWriter.WriteElementString("NextKeyMarker", EncodeS3ListValue(response.NextKeyMarker, response.EncodingType));

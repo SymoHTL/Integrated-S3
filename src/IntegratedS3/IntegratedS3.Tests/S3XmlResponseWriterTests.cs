@@ -314,6 +314,34 @@ public sealed class S3XmlResponseWriterTests
     }
 
     [Fact]
+    public void WriteListObjectVersionsResult_AlwaysEmitsEmptyKeyAndVersionIdMarkers_OnFirstPage()
+    {
+        // Regression for #136: AWS always emits <KeyMarker> and <VersionIdMarker> in
+        // ListVersionsResult, present-but-empty on the first page (no marker supplied).
+        var xml = S3XmlResponseWriter.WriteListObjectVersionsResult(new S3ListObjectVersionsResult
+        {
+            Name = "bucket",
+            Prefix = "docs/",
+            MaxKeys = 1,
+            KeyMarker = null,
+            VersionIdMarker = null,
+            Versions = [],
+            CommonPrefixes = []
+        });
+
+        var document = XDocument.Parse(xml);
+        var ns = S3XmlTestHelper.CanonicalS3Namespace;
+
+        var keyMarker = document.Root!.Element(XName.Get("KeyMarker", ns));
+        Assert.NotNull(keyMarker);
+        Assert.Equal(string.Empty, keyMarker!.Value);
+
+        var versionIdMarker = document.Root!.Element(XName.Get("VersionIdMarker", ns));
+        Assert.NotNull(versionIdMarker);
+        Assert.Equal(string.Empty, versionIdMarker!.Value);
+    }
+
+    [Fact]
     public void EmptyConfigurationResponses_EmitCanonicalS3NamespaceOnSelfClosingRoot()
     {
         // Regression for #117: empty configs serialize the root as a self-closing element
