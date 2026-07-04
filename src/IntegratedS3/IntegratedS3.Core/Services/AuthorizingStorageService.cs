@@ -118,6 +118,33 @@ internal sealed class AuthorizingStorageService(
         }, innerCancellationToken => inner.DeleteBucketDefaultEncryptionAsync(request, innerCancellationToken), cancellationToken);
     }
 
+    public ValueTask<StorageResult<BucketPublicAccessBlockConfiguration>> GetBucketPublicAccessBlockAsync(string bucketName, CancellationToken cancellationToken = default)
+    {
+        return ExecuteAuthorizedAsync(new StorageAuthorizationRequest
+        {
+            Operation = StorageOperationType.GetBucketPublicAccessBlock,
+            BucketName = bucketName
+        }, innerCancellationToken => inner.GetBucketPublicAccessBlockAsync(bucketName, innerCancellationToken), cancellationToken);
+    }
+
+    public ValueTask<StorageResult<BucketPublicAccessBlockConfiguration>> PutBucketPublicAccessBlockAsync(PutBucketPublicAccessBlockRequest request, CancellationToken cancellationToken = default)
+    {
+        return ExecuteAuthorizedAsync(new StorageAuthorizationRequest
+        {
+            Operation = StorageOperationType.PutBucketPublicAccessBlock,
+            BucketName = request.BucketName
+        }, innerCancellationToken => inner.PutBucketPublicAccessBlockAsync(request, innerCancellationToken), cancellationToken);
+    }
+
+    public ValueTask<StorageResult> DeleteBucketPublicAccessBlockAsync(DeleteBucketPublicAccessBlockRequest request, CancellationToken cancellationToken = default)
+    {
+        return ExecuteAuthorizedAsync(new StorageAuthorizationRequest
+        {
+            Operation = StorageOperationType.DeleteBucketPublicAccessBlock,
+            BucketName = request.BucketName
+        }, innerCancellationToken => inner.DeleteBucketPublicAccessBlockAsync(request, innerCancellationToken), cancellationToken);
+    }
+
     public ValueTask<StorageResult<BucketInfo>> HeadBucketAsync(string bucketName, CancellationToken cancellationToken = default)
     {
         return ExecuteAuthorizedAsync(new StorageAuthorizationRequest

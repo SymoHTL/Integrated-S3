@@ -33,6 +33,14 @@ internal interface IS3StorageClient : IDisposable
     Task DeleteBucketDefaultEncryptionAsync(string bucketName, CancellationToken cancellationToken = default)
         => Task.FromException(new NotSupportedException("Bucket default encryption is not implemented by this S3 storage client."));
 
+    // Bucket Public Access Block
+    Task<BucketPublicAccessBlockConfiguration> GetBucketPublicAccessBlockAsync(string bucketName, CancellationToken cancellationToken = default)
+        => Task.FromException<BucketPublicAccessBlockConfiguration>(new NotSupportedException("Bucket public access block is not implemented by this S3 storage client."));
+    Task<BucketPublicAccessBlockConfiguration> SetBucketPublicAccessBlockAsync(PutBucketPublicAccessBlockRequest request, CancellationToken cancellationToken = default)
+        => Task.FromException<BucketPublicAccessBlockConfiguration>(new NotSupportedException("Bucket public access block is not implemented by this S3 storage client."));
+    Task DeleteBucketPublicAccessBlockAsync(string bucketName, CancellationToken cancellationToken = default)
+        => Task.FromException(new NotSupportedException("Bucket public access block is not implemented by this S3 storage client."));
+
     // Object listing
     Task<S3ObjectListPage> ListObjectsAsync(
         string bucketName,

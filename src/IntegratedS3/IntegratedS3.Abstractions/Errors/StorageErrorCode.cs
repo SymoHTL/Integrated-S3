@@ -110,6 +110,9 @@ public enum StorageErrorCode
     /// <summary>No intelligent-tiering configuration exists for the bucket.</summary>
     IntelligentTieringConfigurationNotFound,
 
+    /// <summary>No public access block configuration exists for the bucket.</summary>
+    PublicAccessBlockConfigurationNotFound,
+
     /// <summary>The object is protected by an object-lock retention policy or legal hold.</summary>
     ObjectLocked,
 }

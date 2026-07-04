@@ -356,6 +356,61 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
     }
 
     // -------------------------------------------------------------------------
+    // Bucket Public Access Block
+    // -------------------------------------------------------------------------
+
+    public async ValueTask<StorageResult<BucketPublicAccessBlockConfiguration>> GetBucketPublicAccessBlockAsync(string bucketName, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var config = await _client.GetBucketPublicAccessBlockAsync(bucketName, cancellationToken).ConfigureAwait(false);
+            return StorageResult<BucketPublicAccessBlockConfiguration>.Success(config);
+        }
+        catch (AmazonServiceException ex)
+        {
+            return StorageResult<BucketPublicAccessBlockConfiguration>.Failure(S3ErrorTranslator.Translate(ex, Name, bucketName));
+        }
+        catch (Exception ex) when (S3ErrorTranslator.IsTransportFailure(ex, cancellationToken))
+        {
+            return StorageResult<BucketPublicAccessBlockConfiguration>.Failure(S3ErrorTranslator.TranslateTransport(ex, Name, bucketName));
+        }
+    }
+
+    public async ValueTask<StorageResult<BucketPublicAccessBlockConfiguration>> PutBucketPublicAccessBlockAsync(PutBucketPublicAccessBlockRequest request, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var config = await _client.SetBucketPublicAccessBlockAsync(request, cancellationToken).ConfigureAwait(false);
+            return StorageResult<BucketPublicAccessBlockConfiguration>.Success(config);
+        }
+        catch (AmazonServiceException ex)
+        {
+            return StorageResult<BucketPublicAccessBlockConfiguration>.Failure(S3ErrorTranslator.Translate(ex, Name, request.BucketName));
+        }
+        catch (Exception ex) when (S3ErrorTranslator.IsTransportFailure(ex, cancellationToken))
+        {
+            return StorageResult<BucketPublicAccessBlockConfiguration>.Failure(S3ErrorTranslator.TranslateTransport(ex, Name, request.BucketName));
+        }
+    }
+
+    public async ValueTask<StorageResult> DeleteBucketPublicAccessBlockAsync(DeleteBucketPublicAccessBlockRequest request, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            await _client.DeleteBucketPublicAccessBlockAsync(request.BucketName, cancellationToken).ConfigureAwait(false);
+            return StorageResult.Success();
+        }
+        catch (AmazonServiceException ex)
+        {
+            return StorageResult.Failure(S3ErrorTranslator.Translate(ex, Name, request.BucketName));
+        }
+        catch (Exception ex) when (S3ErrorTranslator.IsTransportFailure(ex, cancellationToken))
+        {
+            return StorageResult.Failure(S3ErrorTranslator.TranslateTransport(ex, Name, request.BucketName));
+        }
+    }
+
+    // -------------------------------------------------------------------------
     // Bucket Tagging
     // -------------------------------------------------------------------------
 

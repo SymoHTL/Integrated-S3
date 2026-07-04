@@ -75,6 +75,57 @@ public static class S3XmlRequestReader
         }
     }
 
+    /// <summary>Reads a bucket public access block configuration from the XML request body.</summary>
+    /// <param name="content">The request body stream containing the XML payload.</param>
+    /// <param name="cancellationToken">A token to cancel the asynchronous operation.</param>
+    /// <returns>The deserialized <see cref="S3PublicAccessBlockConfiguration"/>.</returns>
+    public static async Task<S3PublicAccessBlockConfiguration> ReadPublicAccessBlockConfigurationAsync(Stream content, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(content);
+
+        try {
+            var document = await HardenedXml.LoadAsync(content, cancellationToken);
+            var root = document.Root;
+            if (root is null || !string.Equals(root.Name.LocalName, "PublicAccessBlockConfiguration", StringComparison.Ordinal)) {
+                throw new FormatException("The public access block request body must contain a root 'PublicAccessBlockConfiguration' element.");
+            }
+
+            return new S3PublicAccessBlockConfiguration
+            {
+                BlockPublicAcls = ParseOptionalBoolean(root, "BlockPublicAcls"),
+                IgnorePublicAcls = ParseOptionalBoolean(root, "IgnorePublicAcls"),
+                BlockPublicPolicy = ParseOptionalBoolean(root, "BlockPublicPolicy"),
+                RestrictPublicBuckets = ParseOptionalBoolean(root, "RestrictPublicBuckets")
+            };
+        }
+        catch (FormatException ex) {
+            ProtocolTelemetry.RecordXmlParseError("ReadPublicAccessBlockConfiguration", ex.Message);
+            throw;
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException) {
+            ProtocolTelemetry.RecordXmlParseError("ReadPublicAccessBlockConfiguration", exception.Message);
+            throw new FormatException("The public access block request body is not valid XML.", exception);
+        }
+    }
+
+    private static bool ParseOptionalBoolean(XElement parent, string childName)
+    {
+        var text = GetSingleOptionalChildValue(
+            parent,
+            childName,
+            $"The public access block configuration must not contain multiple '{childName}' elements.");
+
+        if (text is null) {
+            return false;
+        }
+
+        if (!bool.TryParse(text, out var parsed)) {
+            throw new FormatException($"The '{childName}' element must be 'true' or 'false'.");
+        }
+
+        return parsed;
+    }
+
     /// <summary>Reads a CORS configuration from the XML request body.</summary>
     /// <param name="content">The request body stream containing the XML payload.</param>
     /// <param name="cancellationToken">A token to cancel the asynchronous operation.</param>

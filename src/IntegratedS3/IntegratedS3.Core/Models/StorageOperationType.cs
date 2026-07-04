@@ -316,4 +316,16 @@ public enum StorageOperationType
 
     /// <summary>Generate a presigned URL for uploading a single part of a multipart upload.</summary>
     PresignUploadPart,
+
+    // ── Bucket public access block ──────────────────────────────────
+    // New members are appended so existing numeric values stay stable.
+
+    /// <summary>Retrieve the public access block configuration of a bucket.</summary>
+    GetBucketPublicAccessBlock,
+
+    /// <summary>Set the public access block configuration of a bucket.</summary>
+    PutBucketPublicAccessBlock,
+
+    /// <summary>Delete the public access block configuration of a bucket.</summary>
+    DeleteBucketPublicAccessBlock,
 }

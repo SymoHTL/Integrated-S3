@@ -102,6 +102,32 @@ public static class S3XmlResponseWriter
         return InjectS3Namespace(builder, "ServerSideEncryptionConfiguration");
     }
 
+    /// <summary>Writes a PublicAccessBlockConfiguration as an XML response body.</summary>
+    /// <param name="response">The <see cref="S3PublicAccessBlockConfiguration"/> to serialize.</param>
+    /// <returns>The XML string.</returns>
+    public static string WritePublicAccessBlockConfiguration(S3PublicAccessBlockConfiguration response)
+    {
+        ArgumentNullException.ThrowIfNull(response);
+
+        var builder = new StringBuilder(256);
+        using var stringWriter = new Utf8StringWriter(builder, CultureInfo.InvariantCulture);
+        using var xmlWriter = XmlWriter.Create(stringWriter, CreateSettings());
+
+        xmlWriter.WriteStartDocument();
+        xmlWriter.WriteStartElement("PublicAccessBlockConfiguration");
+
+        xmlWriter.WriteElementString("BlockPublicAcls", XmlConvert.ToString(response.BlockPublicAcls));
+        xmlWriter.WriteElementString("IgnorePublicAcls", XmlConvert.ToString(response.IgnorePublicAcls));
+        xmlWriter.WriteElementString("BlockPublicPolicy", XmlConvert.ToString(response.BlockPublicPolicy));
+        xmlWriter.WriteElementString("RestrictPublicBuckets", XmlConvert.ToString(response.RestrictPublicBuckets));
+
+        xmlWriter.WriteEndElement();
+        xmlWriter.WriteEndDocument();
+        xmlWriter.Flush();
+
+        return InjectS3Namespace(builder, "PublicAccessBlockConfiguration");
+    }
+
     /// <summary>Writes a CorsConfiguration as an XML response body.</summary>
     /// <param name="response">The <see cref="S3CorsConfiguration"/> to serialize.</param>
     /// <returns>The XML string.</returns>

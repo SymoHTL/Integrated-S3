@@ -267,6 +267,7 @@ internal sealed class DiskStorageService(
             MetricsConfigurations = existingMetadata.MetricsConfigurations,
             InventoryConfigurations = existingMetadata.InventoryConfigurations,
             IntelligentTieringConfigurations = existingMetadata.IntelligentTieringConfigurations,
+            PublicAccessBlockConfiguration = existingMetadata.PublicAccessBlockConfiguration,
         };
 
         if (!ShouldPersistBucketMetadata(metadata)) {
@@ -332,6 +333,7 @@ internal sealed class DiskStorageService(
             MetricsConfigurations = existingMetadata.MetricsConfigurations,
             InventoryConfigurations = existingMetadata.InventoryConfigurations,
             IntelligentTieringConfigurations = existingMetadata.IntelligentTieringConfigurations,
+            PublicAccessBlockConfiguration = existingMetadata.PublicAccessBlockConfiguration,
         };
 
         if (!ShouldPersistBucketMetadata(updatedMetadata)) {
@@ -373,6 +375,7 @@ internal sealed class DiskStorageService(
             MetricsConfigurations = existingMetadata.MetricsConfigurations,
             InventoryConfigurations = existingMetadata.InventoryConfigurations,
             IntelligentTieringConfigurations = existingMetadata.IntelligentTieringConfigurations,
+            PublicAccessBlockConfiguration = existingMetadata.PublicAccessBlockConfiguration,
         };
 
         if (!ShouldPersistBucketMetadata(updatedMetadata)) {
@@ -444,6 +447,7 @@ internal sealed class DiskStorageService(
             MetricsConfigurations = existingMetadata.MetricsConfigurations,
             InventoryConfigurations = existingMetadata.InventoryConfigurations,
             IntelligentTieringConfigurations = existingMetadata.IntelligentTieringConfigurations,
+            PublicAccessBlockConfiguration = existingMetadata.PublicAccessBlockConfiguration,
         };
 
         await PersistBucketMetadataAsync(bucketPath, updatedMetadata, cancellationToken);
@@ -484,11 +488,129 @@ internal sealed class DiskStorageService(
             MetricsConfigurations = existingMetadata.MetricsConfigurations,
             InventoryConfigurations = existingMetadata.InventoryConfigurations,
             IntelligentTieringConfigurations = existingMetadata.IntelligentTieringConfigurations,
+            PublicAccessBlockConfiguration = existingMetadata.PublicAccessBlockConfiguration,
         };
 
         await PersistBucketMetadataAsync(bucketPath, updatedMetadata, cancellationToken);
         return StorageResult.Success();
     }
+
+    // -------------------------------------------------------------------------
+    // Bucket Public Access Block
+    // -------------------------------------------------------------------------
+
+    public async ValueTask<StorageResult<BucketPublicAccessBlockConfiguration>> GetBucketPublicAccessBlockAsync(string bucketName, CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+
+        var bucketPath = GetBucketPath(bucketName);
+        if (!Directory.Exists(bucketPath)) {
+            return StorageResult<BucketPublicAccessBlockConfiguration>.Failure(BucketNotFound(bucketName));
+        }
+
+        var metadata = await ReadBucketMetadataAsync(bucketPath, cancellationToken);
+        if (metadata.PublicAccessBlockConfiguration is null) {
+            return StorageResult<BucketPublicAccessBlockConfiguration>.Failure(ConfigurationNotFound(StorageErrorCode.PublicAccessBlockConfigurationNotFound, bucketName, "public access block"));
+        }
+
+        return StorageResult<BucketPublicAccessBlockConfiguration>.Success(new BucketPublicAccessBlockConfiguration
+        {
+            BucketName = bucketName,
+            BlockPublicAcls = metadata.PublicAccessBlockConfiguration.BlockPublicAcls,
+            IgnorePublicAcls = metadata.PublicAccessBlockConfiguration.IgnorePublicAcls,
+            BlockPublicPolicy = metadata.PublicAccessBlockConfiguration.BlockPublicPolicy,
+            RestrictPublicBuckets = metadata.PublicAccessBlockConfiguration.RestrictPublicBuckets
+        });
+    }
+
+    public async ValueTask<StorageResult<BucketPublicAccessBlockConfiguration>> PutBucketPublicAccessBlockAsync(PutBucketPublicAccessBlockRequest request, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        cancellationToken.ThrowIfCancellationRequested();
+
+        var bucketPath = GetBucketPath(request.BucketName);
+        if (!Directory.Exists(bucketPath)) {
+            return StorageResult<BucketPublicAccessBlockConfiguration>.Failure(BucketNotFound(request.BucketName));
+        }
+
+        var diskConfig = new DiskBucketPublicAccessBlockConfiguration
+        {
+            BlockPublicAcls = request.BlockPublicAcls,
+            IgnorePublicAcls = request.IgnorePublicAcls,
+            BlockPublicPolicy = request.BlockPublicPolicy,
+            RestrictPublicBuckets = request.RestrictPublicBuckets
+        };
+
+        using var bucketMutationLock = await AcquireBucketMutationLockAsync(bucketPath, cancellationToken);
+        var existingMetadata = await ReadBucketMetadataAsync(bucketPath, cancellationToken);
+        var updatedMetadata = new DiskBucketMetadata
+        {
+            VersioningStatus = existingMetadata.VersioningStatus,
+            CorsConfiguration = existingMetadata.CorsConfiguration,
+            TaggingConfiguration = existingMetadata.TaggingConfiguration,
+            LoggingConfiguration = existingMetadata.LoggingConfiguration,
+            WebsiteConfiguration = existingMetadata.WebsiteConfiguration,
+            RequestPaymentConfiguration = existingMetadata.RequestPaymentConfiguration,
+            AccelerateConfiguration = existingMetadata.AccelerateConfiguration,
+            LifecycleConfiguration = existingMetadata.LifecycleConfiguration,
+            ReplicationConfiguration = existingMetadata.ReplicationConfiguration,
+            NotificationConfiguration = existingMetadata.NotificationConfiguration,
+            ObjectLockConfiguration = existingMetadata.ObjectLockConfiguration,
+            AnalyticsConfigurations = existingMetadata.AnalyticsConfigurations,
+            MetricsConfigurations = existingMetadata.MetricsConfigurations,
+            InventoryConfigurations = existingMetadata.InventoryConfigurations,
+            IntelligentTieringConfigurations = existingMetadata.IntelligentTieringConfigurations,
+            PublicAccessBlockConfiguration = diskConfig,
+        };
+
+        await PersistBucketMetadataAsync(bucketPath, updatedMetadata, cancellationToken);
+
+        return StorageResult<BucketPublicAccessBlockConfiguration>.Success(new BucketPublicAccessBlockConfiguration
+        {
+            BucketName = request.BucketName,
+            BlockPublicAcls = diskConfig.BlockPublicAcls,
+            IgnorePublicAcls = diskConfig.IgnorePublicAcls,
+            BlockPublicPolicy = diskConfig.BlockPublicPolicy,
+            RestrictPublicBuckets = diskConfig.RestrictPublicBuckets
+        });
+    }
+
+    public async ValueTask<StorageResult> DeleteBucketPublicAccessBlockAsync(DeleteBucketPublicAccessBlockRequest request, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        cancellationToken.ThrowIfCancellationRequested();
+
+        var bucketPath = GetBucketPath(request.BucketName);
+        if (!Directory.Exists(bucketPath)) {
+            return StorageResult.Failure(BucketNotFound(request.BucketName));
+        }
+
+        using var bucketMutationLock = await AcquireBucketMutationLockAsync(bucketPath, cancellationToken);
+        var existingMetadata = await ReadBucketMetadataAsync(bucketPath, cancellationToken);
+        var updatedMetadata = new DiskBucketMetadata
+        {
+            VersioningStatus = existingMetadata.VersioningStatus,
+            CorsConfiguration = existingMetadata.CorsConfiguration,
+            TaggingConfiguration = existingMetadata.TaggingConfiguration,
+            LoggingConfiguration = existingMetadata.LoggingConfiguration,
+            WebsiteConfiguration = existingMetadata.WebsiteConfiguration,
+            RequestPaymentConfiguration = existingMetadata.RequestPaymentConfiguration,
+            AccelerateConfiguration = existingMetadata.AccelerateConfiguration,
+            LifecycleConfiguration = existingMetadata.LifecycleConfiguration,
+            ReplicationConfiguration = existingMetadata.ReplicationConfiguration,
+            NotificationConfiguration = existingMetadata.NotificationConfiguration,
+            ObjectLockConfiguration = existingMetadata.ObjectLockConfiguration,
+            AnalyticsConfigurations = existingMetadata.AnalyticsConfigurations,
+            MetricsConfigurations = existingMetadata.MetricsConfigurations,
+            InventoryConfigurations = existingMetadata.InventoryConfigurations,
+            IntelligentTieringConfigurations = existingMetadata.IntelligentTieringConfigurations,
+            PublicAccessBlockConfiguration = null,
+        };
+
+        await PersistBucketMetadataAsync(bucketPath, updatedMetadata, cancellationToken);
+        return StorageResult.Success();
+    }
+
     // -------------------------------------------------------------------------
     // Bucket Logging
     // -------------------------------------------------------------------------
@@ -546,6 +668,7 @@ internal sealed class DiskStorageService(
             MetricsConfigurations = existingMetadata.MetricsConfigurations,
             InventoryConfigurations = existingMetadata.InventoryConfigurations,
             IntelligentTieringConfigurations = existingMetadata.IntelligentTieringConfigurations,
+            PublicAccessBlockConfiguration = existingMetadata.PublicAccessBlockConfiguration,
         };
 
         await PersistBucketMetadataAsync(bucketPath, updatedMetadata, cancellationToken);
@@ -609,6 +732,7 @@ internal sealed class DiskStorageService(
             MetricsConfigurations = existingMetadata.MetricsConfigurations,
             InventoryConfigurations = existingMetadata.InventoryConfigurations,
             IntelligentTieringConfigurations = existingMetadata.IntelligentTieringConfigurations,
+            PublicAccessBlockConfiguration = existingMetadata.PublicAccessBlockConfiguration,
         };
 
         await PersistBucketMetadataAsync(bucketPath, updatedMetadata, cancellationToken);
@@ -645,6 +769,7 @@ internal sealed class DiskStorageService(
             MetricsConfigurations = existingMetadata.MetricsConfigurations,
             InventoryConfigurations = existingMetadata.InventoryConfigurations,
             IntelligentTieringConfigurations = existingMetadata.IntelligentTieringConfigurations,
+            PublicAccessBlockConfiguration = existingMetadata.PublicAccessBlockConfiguration,
         };
 
         await PersistBucketMetadataAsync(bucketPath, updatedMetadata, cancellationToken);
@@ -709,6 +834,7 @@ internal sealed class DiskStorageService(
             MetricsConfigurations = existingMetadata.MetricsConfigurations,
             InventoryConfigurations = existingMetadata.InventoryConfigurations,
             IntelligentTieringConfigurations = existingMetadata.IntelligentTieringConfigurations,
+            PublicAccessBlockConfiguration = existingMetadata.PublicAccessBlockConfiguration,
         };
 
         await PersistBucketMetadataAsync(bucketPath, updatedMetadata, cancellationToken);
@@ -778,6 +904,7 @@ internal sealed class DiskStorageService(
             MetricsConfigurations = existingMetadata.MetricsConfigurations,
             InventoryConfigurations = existingMetadata.InventoryConfigurations,
             IntelligentTieringConfigurations = existingMetadata.IntelligentTieringConfigurations,
+            PublicAccessBlockConfiguration = existingMetadata.PublicAccessBlockConfiguration,
         };
 
         await PersistBucketMetadataAsync(bucketPath, updatedMetadata, cancellationToken);
@@ -840,6 +967,7 @@ internal sealed class DiskStorageService(
             MetricsConfigurations = existingMetadata.MetricsConfigurations,
             InventoryConfigurations = existingMetadata.InventoryConfigurations,
             IntelligentTieringConfigurations = existingMetadata.IntelligentTieringConfigurations,
+            PublicAccessBlockConfiguration = existingMetadata.PublicAccessBlockConfiguration,
         };
 
         await PersistBucketMetadataAsync(bucketPath, updatedMetadata, cancellationToken);
@@ -876,6 +1004,7 @@ internal sealed class DiskStorageService(
             MetricsConfigurations = existingMetadata.MetricsConfigurations,
             InventoryConfigurations = existingMetadata.InventoryConfigurations,
             IntelligentTieringConfigurations = existingMetadata.IntelligentTieringConfigurations,
+            PublicAccessBlockConfiguration = existingMetadata.PublicAccessBlockConfiguration,
         };
 
         await PersistBucketMetadataAsync(bucketPath, updatedMetadata, cancellationToken);
@@ -933,6 +1062,7 @@ internal sealed class DiskStorageService(
             MetricsConfigurations = existingMetadata.MetricsConfigurations,
             InventoryConfigurations = existingMetadata.InventoryConfigurations,
             IntelligentTieringConfigurations = existingMetadata.IntelligentTieringConfigurations,
+            PublicAccessBlockConfiguration = existingMetadata.PublicAccessBlockConfiguration,
         };
 
         await PersistBucketMetadataAsync(bucketPath, updatedMetadata, cancellationToken);
@@ -969,6 +1099,7 @@ internal sealed class DiskStorageService(
             MetricsConfigurations = existingMetadata.MetricsConfigurations,
             InventoryConfigurations = existingMetadata.InventoryConfigurations,
             IntelligentTieringConfigurations = existingMetadata.IntelligentTieringConfigurations,
+            PublicAccessBlockConfiguration = existingMetadata.PublicAccessBlockConfiguration,
         };
 
         await PersistBucketMetadataAsync(bucketPath, updatedMetadata, cancellationToken);
@@ -1025,6 +1156,7 @@ internal sealed class DiskStorageService(
             MetricsConfigurations = existingMetadata.MetricsConfigurations,
             InventoryConfigurations = existingMetadata.InventoryConfigurations,
             IntelligentTieringConfigurations = existingMetadata.IntelligentTieringConfigurations,
+            PublicAccessBlockConfiguration = existingMetadata.PublicAccessBlockConfiguration,
         };
 
         await PersistBucketMetadataAsync(bucketPath, updatedMetadata, cancellationToken);
@@ -1096,6 +1228,7 @@ internal sealed class DiskStorageService(
             MetricsConfigurations = existingMetadata.MetricsConfigurations,
             InventoryConfigurations = existingMetadata.InventoryConfigurations,
             IntelligentTieringConfigurations = existingMetadata.IntelligentTieringConfigurations,
+            PublicAccessBlockConfiguration = existingMetadata.PublicAccessBlockConfiguration,
         };
 
         await PersistBucketMetadataAsync(bucketPath, updatedMetadata, cancellationToken);
@@ -1158,6 +1291,7 @@ internal sealed class DiskStorageService(
             MetricsConfigurations = existingMetadata.MetricsConfigurations,
             InventoryConfigurations = existingMetadata.InventoryConfigurations,
             IntelligentTieringConfigurations = existingMetadata.IntelligentTieringConfigurations,
+            PublicAccessBlockConfiguration = existingMetadata.PublicAccessBlockConfiguration,
         };
 
         await PersistBucketMetadataAsync(bucketPath, updatedMetadata, cancellationToken);
@@ -1199,6 +1333,7 @@ internal sealed class DiskStorageService(
             MetricsConfigurations = existingMetadata.MetricsConfigurations,
             InventoryConfigurations = existingMetadata.InventoryConfigurations,
             IntelligentTieringConfigurations = existingMetadata.IntelligentTieringConfigurations,
+            PublicAccessBlockConfiguration = existingMetadata.PublicAccessBlockConfiguration,
         };
 
         await PersistBucketMetadataAsync(bucketPath, updatedMetadata, cancellationToken);
@@ -1281,6 +1416,7 @@ internal sealed class DiskStorageService(
             MetricsConfigurations = updatedDict,
             InventoryConfigurations = existingMetadata.InventoryConfigurations,
             IntelligentTieringConfigurations = existingMetadata.IntelligentTieringConfigurations,
+            PublicAccessBlockConfiguration = existingMetadata.PublicAccessBlockConfiguration,
         };
 
         await PersistBucketMetadataAsync(bucketPath, updatedMetadata, cancellationToken);
@@ -1322,6 +1458,7 @@ internal sealed class DiskStorageService(
             MetricsConfigurations = updatedDict.Count > 0 ? updatedDict : null,
             InventoryConfigurations = existingMetadata.InventoryConfigurations,
             IntelligentTieringConfigurations = existingMetadata.IntelligentTieringConfigurations,
+            PublicAccessBlockConfiguration = existingMetadata.PublicAccessBlockConfiguration,
         };
 
         await PersistBucketMetadataAsync(bucketPath, updatedMetadata, cancellationToken);
@@ -1404,6 +1541,7 @@ internal sealed class DiskStorageService(
             MetricsConfigurations = existingMetadata.MetricsConfigurations,
             InventoryConfigurations = updatedDict,
             IntelligentTieringConfigurations = existingMetadata.IntelligentTieringConfigurations,
+            PublicAccessBlockConfiguration = existingMetadata.PublicAccessBlockConfiguration,
         };
 
         await PersistBucketMetadataAsync(bucketPath, updatedMetadata, cancellationToken);
@@ -1445,6 +1583,7 @@ internal sealed class DiskStorageService(
             MetricsConfigurations = existingMetadata.MetricsConfigurations,
             InventoryConfigurations = updatedDict.Count > 0 ? updatedDict : null,
             IntelligentTieringConfigurations = existingMetadata.IntelligentTieringConfigurations,
+            PublicAccessBlockConfiguration = existingMetadata.PublicAccessBlockConfiguration,
         };
 
         await PersistBucketMetadataAsync(bucketPath, updatedMetadata, cancellationToken);
@@ -1527,6 +1666,7 @@ internal sealed class DiskStorageService(
             MetricsConfigurations = existingMetadata.MetricsConfigurations,
             InventoryConfigurations = existingMetadata.InventoryConfigurations,
             IntelligentTieringConfigurations = updatedDict,
+            PublicAccessBlockConfiguration = existingMetadata.PublicAccessBlockConfiguration,
         };
 
         await PersistBucketMetadataAsync(bucketPath, updatedMetadata, cancellationToken);
@@ -1568,6 +1708,7 @@ internal sealed class DiskStorageService(
             MetricsConfigurations = existingMetadata.MetricsConfigurations,
             InventoryConfigurations = existingMetadata.InventoryConfigurations,
             IntelligentTieringConfigurations = updatedDict.Count > 0 ? updatedDict : null,
+            PublicAccessBlockConfiguration = existingMetadata.PublicAccessBlockConfiguration,
         };
 
         await PersistBucketMetadataAsync(bucketPath, updatedMetadata, cancellationToken);
@@ -4801,7 +4942,8 @@ internal sealed class DiskStorageService(
             || metadata.AnalyticsConfigurations is { Count: > 0 }
             || metadata.MetricsConfigurations is { Count: > 0 }
             || metadata.InventoryConfigurations is { Count: > 0 }
-            || metadata.IntelligentTieringConfigurations is { Count: > 0 };
+            || metadata.IntelligentTieringConfigurations is { Count: > 0 }
+            || metadata.PublicAccessBlockConfiguration is not null;
     }
 
     private static BucketCorsConfiguration ToBucketCorsConfiguration(string bucketName, DiskBucketCorsConfiguration configuration)
