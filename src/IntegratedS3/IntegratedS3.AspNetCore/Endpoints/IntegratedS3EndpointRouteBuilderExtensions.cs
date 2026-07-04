@@ -8831,17 +8831,17 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
         return false;
     }
 
+    /// <summary>
+    /// Parses an optional conditional HTTP-date request header (e.g.
+    /// <c>x-amz-copy-source-if-modified-since</c>). Per AWS/RFC 7232 an unparseable value is treated
+    /// as <b>absent</b>: the precondition simply does not apply, rather than failing the request with
+    /// <c>400</c>. An absent or unparseable value therefore yields <see langword="null"/>.
+    /// </summary>
     private static DateTimeOffset? ParseOptionalHttpDateHeader(string? rawValue)
     {
-        if (string.IsNullOrWhiteSpace(rawValue)) {
-            return null;
-        }
-
-        if (!DateTimeOffset.TryParse(rawValue, out var parsedValue)) {
-            throw new FormatException($"Invalid HTTP date header value '{rawValue}'.");
-        }
-
-        return parsedValue;
+        return string.IsNullOrWhiteSpace(rawValue) || !DateTimeOffset.TryParse(rawValue, out var parsedValue)
+            ? null
+            : parsedValue;
     }
 
     /// <summary>
