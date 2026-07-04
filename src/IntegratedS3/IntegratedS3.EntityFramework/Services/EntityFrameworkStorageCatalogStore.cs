@@ -263,6 +263,7 @@ internal sealed class EntityFrameworkStorageCatalogStore<TDbContext>(
             record.LegalHoldStatus = @object.LegalHoldStatus;
             record.ServerSideEncryptionAlgorithm = @object.ServerSideEncryption?.Algorithm;
             record.ServerSideEncryptionKeyId = @object.ServerSideEncryption?.KeyId;
+            record.StorageClass = @object.StorageClass;
             record.LastSyncedAtUtc = DateTimeOffset.UtcNow;
             // Advance the optimistic-concurrency token so a concurrent update to the same version is detected.
             record.Version = originalVersion + 1;
@@ -390,6 +391,7 @@ internal sealed class EntityFrameworkStorageCatalogStore<TDbContext>(
                         KeyId = @object.ServerSideEncryptionKeyId
                     }
                     : null,
+                StorageClass = @object.StorageClass,
                 LastSyncedAtUtc = @object.LastSyncedAtUtc
         };
 

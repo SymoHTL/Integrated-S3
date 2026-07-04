@@ -1344,6 +1344,10 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
                             return destinationCustomerEncryptionError;
                         }
 
+                        if (!TryReadStorageClassHeader(httpContext, bucketName, key, out var copyStorageClass, out var copyStorageClassError)) {
+                            return copyStorageClassError!;
+                        }
+
                         var copyResult = await storageService.CopyObjectAsync(new CopyObjectRequest
                         {
                             SourceBucketName = copySource!.BucketName,
@@ -1371,7 +1375,7 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
                             DestinationServerSideEncryption = copyServerSideEncryption,
                             SourceCustomerEncryption = sourceCustomerEncryption,
                             DestinationCustomerEncryption = destinationCustomerEncryption,
-                            StorageClass = GetOptionalHeaderValue(request.Headers[StorageClassHeaderName].ToString())
+                            StorageClass = copyStorageClass
                         }, innerCancellationToken);
 
                         if (!copyResult.IsSuccess) {
@@ -1411,6 +1415,10 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
                             BuildObjectResource(bucketName, key), bucketName, key);
                     }
 
+                    if (!TryReadStorageClassHeader(httpContext, bucketName, key, out var putStorageClass, out var putStorageClassError)) {
+                        return putStorageClassError!;
+                    }
+
                     var result = await storageService.PutObjectAsync(new PutObjectRequest
                     {
                         BucketName = bucketName,
@@ -1429,7 +1437,7 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
                         Checksums = requestedChecksums,
                         ServerSideEncryption = serverSideEncryption,
                         CustomerEncryption = customerEncryption,
-                        StorageClass = GetOptionalHeaderValue(request.Headers[StorageClassHeaderName].ToString()),
+                        StorageClass = putStorageClass,
                         IfMatchETag = GetOptionalHeaderValue(request.Headers.IfMatch.ToString()),
                         IfNoneMatchETag = GetOptionalHeaderValue(request.Headers.IfNoneMatch.ToString())
                     }, innerCancellationToken);
@@ -2960,6 +2968,10 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
                         BuildObjectResource(bucketName, key), bucketName, key);
                 }
 
+                if (!TryReadStorageClassHeader(httpContext, bucketName, key, out var initiateStorageClass, out var initiateStorageClassError)) {
+                    return initiateStorageClassError!;
+                }
+
                 var result = await storageService.InitiateMultipartUploadAsync(new InitiateMultipartUploadRequest
                 {
                     BucketName = bucketName,
@@ -2976,7 +2988,7 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
                     ChecksumAlgorithm = checksumAlgorithm,
                     ServerSideEncryption = serverSideEncryption,
                     CustomerEncryption = customerEncryption,
-                    StorageClass = GetOptionalHeaderValue(httpContext.Request.Headers[StorageClassHeaderName].ToString())
+                    StorageClass = initiateStorageClass
                 }, innerCancellationToken);
 
                 if (!result.IsSuccess) {
@@ -4751,6 +4763,7 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
                     ETag = entry.Object.ETag,
                     Size = entry.Object.ContentLength,
                     LastModifiedUtc = entry.Object.LastModifiedUtc,
+                    StorageClass = StorageClass.NormalizeForEcho(entry.Object.StorageClass),
                     Owner = includeOwner ? owner : null
                 })
                 .ToArray(),
@@ -4842,6 +4855,7 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
                     ETag = entry.Version.ETag,
                     Size = entry.Version.ContentLength,
                     LastModifiedUtc = entry.Version.LastModifiedUtc,
+                    StorageClass = StorageClass.NormalizeForEcho(entry.Version.StorageClass),
                     Owner = owner
                 })
                 .ToArray(),
@@ -9058,6 +9072,35 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
             : rawValue;
     }
 
+    /// <summary>
+    /// Validates the optional <c>x-amz-storage-class</c> request header. Returns the parsed value (or
+    /// null when absent) via <paramref name="storageClass"/>; when the supplied value is not a known
+    /// storage class, produces an <c>InvalidStorageClass</c> (400) error result and returns false.
+    /// </summary>
+    private static bool TryReadStorageClassHeader(
+        HttpContext httpContext,
+        string bucketName,
+        string key,
+        out string? storageClass,
+        out IResult? errorResult)
+    {
+        storageClass = GetOptionalHeaderValue(httpContext.Request.Headers[StorageClassHeaderName].ToString());
+        if (!StorageClass.IsKnown(storageClass)) {
+            errorResult = ToErrorResult(
+                httpContext,
+                StatusCodes.Status400BadRequest,
+                "InvalidStorageClass",
+                "The storage class you specified is not valid.",
+                BuildObjectResource(bucketName, key),
+                bucketName,
+                key);
+            return false;
+        }
+
+        errorResult = null;
+        return true;
+    }
+
     private static void ApplyDeleteObjectHeaders(HttpResponse httpResponse, DeleteObjectResult result)
     {
         ApplyVersionIdHeader(httpResponse, result.VersionId);
@@ -9261,6 +9304,12 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
         }
         else if (objectInfo.ExpiresUtc is { } expiresUtc) {
             httpResponse.Headers.Expires = expiresUtc.ToString("R");
+        }
+
+        // AWS omits x-amz-storage-class on GET/HEAD for STANDARD objects and emits it only for
+        // non-STANDARD storage classes.
+        if (StorageClass.IsNonStandard(objectInfo.StorageClass)) {
+            httpResponse.Headers[StorageClassHeaderName] = StorageClass.NormalizeForEcho(objectInfo.StorageClass);
         }
     }
 

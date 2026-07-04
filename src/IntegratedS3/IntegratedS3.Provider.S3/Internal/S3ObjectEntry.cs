@@ -26,4 +26,5 @@ internal sealed record S3ObjectEntry(
     ObjectRetentionMode? RetentionMode = null,
     DateTimeOffset? RetainUntilDateUtc = null,
     ObjectLegalHoldStatus? LegalHoldStatus = null,
-    ObjectCustomerEncryptionInfo? CustomerEncryption = null);
+    ObjectCustomerEncryptionInfo? CustomerEncryption = null,
+    string? StorageClass = null);

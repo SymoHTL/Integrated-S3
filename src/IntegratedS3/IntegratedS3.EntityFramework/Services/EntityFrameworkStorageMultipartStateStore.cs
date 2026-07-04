@@ -118,6 +118,7 @@ internal sealed class EntityFrameworkStorageMultipartStateStore<TDbContext>(
         record.ContentLanguage = state.ContentLanguage;
         record.ExpiresUtc = state.ExpiresUtc;
         record.ChecksumAlgorithm = state.ChecksumAlgorithm;
+        record.StorageClass = state.StorageClass;
         record.MetadataJson = SerializeDictionary(state.Metadata);
         record.TagsJson = SerializeDictionary(state.Tags);
         record.LastSyncedAtUtc = DateTimeOffset.UtcNow;
@@ -207,6 +208,7 @@ internal sealed class EntityFrameworkStorageMultipartStateStore<TDbContext>(
             ContentLanguage = record.ContentLanguage,
             ExpiresUtc = record.ExpiresUtc,
             ChecksumAlgorithm = record.ChecksumAlgorithm,
+            StorageClass = record.StorageClass,
             Metadata = DeserializeDictionary(record.MetadataJson),
             Tags = DeserializeDictionary(record.TagsJson)
         };

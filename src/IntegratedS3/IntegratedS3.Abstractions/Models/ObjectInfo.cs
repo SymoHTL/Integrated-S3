@@ -122,4 +122,10 @@ public sealed class ObjectInfo
     /// Customer-provided encryption information for the object.
     /// </summary>
     public ObjectCustomerEncryptionInfo? CustomerEncryption { get; init; }
+
+    /// <summary>
+    /// The storage class of the object (e.g. <c>STANDARD</c>, <c>STANDARD_IA</c>, <c>GLACIER</c>), or
+    /// <see langword="null"/> when it was not persisted (treated as <c>STANDARD</c> by read paths).
+    /// </summary>
+    public string? StorageClass { get; init; }
 }
