@@ -20,7 +20,7 @@ Use GitHub's private vulnerability reporting instead:
 1. Go to the repository's Security tab: <https://github.com/SymoHTL/Integrated-S3/security>
 2. Click **Report a vulnerability** (or open <https://github.com/SymoHTL/Integrated-S3/security/advisories/new> directly).
 3. Include as much of the following as you can:
-   - affected package(s) and version(s) (e.g. `IntegratedS3.AspNetCore 10.0.4`)
+   - affected package(s) and version(s) (e.g. `IntegratedS3.AspNetCore 11.0.0`)
    - the provider and configuration in play (disk / S3 / custom backend, SigV4 on or off)
    - reproduction steps or a proof-of-concept request
    - the impact you believe the issue has (e.g. authentication bypass, signature forgery, path traversal, information disclosure)
