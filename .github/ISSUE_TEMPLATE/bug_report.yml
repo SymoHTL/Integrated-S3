@@ -13,7 +13,7 @@ body:
     attributes:
       label: Package and version
       description: Which IntegratedS3 package(s) and version(s) are affected?
-      placeholder: e.g. IntegratedS3.AspNetCore 10.0.4, IntegratedS3.Provider.Disk 10.0.4
+      placeholder: e.g. IntegratedS3.AspNetCore 11.0.0, IntegratedS3.Provider.Disk 11.0.0
     validations:
       required: true
   - type: dropdown
