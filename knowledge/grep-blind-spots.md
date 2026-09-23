@@ -24,7 +24,7 @@ in `IntegratedS3.Core/Services`. Five test files declare a private class with th
 `IntegratedS3AwsSdkCompatibilityTests`, `IntegratedS3AwsSdkEscapedPathCompatibilityTests` and
 `IntegratedS3CoreOrchestrationTests`. Check the file path before trusting a class-name hit.
 
-**The big file.** `IntegratedS3EndpointRouteBuilderExtensions.cs` is 626 KB and 12,550 lines. Grep
+**The big file.** `IntegratedS3EndpointRouteBuilderExtensions.cs` is over 600 KB and 12,550 lines. Grep
 it, then read line ranges; do not read it whole.
 
 **Why:** a search that returns nothing is read as "no such code", and that is how a caller or a test

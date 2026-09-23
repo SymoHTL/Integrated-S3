@@ -20,7 +20,7 @@ A new subresource, like `?intelligent-tiering`, or a new query parameter touches
 
 History:
 
-- **#153.** The Intelligent-Tiering handlers were finished and unit-tested, but the request
+- **#153.** The Intelligent-Tiering handlers were finished, but the request
   validator rejected `?intelligent-tiering` before dispatch, so no client could reach them. PR #205
   (5216458) added it to the allow-list.
 - **#148.** GET and HEAD rejected the `response-content-*` override parameters with 501, which broke
