@@ -4,11 +4,11 @@
 Fails (exit 1) on:
   * an INDEX.md link into knowledge/ whose target file does not exist
   * a file under knowledge/ that no INDEX.md link points to (a link inside an HTML comment does
-    not count)
+    not count), or that INDEX.md links more than once, as a merge that kept both sides does
+  * a knowledge/<entry>.md named in CLAUDE.md or in an entry that does not exist
   * a file under knowledge/ that is not a .md entry directly in it: the store is flat
   * an entry without frontmatter (a --- block with non-empty name:, description: and metadata
-    type:), or whose name: is not its file name, so a [[slug]] link and the file it means cannot
-    drift apart
+    type:), or whose name: is not its file name, so a [[slug]] always names a file
   * a credential-shaped string in INDEX.md or any file under knowledge/ (secret VALUES are banned;
     variable names and flags are fine, and so are AWS's documented example keys)
   * a merge-conflict marker in INDEX.md or any entry: a half-resolved INDEX.md merge is
@@ -19,6 +19,9 @@ writing.
 
 Usage: python3 scripts/lint_knowledge.py [--self-test]   (py -3 on Windows)
 """
+import collections
+import contextlib
+import io
 import os
 import re
 import shutil
@@ -31,8 +34,9 @@ SECRET_PATTERNS = [
     r"sk-ant-[A-Za-z0-9_\-]{20,}",                                 # Anthropic API keys
     r"AKIA[A-Z0-9]{16}",                                           # AWS access key ids
     r"BEGIN [A-Z ]*PRIVATE KEY",
-    r"Bearer [A-Za-z0-9_\-\.]{25,}",
+    r"(?i)bearer [A-Za-z0-9_\-\.]{25,}",
     r"[MNO][A-Za-z0-9_\-]{23,27}\.[A-Za-z0-9_\-]{6}\.[A-Za-z0-9_\-]{27,}",  # Discord bot tokens
+    r"discord(?:app)?\.com/api/webhooks/\d+/[A-Za-z0-9_\-]{30,}",  # Discord webhook URLs
     # A value assigned to a secret-named key: S3 secret keys, env files, KeyBase64 settings.
     r"(?i)(?:secret|password|token|keybase64)[\w-]*[\"']?[ \t]*[:=][ \t]*[\"']?(?P<value>[A-Za-z0-9/+=_\-\.]{16,})",
 ]
@@ -41,6 +45,8 @@ CONFLICT_MARKER = re.compile(r"^(<<<<<<< |>>>>>>> )", re.M)
 # Link targets into knowledge/: inline [text](./knowledge/x.md#anchor "title") and reference [r]: knowledge/x.md
 LINK_TARGET = re.compile(
     r"\]\([ \t]*<?(?:\./)?(knowledge/[^)\s>#]+)[^)]*\)|^[ \t]*\[[^\]]+\]:[ \t]*<?(?:\./)?(knowledge/[^\s>#]+)", re.M)
+# An entry named anywhere in prose, such as `knowledge/x.md` in CLAUDE.md
+ENTRY_MENTION = re.compile(r"knowledge/[\w.-]+\.md")
 FRONTMATTER_TYPE = re.compile(r"^metadata:[ \t]*\n(?:[ \t]+\S.*\n)*?[ \t]+type:[ \t]*(user|feedback|project|reference)[ \t]*$", re.M)
 
 
@@ -53,7 +59,8 @@ def lint(root):
     """(errors, warnings) for the store under root."""
     errors, warnings = [], []
     index = read(os.path.join(root, "INDEX.md"))
-    linked = {a or b for a, b in LINK_TARGET.findall(re.sub(r"<!--.*?-->", "", index, flags=re.S))}
+    links = [a or b for a, b in LINK_TARGET.findall(re.sub(r"<!--.*?-->", "", index, flags=re.S))]
+    linked = set(links)
     files = set()
     for dirpath, _, filenames in os.walk(os.path.join(root, "knowledge")):
         files.update(os.path.relpath(os.path.join(dirpath, f), root).replace(os.sep, "/") for f in filenames)
@@ -62,6 +69,9 @@ def lint(root):
         errors.append(f"INDEX.md links missing file: {t}")
     for f in sorted(files - linked):
         errors.append(f"{f} has no INDEX.md line")
+    for t, count in sorted(collections.Counter(links).items()):
+        if count > 1:
+            errors.append(f"INDEX.md links {t} {count} times")
 
     bodies = {"INDEX.md": index}
     names = set()
@@ -81,6 +91,13 @@ def lint(root):
         else:
             names.add(name.group(1))
 
+    mentions = {f: body for f, body in bodies.items() if f != "INDEX.md"}  # INDEX.md's links are checked above
+    if os.path.exists(os.path.join(root, "CLAUDE.md")):
+        mentions["CLAUDE.md"] = read(os.path.join(root, "CLAUDE.md"))
+    for where, body in mentions.items():
+        for t in sorted(set(ENTRY_MENTION.findall(body)) - files):
+            errors.append(f"{where} names missing file {t}")
+
     for where, body in bodies.items():
         if CONFLICT_MARKER.search(body):
             errors.append(f"{where}: merge-conflict marker")
@@ -92,6 +109,17 @@ def lint(root):
             if link not in names:
                 warnings.append(f"{where}: [[{link}]] resolves to no entry (worth writing?)")
     return errors, warnings
+
+
+def run(root):
+    """Lints the store under root, prints the result and returns the process exit code."""
+    errors, warnings = lint(root)
+    for w in warnings:
+        print(f"WARN  {w}")
+    for e in errors:
+        print(f"ERROR {e}")
+    print(f"{len(errors)} error(s), {len(warnings)} warning(s)")
+    return 1 if errors else 0
 
 
 def self_test():
@@ -106,8 +134,9 @@ def self_test():
         "sk-ant-" + "x" * 30,
         "AKIA" + "Q" * 16,
         "-----BEGIN RSA PRIVATE KEY-----",
-        "Bearer " + "x" * 30,
+        "bearer " + "x" * 30,
         "M" + "x" * 25 + "." + "y" * 6 + "." + "z" * 30,
+        "https://discord.com/api/webhooks/123456789012345678/" + "x" * 68,
         "INTEGRATEDS3_S3COMPAT_SECRET_KEY=" + "x" * 40,
     ]
     cases = [  # (expected error substring, or None for a clean store; files to write over the clean store)
@@ -116,6 +145,7 @@ def self_test():
         (None, [("INDEX.md", '- [a](knowledge/a.md "title") - hook\n')]),
         (None, [("INDEX.md", "- [a](knowledge/a.md#why) - hook\n")]),
         (None, [("INDEX.md", "- [a][r] - hook\n\n[r]: knowledge/a.md\n")]),
+        (None, [("CLAUDE.md", "Rule; `knowledge/a.md`.\n")]),
         (None, [("knowledge/a.md", entry.format("a", "a") + "AKIAIOSFODNN7EXAMPLE\n")]),
         (None, [("knowledge/a.md", entry.format("a", "a") + "aws_secret_access_key = wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY\n")]),
         (None, [("knowledge/a.md", entry.format("a", "a").replace("  type: project\n", "  local_reason: x\n  type: user\n"))]),
@@ -125,6 +155,9 @@ def self_test():
         ("INDEX.md links missing file", [("INDEX.md", index + "\n[r]: knowledge/b.md\n")]),
         ("has no INDEX.md line", [("knowledge/c.md", entry.format("c", "a"))]),
         ("has no INDEX.md line", [("INDEX.md", "<!--\n- [a](knowledge/a.md) - hook\n-->\n")]),
+        ("INDEX.md links knowledge/a.md 2 times", [("INDEX.md", index + index)]),
+        ("CLAUDE.md names missing file knowledge/b.md", [("CLAUDE.md", "Rule; `knowledge/b.md`.\n")]),
+        ("knowledge/a.md names missing file knowledge/b.md", [("knowledge/a.md", entry.format("a", "a") + "See knowledge/b.md.\n")]),
         ("not a .md entry", [("INDEX.md", index + "- [x](knowledge/sub/x.md)\n"), ("knowledge/sub/x.md", entry.format("x", "a"))]),
         ("not a .md entry", [("INDEX.md", index + "- [x](knowledge/x.MD)\n"), ("knowledge/x.MD", entry.format("x", "a"))]),
         ("missing frontmatter", [("knowledge/a.md", "no frontmatter\n")]),
@@ -136,7 +169,8 @@ def self_test():
         ("is not the file name", [("knowledge/a.md", entry.format("b", "a"))]),
         ("merge-conflict marker", [("INDEX.md", index + "<<<<<<< HEAD\n")]),
         ("merge-conflict marker", [("knowledge/a.md", entry.format("a", "a") + ">>>>>>> branch\n")]),
-        ("credential-shaped string", [("INDEX.md", index), ("knowledge/sub/y.txt", secrets[0] + "\n")]),
+        ("credential-shaped string", [("INDEX.md", index + secrets[0] + "\n")]),
+        ("credential-shaped string", [("knowledge/sub/y.txt", secrets[0] + "\n")]),
     ] + [("credential-shaped string", [("knowledge/a.md", entry.format("a", "a") + s + "\n")]) for s in secrets]
 
     failures = []
@@ -154,10 +188,15 @@ def self_test():
             with open(path, "w", encoding="utf-8", newline="\n") as f:
                 f.write(text)
 
-        for expected, files in cases:
+        def reset(a_links):
             shutil.rmtree(os.path.join(root, "knowledge"), ignore_errors=True)
+            with contextlib.suppress(FileNotFoundError):
+                os.remove(os.path.join(root, "CLAUDE.md"))
             put("INDEX.md", index)
-            put("knowledge/a.md", entry.format("a", "a"))
+            put("knowledge/a.md", entry.format("a", a_links))
+
+        for expected, files in cases:
+            reset("a")
             for rel, text in files:
                 put(rel, text)
             errors, _ = lint(root)
@@ -166,11 +205,15 @@ def self_test():
             elif expected is not None and not any(expected in e for e in errors):
                 failures.append(f"{files} gave {errors}, expected '{expected}'")
 
-        shutil.rmtree(os.path.join(root, "knowledge"), ignore_errors=True)
-        put("INDEX.md", index)
-        put("knowledge/a.md", entry.format("a", "later"))
+        reset("later")
         if lint(root)[1] != ["knowledge/a.md: [[later]] resolves to no entry (worth writing?)"]:
             failures.append(f"dangling wikilink gave {lint(root)[1]}")
+        with contextlib.redirect_stdout(io.StringIO()):
+            codes = [run(root)]
+            put("knowledge/c.md", entry.format("c", "a"))
+            codes.append(run(root))
+        if codes != [0, 1]:
+            failures.append(f"exit codes {codes} for a store with a warning, then with an error; expected [0, 1]")
 
     for f in failures:
         print(f"SELF-TEST FAIL {f}")
@@ -181,13 +224,7 @@ def self_test():
 def main():
     if "--self-test" in sys.argv:
         return self_test()
-    errors, warnings = lint(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    for w in warnings:
-        print(f"WARN  {w}")
-    for e in errors:
-        print(f"ERROR {e}")
-    print(f"{len(errors)} error(s), {len(warnings)} warning(s)")
-    return 1 if errors else 0
+    return run(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
 if __name__ == "__main__":
