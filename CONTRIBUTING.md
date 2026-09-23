@@ -38,7 +38,7 @@ pwsh -File eng/Invoke-AotPublishValidation.ps1
 
 [CLAUDE.md](CLAUDE.md) holds the rules every change must meet, for human and AI contributors alike. Each rule names the test or CI step that goes red when it is broken. A rule that nothing enforces yet is marked **HAZARD** and links the issue that will add its gate. The file also lists the ways a local run can report green without testing your change, such as a filter that matches nothing, stale binaries, or tests that return early.
 
-Know what CI does not check. Every push and PR runs the build and the fast test subset. The full suite, the E2E `Full` subset and the AOT validation run only when the `heavy` job is dispatched. No check is required before merge.
+Know what CI does not check: the CI section of [CLAUDE.md](CLAUDE.md#ci) says what runs on every PR and what runs only on dispatch.
 
 ## Pull requests
 
@@ -57,7 +57,7 @@ Know what CI does not check. Every push and PR runs the build and the fast test 
 
 ## Releases
 
-Releases are cut by maintainers via the `Publish NuGet Packages` workflow, which packs all 9 packages from `src/IntegratedS3/Directory.Build.props` (`VersionPrefix`), pushes them to NuGet.org, tags the commit (`v{version}`), and creates a GitHub Release. Version bumps happen in `Directory.Build.props` together with a matching `CHANGELOG.md` entry.
+Releases are cut by maintainers, following the Releases section of [CLAUDE.md](CLAUDE.md#releases).
 
 ## License
 
