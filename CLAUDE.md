@@ -5,7 +5,7 @@ that goes red when it is broken. A rule with no such gate is a labelled **HAZARD
 Open work lives in GitHub issues (`gh -R SymoHTL/Integrated-S3`). The stories behind the rules live
 in `knowledge/`, indexed by `INDEX.md`. The consumer app is `SymoHTL/PersonalS3` (no hyphen; branch
 `master`), which pins these packages from nuget.org. Long procedures live as skills in
-`.claude/skills/`: `release-and-consume` (publish the packages, then move PersonalS3 onto them).
+`.claude/skills/`, each with a `description` that says when to use it.
 
 ## Build & Test
 
@@ -256,8 +256,8 @@ code (#262).
   `EnsureCreated`, which never alters an existing database, so 10.0.x databases break on 11.0.0
   (#272). HAZARD (#270); `knowledge/public-interface-member-is-a-major.md`.
 - Consumers move after the release: PersonalS3 bumps its pins in `Directory.Packages.props` (as in
-  its #82). A local probe pack gets a unique prerelease version, never a released one: restore never
-  replaces a cached version.
+  its #82), after a probe pack showed what the release breaks. A local probe pack gets a unique
+  prerelease version, never a released one: restore never replaces a cached version.
 
 ### Git & PRs
 
@@ -279,7 +279,7 @@ code (#262).
 - **In-flight state** (what is open, filed or released): GitHub issues and PRs only. No task lists,
   handoffs or status in repo markdown; `docs/integrated-s3-implementation-plan.md` is a historical
   snapshot and is not maintained.
-- **Durable lessons** (a trap that bit, a postmortem, a recipe): one file per fact in `knowledge/`
+- **Durable lessons** (a trap that bit, a postmortem, a short recipe): one file per fact in `knowledge/`
   plus one line in `INDEX.md`, added in the PR that learned it. Update an existing entry rather
   than adding a near-duplicate; delete one that is proven wrong. Gate: the `Knowledge lint` CI job
   (`scripts/lint_knowledge.py`), for the index, the frontmatter and credentials only. HAZARD for
@@ -291,7 +291,7 @@ code (#262).
   they were written.
 - **Security findings**: a private draft advisory on the repo's Security tab, never a public issue
   or PR, as `SECURITY.md` asks. The public tracker gets the issue after the fix ships. The audit
-  recipe that finds them: `knowledge/audit-to-issues.md`.
+  that finds them is the `audit-to-issues` skill.
 - **Rules**: this file, each beside its gate, or labelled HAZARD with its ticket.
   `CONTRIBUTING.md` and `.github/copilot-instructions.md` point here instead of restating them.
 - **Private agent memory**: machine- or user-bound facts only. A lesson found there is promoted to

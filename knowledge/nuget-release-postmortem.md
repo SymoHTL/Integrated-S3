@@ -21,7 +21,8 @@ The procedure is the `release-and-consume` skill
   fixed the repository, but published versions cannot be changed.
 - **Reconstructed release notes.** The notes for 10.0.x were rebuilt from git history afterwards,
   and the 11.0.0 notes from 78 commits. Several of their claims do not match the code (#269).
-- **One tag.** `v11.0.0` is the only release tag; earlier versions cannot be traced to a commit.
+- **Tags start at `v11.0.0`.** For an earlier version, its publish run's `headSha` names the
+  commit (10.0.4 is fd0f06f).
 
 **Why:** a green publish run proves the workflow ran, not that a new version exists on nuget.org.
 

@@ -6,7 +6,7 @@ never opens the file still avoids the trap. Add the line in the same PR as the e
 entry without a line and a line without an entry among them.
 
 HARD = a trap that bit at least once; read the file before touching what it names.
-RECIPE = a working procedure to copy. Rules live in `CLAUDE.md` beside their gates; open work lives
+RECIPE = a short working procedure to copy; a longer one is a skill in `.claude/skills/`. Rules live in `CLAUDE.md` beside their gates; open work lives
 in GitHub issues.
 
 - [S3 error code and status diverge](knowledge/s3-error-code-and-status-diverge.md) HARD — the
@@ -61,6 +61,3 @@ in GitHub issues.
   `bench-compare.sh` (`PYTHON=py` on the maintainer machine); a stale `benchmarks/artifacts`
   compares to PASS, a missing benchmark only warns, and the baseline predates BenchmarkDotNet
   0.15.8
-- [Audit to issues](knowledge/audit-to-issues.md) RECIPE — finders in waves of about 4, one skeptic
-  per finding that proves it red on the current sha, dedup against open and closed issues,
-  idempotent filing, and security findings to a private advisory, never the public tracker
