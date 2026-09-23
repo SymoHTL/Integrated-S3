@@ -4,7 +4,8 @@ Rules for changing this repo, for agents and humans alike. Each rule names the t
 that goes red when it is broken. A rule with no such gate is a labelled **HAZARD** with its ticket.
 Open work lives in GitHub issues (`gh -R SymoHTL/Integrated-S3`). The stories behind the rules live
 in `knowledge/`, indexed by `INDEX.md`. The consumer app is `SymoHTL/PersonalS3` (no hyphen; branch
-`master`), which pins these packages from nuget.org.
+`master`), which pins these packages from nuget.org. Long procedures live as skills in
+`.claude/skills/`: `release-and-consume` (publish the packages, then move PersonalS3 onto them).
 
 ## Build & Test
 
@@ -240,8 +241,8 @@ code (#262).
   `CHANGELOG.md` `Unreleased` into the version section in the same commit. Dispatch
   `nuget-publish.yml` with `dry-run` first. nuget.org versions are immutable, and an unbumped run
   goes green while pushing nothing: three green runs on 2026-04-07 shipped nothing. Gate: the
-  tag-conflict step, which fails only after that no-op push. The full recipe and its history:
-  `knowledge/nuget-release-postmortem.md`.
+  tag-conflict step, which fails only after that no-op push. The procedure is the
+  `release-and-consume` skill; its history is `knowledge/nuget-release-postmortem.md`.
 - A new abstract member on a public interface, or a new EF column or index, is a major version,
   with consumer migration notes in `CHANGELOG.md`. The EF stores create their schema with
   `EnsureCreated`, which never alters an existing database, so 10.0.x databases break on 11.0.0
@@ -271,6 +272,8 @@ code (#262).
   plus one line in `INDEX.md`, added in the PR that learned it. Update an existing entry rather
   than adding a near-duplicate; delete one that is proven wrong. Gate: the `Knowledge lint` CI job
   (`scripts/lint_knowledge.py`).
+- **Procedures** longer than about 15 lines: a skill in `.claude/skills/`, whose `description`
+  says when to use it.
 - **User docs**: `README.md` and `docs/`. The dated audit snapshots
   (`docs/s3-compliance-audit-2026-07-04.md`, `docs/seaweedfs-comparison-2026-07-04.md`) stay as
   they were written.

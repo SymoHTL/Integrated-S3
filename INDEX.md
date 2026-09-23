@@ -58,9 +58,9 @@ in GitHub issues.
 - [CVE suppressions outlive their reason](knowledge/cve-suppression-outlives-reason.md) HARD — both
   audit gates still suppress two advisories that no restore has resolved since 2026-09-13, in two
   hand-kept lists (#267); audit codes were demoted to get green once (#130)
-- [NuGet release recipe and postmortem](knowledge/nuget-release-postmortem.md) RECIPE —
-  `Bump-Version.ps1`, CHANGELOG, dry run, publish, move consumers; an unbumped run is green and
-  ships nothing (three on 2026-04-07), and nuget.org versions are immutable
+- [NuGet release postmortem](knowledge/nuget-release-postmortem.md) HARD — an unbumped publish
+  run is green and ships nothing (three on 2026-04-07), and nuget.org versions are immutable; the
+  procedure is the `release-and-consume` skill
 - [Benchmark gate](knowledge/benchmark-gate.md) RECIPE — `bench.sh` right before
   `bench-compare.sh` (`PYTHON=py` on the maintainer machine); a stale `benchmarks/artifacts`
   compares to PASS, a missing benchmark only warns, and the baseline predates BenchmarkDotNet
