@@ -125,16 +125,16 @@ Gate: review only. HAZARD until the automated reviewer exists (#270).
 
 ## Architecture
 
+Which package may reference which is defined once, in the table in `LayeringConventionTests`.
+
 - `IntegratedS3.Abstractions`: provider-agnostic contracts (`IStorageBackend`, `IStorageService`,
-  `StorageError`, capabilities, catalog stores). No package references.
-- `IntegratedS3.Protocol`: the S3 wire protocol (SigV4 and SigV4a signing and parsing, XML). No
-  package references.
+  `StorageError`, capabilities, catalog stores).
+- `IntegratedS3.Protocol`: the S3 wire protocol (SigV4 and SigV4a signing and parsing, XML).
 - `IntegratedS3.Core`: orchestration (`OrchestratedStorageService`, replicas and repair,
-  authorization services). References Abstractions and Protocol.
+  authorization services).
 - `IntegratedS3.AspNetCore`: HTTP endpoints (`IntegratedS3EndpointRouteBuilderExtensions`), the SigV4
-  authenticator, DI. References Core.
-- `IntegratedS3.Provider.Disk` and `IntegratedS3.Provider.S3`: backends. They reference Abstractions
-  and Protocol only.
+  authenticator, DI.
+- `IntegratedS3.Provider.Disk` and `IntegratedS3.Provider.S3`: backends.
 - `IntegratedS3.EntityFramework` (EF catalog and multipart stores), `IntegratedS3.Client`, and
   `IntegratedS3.Testing` (the shipped provider contract harness) are the other packages, 9 in all.
 - `WebUi` is the reference host (`PublishAot`, `InvariantGlobalization`). It is composed in
@@ -213,8 +213,11 @@ code (#262).
   only.** Gate: the dispatch-only AOT script, which sees only what `WebUi` reaches. #140
   (reflection JSON in the EF package) passed every gate. HAZARD (#264).
 - **Layering**: Abstractions and Protocol at the bottom, Core above them, AspNetCore above Core;
-  providers reference Abstractions and Protocol only; no EF, AWSSDK or ASP.NET Core reference in the
-  core packages. MSBuild rejects cycles, but nothing checks direction. HAZARD (#265).
+  providers reference Abstractions and Protocol only; optional integrations sit on Core; no EF,
+  AWSSDK or ASP.NET Core dependency in Abstractions, Protocol or Core. A new edge is a design
+  decision, made in the table in `LayeringConventionTests` in the PR that needs it. Gate:
+  `LayeringConventionTests`: every packable project has a row, declares exactly its allowed
+  `ProjectReference`s, and the three core packages take no banned dependency.
 - **Zero warnings, and no suppression to get green.** Gate: `TreatWarningsAsErrors`, nullable
   warnings as errors, and NuGetAudit in `src/IntegratedS3/Directory.Build.props`. The CVE
   suppressions are stale (#267; `knowledge/cve-suppression-outlives-reason.md`). The code-style

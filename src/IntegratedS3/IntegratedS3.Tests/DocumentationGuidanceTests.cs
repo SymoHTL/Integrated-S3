@@ -1,3 +1,4 @@
+using IntegratedS3.Tests.Infrastructure;
 using Xunit;
 
 namespace IntegratedS3.Tests;
@@ -59,23 +60,6 @@ public sealed class DocumentationGuidanceTests
 
     private static string ReadRepositoryFile(params string[] pathSegments)
     {
-        return File.ReadAllText(Path.Combine(GetRepositoryRoot(), Path.Combine(pathSegments)));
-    }
-
-    private static string GetRepositoryRoot()
-    {
-        var directory = new DirectoryInfo(AppContext.BaseDirectory);
-
-        while (directory is not null) {
-            if (File.Exists(Path.Combine(directory.FullName, "LICENSE"))
-                && Directory.Exists(Path.Combine(directory.FullName, "docs"))
-                && Directory.Exists(Path.Combine(directory.FullName, "src"))) {
-                return directory.FullName;
-            }
-
-            directory = directory.Parent;
-        }
-
-        throw new DirectoryNotFoundException("Could not locate the repository root for documentation validation.");
+        return File.ReadAllText(RepositoryRoot.Combine(pathSegments));
     }
 }

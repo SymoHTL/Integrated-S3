@@ -1,4 +1,5 @@
 using System.Text.RegularExpressions;
+using IntegratedS3.Tests.Infrastructure;
 using Xunit;
 
 namespace IntegratedS3.Tests;
@@ -78,23 +79,6 @@ public sealed class DiskStorageDurableFlushTests
 
     private static string GetDiskStorageServiceSourcePath()
         => Path.Combine(
-            GetRepositoryRoot(),
+            RepositoryRoot.Get(),
             "src", "IntegratedS3", "IntegratedS3.Provider.Disk", "DiskStorageService.cs");
-
-    private static string GetRepositoryRoot()
-    {
-        var directory = new DirectoryInfo(AppContext.BaseDirectory);
-
-        while (directory is not null) {
-            if (File.Exists(Path.Combine(directory.FullName, "LICENSE"))
-                && Directory.Exists(Path.Combine(directory.FullName, "docs"))
-                && Directory.Exists(Path.Combine(directory.FullName, "src"))) {
-                return directory.FullName;
-            }
-
-            directory = directory.Parent;
-        }
-
-        throw new DirectoryNotFoundException("Could not locate the repository root for durable-flush validation.");
-    }
 }
