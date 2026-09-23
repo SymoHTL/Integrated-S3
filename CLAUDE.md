@@ -37,10 +37,8 @@ Times were measured on 2026-09-23 on the maintainer's machine with a warm NuGet 
    matches the given testcase filter" and exits 0. Check what ran: the summary must say
    `Total: N` with N > 0.
 2. **"Skipped: 0" does not mean everything ran.** A test that `return`s early when its
-   environment is missing counts as Passed. The 28 in `S3CompatibleEndpointConformanceTests` need
-   the `INTEGRATEDS3_S3COMPAT_*` variables, which CI never sets. The 5 virtual-hosted-style tests
-   in `IntegratedS3AwsSdkCompatibilityTests` do the same on a machine where `*.localhost` does not
-   resolve to loopback; it does on the ubuntu runners and on Windows 11 (HAZARD, #263;
+   environment is missing counts as Passed. The S3-compatible conformance tests do so in every CI
+   run, which never sets `INTEGRATEDS3_S3COMPAT_*` (HAZARD, #263;
    `knowledge/early-return-tests-report-passed.md`).
 3. **`--no-build` runs whatever is in `bin/`**, months-old binaries or Debug instead of Release,
    without a warning. Chain it after a build with `&&`, never `;`, and pass `-c Release` to both.
@@ -55,8 +53,8 @@ Times were measured on 2026-09-23 on the maintainer's machine with a warm NuGet 
    `NoDefaultCurrentDirectoryInExePath`. Prefix the command with
    `env -u NoDefaultCurrentDirectoryInExePath`.
 6. **TestServer is not Kestrel, and HttpClient is not the AWS SDK.** TestServer enforces no request
-   body limit, and HttpClient validates no response checksums, so #81 (uploads over 28.6 MiB got
-   413) and #233 (every ranged GET rejected by AWS SDK v4) passed the whole in-process suite. Wire
+   body limit, and HttpClient validates no response checksums, so #81 and #233 passed the whole
+   in-process suite. Wire
    behaviour goes through `WebUiApplicationFactory.CreateLoopbackIsolatedClientAsync` and
    `AmazonS3Client` (`knowledge/in-process-tests-miss-real-server-and-sdk.md`).
 7. **A running host locks `bin/`.** A no-change build still "succeeds"; the first real rebuild
@@ -68,12 +66,10 @@ Times were measured on 2026-09-23 on the maintainer's machine with a warm NuGet 
 9. **CI runs the newest 10.0 SDK; local runs what `global.json` rolls forward to.** With
    `AnalysisLevel=latest` and warnings-as-errors, a newer analyzer can fail CI while the local
    build is green.
-10. **Text search has blind spots.** `IntegratedS3.Tests/CorrelationIdValidationTests.cs` holds a
-    raw NUL byte, so `git grep` and `grep` print only "Binary file … matches", `git diff` shows no
-    lines, and ripgrep-based tools skip the file; use `grep -a`. Five test files declare
-    private classes named `ScopeBasedIntegratedS3AuthorizationService`, like the production class
-    in `IntegratedS3.Core`: check the path before trusting a class-name hit
-    (`knowledge/grep-blind-spots.md`).
+10. **Text search has blind spots.** A raw NUL byte makes
+    `IntegratedS3.Tests/CorrelationIdValidationTests.cs` binary to `git grep`, `grep` and ripgrep
+    (use `grep -a`), and five test files declare private classes named like a production class:
+    check the path of a class-name hit (`knowledge/grep-blind-spots.md`).
 11. **`bench-compare.sh` compares whatever is in `benchmarks/artifacts`**, which is gitignored. A
     checkout that still holds the run the baseline was promoted from prints PASS without a fresh
     run, and a benchmark missing from the run only warns (HAZARD, #270;
@@ -84,19 +80,17 @@ Times were measured on 2026-09-23 on the maintainer's machine with a warm NuGet 
 Clauses 1 to 5 each come from defects that passed a green suite here.
 
 1. **An error test asserts the S3 `<Code>` and the HTTP status, through the endpoint.** They come
-   from two independent sources (`SuggestedHttpStatusCode ?? ToStatusCode(code)` and
-   `ToS3ErrorCode(code)`), and seven defects shipped a wrong code, a wrong status or both (#118,
-   #139, #147, #150, #152, #157, #164). A fake service leaves `SuggestedHttpStatusCode` unset so
-   the mapping runs (`knowledge/s3-error-code-and-status-diverge.md`).
+   from two independent sources, and seven defects shipped a wrong code, a wrong status or both. A
+   fake service leaves `SuggestedHttpStatusCode` unset so the mapping runs
+   (`knowledge/s3-error-code-and-status-diverge.md`).
 2. **A write test reads the write back**: the bytes, headers and tags. A list test pins the full
    ordered key sequence and the continuation tokens.
 3. **Wire behaviour a real server or SDK enforces is tested on the loopback Kestrel host with
    `AmazonS3Client`**, not TestServer and HttpClient (phantom result 6).
-4. **Crypto is pinned by an external known-answer vector**, never only by sign-then-verify. In
-   #103, signer and verifier shared the same SigV4a key-derivation bug and the round trip was
-   green.
+4. **Crypto is pinned by an external known-answer vector**, never only by sign-then-verify: in
+   #103, signer and verifier shared one SigV4a bug (`knowledge/sigv4-fix-needs-sigv4a-twin.md`).
 5. **A test that needs an environment reports Skipped** (a `Fact` subclass that sets `Skip`), and
-   never `return`s early (#263).
+   never `return`s early (#263; `knowledge/early-return-tests-report-passed.md`).
 6. **Seen red first.** Run the new test against the code without the fix and watch it fail; the PR
    says where it was seen red.
 7. **A bug is a class.** A provider-level bug goes into the contract harness in
@@ -109,8 +103,10 @@ Gate: review only. HAZARD until the automated reviewer exists (#270).
 
 - **`ci.yml` `build-test-smoke`** runs on push to `main` and on every PR: restore, Release build
   (warnings are errors), `IntegratedS3.Tests`, E2E `Suite=Smoke`. It is the only automatic test
-  gate. `cancel-in-progress` is on for every ref, so pushes to `main` cancel each other: 43 of 74
-  `main` runs in July 2026 were cancelled, and a merged sha can end with no finished run.
+  gate. `cancel-in-progress` is on for every ref, so pushes to `main` cancel each other, and a
+  merged sha can end with no finished run.
+- **`ci.yml` `knowledge-lint`** runs on push to `main` and on every PR: the self-test of
+  `scripts/lint_knowledge.py`, then the lint of `INDEX.md` and `knowledge/`.
 - **`security-scan.yml`** runs on push to `main`, on every PR, weekly and on dispatch.
   `vulnerable-packages` fails on any advisory outside its allowlist. `codeql` uploads its alerts
   and fails on none of them.
@@ -123,8 +119,7 @@ Gate: review only. HAZARD until the automated reviewer exists (#270).
 - **`nuget-publish.yml`** runs on dispatch only: `validate` (full suite and AOT script), pack, push
   with `--skip-duplicate`, then tag `v{version}` and create the GitHub Release.
 - **HAZARD: merges are not gated.** Ruleset `main protection` blocks only deletion and force-push.
-  There is no required check, no required PR and no required conversation resolution. #208 merged
-  four seconds after its checks started, and direct pushes to `main` happen (8e6e1b1). See #270
+  There is no required check, no required PR and no required conversation resolution. See #270
   and `knowledge/ci-green-proves-less-than-you-think.md`.
 
 ## Architecture
@@ -172,10 +167,11 @@ code (#262).
 - **A new `StorageErrorCode` gets its forward `<Code>` and status and its reverse
   `S3ErrorTranslator` arm in the same PR.** Gate: the forward code and status, for the rows of
   `S3CompatibleBucketSubresource_WhenConfigAbsent_ReturnsNoSuchCodeWithNotFoundStatus` only.
-  HAZARD for the rest, the reverse arm included (#261).
+  HAZARD for the rest, the reverse arm included (#261;
+  `knowledge/s3-error-code-and-status-diverge.md`).
 - **Client input never reaches a throwing `ToDictionary` or `Parse`.** Duplicates and malformed
-  values answer 400 with the S3 code, never 500 (#118: a duplicate `Authorization` parameter; #150:
-  an invalid `max-keys`). HAZARD (#270), with live instances in bucket-configuration XML (#278).
+  values answer 400 with the S3 code, never 500 (#118, #150). HAZARD (#270), with live instances in
+  bucket-configuration XML (#278).
 - **A new subresource or query parameter lands at every registration point in one PR**: the
   `Known*QueryParameters` allow-lists, the dispatch arm and handler, the error mapping,
   `StorageOperationType`, `AuthorizingStorageService`, the replica write policy, the repair switch,
@@ -185,8 +181,8 @@ code (#262).
   `knowledge/subresource-needs-every-registration-point.md`.
 - **A missing input is never success.** No credentials, no signing context, no chunk signature, no
   body hash, no resolved version or no health data means reject, or record a failure. Seven defects
-  treated absence as "nothing to check" (#82, #86, #101, #114, #126, #127, #131). Gate, each for
-  the case it names: `UnsignedRequest_WithSigV4Enabled_IsRejectedWith403`,
+  treated absence as "nothing to check". Gate, each for the case it names:
+  `UnsignedRequest_WithSigV4Enabled_IsRejectedWith403`,
   `PutObject_WithTrailerBackedPayloadHashAndTrailerSignatureButNoSigningContext_ReturnsAccessDenied`,
   `PutObject_WithSignedContentSha256NotMatchingBody_ReturnsXAmzContentSHA256Mismatch`, and the
   tampered aws-chunked tests from #208. HAZARD for the rest (#270), and for replica writes, which
@@ -197,15 +193,14 @@ code (#262).
   `StorageReplicaRepairService_RepairReplicaObject_PreservesPrimaryObjectTags` (tags only). HAZARD
   for the rest (#270); write-through PutObject still drops 11 of 20 fields (#273);
   `knowledge/request-rebuild-drops-fields.md`.
-- **A SigV4 change lands in its SigV4a twin, with the twin's own boundary test.** #132, #133 and
-  #161 each needed the same edit in the SigV4 block and the SigV4a block of
-  `AwsSignatureV4RequestAuthenticator`. Gate:
+- **A SigV4 change lands in its SigV4a twin, with the twin's own boundary test.** Three fixes
+  needed the same edit in both blocks of `AwsSignatureV4RequestAuthenticator`. Gate:
   `DeriveEcdsaKey_MatchesAwsCrtKnownAnswerVector` covers the key only. HAZARD (#270), and the
   signature format is wrong today: P1363 where AWS uses DER (#276);
   `knowledge/sigv4-fix-needs-sigv4a-twin.md`.
-- **Same-key writes are serialized per key and tested concurrently.** Five defects lost a version,
-  left two latest rows or mixed up concurrent multipart calls (#84, #110, #111, #123, #124). A
-  stored "latest" flag also needs a transaction and a database unique constraint. Gate:
+- **Same-key writes are serialized per key and tested concurrently.** Five defects lost a version
+  or left two latest rows. A stored "latest" flag also needs a transaction and a database unique
+  constraint. Gate:
   `DiskStorage_ConcurrentSameKeyPuts_PreserveEveryVersion`,
   `UpsertObjectAsync_ConcurrentWritesToSameKey_LeaveExactlyOneLatest` (flaky, #283). HAZARD for
   new providers until the test lives in the contract harness (#268);
@@ -214,12 +209,13 @@ code (#262).
   #115 (disk-exhaustion DoS) was filed eight hours after it merged. Gate, for the body limit
   only: `IntegratedS3Options_MaxObjectSizeBytes_DefaultsToFiveGibibytes` and
   `KestrelHostedPutObject_ExceedingConfiguredMaxObjectSizeBytes_ReturnsPayloadTooLarge`. HAZARD for
-  other defaults (#270).
+  other defaults (#270); `knowledge/in-process-tests-miss-real-server-and-sdk.md`.
 - **Streaming first: no request path buffers a whole body.** HAZARD, and broken today by signed-PUT
   hashing (#238).
 - **Packable libraries stay AOT- and trim-clean, and JSON goes through source-generated contexts
   only.** Gate: the dispatch-only AOT script, which sees only what `WebUi` reaches. #140
-  (reflection JSON in the EF package) passed every gate. HAZARD (#264).
+  (reflection JSON in the EF package) passed every gate. HAZARD (#264;
+  `knowledge/ci-green-proves-less-than-you-think.md`).
 - **Layering**: Abstractions and Protocol at the bottom, Core above them, AspNetCore above Core;
   providers reference Abstractions and Protocol only; no EF, AWSSDK or ASP.NET Core reference in the
   core packages. MSBuild rejects cycles, but nothing checks direction. HAZARD (#265).
@@ -275,7 +271,8 @@ code (#262).
 - **Durable lessons** (a trap that bit, a postmortem, a recipe): one file per fact in `knowledge/`
   plus one line in `INDEX.md`, added in the PR that learned it. Update an existing entry rather
   than adding a near-duplicate; delete one that is proven wrong. Gate: the `Knowledge lint` CI job
-  (`scripts/lint_knowledge.py`).
+  (`scripts/lint_knowledge.py`), for the index, the frontmatter and credentials only. HAZARD for
+  the rest: nothing checks that an entry is new, current and true (#270).
 - **User docs**: `README.md` and `docs/`. The dated audit snapshots
   (`docs/s3-compliance-audit-2026-07-04.md`, `docs/seaweedfs-comparison-2026-07-04.md`) stay as
   they were written.

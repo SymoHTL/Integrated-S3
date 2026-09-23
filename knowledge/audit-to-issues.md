@@ -5,7 +5,7 @@ metadata:
   type: reference
 ---
 
-**Recipe**, as used for #147–#167 (July 2026) and #261–#278 (September 2026):
+**Recipe**, as used for the issues in #147–#167 (July 2026) and #261–#278 (September 2026):
 
 1. **Scoped finders.** Run one agent per subsystem and lens. The lenses are correctness, security,
    concurrency, performance, resource leaks, testing and CI. This repo takes about 12 finders.

@@ -13,7 +13,7 @@ and closed by 2026-07-04:
 |---|---|---|
 | #82 | credentials | an unsigned request passed as anonymous |
 | #86 | an authorization policy | everything was allowed |
-| #114 | a signing context | signed streaming was accepted |
+| #114 | a signing context | trailer-signature validation failed open |
 | #101 | a per-chunk signature check | the chunk bytes were not bound to the signature |
 | #131 | a body-hash check | the signed `x-amz-content-sha256` was never compared with the body |
 | #126 | a resolved version | a replica tag write got the raw request version |
@@ -34,7 +34,7 @@ fails, because the tests supply the input.
 request is rejected or that a failure is recorded, never only `IsSuccess`. "Not found" counts as
 success only when the thing looked up is known to be the right one.
 
-Gate:
+Gate, each for the case it names:
 
 - `UnsignedRequest_WithSigV4Enabled_IsRejectedWith403` (#82);
 - `PutObject_WithTrailerBackedPayloadHashAndTrailerSignatureButNoSigningContext_ReturnsAccessDenied`

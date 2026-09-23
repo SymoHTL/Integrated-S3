@@ -24,7 +24,8 @@ drifted from the EF store's.
 
 - `PrimaryVersionId`, `StorageClass` and a `Version` concurrency token on `IntegratedS3Objects`;
 - `StorageClass` on `IntegratedS3MultipartUploads`;
-- the single-latest-per-key unique index.
+- the single-latest-per-key unique index;
+- an index on (`ProviderName`, `BucketName`, `Key`, `PrimaryVersionId`).
 
 The EF stores create their schema with `EnsureCreated`, which does nothing on an existing database,
 and the package ships no migrations. So a database created by 10.0.x fails every object and

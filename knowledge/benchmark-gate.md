@@ -1,6 +1,6 @@
 ---
 name: benchmark-gate
-description: How to run the BenchmarkDotNet regression gate, and where it lies - it only works in-process, the baseline holds only for the machine and toolchain it was recorded on (BDN 0.15.2, now 0.15.8), a missing benchmark only warns, and a compare without a fresh run compares stale artifacts and prints PASS.
+description: How to run the BenchmarkDotNet regression gate, and where it lies - it only works in-process, the baseline holds only for the machine and toolchain it was recorded on (BDN 0.15.2, now 0.15.8), a missing benchmark only warns, and a compare without a fresh run compares whatever stale artifacts the checkout holds and can print PASS.
 metadata:
   type: reference
 ---
@@ -20,9 +20,10 @@ metadata:
 
 **Where it lies:**
 
-- **Stale input.** `bench-compare.sh` compares whatever is in `benchmarks/artifacts`. Without a
-  fresh run, it compares the 2026-07-04 run the baseline was promoted from: every row +0.0 %,
-  "PASS", exit 0.
+- **Stale input.** `bench-compare.sh` compares whatever is in `benchmarks/artifacts`, which is
+  gitignored. A fresh checkout has none and exits 2 ("no current benchmark results found"). A
+  checkout that still holds the 2026-07-04 run the baseline was promoted from compares that run
+  with itself: every row +0.0 %, "PASS", exit 0.
 - **A missing benchmark only warns.** A baseline benchmark missing from the run prints `WARNING`
   and still passes. A new benchmark is not gated.
 - **Stale baseline.** The baseline (`benchmarks/baseline/README.md`) was captured on 2026-07-04 on
@@ -35,8 +36,8 @@ metadata:
   it has never run ([[ci-green-proves-less-than-you-think]]).
 
 History: PR #234 (572d666) replaced the earlier Stopwatch harness with BenchmarkDotNet and checked
-the gate in both directions using a deliberately slowed copy. `README.md` still calls the harness
-Stopwatch-based (#269).
+the gate in both directions: a self-compare passes, and a synthetic +20 %/+10 % run fails.
+`README.md` still calls the harness Stopwatch-based (#269).
 
 **Why:** a PASS from a stale or partial run looks exactly like a PASS from a real one.
 
