@@ -11,8 +11,7 @@ name: Security Scan
 on:
   push:
     branches: [ main ]
-  pull_request:
-    branches: [ main ]
+  pull_request:  # every PR, stacked ones included: their base is the branch below, not main
   schedule:
     # Every Monday 06:00 UTC — catches advisories published against pinned deps between commits.
     - cron: '0 6 * * 1'
