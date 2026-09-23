@@ -103,7 +103,7 @@ Gate: review only. HAZARD until the automated reviewer exists (#270).
 
 ## CI
 
-- **`ci.yml` `build-test-smoke`** runs on push to `main` and on PRs to `main`: restore, Release build
+- **`ci.yml` `build-test-smoke`** runs on push to `main` and on every PR: restore, Release build
   (warnings are errors), `IntegratedS3.Tests`, E2E `Suite=Smoke`. It is the only automatic test
   gate. `cancel-in-progress` is on for every ref, so pushes to `main` cancel each other: 43 of 74
   `main` runs in July 2026 were cancelled, and a merged sha can end with no finished run.

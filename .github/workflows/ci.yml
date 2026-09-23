@@ -9,8 +9,7 @@ name: CI
 on:
   push:
     branches: [ main ]
-  pull_request:
-    branches: [ main ]
+  pull_request:  # every PR, stacked ones included: their base is the branch below, not main
   workflow_dispatch:
     inputs:
       run-heavy:
