@@ -1,3 +1,4 @@
+using System.Text.Json;
 using System.Xml.Linq;
 using IntegratedS3.Tests.Infrastructure;
 using Xunit;
@@ -7,8 +8,10 @@ namespace IntegratedS3.Tests;
 /// <summary>
 /// The layering of the shipped packages, defined once (#265). Each packable project may reference exactly the
 /// IntegratedS3 projects listed for it below. A new edge is a design decision: make it in this table, in the PR
-/// that needs it. The table reads the declared references in each .csproj, because a ProjectReference becomes a
-/// NuGet dependency of the package even when no type from it is used.
+/// that needs it. The tests read what restore computed (each project's obj/project.assets.json) rather than the
+/// .csproj text, so a reference or package that arrives through a props file, an SDK or another package counts
+/// like one written in the .csproj. A ProjectReference becomes a NuGet dependency of the package even when no type
+/// from it is used.
 /// </summary>
 public sealed class LayeringConventionTests
 {
@@ -34,29 +37,42 @@ public sealed class LayeringConventionTests
 
     private static readonly string[] DependencyPrefixesBannedInCorePackages = ["Microsoft.EntityFrameworkCore", "AWSSDK", "Microsoft.AspNetCore"];
 
-    public static TheoryData<string> ShippedProjects => ToTheoryData(AllowedProjectReferences.Keys);
+    // The projects nuget-publish.yml packs: every <Project Path> of the solution, by project name.
+    private static readonly Dictionary<string, string> SolutionProjects = XDocument
+        .Load(RepositoryRoot.Combine("src", "IntegratedS3", "IntegratedS3.slnx"))
+        .Descendants()
+        .Where(static element => element.Name.LocalName == "Project")
+        .Select(static element => RepositoryRoot.Combine("src", "IntegratedS3", (string)element.Attribute("Path")!))
+        .ToDictionary(static csproj => Path.GetFileNameWithoutExtension(csproj), StringComparer.Ordinal);
 
-    public static TheoryData<string> CorePackageProjects => ToTheoryData(CorePackages);
+    public static TheoryData<string> ShippedProjects => new(AllowedProjectReferences.Keys);
+
+    public static TheoryData<string> CorePackageProjects => new(CorePackages);
 
     [Theory]
     [MemberData(nameof(ShippedProjects))]
     public void ShippedProject_ReferencesExactlyItsAllowedLayers(string project)
     {
-        var actual = ReadReferences(project, "ProjectReference")
-            .Select(static include => Path.GetFileNameWithoutExtension(include.Replace('\\', '/')))
+        var actual = ReadAssets(project).GetProperty("project").GetProperty("restore").GetProperty("frameworks")
+            .EnumerateObject()
+            .SelectMany(static framework => framework.Value.TryGetProperty("projectReferences", out var references)
+                ? references.EnumerateObject().Select(static reference => Path.GetFileNameWithoutExtension(reference.Name.Replace('\\', '/'))).ToArray()
+                : [])
+            .Distinct(StringComparer.Ordinal)
             .Order(StringComparer.Ordinal);
 
         Assert.Equal(AllowedProjectReferences[project].Order(StringComparer.Ordinal), actual);
     }
 
+    // ponytail: reads IsPackable as written in each .csproj and ignores Condition attributes and SDK defaults; the
+    // non-packable projects all say false explicitly today. Evaluate with MSBuild if one ever relies on a default.
     [Fact]
-    public void EveryPackableProject_HasARowInTheLayeringTable()
+    public void EveryPackableProjectInTheSolution_HasARowInTheLayeringTable()
     {
-        var packable = Directory.EnumerateDirectories(RepositoryRoot.Combine("src", "IntegratedS3"))
-            .Select(static directory => Path.Combine(directory, Path.GetFileName(directory) + ".csproj"))
-            .Where(File.Exists)
-            .Where(static csproj => !XDocument.Load(csproj).Descendants("IsPackable").Any(static element => element.Value.Trim() == "false"))
-            .Select(static csproj => Path.GetFileNameWithoutExtension(csproj))
+        var packable = SolutionProjects
+            .Where(static project => !XDocument.Load(project.Value).Descendants().Any(static element =>
+                element.Name.LocalName == "IsPackable" && element.Value.Trim().Equals("false", StringComparison.OrdinalIgnoreCase)))
+            .Select(static project => project.Key)
             .Order(StringComparer.Ordinal);
 
         Assert.Equal(AllowedProjectReferences.Keys.Order(StringComparer.Ordinal), packable);
@@ -66,28 +82,29 @@ public sealed class LayeringConventionTests
     [MemberData(nameof(CorePackageProjects))]
     public void CorePackage_TakesNoEntityFrameworkAwsSdkOrAspNetCoreDependency(string project)
     {
-        var dependencies = ReadReferences(project, "PackageReference").Concat(ReadReferences(project, "FrameworkReference"));
+        var assets = ReadAssets(project);
+        // Every package restore resolved for the project, direct or transitive, its own framework references, and
+        // the framework references its packages bring (a package can pull in Microsoft.AspNetCore.App).
+        var packages = assets.GetProperty("libraries").EnumerateObject().Select(static library => library.Name.Split('/')[0]);
+        var frameworks = assets.GetProperty("project").GetProperty("frameworks").EnumerateObject()
+            .SelectMany(static framework => framework.Value.TryGetProperty("frameworkReferences", out var references)
+                ? references.EnumerateObject().Select(static reference => reference.Name).ToArray()
+                : []);
+        var packageFrameworks = assets.GetProperty("targets").EnumerateObject()
+            .SelectMany(static target => target.Value.EnumerateObject())
+            .SelectMany(static library => library.Value.TryGetProperty("frameworkReferences", out var references)
+                ? references.EnumerateArray().Select(static reference => reference.GetString()!).ToArray()
+                : []);
 
         Assert.DoesNotContain(
-            dependencies,
+            packages.Concat(frameworks).Concat(packageFrameworks),
             static dependency => DependencyPrefixesBannedInCorePackages.Any(prefix => dependency.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)));
     }
 
-    private static IEnumerable<string> ReadReferences(string project, string itemType)
+    private static JsonElement ReadAssets(string project)
     {
-        return XDocument.Load(RepositoryRoot.Combine("src", "IntegratedS3", project, project + ".csproj"))
-            .Descendants(itemType)
-            .Select(static element => (string?)element.Attribute("Include"))
-            .OfType<string>();
-    }
-
-    private static TheoryData<string> ToTheoryData(IEnumerable<string> values)
-    {
-        var data = new TheoryData<string>();
-        foreach (var value in values) {
-            data.Add(value);
-        }
-
-        return data;
+        var assetsPath = Path.Combine(Path.GetDirectoryName(SolutionProjects[project])!, "obj", "project.assets.json");
+        using var assets = JsonDocument.Parse(File.ReadAllText(assetsPath));
+        return assets.RootElement.Clone();
     }
 }

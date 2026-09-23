@@ -10,6 +10,7 @@ What runs where (`.github/workflows/ci.yml`):
 | Job | Trigger | What it proves |
 |---|---|---|
 | `build-test-smoke` | push to `main`, PRs | ubuntu Release build, `IntegratedS3.Tests`, E2E `Suite=Smoke` |
+| `knowledge-lint` | push to `main`, PRs | `INDEX.md` and `knowledge/` pass `scripts/lint_knowledge.py` |
 | `heavy` | `workflow_dispatch` with `run-heavy` | full suite with E2E Full and coverage, AOT script, on ubuntu and windows |
 | `benchmarks` | `workflow_dispatch` with `run-benchmarks`, self-hosted runner | BenchmarkDotNet regression gate |
 
@@ -27,8 +28,8 @@ The record:
   publishes only `WebUi`, which does not reference `IntegratedS3.EntityFramework`, and no library
   sets `IsAotCompatible` (#264).
 - **Gates have been loosened to get green before.** 791a286 relaxed the CI build warning gate "to
-  match current repo baseline" (2026-03-21). NU1901–NU1904 were demoted from errors until #130;
-  #179 (de47523) restored them.
+  match current repo baseline" (2026-03-21), and NuGet audit codes were demoted until #130
+  ([[cve-suppression-outlives-reason]]).
 
 **Why:** "CI is green" is read as "the change is safe". Here it covers one OS and one test subset,
 and a merge does not even wait for it.
@@ -36,9 +37,9 @@ and a merge does not even wait for it.
 **How to apply:**
 
 - Before merging, wait for the head sha's `build-test-smoke` run to finish green.
-- For serialization, reflection, DI wiring, filesystem or hot-path changes, dispatch `heavy` and
-  wait for the result:
-  `gh workflow run ci.yml -R SymoHTL/Integrated-S3 --ref <branch> -f run-heavy=true`.
+- For serialization, reflection, DI wiring or filesystem changes, dispatch `heavy` and wait for
+  the result: `gh workflow run ci.yml -R SymoHTL/Integrated-S3 --ref <branch> -f run-heavy=true`.
+  A hot-path change has no gate: `heavy` measures no performance, and `benchmarks` has never run.
 - A red gate is fixed, never relaxed.
 
 Gate: none (#270 for merge gating, #264 for AOT).
