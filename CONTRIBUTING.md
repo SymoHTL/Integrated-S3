@@ -30,25 +30,15 @@ dotnet test src/IntegratedS3/IntegratedS3.slnx
 # Run the reference host
 dotnet run --project src/IntegratedS3/WebUi/WebUi.csproj
 
-# Validate AOT/trimming compatibility (what CI runs)
+# Validate AOT/trimming compatibility (what the dispatch-only heavy CI job and the release workflow run)
 pwsh -File eng/Invoke-AotPublishValidation.ps1
 ```
 
-## Quality bar
+## Quality bar and design conventions
 
-All of the following are enforced by CI (`.github/workflows/ci.yml`) and must pass locally before you open a PR:
+[CLAUDE.md](CLAUDE.md) holds the rules every change must meet, for human and AI contributors alike. Each rule names the test or CI step that goes red when it is broken. A rule that nothing enforces yet is marked **HAZARD** and links the issue that will add its gate. The file also lists the ways a local run can report green without testing your change, such as a filter that matches nothing, stale binaries, or tests that return early.
 
-1. **Zero warnings.** `TreatWarningsAsErrors` is enabled solution-wide, including nullable-reference warnings and code-style analyzers (`EnforceCodeStyleInBuild`). Do not suppress warnings to get a green build; fix the cause or discuss the suppression in the PR.
-2. **All tests pass** on the full solution (`dotnet test src/IntegratedS3/IntegratedS3.slnx`).
-3. **AOT/trimming stays clean.** Production code must not introduce `IL2026`/`IL3050` (or related) trim/AOT warnings. Run the AOT validation script when touching serialization, reflection, or DI wiring.
-4. **New behavior comes with tests.** Bug fixes include a regression test; features include unit and, where applicable, HTTP-surface integration tests.
-
-## Design conventions
-
-- **Providers fail explicitly.** Operations a provider does not support must return an S3-style `NotImplemented`/unsupported error, never silently degrade. Update the [provider capability matrix](docs/protocol-compatibility.md#provider-capability-matrix) when provider support changes.
-- **Layering.** Provider-agnostic contracts live in `IntegratedS3.Abstractions`, orchestration in `IntegratedS3.Core`, wire protocol in `IntegratedS3.Protocol`, and HTTP integration in `IntegratedS3.AspNetCore`. Keep dependencies pointing in that direction.
-- **Optional integrations stay optional.** Don't add mandatory dependencies to the core packages (for example, EF Core support lives in its own `IntegratedS3.EntityFramework` package).
-- **Custom backends** are validated with the contract-test harness in `IntegratedS3.Testing` — extend it when you extend `IStorageBackend`.
+Know what CI does not check. Every push and PR runs the build and the fast test subset. The full suite, the E2E `Full` subset and the AOT validation run only when the `heavy` job is dispatched. No check is required before merge.
 
 ## Pull requests
 
@@ -58,7 +48,7 @@ All of the following are enforced by CI (`.github/workflows/ci.yml`) and must pa
 4. Update documentation affected by your change (`README.md`, `docs/`, XML doc comments) — in particular the capability matrix for provider-support changes.
 5. Add a short entry to the `Unreleased` section of [CHANGELOG.md](CHANGELOG.md) for user-visible changes.
 6. Fill in the pull request template. Link the issue the PR addresses.
-7. A maintainer (see [CODEOWNERS](.github/CODEOWNERS)) will review your PR. CI must be green before merge.
+7. A maintainer (see [CODEOWNERS](.github/CODEOWNERS)) will review your PR. CI on the PR's head commit must have finished green before merge.
 
 ## Commit messages
 

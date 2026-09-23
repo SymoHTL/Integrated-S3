@@ -1,5 +1,11 @@
 # Integrated S3 Implementation Plan
 
+> **Historical snapshot, not maintained.** Last edited on 2026-07-03 (1ff547f) and kept for its
+> design rationale. Its status, test counts and next steps are out of date. Open work lives in
+> [GitHub issues](https://github.com/SymoHTL/Integrated-S3/issues), the rules for changing the code
+> in [CLAUDE.md](../CLAUDE.md), and provider support in
+> [protocol-compatibility.md](protocol-compatibility.md).
+
 Build a modular, AOT-conscious ASP.NET storage platform that exposes an S3-compatible HTTP surface, supports pluggable backends (`S3`, disk, future providers), uses `ClaimsPrincipal`-driven authorization, and ships as reusable NuGet packages. The recommended approach is to separate protocol compatibility, storage orchestration, provider implementations, and ASP.NET integration so the system can grow toward broad S3 parity without becoming tightly coupled or hard to optimize.
 
 ## Current Implementation Status (July 2025)

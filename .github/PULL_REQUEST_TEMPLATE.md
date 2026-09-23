@@ -16,7 +16,7 @@ Fixes #
 
 - [ ] `dotnet build src/IntegratedS3/IntegratedS3.slnx` passes with zero warnings (warnings are errors)
 - [ ] `dotnet test src/IntegratedS3/IntegratedS3.slnx` passes
-- [ ] New/changed behavior is covered by tests
+- [ ] New/changed behavior is covered by tests, and each new test was seen failing without the change (say where below)
 - [ ] AOT/trimming compatibility preserved (run `pwsh -File eng/Invoke-AotPublishValidation.ps1` if you touched serialization, reflection, or DI wiring)
 - [ ] Documentation updated where affected (`README.md`, `docs/`, XML doc comments)
 - [ ] Provider capability matrix (`docs/protocol-compatibility.md`) updated if provider support changed
