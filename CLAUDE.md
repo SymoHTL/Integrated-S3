@@ -164,10 +164,11 @@ code (#262).
   change in the same PR. Gate: `ProviderContract_BucketDefaultEncryption_IsExplicitlySupportedOrRejected`,
   for that one feature only. HAZARD for the rest (#262).
 - **Every `IStorageBackend` operation is called by the provider contract harness**
-  (`StorageProviderContractTests` in `IntegratedS3.Testing`), so every provider is tested on it. A
-  new member arrives with its harness fact. Gate: `ProviderContractCoverageTests`, a ratchet: 57 of
-  86 operations have no fact yet and are listed in its `NotYetCovered`, which may only shrink
-  (#268). It matches call sites by name, so it proves a call, not an assertion.
+  (`StorageProviderContractTests` in `IntegratedS3.Testing`). A new member arrives with its harness
+  fact and never as an overload. Gate: `ProviderContractCoverageTests`, a ratchet: 57 of 86
+  operations had no fact on 2026-09-23 and are listed in `NotYetCovered`, whose pinned length may
+  only go down (#268). It proves a call, not an assertion: most facts return early, and pass, when
+  the provider reports the capability unsupported or has not opted in (#268).
 - **A new `StorageErrorCode` gets its forward `<Code>` and status and its reverse
   `S3ErrorTranslator` arm in the same PR.** Gate: the rows of
   `S3CompatibleBucketSubresource_WhenConfigAbsent_ReturnsNoSuchCodeWithNotFoundStatus` only.
