@@ -38,6 +38,21 @@ defaults:
     shell: bash
 
 jobs:
+  # ── KNOWLEDGE LINT (automatic on push/PR) ─────────────────────────────────
+  # INDEX.md <-> knowledge/*.md both ways, frontmatter, no credentials or conflict markers.
+  knowledge-lint:
+    name: Knowledge lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Lint self-test
+        run: python3 scripts/lint_knowledge.py --self-test
+
+      - name: Lint INDEX.md and knowledge/
+        run: python3 scripts/lint_knowledge.py
+
   # ── FREE-TIER GATE (automatic on push/PR) ─────────────────────────────────
   # restore + build + unit/integration tests + fast E2E smoke. All offline & deterministic.
   build-test-smoke:
