@@ -4,27 +4,30 @@
 Fails (exit 1) on:
   * an INDEX.md link into knowledge/ whose target file does not exist
   * a file under knowledge/ that no INDEX.md link points to (a link inside an HTML comment does
-    not count), or that INDEX.md links more than once, as a merge that kept both sides does
-  * a knowledge/<entry>.md named in CLAUDE.md or in an entry that does not exist
+    not count), or that leads more than one INDEX.md list item, as a merge that kept both sides
+    does
+  * a knowledge/ path named in CLAUDE.md, INDEX.md or an entry that does not exist, and a missing
+    CLAUDE.md, whose pointers would otherwise go unchecked
   * a file under knowledge/ that is not a .md entry directly in it: the store is flat
-  * an entry without frontmatter (a --- block with non-empty name:, description: and metadata
-    type:), or whose name: is not its file name, so a [[slug]] always names a file
+  * an entry without frontmatter (a --- block at the top with non-empty name:, description: and
+    metadata type:), or whose name: is not its file name, so a [[slug]] link and the file it means
+    cannot drift apart
   * a credential-shaped string in INDEX.md or any file under knowledge/ (secret VALUES are banned;
     variable names and flags are fine, and so are AWS's documented example keys)
   * a merge-conflict marker in INDEX.md or any entry: a half-resolved INDEX.md merge is
     otherwise a well-formed index with two extra lines
 
 Warns without failing on a [[wikilink]] that resolves to no entry: it marks an entry worth
-writing.
+writing, or one renamed without updating the links to it.
 
 Usage: python3 scripts/lint_knowledge.py [--self-test]   (py -3 on Windows)
+CI checks that the self-test prints "self-test OK", because a broken exit code would pass it.
 """
 import collections
-import contextlib
-import io
 import os
 import re
 import shutil
+import subprocess
 import sys
 import tempfile
 
@@ -36,7 +39,7 @@ SECRET_PATTERNS = [
     r"BEGIN [A-Z ]*PRIVATE KEY",
     r"(?i)bearer [A-Za-z0-9_\-\.]{25,}",
     r"[MNO][A-Za-z0-9_\-]{23,27}\.[A-Za-z0-9_\-]{6}\.[A-Za-z0-9_\-]{27,}",  # Discord bot tokens
-    r"discord(?:app)?\.com/api/webhooks/\d+/[A-Za-z0-9_\-]{30,}",  # Discord webhook URLs
+    r"discord(?:app)?\.com/api/(?:v\d+/)?webhooks/\d+/[A-Za-z0-9_\-]{30,}",  # Discord webhook URLs
     # A value assigned to a secret-named key: S3 secret keys, env files, KeyBase64 settings.
     r"(?i)(?:secret|password|token|keybase64)[\w-]*[\"']?[ \t]*[:=][ \t]*[\"']?(?P<value>[A-Za-z0-9/+=_\-\.]{16,})",
 ]
@@ -45,8 +48,11 @@ CONFLICT_MARKER = re.compile(r"^(<<<<<<< |>>>>>>> )", re.M)
 # Link targets into knowledge/: inline [text](./knowledge/x.md#anchor "title") and reference [r]: knowledge/x.md
 LINK_TARGET = re.compile(
     r"\]\([ \t]*<?(?:\./)?(knowledge/[^)\s>#]+)[^)]*\)|^[ \t]*\[[^\]]+\]:[ \t]*<?(?:\./)?(knowledge/[^\s>#]+)", re.M)
-# An entry named anywhere in prose, such as `knowledge/x.md` in CLAUDE.md
-ENTRY_MENTION = re.compile(r"knowledge/[\w.-]+\.md")
+# The link that leads an INDEX.md list item: the entry the item is for.
+LEADING_LINK = re.compile(r"^[ \t]*[-*+][ \t]+\[[^\]]*\]\([ \t]*<?(?:\./)?(knowledge/[^)\s>#]+)", re.M)
+# A path into this repo's knowledge/ named anywhere in prose, such as `knowledge/x.md` in CLAUDE.md.
+# Not one inside a longer path or URL, which points into another repo.
+ENTRY_MENTION = re.compile(r"(?<![\w/.-])(?:\./)?(knowledge/[\w./-]+?\.md)\b", re.I)
 FRONTMATTER_TYPE = re.compile(r"^metadata:[ \t]*\n(?:[ \t]+\S.*\n)*?[ \t]+type:[ \t]*(user|feedback|project|reference)[ \t]*$", re.M)
 
 
@@ -59,8 +65,8 @@ def lint(root):
     """(errors, warnings) for the store under root."""
     errors, warnings = [], []
     index = read(os.path.join(root, "INDEX.md"))
-    links = [a or b for a, b in LINK_TARGET.findall(re.sub(r"<!--.*?-->", "", index, flags=re.S))]
-    linked = set(links)
+    index_text = re.sub(r"<!--.*?-->", "", index, flags=re.S)
+    linked = {a or b for a, b in LINK_TARGET.findall(index_text)}
     files = set()
     for dirpath, _, filenames in os.walk(os.path.join(root, "knowledge")):
         files.update(os.path.relpath(os.path.join(dirpath, f), root).replace(os.sep, "/") for f in filenames)
@@ -69,9 +75,9 @@ def lint(root):
         errors.append(f"INDEX.md links missing file: {t}")
     for f in sorted(files - linked):
         errors.append(f"{f} has no INDEX.md line")
-    for t, count in sorted(collections.Counter(links).items()):
+    for t, count in sorted(collections.Counter(LEADING_LINK.findall(index_text)).items()):
         if count > 1:
-            errors.append(f"INDEX.md links {t} {count} times")
+            errors.append(f"INDEX.md has {count} lines for {t}")
 
     bodies = {"INDEX.md": index}
     names = set()
@@ -91,11 +97,14 @@ def lint(root):
         else:
             names.add(name.group(1))
 
-    mentions = {f: body for f, body in bodies.items() if f != "INDEX.md"}  # INDEX.md's links are checked above
+    mentions = dict(bodies)
     if os.path.exists(os.path.join(root, "CLAUDE.md")):
         mentions["CLAUDE.md"] = read(os.path.join(root, "CLAUDE.md"))
+    else:
+        errors.append("CLAUDE.md is missing, so the entry names it cites go unchecked")
     for where, body in mentions.items():
-        for t in sorted(set(ENTRY_MENTION.findall(body)) - files):
+        reported = linked if where == "INDEX.md" else set()  # a dead INDEX.md link is reported above
+        for t in sorted(set(ENTRY_MENTION.findall(body)) - files - reported):
             errors.append(f"{where} names missing file {t}")
 
     for where, body in bodies.items():
@@ -127,6 +136,7 @@ def self_test():
     python -O cannot skip it. Returns the process exit code."""
     entry = "---\nname: {0}\ndescription: d\nmetadata:\n  type: project\n---\n\nBody [[{1}]].\n"
     index = "- [a](knowledge/a.md) - hook\n"
+    token = "Ab_-" * 17
     # One sample per SECRET_PATTERNS entry, each matching that pattern only: dropping a pattern fails.
     secrets = [
         "ghp_" + "x" * 36,
@@ -134,18 +144,23 @@ def self_test():
         "sk-ant-" + "x" * 30,
         "AKIA" + "Q" * 16,
         "-----BEGIN RSA PRIVATE KEY-----",
-        "bearer " + "x" * 30,
+        "BeArEr " + "x" * 30,
         "M" + "x" * 25 + "." + "y" * 6 + "." + "z" * 30,
-        "https://discord.com/api/webhooks/123456789012345678/" + "x" * 68,
+        "https://discordapp.com/api/webhooks/123456789012345678/" + token,
         "INTEGRATEDS3_S3COMPAT_SECRET_KEY=" + "x" * 40,
     ]
-    cases = [  # (expected error substring, or None for a clean store; files to write over the clean store)
+    cases = [  # (expected error substring, or None for a clean store; files to write over the clean store, None deletes)
         (None, []),
         (None, [("INDEX.md", "- [a](./knowledge/a.md) - hook\n")]),
         (None, [("INDEX.md", '- [a](knowledge/a.md "title") - hook\n')]),
         (None, [("INDEX.md", "- [a](knowledge/a.md#why) - hook\n")]),
         (None, [("INDEX.md", "- [a][r] - hook\n\n[r]: knowledge/a.md\n")]),
-        (None, [("CLAUDE.md", "Rule; `knowledge/a.md`.\n")]),
+        (None, [("INDEX.md", "<!-- x -->\n" + index + "<!-- y -->\n")]),
+        (None, [("INDEX.md", index + "- [b](knowledge/b.md) - hook, see [a](knowledge/a.md)\n"),
+                ("knowledge/b.md", entry.format("b", "a"))]),
+        (None, [("CLAUDE.md", "Rule; `knowledge/a.md` and ./knowledge/a.md#why.\n")]),
+        (None, [("CLAUDE.md", "Elsewhere: https://github.com/o/r/blob/main/knowledge/zz.md, `team-knowledge/zz.md`,"
+                              " ../other-repo/knowledge/zz.md, `knowledge/<slug>.md`.\n")]),
         (None, [("knowledge/a.md", entry.format("a", "a") + "AKIAIOSFODNN7EXAMPLE\n")]),
         (None, [("knowledge/a.md", entry.format("a", "a") + "aws_secret_access_key = wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY\n")]),
         (None, [("knowledge/a.md", entry.format("a", "a").replace("  type: project\n", "  local_reason: x\n  type: user\n"))]),
@@ -155,12 +170,18 @@ def self_test():
         ("INDEX.md links missing file", [("INDEX.md", index + "\n[r]: knowledge/b.md\n")]),
         ("has no INDEX.md line", [("knowledge/c.md", entry.format("c", "a"))]),
         ("has no INDEX.md line", [("INDEX.md", "<!--\n- [a](knowledge/a.md) - hook\n-->\n")]),
-        ("INDEX.md links knowledge/a.md 2 times", [("INDEX.md", index + index)]),
-        ("CLAUDE.md names missing file knowledge/b.md", [("CLAUDE.md", "Rule; `knowledge/b.md`.\n")]),
+        ("INDEX.md has 2 lines for knowledge/a.md", [("INDEX.md", index + index)]),
+        ("INDEX.md has 2 lines for knowledge/a.md", [("INDEX.md", index + "* [a](./knowledge/a.md#why) - hook\n")]),
+        ("CLAUDE.md names missing file knowledge/b-c.md", [("CLAUDE.md", "Rule; `knowledge/b-c.md`.\n")]),
+        ("CLAUDE.md names missing file knowledge/sub/b.md", [("CLAUDE.md", "Rule; knowledge/sub/b.md.\n")]),
+        ("CLAUDE.md names missing file knowledge/b.MD", [("CLAUDE.md", "Rule; knowledge/b.MD.\n")]),
+        ("CLAUDE.md is missing", [("CLAUDE.md", None)]),
+        ("INDEX.md names missing file knowledge/b.md", [("INDEX.md", index + "Also see `knowledge/b.md`.\n")]),
         ("knowledge/a.md names missing file knowledge/b.md", [("knowledge/a.md", entry.format("a", "a") + "See knowledge/b.md.\n")]),
         ("not a .md entry", [("INDEX.md", index + "- [x](knowledge/sub/x.md)\n"), ("knowledge/sub/x.md", entry.format("x", "a"))]),
         ("not a .md entry", [("INDEX.md", index + "- [x](knowledge/x.MD)\n"), ("knowledge/x.MD", entry.format("x", "a"))]),
         ("missing frontmatter", [("knowledge/a.md", "no frontmatter\n")]),
+        ("missing frontmatter", [("knowledge/a.md", "Intro.\n" + entry.format("a", "a"))]),
         ("missing frontmatter", [("knowledge/a.md", entry.format("a", "a").replace("description: d\n", ""))]),
         ("missing frontmatter", [("knowledge/a.md", entry.format("a", "a").replace("description: d\n", "description:\n"))]),
         ("missing frontmatter", [("knowledge/a.md", entry.format("a", "a").replace("  type: project\n", ""))]),
@@ -171,6 +192,7 @@ def self_test():
         ("merge-conflict marker", [("knowledge/a.md", entry.format("a", "a") + ">>>>>>> branch\n")]),
         ("credential-shaped string", [("INDEX.md", index + secrets[0] + "\n")]),
         ("credential-shaped string", [("knowledge/sub/y.txt", secrets[0] + "\n")]),
+        ("credential-shaped string", [("knowledge/a.md", entry.format("a", "a") + "https://discord.com/api/v10/webhooks/1/" + token + "\n")]),
     ] + [("credential-shaped string", [("knowledge/a.md", entry.format("a", "a") + s + "\n")]) for s in secrets]
 
     failures = []
@@ -184,15 +206,17 @@ def self_test():
     with tempfile.TemporaryDirectory() as root:
         def put(rel, text):
             path = os.path.join(root, rel)
+            if text is None:
+                os.remove(path)
+                return
             os.makedirs(os.path.dirname(path), exist_ok=True)
             with open(path, "w", encoding="utf-8", newline="\n") as f:
                 f.write(text)
 
         def reset(a_links):
             shutil.rmtree(os.path.join(root, "knowledge"), ignore_errors=True)
-            with contextlib.suppress(FileNotFoundError):
-                os.remove(os.path.join(root, "CLAUDE.md"))
             put("INDEX.md", index)
+            put("CLAUDE.md", "Rules.\n")
             put("knowledge/a.md", entry.format("a", a_links))
 
         for expected, files in cases:
@@ -208,10 +232,13 @@ def self_test():
         reset("later")
         if lint(root)[1] != ["knowledge/a.md: [[later]] resolves to no entry (worth writing?)"]:
             failures.append(f"dangling wikilink gave {lint(root)[1]}")
-        with contextlib.redirect_stdout(io.StringIO()):
-            codes = [run(root)]
-            put("knowledge/c.md", entry.format("c", "a"))
-            codes.append(run(root))
+        # The script as CI runs it, from scripts/ under the store: exit 0 with only a warning, 1 with an error.
+        script = os.path.join(root, "scripts", "lint_knowledge.py")
+        os.makedirs(os.path.dirname(script), exist_ok=True)
+        shutil.copyfile(os.path.abspath(__file__), script)
+        codes = [subprocess.run([sys.executable, script], capture_output=True).returncode]
+        put("knowledge/c.md", entry.format("c", "a"))
+        codes.append(subprocess.run([sys.executable, script], capture_output=True).returncode)
         if codes != [0, 1]:
             failures.append(f"exit codes {codes} for a store with a warning, then with an error; expected [0, 1]")
 

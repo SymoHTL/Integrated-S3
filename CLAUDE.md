@@ -106,7 +106,8 @@ Gate: review only. HAZARD until the automated reviewer exists (#270).
   gate. `cancel-in-progress` is on for every ref, so pushes to `main` cancel each other, and a
   merged sha can end with no finished run.
 - **`ci.yml` `knowledge-lint`** runs on push to `main` and on every PR: the self-test of
-  `scripts/lint_knowledge.py`, then the lint of `INDEX.md` and `knowledge/`.
+  `scripts/lint_knowledge.py`, which must print `self-test OK`, then the lint of `INDEX.md`,
+  `knowledge/` and the entry names this file cites.
 - **`security-scan.yml`** runs on push to `main`, on every PR, weekly and on dispatch.
   `vulnerable-packages` fails on any advisory outside its allowlist. `codeql` uploads its alerts
   and fails on none of them.
@@ -281,9 +282,10 @@ code (#262).
 - **Durable lessons** (a trap that bit, a postmortem, a recipe): one file per fact in `knowledge/`
   plus one line in `INDEX.md`, added in the PR that learned it. Update an existing entry rather
   than adding a near-duplicate; delete one that is proven wrong. Gate: the `Knowledge lint` CI job
-  (`scripts/lint_knowledge.py`), for the index, the entry names this file cites, the frontmatter
-  and credentials only. HAZARD for the rest: nothing checks that an entry is new, current and true
-  (#270).
+  (`scripts/lint_knowledge.py`), for the structure its docstring lists: the index against the
+  files, the entry names this file and the entries cite, frontmatter, and credentials and conflict
+  markers inside the store. HAZARD for the content: nothing checks that an entry is new, current
+  and true (#270).
 - **User docs**: `README.md` and `docs/`. The dated audit snapshots
   (`docs/s3-compliance-audit-2026-07-04.md`, `docs/seaweedfs-comparison-2026-07-04.md`) stay as
   they were written.
