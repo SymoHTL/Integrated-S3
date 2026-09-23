@@ -173,7 +173,7 @@ See [docs/observability.md](docs/observability.md) for the full list of instrume
 |---|---|
 | [Getting Started](docs/getting-started.md) | First-time setup, installation, and basic usage guide |
 | [Protocol Compatibility](docs/protocol-compatibility.md) | S3 protocol coverage, per-provider capability matrix, and compatibility notes |
-| [Implementation Plan](docs/integrated-s3-implementation-plan.md) | Architecture overview, module breakdown, and roadmap |
+| [Implementation Plan](docs/integrated-s3-implementation-plan.md) | Original design rationale and module breakdown (historical snapshot, not maintained) |
 | [WebUi Reference Host](docs/webui-reference-host.md) | Full configuration and wiring reference for the sample host |
 | [Consumer Samples](docs/web-consumer-samples.md) | Minimal API, MVC/Razor, and Blazor WASM sample apps |
 | [Observability](docs/observability.md) | Traces, metrics, structured logging, and OpenTelemetry integration |
