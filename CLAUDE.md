@@ -216,8 +216,9 @@ code (#262).
   providers reference Abstractions and Protocol only; optional integrations sit on Core; no EF,
   AWSSDK or ASP.NET Core dependency in Abstractions, Protocol or Core. A new edge is a design
   decision, made in the table in `LayeringConventionTests` in the PR that needs it. Gate:
-  `LayeringConventionTests`: every packable project has a row, declares exactly its allowed
-  `ProjectReference`s, and the three core packages take no banned dependency.
+  `LayeringConventionTests`, which reads what restore resolved: every packable project in the
+  solution has a row, restores exactly its allowed project references, and the three core packages
+  resolve no banned package or framework reference, direct or transitive.
 - **Zero warnings, and no suppression to get green.** Gate: `TreatWarningsAsErrors`, nullable
   warnings as errors, and NuGetAudit in `src/IntegratedS3/Directory.Build.props`. The CVE
   suppressions are stale (#267; `knowledge/cve-suppression-outlives-reason.md`). The code-style
