@@ -45,10 +45,14 @@ used, because restore never replaces a cached version (PersonalS3 #98):
 2. In the release worktree:
    `dotnet pack src/IntegratedS3/IntegratedS3.slnx -c Release -o <scratch>/probe --version-suffix probe.<n>`.
 3. In a PersonalS3 worktree off a fresh `origin/master`, set both pins in
-   `Directory.Packages.props` to `<version>-probe.<n>`, then build with
-   `dotnet build PersonalS3.sln -c Release --source <scratch>/probe --source https://api.nuget.org/v3/index.json`
-   and run the fast gate from PersonalS3's `CLAUDE.md`. A break found in step 0 fails here; a minor
-   or patch passes.
+   `Directory.Packages.props` to `<version>-probe.<n>`, then build, run the full suite and run the
+   warning ratchet on that build's log:
+   `set -o pipefail; dotnet build PersonalS3.sln -c Release --no-incremental --source <scratch>/probe --source https://api.nuget.org/v3/index.json 2>&1 | tee <scratch>/probe-build.log`,
+   then `dotnet test PersonalS3.sln -c Release --no-build` and
+   `py -3 scripts/check_warnings.py <scratch>/probe-build.log`. A break found in step 0 fails
+   here; a minor or patch passes. A `new warning` stops the release until the release PR removes
+   it or its `CHANGELOG.md` section tells consumers what to change. A baseline line `no longer
+   produced` is not a break: step 5 deletes it.
 4. Throw the probe away: `git checkout -- Directory.Packages.props` in that worktree, and
    `rm -rf ~/.nuget/packages/integrateds3.*/<version>-probe.<n>`.
 5. Squash-merge the release PR.
@@ -94,10 +98,13 @@ used, because restore never replaces a cached version (PersonalS3 #98):
 4. A major: implement the new members (11.0.0 added four to `IStorageCatalogStore`, PersonalS3
    #82). A new column is a numbered schema migration, with a test seen red without it.
 5. Build and test with the commands in PersonalS3's `CLAUDE.md`, including its warning ratchet.
-   A package bump reaches the Native AOT binary, so dispatch `heavy`
-   (`gh workflow run ci.yml -R SymoHTL/PersonalS3 --ref <branch> -f run-heavy=true`) and run the
-   AOT binary as PersonalS3's `knowledge/aot-only-failures.md` shows, with one request through a
-   path the release changed.
+   A package bump reaches the Native AOT binary. Push the branch, then dispatch `heavy`
+   (`gh workflow run ci.yml -R SymoHTL/PersonalS3 --ref <branch> -f run-heavy=true`), which builds
+   the image without starting it. Then run the AOT binary as PersonalS3's
+   `knowledge/aot-only-failures.md` shows. With Discord disabled that run covers startup, the
+   migrations and the access-key store, but maps no S3 route: a path the release changed needs a
+   run with Discord enabled, against a throwaway guild or the Discord API stub (HAZARD, PersonalS3
+   #96).
 6. `CHANGELOG.md` `Unreleased`: the behaviour inherited from the release, linking the GitHub
    Release from step 4.6.
 7. PR, then CI green on its head sha. CI restores from nuget.org, which a local build may not
