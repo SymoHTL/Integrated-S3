@@ -39,7 +39,7 @@ Times were measured on 2026-09-23 on the maintainer's machine with a warm NuGet 
 2. **"Skipped: 0" does not mean everything ran.** 32 tests `return` early when their environment
    is missing and count as Passed: 27 in `S3CompatibleEndpointConformanceTests` (no
    `INTEGRATEDS3_S3COMPAT_*` variables, which CI never sets) and 5 virtual-hosted-style tests in
-   `IntegratedS3AwsSdkCompatibilityTests` (HAZARD, #263).
+   `IntegratedS3AwsSdkCompatibilityTests` (HAZARD, #263; `knowledge/early-return-tests-report-passed.md`).
 3. **`--no-build` runs whatever is in `bin/`**, months-old binaries or Debug instead of Release,
    without a warning. Chain it after a build with `&&`, never `;`, and pass `-c Release` to both.
    `--no-restore` after a `Directory.Packages.props` bump builds against the old package, too.
@@ -56,7 +56,7 @@ Times were measured on 2026-09-23 on the maintainer's machine with a warm NuGet 
    body limit, and HttpClient validates no response checksums, so #81 (uploads over 28.6 MiB got
    413) and #233 (every ranged GET rejected by AWS SDK v4) passed the whole in-process suite. Wire
    behaviour goes through `WebUiApplicationFactory.CreateLoopbackIsolatedClientAsync` and
-   `AmazonS3Client`.
+   `AmazonS3Client` (`knowledge/in-process-tests-miss-real-server-and-sdk.md`).
 7. **A running host locks `bin/`.** A no-change build still "succeeds"; the first real rebuild
    fails with MSB3027/MSB3021 ("The file is locked by: WebUi"). Check
    `tasklist | grep -iE "WebUi|testhost"` first; `dotnet build-server shutdown` after.
@@ -70,10 +70,11 @@ Times were measured on 2026-09-23 on the maintainer's machine with a warm NuGet 
     raw NUL byte, so `git grep` and `grep` print only "Binary file … matches", `git diff` shows no
     lines, and ripgrep-based tools skip the file; use `grep -a`. Five test files declare
     private classes named `ScopeBasedIntegratedS3AuthorizationService`, like the production class
-    in `IntegratedS3.Core`: check the path before trusting a class-name hit.
+    in `IntegratedS3.Core`: check the path before trusting a class-name hit
+    (`knowledge/grep-blind-spots.md`).
 11. **`bench-compare.sh` compares whatever is in `benchmarks/artifacts`.** Without a fresh run it
     compares the run the baseline was promoted from and prints PASS, and a benchmark missing from
-    the run only warns (HAZARD, #270).
+    the run only warns (HAZARD, #270; `knowledge/benchmark-gate.md`).
 
 ## Tests: mandatory for every change
 
@@ -83,7 +84,7 @@ Clauses 1 to 5 each come from defects that passed a green suite here.
    from two independent sources (`SuggestedHttpStatusCode ?? ToStatusCode(code)` and
    `ToS3ErrorCode(code)`), and seven defects shipped a wrong code, a wrong status or both (#118,
    #139, #147, #150, #152, #157, #164). A fake service leaves `SuggestedHttpStatusCode` unset so
-   the mapping runs.
+   the mapping runs (`knowledge/s3-error-code-and-status-diverge.md`).
 2. **A write test reads the write back**: the bytes, headers and tags. A list test pins the full
    ordered key sequence and the continuation tokens.
 3. **Wire behaviour a real server or SDK enforces is tested on the loopback Kestrel host with
@@ -119,7 +120,8 @@ Gate: review only. HAZARD until the automated reviewer exists (#270).
   with `--skip-duplicate`, then tag `v{version}` and create the GitHub Release.
 - **HAZARD: merges are not gated.** Ruleset `main protection` blocks only deletion and force-push.
   There is no required check, no required PR and no required conversation resolution. #208 merged
-  four seconds after its checks started, and direct pushes to `main` happen (8e6e1b1). See #270.
+  four seconds after its checks started, and direct pushes to `main` happen (8e6e1b1). See #270
+  and `knowledge/ci-green-proves-less-than-you-think.md`.
 
 ## Architecture
 
@@ -173,7 +175,8 @@ code (#262).
   `StorageOperationType`, `AuthorizingStorageService`, the replica write policy, the repair switch,
   both providers (or an explicit `NotImplemented`) and the docs matrix. Missing the allow-list made
   a finished handler unreachable (#153). Gate: that endpoint's HTTP rows only. HAZARD for the
-  cross-check (#270); 25 replicated operation types have no working repair arm (#275).
+  cross-check (#270); 25 replicated operation types have no working repair arm (#275);
+  `knowledge/subresource-needs-every-registration-point.md`.
 - **A missing input is never success.** No credentials, no signing context, no chunk signature, no
   body hash, no resolved version or no health data means reject, or record a failure. Seven defects
   treated absence as "nothing to check" (#82, #86, #101, #114, #126, #127, #131). Gate:
@@ -181,22 +184,24 @@ code (#262).
   `PutObject_WithTrailerBackedPayloadHashAndTrailerSignatureButNoSigningContext_ReturnsAccessDenied`,
   `PutObject_WithSignedContentSha256NotMatchingBody_ReturnsXAmzContentSHA256Mismatch`, and the
   tampered aws-chunked tests from #208. HAZARD for replica writes, which still report success
-  without reaching the replica (#274).
+  without reaching the replica (#274); `knowledge/absent-state-treated-as-success.md`.
 - **A request is copied whole, never rebuilt by listing its properties**: a field added later is
   dropped silently. Repair lost object tags that way (#107). Gate:
   `StorageReplicaRepairService_RepairReplicaObject_PreservesPrimaryObjectTags` (tags only). HAZARD
-  for the rest (#270); write-through PutObject still drops 11 of 20 fields (#273).
+  for the rest (#270); write-through PutObject still drops 11 of 20 fields (#273);
+  `knowledge/request-rebuild-drops-fields.md`.
 - **A SigV4 change lands in its SigV4a twin, with the twin's own boundary test.** #132, #133 and
   #161 each needed the same edit in the SigV4 block and the SigV4a block of
   `AwsSignatureV4RequestAuthenticator`. Gate:
   `DeriveEcdsaKey_MatchesAwsCrtKnownAnswerVector` covers the key only. HAZARD (#270), and the
-  signature format is wrong today: P1363 where AWS uses DER (#276).
+  signature format is wrong today: P1363 where AWS uses DER (#276);
+  `knowledge/sigv4-fix-needs-sigv4a-twin.md`.
 - **Same-key writes are serialized per key and tested concurrently.** Five defects lost a version,
   left two latest rows or mixed up concurrent multipart calls (#84, #110, #111, #123, #124). A
   stored "latest" flag also needs a transaction and a database unique constraint. Gate:
   `DiskStorage_ConcurrentSameKeyPuts_PreserveEveryVersion`,
   `UpsertObjectAsync_ConcurrentWritesToSameKey_LeaveExactlyOneLatest`. HAZARD for new providers
-  until the test lives in the contract harness (#268).
+  until the test lives in the contract harness (#268); `knowledge/same-key-race-two-latest-rows.md`.
 - **Lifting a server default ships its replacement bound.** #93 lifted Kestrel's body limit, and
   #115 (disk-exhaustion DoS) was filed eight hours after it merged. Gate:
   `KestrelHostedPutObjectAndUploadPart_LargerThanDefaultBodyLimit_Succeed`,
@@ -212,8 +217,8 @@ code (#262).
   core packages. MSBuild rejects cycles, but nothing checks direction. HAZARD (#265).
 - **Zero warnings, and no suppression to get green.** Gate: `TreatWarningsAsErrors`, nullable
   warnings as errors, and NuGetAudit in `src/IntegratedS3/Directory.Build.props`. The CVE
-  suppressions are stale (#267). The code-style preferences gate nothing, because every one is a
-  `:suggestion` (#266).
+  suppressions are stale (#267; `knowledge/cve-suppression-outlives-reason.md`). The code-style
+  preferences gate nothing, because every one is a `:suggestion` (#266).
 - **XML is read only through `HardenedXml`** (#104: every S3 XML endpoint expanded DTD entities, a
   billion-laughs DoS), **and written with the UTF-8 writer, never a `StringWriter`** (f93d097:
   rclone broke on a UTF-16 declaration). Gate: `XmlResponses_EmitUtf8EncodingDeclaration` for
@@ -227,11 +232,12 @@ code (#262).
   `CHANGELOG.md` `Unreleased` into the version section in the same commit. Dispatch
   `nuget-publish.yml` with `dry-run` first. nuget.org versions are immutable, and an unbumped run
   goes green while pushing nothing: three green runs on 2026-04-07 shipped nothing. Gate: the
-  tag-conflict step, which fails only after that no-op push.
+  tag-conflict step, which fails only after that no-op push. The full recipe and its history:
+  `knowledge/nuget-release-postmortem.md`.
 - A new abstract member on a public interface, or a new EF column or index, is a major version,
   with consumer migration notes in `CHANGELOG.md`. The EF stores create their schema with
   `EnsureCreated`, which never alters an existing database, so 10.0.x databases break on 11.0.0
-  (#272). HAZARD (#270).
+  (#272). HAZARD (#270); `knowledge/public-interface-member-is-a-major.md`.
 - Consumers move after the release: PersonalS3 bumps its pin in `Directory.Packages.props` (as in
   its #82). A local probe pack gets a unique prerelease version, never a released one: restore never
   replaces a cached version.
@@ -254,12 +260,15 @@ code (#262).
   handoffs or status in repo markdown; `docs/integrated-s3-implementation-plan.md` is a historical
   snapshot and is not maintained.
 - **Durable lessons** (a trap that bit, a postmortem, a recipe): one file per fact in `knowledge/`
-  plus one line in `INDEX.md`, added in the PR that learned it.
+  plus one line in `INDEX.md`, added in the PR that learned it. Update an existing entry rather
+  than adding a near-duplicate; delete one that is proven wrong. Gate: the `Knowledge lint` CI job
+  (`scripts/lint_knowledge.py`).
 - **User docs**: `README.md` and `docs/`. The dated audit snapshots
   (`docs/s3-compliance-audit-2026-07-04.md`, `docs/seaweedfs-comparison-2026-07-04.md`) stay as
   they were written.
 - **Security findings**: a private draft advisory on the repo's Security tab, never a public issue
-  or PR, as `SECURITY.md` asks. The public tracker gets the issue after the fix ships.
+  or PR, as `SECURITY.md` asks. The public tracker gets the issue after the fix ships. The audit
+  recipe that finds them: `knowledge/audit-to-issues.md`.
 - **Rules**: this file, each beside its gate, or labelled HAZARD with its ticket.
   `CONTRIBUTING.md` and `.github/copilot-instructions.md` point here instead of restating them.
 - **Private agent memory**: machine- or user-bound facts only. A lesson found there is promoted to
