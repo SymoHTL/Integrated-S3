@@ -25,9 +25,9 @@ Times were measured on 2026-09-23 on the maintainer's machine with a warm NuGet 
 `python` resolves to the Microsoft Store stub (exit 49), so run the comparison as
 `PYTHON=py bash scripts/bench-compare.sh`.
 
-- `IntegratedS3.Tests` has about 1,300 tests and no `Suite` traits. `IntegratedS3.E2E.Tests` has 22: 16
-  `Suite=Smoke`, 6 `Suite=Full`. xUnit v2 on VSTest. An untagged E2E class never runs in automatic
-  CI.
+- `IntegratedS3.Tests` has about 1,300 tests and no `Suite` traits. `IntegratedS3.E2E.Tests` has
+  22: 16 `Suite=Smoke`, 6 `Suite=Full`. xUnit v2 on VSTest. An untagged E2E class never runs in
+  automatic CI.
 - `IntegratedS3EndpointRouteBuilderExtensions.cs` is over 600 KB and 12,550 lines: grep it, then
   read line ranges.
 
@@ -47,8 +47,8 @@ Times were measured on 2026-09-23 on the maintainer's machine with a warm NuGet 
 4. **The AOT gate can print "0 warnings" without compiling anything.** After a plain
    `dotnet publish`, ILC was skipped and the script passed in 8 s. An honest run takes about a
    minute and its log (`$TEMP/IntegratedS3-aot-publish.log`, one file for every worktree on the
-   machine) contains "Generating native code" once. If it does not, delete `src/IntegratedS3/WebUi/obj/Release/net10.0/win-x64` and rerun
-   (HAZARD, #264).
+   machine) contains "Generating native code" once. If it does not, delete
+   `src/IntegratedS3/WebUi/obj/Release/net10.0/win-x64` and rerun (HAZARD, #264).
 5. **An AOT publish fails in the Claude Code shell on Windows** with `link.exe … exited with code
    123` after "'vswhere.exe' is not recognized", because that shell sets
    `NoDefaultCurrentDirectoryInExePath`. Prefix the command with
@@ -108,8 +108,9 @@ Gate: review only. HAZARD until the automated reviewer exists (#270).
   (warnings are errors), `IntegratedS3.Tests`, E2E `Suite=Smoke`. It is the only automatic test
   gate. `cancel-in-progress` is on for every ref, so pushes to `main` cancel each other: 43 of 74
   `main` runs in July 2026 were cancelled, and a merged sha can end with no finished run.
-- **`security-scan.yml`** runs on push to `main`, on every PR, weekly and on dispatch. `vulnerable-packages` fails on any advisory
-  outside its allowlist. `codeql` uploads its alerts and fails on none of them.
+- **`security-scan.yml`** runs on push to `main`, on every PR, weekly and on dispatch.
+  `vulnerable-packages` fails on any advisory outside its allowlist. `codeql` uploads its alerts
+  and fails on none of them.
 - **`heavy`** runs on `workflow_dispatch` with `run-heavy`: the full suite with E2E Full and
   coverage, plus the AOT script, on ubuntu and windows. Dispatch it before calling done any change
   to serialization, reflection, DI wiring or filesystem semantics:
