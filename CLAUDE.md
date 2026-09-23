@@ -167,28 +167,30 @@ code (#262).
   HAZARD for the rest (#261).
 - **Client input never reaches a throwing `ToDictionary` or `Parse`.** Duplicates and malformed
   values answer 400 with the S3 code, never 500 (#118: a duplicate `Authorization` parameter; #150:
-  an invalid `max-keys`). HAZARD (#270).
+  an invalid `max-keys`). HAZARD (#270), with live instances in bucket-configuration XML (#278).
 - **A new subresource or query parameter lands at every registration point in one PR**: the
   `Known*QueryParameters` allow-lists, the dispatch arm and handler, the error mapping,
   `StorageOperationType`, `AuthorizingStorageService`, the replica write policy, the repair switch,
   both providers (or an explicit `NotImplemented`) and the docs matrix. Missing the allow-list made
   a finished handler unreachable (#153). Gate: that endpoint's HTTP rows only. HAZARD for the
-  cross-check (#270).
+  cross-check (#270); 25 replicated operation types have no working repair arm (#275).
 - **A missing input is never success.** No credentials, no signing context, no chunk signature, no
   body hash, no resolved version or no health data means reject, or record a failure. Seven defects
   treated absence as "nothing to check" (#82, #86, #101, #114, #126, #127, #131). Gate:
   `UnsignedRequest_WithSigV4Enabled_IsRejectedWith403`,
   `PutObject_WithTrailerBackedPayloadHashAndTrailerSignatureButNoSigningContext_ReturnsAccessDenied`,
   `PutObject_WithSignedContentSha256NotMatchingBody_ReturnsXAmzContentSHA256Mismatch`, and the
-  tampered aws-chunked tests from #208, which cover trailer mode only.
+  tampered aws-chunked tests from #208. HAZARD for replica writes, which still report success
+  without reaching the replica (#274).
 - **A request is copied whole, never rebuilt by listing its properties**: a field added later is
   dropped silently. Repair lost object tags that way (#107). Gate:
   `StorageReplicaRepairService_RepairReplicaObject_PreservesPrimaryObjectTags` (tags only). HAZARD
-  for the rest (#270).
+  for the rest (#270); write-through PutObject still drops 11 of 20 fields (#273).
 - **A SigV4 change lands in its SigV4a twin, with the twin's own boundary test.** #132, #133 and
   #161 each needed the same edit in the SigV4 block and the SigV4a block of
   `AwsSignatureV4RequestAuthenticator`. Gate:
-  `DeriveEcdsaKey_MatchesAwsCrtKnownAnswerVector` covers the key only. HAZARD (#270).
+  `DeriveEcdsaKey_MatchesAwsCrtKnownAnswerVector` covers the key only. HAZARD (#270), and the
+  signature format is wrong today: P1363 where AWS uses DER (#276).
 - **Same-key writes are serialized per key and tested concurrently.** Five defects lost a version,
   left two latest rows or mixed up concurrent multipart calls (#84, #110, #111, #123, #124). A
   stored "latest" flag also needs a transaction and a database unique constraint. Gate:
@@ -228,7 +230,8 @@ code (#262).
   tag-conflict step, which fails only after that no-op push.
 - A new abstract member on a public interface, or a new EF column or index, is a major version,
   with consumer migration notes in `CHANGELOG.md`. The EF stores create their schema with
-  `EnsureCreated`, which never alters an existing database. HAZARD (#270).
+  `EnsureCreated`, which never alters an existing database, so 10.0.x databases break on 11.0.0
+  (#272). HAZARD (#270).
 - Consumers move after the release: PersonalS3 bumps its pin in `Directory.Packages.props` (as in
   its #82). A local probe pack gets a unique prerelease version, never a released one: restore never
   replaces a cached version.
@@ -255,6 +258,8 @@ code (#262).
 - **User docs**: `README.md` and `docs/`. The dated audit snapshots
   (`docs/s3-compliance-audit-2026-07-04.md`, `docs/seaweedfs-comparison-2026-07-04.md`) stay as
   they were written.
+- **Security findings**: a private draft advisory on the repo's Security tab, never a public issue
+  or PR, as `SECURITY.md` asks. The public tracker gets the issue after the fix ships.
 - **Rules**: this file, each beside its gate, or labelled HAZARD with its ticket.
   `CONTRIBUTING.md` and `.github/copilot-instructions.md` point here instead of restating them.
 - **Private agent memory**: machine- or user-bound facts only. A lesson found there is promoted to
