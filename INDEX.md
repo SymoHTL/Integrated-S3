@@ -2,12 +2,8 @@
 
 One line per entry in `knowledge/`: a link and a hook that carries the payload, so a reader who
 never opens the file still avoids the trap. Add the line in the same PR as the entry.
-`scripts/lint_knowledge.py` (CI job `Knowledge lint`) fails on:
-
-- an entry without a line;
-- a line without an entry;
-- missing frontmatter;
-- a credential-shaped string.
+`scripts/lint_knowledge.py` (CI job `Knowledge lint`) fails on the problems its docstring lists, an
+entry without a line and a line without an entry among them.
 
 HARD = a trap that bit at least once; read the file before touching what it names.
 RECIPE = a working procedure to copy. Rules live in `CLAUDE.md` beside their gates; open work lives
@@ -25,11 +21,11 @@ in GitHub issues.
 - [A subresource needs every registration point](knowledge/subresource-needs-every-registration-point.md)
   HARD — about ten places, from the `Known*QueryParameters` allow-list to the repair switch; a
   missed allow-list made finished handlers unreachable (#153), and 25 replicated operation types
-  have no repair arm (#275)
+  have no working repair arm (#275)
 - [CI green proves less than you think](knowledge/ci-green-proves-less-than-you-think.md) HARD —
-  push/PR CI is one ubuntu build, `IntegratedS3.Tests` and E2E Smoke; `heavy` ran once, benchmarks
-  never, and 27 of 31 merged PRs in #206–#237 merged before their CI finished. Dispatch `heavy` for
-  serialization, reflection, DI, filesystem or hot-path work
+  the only automatic test gate is one ubuntu build, `IntegratedS3.Tests` and E2E Smoke; `heavy` ran
+  once, benchmarks never, and 27 of 31 merged PRs in #206–#237 merged before their CI finished.
+  Dispatch `heavy` for serialization, reflection, DI or filesystem work
 - [Absent state treated as success](knowledge/absent-state-treated-as-success.md) HARD — seven
   times a missing credential, policy, signing context, check, version or health datum meant "pass"
   (#82, #86, #101, #114, #126, #127, #131); replica tag writes and deletes still do (#274). Test
@@ -37,9 +33,9 @@ in GitHub issues.
 - [Request rebuild drops fields](knowledge/request-rebuild-drops-fields.md) HARD — `PutObjectRequest`
   is a class copied field by field; repair lost tags (#107), and write-through PutObject copies 9 of
   20 properties, dropping SSE and `If-None-Match` (#273). Gate copies with a reflection test
-- [Early-return tests report Passed](knowledge/early-return-tests-report-passed.md) HARD — 32 tests
-  `return` when their environment is missing, so CI says "Skipped 0" while the S3 provider never ran
-  against a real endpoint (#263); set `Skip` in a `Fact` subclass instead
+- [Early-return tests report Passed](knowledge/early-return-tests-report-passed.md) HARD — 28
+  conformance tests `return` when their environment is missing, so CI says "Skipped 0" while the S3
+  provider never ran against a real endpoint (#263); set `Skip` in a `Fact` subclass instead
 - [A SigV4 fix needs its SigV4a twin](knowledge/sigv4-fix-needs-sigv4a-twin.md) HARD — twin blocks
   tested by self round trips: #103's key derivation passed every test, #132/#133/#161 each needed
   both blocks, and SigV4a signatures are P1363 where AWS uses DER (#276). Pin crypto with external

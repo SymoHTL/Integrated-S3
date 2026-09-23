@@ -20,8 +20,8 @@ History:
   - It is used for the primary write in `WriteThroughAll`, and for every replica write.
   - In `WriteThroughAll`, an SSE PUT is stored unencrypted, and `If-None-Match: *` overwrites an
     existing object.
-  - #155 (storage class) and #165 (header fixes) added properties on 2026-07-04 without touching
-    this method.
+  - On 2026-07-04, #165 added `Expires` and #155 started persisting `StorageClass`; neither
+    touched this method.
 
 **Why:** a compiler never flags a property that a copy site leaves out, and a test that sets only
 the properties it knows passes.

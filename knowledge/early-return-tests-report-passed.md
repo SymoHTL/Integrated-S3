@@ -1,19 +1,22 @@
 ---
 name: early-return-tests-report-passed
-description: 32 tests return early when their environment is missing and xUnit v2 counts them as Passed, so every CI run says "Skipped 0" while the S3 provider has never run against a real endpoint (#263). A test that needs an environment sets Skip; it never returns.
+description: 28 conformance tests return early when their environment is missing and xUnit v2 counts them as Passed, so every CI run says "Skipped 0" while the S3 provider has never run against a real endpoint (#263). A test that needs an environment sets Skip; it never returns.
 metadata:
   type: project
 ---
 
 The tests:
 
-- **27 in `S3CompatibleEndpointConformanceTests`** (`[Trait("Category", "LocalS3Compatible")]`)
-  start with `if (settings is null) return;`. `settings` is null unless the three
+- **28 in `S3CompatibleEndpointConformanceTests`** (`[Trait("Category", "LocalS3Compatible")]`).
+  26 start with `if (settings is null) return;`, and 2 return the same way inside
+  `AssertMultipartCopyChecksumConformanceAsync`. `settings` is null unless the three
   `INTEGRATEDS3_S3COMPAT_*` variables are set, and CI never sets them.
-- **5 virtual-hosted-style tests in `IntegratedS3AwsSdkCompatibilityTests`** return when the
-  loopback host cannot resolve virtual-hosted names.
+- **5 virtual-hosted-style tests in `IntegratedS3AwsSdkCompatibilityTests`** return when
+  `integrateds3-loopback-probe.localhost` does not resolve to loopback. It does on the ubuntu
+  runners (they took 37–175 ms in publish run 34785277030) and on Windows 11, so today they run;
+  on a machine without `*.localhost` resolution they pass without running.
 
-Each reports Passed in about a millisecond. A CI run of `IntegratedS3.Tests` says "Passed 1284,
+The 28 report Passed in about a millisecond each. A CI run of `IntegratedS3.Tests` says "Passed 1284,
 Skipped 0", and nothing in the output shows that the S3 provider's conformance suite did not run.
 That is how the reverse error-map gap in #261 stays invisible.
 
