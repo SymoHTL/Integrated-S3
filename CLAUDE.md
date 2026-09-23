@@ -198,8 +198,8 @@ code (#262).
   left two latest rows or mixed up concurrent multipart calls (#84, #110, #111, #123, #124). A
   stored "latest" flag also needs a transaction and a database unique constraint. Gate:
   `DiskStorage_ConcurrentSameKeyPuts_PreserveEveryVersion`,
-  `UpsertObjectAsync_ConcurrentWritesToSameKey_LeaveExactlyOneLatest`. HAZARD for new providers
-  until the test lives in the contract harness (#268).
+  `UpsertObjectAsync_ConcurrentWritesToSameKey_LeaveExactlyOneLatest` (flaky, #283). HAZARD for
+  new providers until the test lives in the contract harness (#268).
 - **Lifting a server default ships its replacement bound.** #93 lifted Kestrel's body limit, and
   #115 (disk-exhaustion DoS) was filed eight hours after it merged. Gate, for the body limit
   only: `IntegratedS3Options_MaxObjectSizeBytes_DefaultsToFiveGibibytes` and
