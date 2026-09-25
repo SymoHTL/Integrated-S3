@@ -25,7 +25,7 @@ Fixes #
 
 ## Verification
 
-<!-- The sha each verification pass ran at, what it could not run (NOT RUN), and each finding: fixed, or why not. Which later changes need a new pass: `CLAUDE.md`, Git & PRs. -->
+<!-- The sha each verification pass ran at, what it could not run (NOT RUN), and each finding: fixed, or why not (a high or medium one is fixed). Which later changes need a new pass: `CLAUDE.md`, Git & PRs. -->
 
 ## Notes for reviewers
 
