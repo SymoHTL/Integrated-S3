@@ -97,7 +97,8 @@ Clauses 1 to 5 each come from defects that passed a green suite here.
    `IntegratedS3.Testing` (#268), a SigV4 fix goes into its SigV4a twin, and an endpoint fix goes
    into every endpoint of the same shape.
 
-Gate: review only. HAZARD until the automated reviewer exists (#270).
+Gate: review only, by the verification pass every PR gets before it merges (Git & PRs). HAZARD:
+nothing mechanical checks these clauses (#270).
 
 ## CI
 
@@ -267,6 +268,12 @@ code (#262).
   `gh pr merge <n> --squash --subject "<title> (#<n>)" --body-file <body>`. The repo's default
   squash message is the branch's commit messages instead (HAZARD, #270). Keep the body's claims
   true to the merged code.
+- Every PR gets a verification pass before it merges: a skeptic subagent re-reads the PR at its
+  head sha against the current code, checks its tests against the clauses under Tests, re-runs the
+  claims in its body, mutation-tests any new gate, and reports what is false or broken. Each
+  finding is fixed, or answered in the PR with a written reason; fixes that add new claims are
+  verified again. This replaced the planned automated CI reviewer on 2026-09-23. HAZARD: nothing
+  enforces it (#270).
 - A PR merges only after CI on its head sha has finished green and every review thread is fixed or
   answered with a written reason (HAZARD, not enforced: #270). `heavy` is dispatched and green for
   changes that need it. A benchmark regression is fixed, or the baseline is re-recorded in the same

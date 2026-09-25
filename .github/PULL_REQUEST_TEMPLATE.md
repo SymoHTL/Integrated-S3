@@ -21,6 +21,7 @@ Fixes #
 - [ ] Documentation updated where affected (`README.md`, `docs/`, XML doc comments)
 - [ ] Provider capability matrix (`docs/protocol-compatibility.md`) updated if provider support changed
 - [ ] `CHANGELOG.md` `Unreleased` section updated for user-visible changes
+- [ ] Verification pass run at the head sha; each finding fixed or answered below (`CLAUDE.md`, Git & PRs)
 
 ## Notes for reviewers
 
