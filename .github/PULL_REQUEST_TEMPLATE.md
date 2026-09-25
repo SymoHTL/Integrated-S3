@@ -16,11 +16,16 @@ Fixes #
 
 - [ ] `dotnet build src/IntegratedS3/IntegratedS3.slnx` passes with zero warnings (warnings are errors)
 - [ ] `dotnet test src/IntegratedS3/IntegratedS3.slnx` passes
-- [ ] New/changed behavior is covered by tests, and each new test was seen failing without the change (say where below)
+- [ ] New/changed behavior is covered by tests, and each new test was seen failing without the change (say where under Notes for reviewers)
 - [ ] AOT/trimming compatibility preserved: `heavy` dispatched and green when the CI section of `CLAUDE.md` asks for it (it runs `eng/Invoke-AotPublishValidation.ps1`)
 - [ ] Documentation updated where affected (`README.md`, `docs/`, XML doc comments)
 - [ ] Provider capability matrix (`docs/protocol-compatibility.md`) updated if provider support changed
 - [ ] `CHANGELOG.md` `Unreleased` section updated for user-visible changes
+- [ ] Every verification pass this PR needs has finished; the sha each ran at, what it could not run and the answer to each finding are under Verification below, or, for a contributor's or a bot's PR, in the comment of the maintainer who ran them (`CLAUDE.md`, Git & PRs)
+
+## Verification
+
+<!-- The sha each verification pass ran at, what it could not run (NOT RUN), and each finding: fixed, or why not (a high or medium one, or one in `knowledge/` or `INDEX.md`, is fixed unless the owner decided after a did-not-converge note). Which later changes need a new pass: `CLAUDE.md`, Git & PRs. -->
 
 ## Notes for reviewers
 
