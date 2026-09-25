@@ -34,8 +34,8 @@ One-time setup (the `NUGET_API_KEY` secret): `docs/nuget-publishing.md`.
    empty `## [Unreleased]` above it. A major lists what a consumer must do: new abstract members
    to implement, and schema changes with their migration (`EnsureCreated` alters nothing, #272).
 5. Nothing else goes in this commit. PR titled `release: <version>`, CI green on its head sha,
-   and a verification pass over it (`CLAUDE.md`, Git & PRs), which checks step 0's major-or-minor
-   call against the diff. Do not merge it before step 2 passes.
+   and its verification passes (`CLAUDE.md`, Git & PRs), which check step 0's major-or-minor call
+   against the diff. Do not merge it before step 2 passes.
 
 ## 2. Probe PersonalS3, before merging the release PR
 
@@ -108,8 +108,8 @@ used, because restore never replaces a cached version (PersonalS3 #98):
    #96).
 6. `CHANGELOG.md` `Unreleased`: the behaviour inherited from the release, linking the GitHub
    Release from step 4.6.
-7. PR, then CI green on its head sha and a verification pass over it, as for any PR. CI restores
-   from nuget.org, which a local build may not have done.
+7. PR, then CI green on its head sha and its verification passes, as for any PR. CI restores from
+   nuget.org, which a local build may not have done.
 
 ## Done when
 
