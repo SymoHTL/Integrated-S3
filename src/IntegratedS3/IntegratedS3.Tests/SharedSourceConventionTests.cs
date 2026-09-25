@@ -43,7 +43,7 @@ public sealed class SharedSourceConventionTests
         Assert.True(
             declarations.Length == 0,
             "Declared outside src/IntegratedS3/Shared, which holds the one definition; link the shared file into the "
-            + "project instead of keeping a copy:" + Environment.NewLine + string.Join(Environment.NewLine, declarations));
+            + "project instead of keeping a copy, or rename a declaration that means something else:" + Environment.NewLine + string.Join(Environment.NewLine, declarations));
     }
 
     // Only a project's own output folders are generated; a source folder named bin or obj deeper down still compiles.
