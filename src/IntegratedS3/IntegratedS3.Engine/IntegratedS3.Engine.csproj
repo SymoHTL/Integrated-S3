@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <Description>Storage engine for IntegratedS3 (preview): S3 semantics over a transactional metadata store and write-once blob stores.</Description>
+    <!-- Preview until the engine reaches parity with the Disk provider (#288); its public API may still change. -->
+    <VersionSuffix>preview</VersionSuffix>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\IntegratedS3.Abstractions\IntegratedS3.Abstractions.csproj" />
+  </ItemGroup>
+</Project>
