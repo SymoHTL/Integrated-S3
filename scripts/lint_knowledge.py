@@ -8,9 +8,10 @@ Fails (exit 1) on:
   * a file under knowledge/ that leads no INDEX.md list item, or more than one, as a merge that
     kept both sides does. An item starts with -, *, +, 1. or 1), then an inline link to its entry,
     plain, bold or italic, whose (target) closes on its line: - [Title](knowledge/x.md). The text
-    may wrap and hold one level of brackets. A link later in an item, or a reference-style link,
-    does not count as the entry's line. A sub-item that starts with a link does, so a see-also
-    goes in the hook. So does an item inside a code block.
+    may wrap, but not across a blank line or into another item, and may hold one level of brackets
+    on one line. A <target> needs both of its brackets. A link later in an item, or a
+    reference-style link, does not count as the entry's line. A sub-item that starts with a link
+    does, so a see-also goes in the hook. So does an item inside a code block.
   * a knowledge/*.md path named in CLAUDE.md, INDEX.md or an entry that does not exist, and a
     missing CLAUDE.md, whose pointers would otherwise go unchecked. A path inside a URL or after
     another directory (team-knowledge/, ../other-repo/knowledge/) is another store's and is
@@ -64,11 +65,13 @@ LINK_TARGET = re.compile(
     r"\]\([ \t]*<?(?:\./)?(knowledge/[^)\s>#]+)[^)]*\)|^[ \t]*\[[^\]]+\]:[ \t]*<?(?:\./)?(knowledge/[^\s>#]+)", re.M)
 # The link that leads an INDEX.md list item: the entry the item is for. Its text may hold one level
 # of brackets and wrap, but not across a blank line or into the next item; its (target "title")
-# must close on its line: [a](knowledge/a.md without ")" is plain text.
+# must close on its line: [a](knowledge/a.md without ")" is plain text. A wrap across a heading, a
+# quote, a fence, a thematic break or an empty item still counts, though it renders no link; no
+# realistic edit makes one.
 LEADING_LINK = re.compile(
     r"^[ \t]*(?:[-*+]|\d+[.)])[ \t]+(?:\*{1,3}|_{1,3})?\[(?:[^\[\]\n]|\[[^\[\]\n]*\]"
     r"|\n(?![ \t]*(?:\n|[-*+][ \t]|\d+[.)][ \t])))*\]"
-    r"\([ \t]*<?(?:\./)?(knowledge/[^)\s>#]+)(?:#[^)\s>]*)?>?"
+    r"\([ \t]*(?P<lt><)?(?:\./)?(?P<path>knowledge/[^)\s>#]+)(?:#[^)\s>]*)?(?(lt)>)"
     r"(?:[ \t]+(?:\"[^\"\n]*\"|'[^'\n]*'|\([^()\n]*\)))?[ \t]*\)", re.M)
 # A path into this repo's knowledge/ named anywhere in prose, such as `knowledge/x.md` in CLAUDE.md.
 # Not one inside a longer path or URL, which points into another repo, and not the knowledge/x.md
@@ -98,7 +101,7 @@ def lint(root, floor=FLOOR):
     entries = [f for f in files if f.count("/") == 1 and f.endswith(".md")]
     if len(entries) < floor:
         errors.append(f"knowledge/ holds fewer than {floor} entries ({len(entries)}): is this the right tree?")
-    lines = collections.Counter(LEADING_LINK.findall(index_text))
+    lines = collections.Counter(m.group("path") for m in LEADING_LINK.finditer(index_text))
     for t in sorted(linked - files):
         errors.append(f"INDEX.md links missing file: {t}")
     for f in sorted(files - set(lines)):
@@ -223,6 +226,7 @@ def self_test():
         (None, [("INDEX.md", "- [`a[0]` is null](knowledge/a.md) - hook\n")]),
         (None, [("INDEX.md", "- *[a](knowledge/a.md)* - hook\n")]),
         (None, [("INDEX.md", "- [a long\n  title](knowledge/a.md) - hook\n")]),
+        (None, [("INDEX.md", "- [a long\ntitle and\n  **bold** end](knowledge/a.md) - hook\n")]),
         ("INDEX.md links missing file", [("INDEX.md", index + "- [b](knowledge/b.md)\n")]),
         ("INDEX.md links missing file", [("INDEX.md", index + "- [b](./knowledge/b.md)\n")]),
         ("INDEX.md links missing file", [("INDEX.md", index + '- [b](knowledge/b.md "t")\n')]),
@@ -233,6 +237,18 @@ def self_test():
         (["knowledge/a.md has no INDEX.md line"], [("INDEX.md", "- [a](knowledge/a.md#why - hook (see #12)\n")]),
         (["knowledge/a.md has no INDEX.md line"], [("INDEX.md", "- [x\n\n  y](knowledge/a.md) - hook\n")]),
         (["knowledge/a.md has no INDEX.md line"], [("INDEX.md", "- [x\n- y](knowledge/a.md) - hook\n")]),
+        (["knowledge/a.md has no INDEX.md line"], [("INDEX.md", "".join(
+            f"{m} [x\n{n} y](knowledge/a.md) - hook\n" for m, n in
+            [("-", "  -"), ("-", "\t-"), ("*", "*"), ("+", "+"), ("1)", "2)"), ("10.", "11.")])
+            + "- [x\n  \n  y](knowledge/a.md) - hook\n")]),
+        (["knowledge/a.md has no INDEX.md line"], [("INDEX.md", "- [a](knowledge/a.md>) - hook\n- [a](<knowledge/a.md) - hook\n")]),
+        (["knowledge/a.md has no INDEX.md line"], [("INDEX.md", "- [a [b\n\n  c] d](knowledge/a.md) - hook\n"
+                                                                "- [a](knowledge/a.md (why (not))) - hook\n"
+                                                                "- [a](knowledge/a.md (why\n\n  not)) - hook\n"
+                                                                '- [a](knowledge/a.md "why\n\n  not") - hook\n'
+                                                                "- [a](knowledge/a.md 'why\n\n  not') - hook\n")]),
+        (["knowledge/a.md has no INDEX.md line"], [("INDEX.md", "- [a](knowledge/a.md (why) - hook (see (#12))\n"
+                                                                '- [a](knowledge/a.md "why" - hook "see")\n')]),
         (["INDEX.md is missing: is this the right tree?"], [("INDEX.md", None)]),
         ("knowledge/a.md has no INDEX.md line", [("INDEX.md", "- [a][r] - hook\n\n[r]: knowledge/a.md\n")]),
         ("knowledge/a.md has no INDEX.md line", [("INDEX.md", "- [b](knowledge/b.md) - hook, see [a](knowledge/a.md)\n"),
@@ -275,6 +291,7 @@ def self_test():
         ("missing frontmatter", [("knowledge/a.md", entry.format("a", "a").replace("description: d\n", "description: null\n"))]),
         ("missing frontmatter", [("knowledge/a.md", entry.format("a", "a").replace("description: d\n", "description: ''\n"))]),
         ("missing frontmatter", [("knowledge/a.md", entry.format("a", "a").replace("description: d\n", "description: ~ \n"))]),
+        ("missing frontmatter", [("knowledge/a.md", entry.format("a", "a").replace("description: d\n", 'description: "" \t\n'))]),
         ("missing frontmatter", [("knowledge/a.md", entry.format("a", "a").replace("description: d\n", "")
                                   + "\n---\n\ndescription: later\n---\n")]),
         ("missing frontmatter", [("knowledge/a.md", entry.format("a", "a").replace("  type: project\n", ""))]),
@@ -346,7 +363,8 @@ def self_test():
         if lint(root, floor=1)[1] != ["knowledge/a.md: [[later]] resolves to no entry (worth writing?)"]:
             failures.append(f"dangling wikilink gave {lint(root, floor=1)[1]}")
         # The script as CI runs it, from scripts/ under the store, at its own FLOOR: exit 0 with FLOOR
-        # entries and a warning, 1 with an unindexed entry, and 1 with one entry fewer than FLOOR.
+        # entries and a warning; 1 with an unindexed entry and every credential sample, printing exactly
+        # the expected lines and nothing on stderr; and 1 with one entry fewer than FLOOR.
         if FLOOR < 5:
             failures.append(f"FLOOR is {FLOOR}; below 5 it stops telling a real store from an empty one")
         script = os.path.join(root, "scripts", "lint_knowledge.py")
@@ -357,15 +375,18 @@ def self_test():
         for e in more:
             put(f"knowledge/{e}.md", entry.format(e, "a"))
         codes = [subprocess.run([sys.executable, script], capture_output=True).returncode]
-        put("knowledge/c.md", entry.format("c", "a") + secrets[-1] + "\n")
+        put("knowledge/c.md", entry.format("c", "a") + "".join(s + "\n" for s in secrets))
+        put("INDEX.md", index + "".join(f"- [{e}](knowledge/{e}.md) - hook\n" for e in more) + secrets[0] + "\n")
         r = subprocess.run([sys.executable, script], capture_output=True, text=True)
         codes.append(r.returncode)
-        if r.stderr or r.stdout != ("WARN  knowledge/a.md: [[later]] resolves to no entry (worth writing?)\n"
-                                    "ERROR knowledge/c.md has no INDEX.md line\n"
-                                    "ERROR knowledge/c.md:9: credential-shaped string\n"
-                                    "2 error(s), 1 warning(s)\n"):
+        expected = (["WARN  knowledge/a.md: [[later]] resolves to no entry (worth writing?)",
+                     "ERROR knowledge/c.md has no INDEX.md line",
+                     f"ERROR INDEX.md:{len(more) + 2}: credential-shaped string"]
+                    + [f"ERROR knowledge/c.md:{9 + i}: credential-shaped string" for i in range(len(secrets))]
+                    + [f"{len(secrets) + 2} error(s), 1 warning(s)"])
+        if r.stderr or sorted(r.stdout.splitlines()) != sorted(expected) or not r.stdout.endswith("\n"):
             failures.append(f"the script printed {len(r.stdout)} and {len(r.stderr)} characters for a store "
-                            "with a credential, not exactly its warning, its two errors and the count")
+                            "with every credential sample, not exactly its warning, its errors and the count")
         put("knowledge/c.md", None)
         put(f"knowledge/{more[-1]}.md", None)
         put("INDEX.md", index + "".join(f"- [{e}](knowledge/{e}.md) - hook\n" for e in more[:-1]))
