@@ -48,7 +48,7 @@ Know what CI does not check: the CI section of [CLAUDE.md](CLAUDE.md#ci) says wh
 4. Update documentation affected by your change (`README.md`, `docs/`, XML doc comments) — in particular the capability matrix for provider-support changes.
 5. Add a short entry to the `Unreleased` section of [CHANGELOG.md](CHANGELOG.md) for user-visible changes.
 6. Fill in the pull request template. Link the issue the PR addresses.
-7. A maintainer (see [CODEOWNERS](.github/CODEOWNERS)) will review your PR and run its verification pass. What a PR needs before it merges is listed under Git & PRs in [CLAUDE.md](CLAUDE.md#git--prs).
+7. A maintainer (see [CODEOWNERS](.github/CODEOWNERS)) will review your PR and run its verification passes. What a PR needs before it merges is listed under Git & PRs in [CLAUDE.md](CLAUDE.md#git--prs).
 
 ## Commit messages
 
