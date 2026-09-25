@@ -9,4 +9,10 @@
     <ProjectReference Include="..\IntegratedS3.Abstractions\IntegratedS3.Abstractions.csproj" />
     <ProjectReference Include="..\IntegratedS3.Protocol\IntegratedS3.Protocol.csproj" />
   </ItemGroup>
+
+  <ItemGroup>
+    <!-- S3 object semantics (checksums, ETags, preconditions, ranges, version ids), one definition
+         compiled into every backend that needs them. -->
+    <Compile Include="..\Shared\**\*.cs" LinkBase="Shared" />
+  </ItemGroup>
 </Project>
