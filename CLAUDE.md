@@ -145,8 +145,12 @@ Which package may reference which is defined once, in the table in `LayeringConv
 - `IntegratedS3.AspNetCore`: HTTP endpoints (`IntegratedS3EndpointRouteBuilderExtensions`), the SigV4
   authenticator, DI.
 - `IntegratedS3.Provider.Disk` and `IntegratedS3.Provider.S3`: backends.
+- `IntegratedS3.Engine` (prerelease): the storage engine of the distributed design
+  (`docs/distributed-architecture.md`), with its local disk blob store. `IBlobStore` lives in
+  Abstractions, so a third-party blob store needs only Abstractions and Testing.
 - `IntegratedS3.EntityFramework` (EF catalog and multipart stores), `IntegratedS3.Client`, and
-  `IntegratedS3.Testing` (the shipped provider contract harness) are the other packages, 9 in all.
+  `IntegratedS3.Testing` (the shipped provider and blob store contract harnesses) are the other
+  packages, 10 in all.
 - `WebUi` is the reference host (`PublishAot`, `InvariantGlobalization`). It is composed in
   `WebUiApplication.ConfigureServices` and `ConfigurePipeline`, which the tests'
   `WebUiApplicationFactory` also calls. Host wiring goes there, not into `Program.cs`, or the

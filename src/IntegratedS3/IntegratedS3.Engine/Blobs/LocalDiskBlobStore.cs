@@ -4,7 +4,7 @@ namespace IntegratedS3.Engine.Blobs;
 
 /// <summary>
 /// An <see cref="IBlobStore"/> on a local or shared filesystem. Each blob is one file, named by a random
-/// 128-bit locator and spread over two levels of directories (<c>ab/cd/abcd…</c>). Files are created once and
+/// locator (a version 4 GUID: 122 random bits) and spread over two levels of directories (<c>ab/cd/abcd…</c>). Files are created once and
 /// never renamed or modified, so several nodes can share one directory without any locking.
 /// </summary>
 public sealed class LocalDiskBlobStore : IBlobStore
@@ -46,8 +46,9 @@ public sealed class LocalDiskBlobStore : IBlobStore
 
         // A file at its final name that no metadata row references is an orphan for the sweep, never a blob a
         // client can read, so the write needs no temporary name and no rename.
-        // ponytail: no fsync of the directory entry; ext4 and xfs journal it with the file's fsync, other
-        // filesystems may lose a just-written blob on power failure until a directory fsync is added.
+        // ponytail: no fsync of the directory entries, neither the file's nor the ab/ and ab/cd/ directories this
+        // write may create; ext4 and xfs journal them with the file's fsync, other filesystems may lose a
+        // just-written blob on power failure until directory fsyncs are added.
         var written = 0L;
         try {
             await using (var file = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.None, bufferSize: 0, FileOptions.Asynchronous)) {
@@ -96,7 +97,7 @@ public sealed class LocalDiskBlobStore : IBlobStore
 
         var fileLength = RandomAccess.GetLength(handle);
         var start = Math.Min(offset, fileLength);
-        var end = length is { } requested ? Math.Min(fileLength, start + requested) : fileLength;
+        var end = length is { } requested ? start + Math.Min(requested, fileLength - start) : fileLength;
         return ValueTask.FromResult<Stream>(new FileRangeReadStream(handle, start, end));
     }
 
@@ -152,12 +153,7 @@ public sealed class LocalDiskBlobStore : IBlobStore
                         continue;
                     }
 
-                    entries.Add(new BlobListEntry
-                    {
-                        Locator = locator,
-                        Length = info.Length,
-                        CreatedUtc = new DateTimeOffset(info.LastWriteTimeUtc, TimeSpan.Zero)
-                    });
+                    entries.Add(new BlobListEntry { Locator = locator, Length = info.Length });
 
                     if (entries.Count == maxEntries) {
                         return ValueTask.FromResult(new BlobListPage { Entries = entries, NextCursor = locator });

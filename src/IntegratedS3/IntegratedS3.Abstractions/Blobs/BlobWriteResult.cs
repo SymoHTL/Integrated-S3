@@ -11,7 +11,9 @@ public sealed class BlobWriteResult
     public required string Locator { get; init; }
 
     /// <summary>
-    /// Gets the number of bytes stored.
+    /// Gets the number of bytes the content yielded, which is what <see cref="IBlobStore.OpenReadAsync"/> returns
+    /// for the blob, whatever the store keeps internally (a store that compresses or encrypts reports the bytes
+    /// before it did so).
     /// </summary>
     public required long Length { get; init; }
 }

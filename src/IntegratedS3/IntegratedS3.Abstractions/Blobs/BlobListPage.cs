@@ -31,10 +31,4 @@ public sealed class BlobListEntry
     /// Gets the blob's size in bytes.
     /// </summary>
     public required long Length { get; init; }
-
-    /// <summary>
-    /// Gets when the store began or finished writing the blob. The orphan sweep deletes an unreferenced blob
-    /// only once this is older than its grace period.
-    /// </summary>
-    public required DateTimeOffset CreatedUtc { get; init; }
 }

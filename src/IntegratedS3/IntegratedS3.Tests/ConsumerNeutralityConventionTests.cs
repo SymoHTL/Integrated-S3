@@ -10,7 +10,7 @@ namespace IntegratedS3.Tests;
 /// </summary>
 public sealed class ConsumerNeutralityConventionTests
 {
-    private static readonly string[] ConsumerNames = ["PersonalS3", "Personal-S3", "Discord"];
+    private static readonly string[] ConsumerNames = ["PersonalS3", "Personal-S3", "Personal S3", "Discord"];
 
     // Tests, benchmarks and sample hosts are not shipped.
     private static readonly HashSet<string> UnshippedProjects = new(StringComparer.OrdinalIgnoreCase)
