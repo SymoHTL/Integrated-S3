@@ -403,7 +403,7 @@ internal sealed partial class EngineStorageBackend
             }
 
             var promoted = await RemoveVersionAsync(transaction, bucket, key, head, target, now, cancellationToken);
-            await transaction.CommitAsync(cancellationToken);
+            await transaction.CommitAsync();
             return StorageResult<DeleteObjectResult>.Success(new DeleteObjectResult
             {
                 BucketName = request.BucketName,
@@ -438,7 +438,7 @@ internal sealed partial class EngineStorageBackend
             await transaction.InsertVersionAsync(marker, cancellationToken);
             await transaction.SetHeadAsync(bucket.Id, key, seq, seq, live: false, cancellationToken);
             await transaction.EnqueueGarbageAsync(garbage, GarbageNotBefore(now), cancellationToken);
-            await transaction.CommitAsync(cancellationToken);
+            await transaction.CommitAsync();
             var markerInfo = ToObjectInfo(request.BucketName, request.Key, marker);
             return StorageResult<DeleteObjectResult>.Success(new DeleteObjectResult
             {
@@ -453,7 +453,7 @@ internal sealed partial class EngineStorageBackend
         // Unversioned, or a versioned delete that bypasses the marker: the current version goes for good.
         if (current is not null) {
             await RemoveVersionAsync(transaction, bucket, key, head, current, now, cancellationToken);
-            await transaction.CommitAsync(cancellationToken);
+            await transaction.CommitAsync();
         }
 
         return StorageResult<DeleteObjectResult>.Success(new DeleteObjectResult
@@ -562,7 +562,7 @@ internal sealed partial class EngineStorageBackend
                 cancellationToken);
         }
 
-        await transaction.CommitAsync(cancellationToken);
+        await transaction.CommitAsync();
         return StorageResult<ObjectInfo>.Success(ToObjectInfo(bucketName, keyText, version));
     }
 
@@ -629,8 +629,9 @@ internal sealed partial class EngineStorageBackend
         }
 
         if (!string.IsNullOrWhiteSpace(conditions.IfMatch)) {
+            // As AWS answers a conditional write: no object, or a delete marker, is 404; another ETag is 412.
             if (!exists) {
-                return PreconditionFailed($"Object '{key}' does not exist in bucket '{bucketName}' (If-Match precondition).", bucketName, key);
+                return ObjectNotFound(bucketName, key);
             }
 
             if (!ObjectETags.MatchesIfMatch(conditions.IfMatch, current!.ETag)) {
@@ -686,7 +687,7 @@ internal sealed partial class EngineStorageBackend
 
         var normalized = CopyOrNull(tags);
         await transaction.UpdateVersionMetaAsync(bucket.Id, key, version.Seq, version.Meta with { Tags = normalized }, cancellationToken);
-        await transaction.CommitAsync(cancellationToken);
+        await transaction.CommitAsync();
         return StorageResult<ObjectTagSet>.Success(new ObjectTagSet
         {
             BucketName = bucketName,

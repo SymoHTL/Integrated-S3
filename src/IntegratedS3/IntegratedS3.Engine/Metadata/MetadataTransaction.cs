@@ -20,19 +20,25 @@ internal sealed class MetadataTransaction : IAsyncDisposable
 
     private readonly SqliteConnection _connection;
     private readonly SqliteTransaction _transaction;
+    private readonly TimeProvider _timeProvider;
     private SemaphoreSlim? _writeGate;
     private bool _committed;
 
-    internal MetadataTransaction(SqliteConnection connection, SqliteTransaction transaction, SemaphoreSlim? writeGate)
+    internal MetadataTransaction(SqliteConnection connection, SqliteTransaction transaction, SemaphoreSlim? writeGate, TimeProvider timeProvider)
     {
         _connection = connection;
         _transaction = transaction;
         _writeGate = writeGate;
+        _timeProvider = timeProvider;
     }
 
-    public async ValueTask CommitAsync(CancellationToken cancellationToken = default)
+    /// <summary>
+    /// Commits the transaction. A commit takes no cancellation token: once it is sent, the caller waits for its
+    /// outcome, so a write that took effect is never reported as failed.
+    /// </summary>
+    public async ValueTask CommitAsync()
     {
-        await _transaction.CommitAsync(cancellationToken);
+        await _transaction.CommitAsync(CancellationToken.None);
         _committed = true;
     }
 
@@ -64,7 +70,7 @@ internal sealed class MetadataTransaction : IAsyncDisposable
     public ValueTask<long> GetClockAsync(CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        return ValueTask.FromResult(EngineClock.ToMicroseconds(DateTimeOffset.UtcNow));
+        return ValueTask.FromResult(EngineClock.ToMicroseconds(_timeProvider.GetUtcNow()));
     }
 
     // ----- Buckets -----
@@ -656,23 +662,31 @@ internal sealed class MetadataTransaction : IAsyncDisposable
     }
 
     /// <summary>
-    /// Records a blob the orphan sweep found without a reference, keeping the first time it was seen, and returns
-    /// that time.
+    /// Records a blob the orphan sweep found without a reference during <paramref name="walk"/>, keeping the first
+    /// time it was seen, and returns that time.
     /// </summary>
-    public async ValueTask<long> NoteOrphanCandidateAsync(string locator, long nowUs, CancellationToken cancellationToken = default)
+    public async ValueTask<long> NoteOrphanCandidateAsync(string locator, long nowUs, long walk, CancellationToken cancellationToken = default)
     {
-        await using (var insert = Command("""
-            INSERT INTO orphan_candidates (locator, first_seen_us) VALUES (@locator, @now)
-            ON CONFLICT (locator) DO NOTHING;
-            """)) {
-            insert.Parameters.AddWithValue("@locator", locator);
-            insert.Parameters.AddWithValue("@now", nowUs);
-            await insert.ExecuteNonQueryAsync(cancellationToken);
-        }
-
-        await using var command = Command("SELECT first_seen_us FROM orphan_candidates WHERE locator = @locator;");
+        await using var command = Command("""
+            INSERT INTO orphan_candidates (locator, first_seen_us, walk) VALUES (@locator, @now, @walk)
+            ON CONFLICT (locator) DO UPDATE SET walk = excluded.walk
+            RETURNING first_seen_us;
+            """);
         command.Parameters.AddWithValue("@locator", locator);
+        command.Parameters.AddWithValue("@now", nowUs);
+        command.Parameters.AddWithValue("@walk", walk);
         return (long)(await command.ExecuteScalarAsync(cancellationToken))!;
+    }
+
+    /// <summary>
+    /// Drops the candidates the sweep did not find unreferenced during <paramref name="walk"/>, which has just
+    /// ended: their blobs were referenced or have gone since.
+    /// </summary>
+    public async ValueTask DropStaleOrphanCandidatesAsync(long walk, CancellationToken cancellationToken = default)
+    {
+        await using var command = Command("DELETE FROM orphan_candidates WHERE walk < @walk;");
+        command.Parameters.AddWithValue("@walk", walk);
+        await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
     /// <summary>

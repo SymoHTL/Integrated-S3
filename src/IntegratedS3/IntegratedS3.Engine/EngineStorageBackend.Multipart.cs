@@ -71,7 +71,7 @@ internal sealed partial class EngineStorageBackend
             }
         };
         await transaction.InsertUploadAsync(upload, cancellationToken);
-        await transaction.CommitAsync(cancellationToken);
+        await transaction.CommitAsync();
         return StorageResult<MultipartUploadInfo>.Success(ToUploadInfo(request.BucketName, request.Key, upload));
     }
 
@@ -337,7 +337,7 @@ internal sealed partial class EngineStorageBackend
         var parts = await transaction.ListPartsAsync(upload.Id, 0, MaxPartNumber, cancellationToken);
         await transaction.DeleteUploadAsync(upload.Id, cancellationToken);
         await transaction.EnqueueGarbageAsync(parts.SelectMany(static part => part.Manifest.Select(static extent => extent.Locator)), GarbageNotBefore(now), cancellationToken);
-        await transaction.CommitAsync(cancellationToken);
+        await transaction.CommitAsync();
         return StorageResult.Success();
     }
 
@@ -514,7 +514,7 @@ internal sealed partial class EngineStorageBackend
             await transaction.EnqueueGarbageAsync(replaced.Manifest.Select(static extent => extent.Locator), GarbageNotBefore(now), cancellationToken);
         }
 
-        await transaction.CommitAsync(cancellationToken);
+        await transaction.CommitAsync();
         return StorageResult<MultipartUploadPart>.Success(new MultipartUploadPart
         {
             PartNumber = partNumber,

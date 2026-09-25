@@ -1598,6 +1598,343 @@ public abstract class StorageProviderContractTests
     }
 
     /// <summary>
+    /// Verifies conditional PUTs with <c>If-Match</c> as AWS answers them: a key with no object, or whose current
+    /// version is a delete marker, fails with <see cref="StorageErrorCode.ObjectNotFound"/>; another ETag fails with
+    /// <see cref="StorageErrorCode.PreconditionFailed"/>; the current ETag writes. A failed write stores nothing.
+    /// </summary>
+    [Fact]
+    public async Task ProviderContract_ConditionalWrites_IfMatch_FailsNotFoundWithoutAnObject_AndPreconditionOnAnotherETag()
+    {
+        await using var fixture = await CreateInitializedFixtureAsync();
+        var storage = fixture.Backend;
+        var capabilities = await storage.GetCapabilitiesAsync();
+
+        if (!Supports(capabilities.ConditionalRequests) || !Supports(capabilities.Versioning)) {
+            return;
+        }
+
+        const string bucketName = "contract-if-match";
+        const string key = "docs/if-match.txt";
+        const string otherETag = "\"0123456789abcdef0123456789abcdef\"";
+        RequireSuccess(await storage.CreateBucketAsync(new CreateBucketRequest
+        {
+            BucketName = bucketName,
+            EnableVersioning = true
+        }));
+
+        RequireFailure(await storage.PutObjectAsync(new PutObjectRequest
+        {
+            BucketName = bucketName,
+            Key = key,
+            Content = CreateUtf8Stream("no object yet"),
+            IfMatchETag = otherETag
+        }), StorageErrorCode.ObjectNotFound);
+
+        var first = RequireSuccess(await storage.PutObjectAsync(new PutObjectRequest
+        {
+            BucketName = bucketName,
+            Key = key,
+            Content = CreateUtf8Stream("first")
+        }));
+
+        RequireFailure(await storage.PutObjectAsync(new PutObjectRequest
+        {
+            BucketName = bucketName,
+            Key = key,
+            Content = CreateUtf8Stream("stale"),
+            IfMatchETag = otherETag
+        }), StorageErrorCode.PreconditionFailed);
+
+        var second = RequireSuccess(await storage.PutObjectAsync(new PutObjectRequest
+        {
+            BucketName = bucketName,
+            Key = key,
+            Content = CreateUtf8Stream("second"),
+            IfMatchETag = QuoteETag(first.ETag)
+        }));
+
+        var current = RequireSuccess(await storage.GetObjectAsync(new GetObjectRequest
+        {
+            BucketName = bucketName,
+            Key = key
+        }));
+        await using (current) {
+            Assert.Equal("second", await ReadUtf8Async(current));
+            Assert.Equal(second.VersionId, current.Object.VersionId);
+        }
+
+        var marker = RequireSuccess(await storage.DeleteObjectAsync(new DeleteObjectRequest
+        {
+            BucketName = bucketName,
+            Key = key
+        }));
+        Assert.True(marker.IsDeleteMarker);
+
+        RequireFailure(await storage.PutObjectAsync(new PutObjectRequest
+        {
+            BucketName = bucketName,
+            Key = key,
+            Content = CreateUtf8Stream("over the marker"),
+            IfMatchETag = QuoteETag(second.ETag)
+        }), StorageErrorCode.ObjectNotFound);
+
+        var versions = await storage.ListObjectVersionsAsync(new ListObjectVersionsRequest
+        {
+            BucketName = bucketName
+        }).ToArrayAsync();
+        Assert.Equal(
+            [(marker.VersionId, true), (second.VersionId, false), (first.VersionId, false)],
+            versions.Select(static version => (version.VersionId, version.IsDeleteMarker)).ToArray());
+    }
+
+    /// <summary>
+    /// Verifies that PUTs racing with <c>If-None-Match: *</c> on one key have exactly one winner, whose body is the
+    /// one stored, and that every loser fails with <see cref="StorageErrorCode.PreconditionFailed"/>.
+    /// </summary>
+    [Fact]
+    public async Task ProviderContract_ConcurrentCreateOnlyPuts_HaveExactlyOneWinner()
+    {
+        await using var fixture = await CreateInitializedFixtureAsync();
+        var storage = fixture.Backend;
+        var capabilities = await storage.GetCapabilitiesAsync();
+
+        if (!Supports(capabilities.ConditionalRequests)) {
+            return;
+        }
+
+        const string bucketName = "contract-create-race";
+        RequireSuccess(await storage.CreateBucketAsync(new CreateBucketRequest
+        {
+            BucketName = bucketName
+        }));
+
+        for (var round = 0; round < 5; round++) {
+            var key = $"docs/race-{round}.txt";
+            var results = await Task.WhenAll(Enumerable.Range(0, 8).Select(writer => Task.Run(async () => await storage.PutObjectAsync(new PutObjectRequest
+            {
+                BucketName = bucketName,
+                Key = key,
+                Content = CreateUtf8Stream($"writer {writer}"),
+                IfNoneMatchETag = "*"
+            }))));
+
+            var winner = Assert.Single(Enumerable.Range(0, results.Length), index => results[index].IsSuccess);
+            Assert.All(results.Where(static result => !result.IsSuccess), static result => Assert.Equal(StorageErrorCode.PreconditionFailed, result.Error!.Code));
+
+            var stored = RequireSuccess(await storage.GetObjectAsync(new GetObjectRequest
+            {
+                BucketName = bucketName,
+                Key = key
+            }));
+            await using (stored) {
+                Assert.Equal($"writer {winner}", await ReadUtf8Async(stored));
+                Assert.Equal(results[winner].Value!.ETag, stored.Object.ETag);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Verifies that concurrent PUTs to one key of a versioned bucket keep every version: one per writer, each with
+    /// its own id and body, exactly one of them current.
+    /// </summary>
+    [Fact]
+    public async Task ProviderContract_ConcurrentPutsToOneKey_InAVersionedBucket_KeepEveryVersion()
+    {
+        await using var fixture = await CreateInitializedFixtureAsync();
+        var storage = fixture.Backend;
+        var capabilities = await storage.GetCapabilitiesAsync();
+
+        if (!Supports(capabilities.Versioning)) {
+            return;
+        }
+
+        const string bucketName = "contract-version-race";
+        const string key = "docs/race.txt";
+        const int writers = 8;
+        RequireSuccess(await storage.CreateBucketAsync(new CreateBucketRequest
+        {
+            BucketName = bucketName,
+            EnableVersioning = true
+        }));
+
+        var puts = await Task.WhenAll(Enumerable.Range(0, writers).Select(writer => Task.Run(async () => RequireSuccess(await storage.PutObjectAsync(new PutObjectRequest
+        {
+            BucketName = bucketName,
+            Key = key,
+            Content = CreateUtf8Stream($"writer {writer}")
+        })))));
+
+        var versions = await storage.ListObjectVersionsAsync(new ListObjectVersionsRequest
+        {
+            BucketName = bucketName
+        }).ToArrayAsync();
+        Assert.Equal(
+            puts.Select(static put => put.VersionId).Order(StringComparer.Ordinal).ToArray(),
+            versions.Select(static version => version.VersionId).Order(StringComparer.Ordinal).ToArray());
+        Assert.Equal(writers, versions.Select(static version => version.VersionId).Distinct(StringComparer.Ordinal).Count());
+        var latest = Assert.Single(versions, static version => version.IsLatest);
+
+        for (var writer = 0; writer < writers; writer++) {
+            var version = RequireSuccess(await storage.GetObjectAsync(new GetObjectRequest
+            {
+                BucketName = bucketName,
+                Key = key,
+                VersionId = puts[writer].VersionId
+            }));
+            await using (version) {
+                Assert.Equal($"writer {writer}", await ReadUtf8Async(version));
+            }
+        }
+
+        var current = RequireSuccess(await storage.GetObjectAsync(new GetObjectRequest
+        {
+            BucketName = bucketName,
+            Key = key
+        }));
+        await using (current) {
+            Assert.Equal(latest.VersionId, current.Object.VersionId);
+        }
+    }
+
+    /// <summary>
+    /// Verifies that a CompleteMultipartUpload racing an AbortMultipartUpload of the same upload has exactly one
+    /// winner: either the object exists with the uploaded bytes and the abort fails with
+    /// <see cref="StorageErrorCode.NoSuchUpload"/>, or the complete fails with it and no object exists. The upload is
+    /// gone either way.
+    /// </summary>
+    [Fact]
+    public async Task ProviderContract_CompleteRacingAbort_HasExactlyOneWinner()
+    {
+        await using var fixture = await CreateInitializedFixtureAsync();
+        var storage = fixture.Backend;
+        var capabilities = await storage.GetCapabilitiesAsync();
+
+        if (!Supports(capabilities.MultipartUploads)) {
+            return;
+        }
+
+        const string bucketName = "contract-complete-abort";
+        RequireSuccess(await storage.CreateBucketAsync(new CreateBucketRequest
+        {
+            BucketName = bucketName
+        }));
+
+        for (var round = 0; round < 10; round++) {
+            var key = $"docs/race-{round}.txt";
+            var upload = RequireSuccess(await storage.InitiateMultipartUploadAsync(new InitiateMultipartUploadRequest
+            {
+                BucketName = bucketName,
+                Key = key
+            }));
+            var part = RequireSuccess(await storage.UploadMultipartPartAsync(new UploadMultipartPartRequest
+            {
+                BucketName = bucketName,
+                Key = key,
+                UploadId = upload.UploadId,
+                PartNumber = 1,
+                Content = CreateUtf8Stream($"round {round}")
+            }));
+
+            var complete = Task.Run(async () => await storage.CompleteMultipartUploadAsync(new CompleteMultipartUploadRequest
+            {
+                BucketName = bucketName,
+                Key = key,
+                UploadId = upload.UploadId,
+                Parts = [part]
+            }));
+            var abort = Task.Run(async () => await storage.AbortMultipartUploadAsync(new AbortMultipartUploadRequest
+            {
+                BucketName = bucketName,
+                Key = key,
+                UploadId = upload.UploadId
+            }));
+            await Task.WhenAll(complete, abort);
+
+            if (complete.Result.IsSuccess) {
+                RequireFailure(abort.Result, StorageErrorCode.NoSuchUpload);
+                var stored = RequireSuccess(await storage.GetObjectAsync(new GetObjectRequest
+                {
+                    BucketName = bucketName,
+                    Key = key
+                }));
+                await using (stored) {
+                    Assert.Equal($"round {round}", await ReadUtf8Async(stored));
+                }
+            }
+            else {
+                RequireFailure(complete.Result, StorageErrorCode.NoSuchUpload);
+                RequireSuccess(abort.Result);
+                RequireFailure(await storage.HeadObjectAsync(new HeadObjectRequest
+                {
+                    BucketName = bucketName,
+                    Key = key
+                }), StorageErrorCode.ObjectNotFound);
+            }
+        }
+
+        Assert.Empty(await storage.ListMultipartUploadsAsync(new ListMultipartUploadsRequest
+        {
+            BucketName = bucketName
+        }).ToArrayAsync());
+    }
+
+    /// <summary>
+    /// Verifies that listings order keys by their UTF-8 bytes, as S3 does, not by UTF-16 code units: U+FF21 sorts
+    /// before U+1F600 in UTF-8 and after it in UTF-16. Pins the whole ordered sequence and the page boundaries.
+    /// </summary>
+    [Fact]
+    public async Task ProviderContract_ListObjects_OrdersKeysByTheirUtf8Bytes()
+    {
+        await using var fixture = await CreateInitializedFixtureAsync();
+        var storage = fixture.Backend;
+        var capabilities = await storage.GetCapabilitiesAsync();
+
+        if (!Supports(capabilities.ListObjects)) {
+            return;
+        }
+
+        const string bucketName = "contract-utf8-order";
+        string[] expected = ["a", "b", "~", "é", "中", "Ａ", "\U0001F600"];
+        RequireSuccess(await storage.CreateBucketAsync(new CreateBucketRequest
+        {
+            BucketName = bucketName
+        }));
+
+        foreach (var key in expected.Reverse()) {
+            RequireSuccess(await storage.PutObjectAsync(new PutObjectRequest
+            {
+                BucketName = bucketName,
+                Key = key,
+                Content = CreateUtf8Stream(key)
+            }));
+        }
+
+        var all = await storage.ListObjectsAsync(new ListObjectsRequest
+        {
+            BucketName = bucketName
+        }).ToArrayAsync();
+        Assert.Equal(expected, all.Select(static item => item.Key).ToArray());
+
+        var pages = new List<string[]>();
+        string? continuationToken = null;
+        do {
+            var page = await storage.ListObjectsAsync(new ListObjectsRequest
+            {
+                BucketName = bucketName,
+                PageSize = 3,
+                ContinuationToken = continuationToken
+            }).Select(static item => item.Key).ToArrayAsync();
+            pages.Add(page);
+            continuationToken = page.Length == 3 ? page[^1] : null;
+        }
+        while (continuationToken is not null && pages.Count < 10);
+
+        Assert.Equal(
+            [["a", "b", "~"], ["é", "中", "Ａ"], ["\U0001F600"]],
+            pages);
+    }
+
+    /// <summary>
     /// Verifies that a registered <see cref="IStorageObjectStateStore"/> receives metadata, tags,
     /// and checksums during PUT and tag operations, and that GET returns enriched state.
     /// Also confirms <see cref="StorageSupportStateOwnership.PlatformManaged"/> ownership.

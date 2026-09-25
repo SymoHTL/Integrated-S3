@@ -27,7 +27,7 @@ internal sealed partial class EngineStorageBackend : IStorageBackend, IAsyncDisp
     private readonly Lazy<Task<SqliteMetadataStore>> _store;
     private readonly EngineMaintenance _maintenance;
 
-    public EngineStorageBackend(IntegratedS3EngineOptions options, IBlobStore blobs, ILogger? logger = null)
+    public EngineStorageBackend(IntegratedS3EngineOptions options, IBlobStore blobs, ILogger? logger = null, TimeProvider? timeProvider = null)
     {
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(blobs);
@@ -36,7 +36,7 @@ internal sealed partial class EngineStorageBackend : IStorageBackend, IAsyncDisp
         _options = options;
         _blobs = blobs;
         _logger = logger;
-        _store = new Lazy<Task<SqliteMetadataStore>>(() => SqliteMetadataStore.OpenAsync(options.SqliteDatabasePath));
+        _store = new Lazy<Task<SqliteMetadataStore>>(() => SqliteMetadataStore.OpenAsync(options.SqliteDatabasePath, timeProvider ?? TimeProvider.System));
         _maintenance = new EngineMaintenance(this, logger);
     }
 
@@ -51,6 +51,8 @@ internal sealed partial class EngineStorageBackend : IStorageBackend, IAsyncDisp
     internal IBlobStore Blobs => _blobs;
 
     internal IntegratedS3EngineOptions Options => _options;
+
+    internal EngineMaintenance Maintenance => _maintenance;
 
     public ValueTask<StorageCapabilities> GetCapabilitiesAsync(CancellationToken cancellationToken = default)
     {
@@ -157,7 +159,7 @@ internal sealed partial class EngineStorageBackend : IStorageBackend, IAsyncDisp
             });
         }
 
-        await transaction.CommitAsync(cancellationToken);
+        await transaction.CommitAsync();
         return StorageResult<BucketInfo>.Success(ToBucketInfo(bucket));
     }
 
@@ -208,7 +210,7 @@ internal sealed partial class EngineStorageBackend : IStorageBackend, IAsyncDisp
         var now = await transaction.GetClockAsync(cancellationToken);
         var uploadBlobs = await transaction.DeleteBucketAsync(bucket.Id, cancellationToken);
         await transaction.EnqueueGarbageAsync(uploadBlobs, GarbageNotBefore(now), cancellationToken);
-        await transaction.CommitAsync(cancellationToken);
+        await transaction.CommitAsync();
         return StorageResult.Success();
     }
 
@@ -253,7 +255,7 @@ internal sealed partial class EngineStorageBackend : IStorageBackend, IAsyncDisp
         }
 
         await transaction.SetBucketVersioningAsync(bucket.Id, target.Value, cancellationToken);
-        await transaction.CommitAsync(cancellationToken);
+        await transaction.CommitAsync();
         return StorageResult<BucketVersioningInfo>.Success(new BucketVersioningInfo
         {
             BucketName = request.BucketName,

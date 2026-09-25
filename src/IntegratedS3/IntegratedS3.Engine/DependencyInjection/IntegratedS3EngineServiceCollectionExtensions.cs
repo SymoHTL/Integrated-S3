@@ -14,7 +14,8 @@ public static class IntegratedS3EngineServiceCollectionExtensions
     /// <summary>
     /// Registers the engine as an <see cref="IStorageBackend"/>. It keeps its metadata in SQLite and its blobs in the
     /// registered <see cref="IBlobStore"/>, or, when none is registered, in a <see cref="LocalDiskBlobStore"/> under
-    /// <see cref="IntegratedS3EngineOptions.BlobRootPath"/>.
+    /// <see cref="IntegratedS3EngineOptions.BlobRootPath"/>. It reads the time from the registered
+    /// <see cref="TimeProvider"/>, or from <see cref="TimeProvider.System"/> when none is registered.
     /// </summary>
     /// <param name="services">The service collection to add to.</param>
     /// <param name="configure">A delegate that configures the <see cref="IntegratedS3EngineOptions"/>, or <see langword="null"/> for the defaults.</param>
@@ -41,7 +42,8 @@ public static class IntegratedS3EngineServiceCollectionExtensions
         services.AddSingleton<IStorageBackend>(serviceProvider => new EngineStorageBackend(
             options,
             serviceProvider.GetService<IBlobStore>() ?? new LocalDiskBlobStore(options.BlobRootPath),
-            serviceProvider.GetService<ILoggerFactory>()?.CreateLogger<EngineStorageBackend>()));
+            serviceProvider.GetService<ILoggerFactory>()?.CreateLogger<EngineStorageBackend>(),
+            serviceProvider.GetService<TimeProvider>()));
 
         return services;
     }

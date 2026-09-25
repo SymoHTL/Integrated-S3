@@ -98,7 +98,8 @@ internal sealed class SqliteMetadataStore : IAsyncDisposable
 
         CREATE TABLE orphan_candidates (
             locator TEXT PRIMARY KEY,
-            first_seen_us INTEGER NOT NULL
+            first_seen_us INTEGER NOT NULL,
+            walk INTEGER NOT NULL
         ) WITHOUT ROWID;
 
         CREATE TABLE engine_state (
@@ -109,11 +110,13 @@ internal sealed class SqliteMetadataStore : IAsyncDisposable
     ];
 
     private readonly string _connectionString;
+    private readonly TimeProvider _timeProvider;
     private readonly SemaphoreSlim _writeGate = new(1, 1);
 
-    private SqliteMetadataStore(string connectionString)
+    private SqliteMetadataStore(string connectionString, TimeProvider timeProvider)
     {
         _connectionString = connectionString;
+        _timeProvider = timeProvider;
     }
 
     /// <summary>
@@ -123,11 +126,12 @@ internal sealed class SqliteMetadataStore : IAsyncDisposable
 
     /// <summary>
     /// Opens the database at <paramref name="path"/>, creating it and its directory when missing, and migrates
-    /// its schema to <see cref="SchemaVersion"/>.
+    /// its schema to <see cref="SchemaVersion"/>. Transactions read the time from <paramref name="timeProvider"/>.
     /// </summary>
-    public static async Task<SqliteMetadataStore> OpenAsync(string path, CancellationToken cancellationToken = default)
+    public static async Task<SqliteMetadataStore> OpenAsync(string path, TimeProvider timeProvider, CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
+        ArgumentNullException.ThrowIfNull(timeProvider);
         var fullPath = Path.GetFullPath(path);
         Directory.CreateDirectory(Path.GetDirectoryName(fullPath)!);
 
@@ -140,8 +144,16 @@ internal sealed class SqliteMetadataStore : IAsyncDisposable
             DefaultTimeout = 30
         }.ToString();
 
-        var store = new SqliteMetadataStore(connectionString);
-        await store.MigrateAsync(cancellationToken);
+        var store = new SqliteMetadataStore(connectionString, timeProvider);
+        try {
+            await store.MigrateAsync(cancellationToken);
+        }
+        catch {
+            // A refused or failed migration must not leave a pooled connection holding the file open.
+            await store.DisposeAsync();
+            throw;
+        }
+
         return store;
     }
 
@@ -160,7 +172,7 @@ internal sealed class SqliteMetadataStore : IAsyncDisposable
             connection = new SqliteConnection(_connectionString);
             await connection.OpenAsync(cancellationToken);
             var transaction = connection.BeginTransaction(deferred: !write);
-            return new MetadataTransaction(connection, transaction, write ? _writeGate : null);
+            return new MetadataTransaction(connection, transaction, write ? _writeGate : null, _timeProvider);
         }
         catch {
             if (connection is not null) {
@@ -217,7 +229,7 @@ internal sealed class SqliteMetadataStore : IAsyncDisposable
             await write.ExecuteNonQueryAsync(cancellationToken);
         }
 
-        await transaction.CommitAsync(cancellationToken);
+        await transaction.CommitAsync();
     }
 
     private static async Task ExecuteAsync(SqliteConnection connection, SqliteTransaction? transaction, string sql, CancellationToken cancellationToken)

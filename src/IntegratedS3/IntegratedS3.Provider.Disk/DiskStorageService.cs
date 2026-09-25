@@ -3245,6 +3245,10 @@ internal sealed class DiskStorageService(
             return StorageResult<ObjectInfo>.Failure(BucketNotFound(request.BucketName));
         }
 
+        // The upload's state is read under the lock AbortMultipartUpload takes, so an Abort that ran first leaves
+        // NoSuchUpload here rather than an upload whose parts are gone.
+        using var objectMutationLock = await AcquireObjectMutationLockAsync(request.BucketName, request.Key, cancellationToken);
+
         var uploadStateResult = await ReadMultipartStateAsync(request.BucketName, request.Key, request.UploadId, cancellationToken);
         if (!uploadStateResult.IsSuccess) {
             return StorageResult<ObjectInfo>.Failure(uploadStateResult.Error!);
@@ -3258,8 +3262,6 @@ internal sealed class DiskStorageService(
                 request.BucketName,
                 request.Key));
         }
-
-        using var objectMutationLock = await AcquireObjectMutationLockAsync(request.BucketName, request.Key, cancellationToken);
 
         var objectPath = GetObjectPath(request.BucketName, request.Key);
         if (!OnDiskPathMatchesRequestedCasing(GetBucketPath(request.BucketName), objectPath)) {
@@ -6196,17 +6198,18 @@ internal sealed class DiskStorageService(
             };
         }
 
-        // If-Match: <etag> for optimistic concurrency
+        // If-Match: <etag> for optimistic concurrency. As AWS answers it, no current object (none, or a delete
+        // marker) is 404, and another ETag is 412.
         if (!string.IsNullOrWhiteSpace(ifMatchETag)) {
             if (!objectExists) {
                 return new StorageError
                 {
-                    Code = StorageErrorCode.PreconditionFailed,
+                    Code = StorageErrorCode.ObjectNotFound,
                     Message = $"Object '{key}' does not exist in bucket '{bucketName}' (If-Match precondition).",
                     BucketName = bucketName,
                     ObjectKey = key,
                     ProviderName = options.ProviderName,
-                    SuggestedHttpStatusCode = 412
+                    SuggestedHttpStatusCode = 404
                 };
             }
 

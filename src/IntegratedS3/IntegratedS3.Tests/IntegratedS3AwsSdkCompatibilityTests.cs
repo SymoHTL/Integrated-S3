@@ -401,6 +401,85 @@ public sealed class IntegratedS3AwsSdkCompatibilityTests : IClassFixture<WebUiAp
         Assert.Equal(HttpStatusCode.NotModified, notModifiedGetException.StatusCode);
     }
 
+    // Conditional writes answer as AWS documents them: If-Match on a key with no object is 404 NoSuchKey, another
+    // ETag is 412 PreconditionFailed, and If-None-Match: * on an existing key is 412. The SDK sends both headers.
+    [Fact]
+    public async Task AmazonS3Client_ConditionalPutObject_AnswersNoSuchKeyAndPreconditionFailedLikeAws()
+    {
+        const string accessKeyId = "aws-sdk-conditional-put-access";
+        const string secretAccessKey = "aws-sdk-conditional-put-secret";
+        const string bucketName = "aws-sdk-conditional-put";
+        const string objectKey = "docs/conditional.txt";
+        const string otherETag = "\"0123456789abcdef0123456789abcdef\"";
+
+        await using var isolatedClient = await CreateAuthenticatedLoopbackClientAsync(accessKeyId, secretAccessKey);
+        using var s3Client = CreateS3Client(isolatedClient.BaseAddress!, accessKeyId, secretAccessKey);
+        await s3Client.PutBucketAsync(new PutBucketRequest
+        {
+            BucketName = bucketName
+        });
+
+        var missing = await Assert.ThrowsAsync<AmazonS3Exception>(() => s3Client.PutObjectAsync(new PutObjectRequest
+        {
+            BucketName = bucketName,
+            Key = objectKey,
+            ContentBody = "no object yet",
+            UseChunkEncoding = false,
+            IfMatch = otherETag
+        }));
+        Assert.Equal(HttpStatusCode.NotFound, missing.StatusCode);
+        Assert.Equal("NoSuchKey", missing.ErrorCode);
+
+        var created = await s3Client.PutObjectAsync(new PutObjectRequest
+        {
+            BucketName = bucketName,
+            Key = objectKey,
+            ContentBody = "first",
+            UseChunkEncoding = false,
+            IfNoneMatch = "*"
+        });
+        Assert.Equal(HttpStatusCode.OK, created.HttpStatusCode);
+
+        var exists = await Assert.ThrowsAsync<AmazonS3Exception>(() => s3Client.PutObjectAsync(new PutObjectRequest
+        {
+            BucketName = bucketName,
+            Key = objectKey,
+            ContentBody = "created twice",
+            UseChunkEncoding = false,
+            IfNoneMatch = "*"
+        }));
+        Assert.Equal(HttpStatusCode.PreconditionFailed, exists.StatusCode);
+        Assert.Equal("PreconditionFailed", exists.ErrorCode);
+
+        var mismatch = await Assert.ThrowsAsync<AmazonS3Exception>(() => s3Client.PutObjectAsync(new PutObjectRequest
+        {
+            BucketName = bucketName,
+            Key = objectKey,
+            ContentBody = "stale",
+            UseChunkEncoding = false,
+            IfMatch = otherETag
+        }));
+        Assert.Equal(HttpStatusCode.PreconditionFailed, mismatch.StatusCode);
+        Assert.Equal("PreconditionFailed", mismatch.ErrorCode);
+
+        var replaced = await s3Client.PutObjectAsync(new PutObjectRequest
+        {
+            BucketName = bucketName,
+            Key = objectKey,
+            ContentBody = "second",
+            UseChunkEncoding = false,
+            IfMatch = created.ETag
+        });
+        Assert.Equal(HttpStatusCode.OK, replaced.HttpStatusCode);
+
+        using var stored = await s3Client.GetObjectAsync(bucketName, objectKey);
+        using (var reader = new StreamReader(stored.ResponseStream)) {
+            Assert.Equal("second", await reader.ReadToEndAsync());
+        }
+
+        Assert.Equal(replaced.ETag, stored.ETag);
+    }
+
     [Fact]
     public async Task AmazonS3Client_BucketDefaultEncryption_ControlPlaneCrud_RoundTripsAgainstS3Provider()
     {
