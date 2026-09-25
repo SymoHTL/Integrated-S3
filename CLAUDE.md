@@ -282,10 +282,10 @@ code (#262).
 - **Durable lessons** (a trap that bit, a postmortem, a recipe): one file per fact in `knowledge/`
   plus one line in `INDEX.md`, added in the PR that learned it. Update an existing entry rather
   than adding a near-duplicate; delete one that is proven wrong. Gate: the `Knowledge lint` CI job
-  (`scripts/lint_knowledge.py`), for the structure its docstring lists: at least five entries, the
-  index against the files, the entry names this file and the entries cite, frontmatter,
-  credentials in the store, and conflict markers in the store and this file. HAZARD for the
-  content: nothing checks that an entry is new, current and true (#270).
+  (`scripts/lint_knowledge.py`), for the structure its docstring lists, among them a floor on the
+  entry count, the index against the files, the entry names this file and the entries cite,
+  frontmatter, credentials in the store, and conflict markers in the store and this file. HAZARD
+  for the content: nothing checks that an entry is new, current and true (#270).
 - **User docs**: `README.md` and `docs/`. The dated audit snapshots
   (`docs/s3-compliance-audit-2026-07-04.md`, `docs/seaweedfs-comparison-2026-07-04.md`) stay as
   they were written.

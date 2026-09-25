@@ -2,13 +2,15 @@
 """Knowledge lint: the CI gate for the in-repo knowledge store (INDEX.md + knowledge/).
 
 Fails (exit 1) on:
-  * fewer than FLOOR entries in knowledge/: every other check passes on an empty or wrong tree
+  * a missing INDEX.md, or fewer than FLOOR entries in knowledge/: a wrong or emptied tree whose
+    INDEX.md and CLAUDE.md name no entry would pass every other check
   * an INDEX.md link into knowledge/ whose target file does not exist
   * a file under knowledge/ that leads no INDEX.md list item, or more than one, as a merge that
     kept both sides does. An item starts with -, *, +, 1. or 1), then an inline link to its entry,
-    closed on the same line, plain, bold or italic: - [Title](knowledge/x.md). A link later in an
-    item, or a reference-style link, does not count as the entry's line. A sub-item that starts
-    with a link does, so a see-also goes in the hook. So does an item inside a code block.
+    plain, bold or italic, whose (target) closes on its line: - [Title](knowledge/x.md). The text
+    may wrap and hold one level of brackets. A link later in an item, or a reference-style link,
+    does not count as the entry's line. A sub-item that starts with a link does, so a see-also
+    goes in the hook. So does an item inside a code block.
   * a knowledge/*.md path named in CLAUDE.md, INDEX.md or an entry that does not exist, and a
     missing CLAUDE.md, whose pointers would otherwise go unchecked. A path inside a URL or after
     another directory (team-knowledge/, ../other-repo/knowledge/) is another store's and is
@@ -61,15 +63,18 @@ CONFLICT_MARKER = re.compile(r"^(<<<<<<< |>>>>>>> )", re.M)
 LINK_TARGET = re.compile(
     r"\]\([ \t]*<?(?:\./)?(knowledge/[^)\s>#]+)[^)]*\)|^[ \t]*\[[^\]]+\]:[ \t]*<?(?:\./)?(knowledge/[^\s>#]+)", re.M)
 # The link that leads an INDEX.md list item: the entry the item is for. Its text may hold one level
-# of brackets, and it must close on its line: [a](knowledge/a.md without ")" is plain text.
+# of brackets and wrap, but not across a blank line or into the next item; its (target "title")
+# must close on its line: [a](knowledge/a.md without ")" is plain text.
 LEADING_LINK = re.compile(
-    r"^[ \t]*(?:[-*+]|\d+[.)])[ \t]+(?:\*{1,3}|_{1,3})?\[(?:[^\[\]\n]|\[[^\[\]\n]*\])*\]"
-    r"\([ \t]*<?(?:\./)?(knowledge/[^)\s>#]+)(?:#[^)\s>]*)?>?(?:[ \t]+(?:\"[^\"\n]*\"|'[^'\n]*'))?[ \t]*\)", re.M)
+    r"^[ \t]*(?:[-*+]|\d+[.)])[ \t]+(?:\*{1,3}|_{1,3})?\[(?:[^\[\]\n]|\[[^\[\]\n]*\]"
+    r"|\n(?![ \t]*(?:\n|[-*+][ \t]|\d+[.)][ \t])))*\]"
+    r"\([ \t]*<?(?:\./)?(knowledge/[^)\s>#]+)(?:#[^)\s>]*)?>?"
+    r"(?:[ \t]+(?:\"[^\"\n]*\"|'[^'\n]*'|\([^()\n]*\)))?[ \t]*\)", re.M)
 # A path into this repo's knowledge/ named anywhere in prose, such as `knowledge/x.md` in CLAUDE.md.
 # Not one inside a longer path or URL, which points into another repo, and not the knowledge/x.md
 # in knowledge/x.md.bak; a sentence's closing period or dash still ends the name.
 ENTRY_MENTION = re.compile(r"(?<![\w/.-])(?:\./)?(knowledge/[\w./-]+?\.md)(?!\w|\.\w)", re.I)
-EMPTY_SCALAR = r"(?!(?:\"\"|''|~|null)[ \t]*$)"  # YAML's empty values, which \S alone accepts
+EMPTY_SCALAR = r"(?!(?:\"\"|''|~|null)[ \t]*$)"  # the empty values the docstring lists; \S accepts them
 FRONTMATTER_TYPE = re.compile(r"^metadata:[ \t]*\n(?:[ \t]+\S.*\n)*?[ \t]+type:[ \t]*(user|feedback|project|reference)[ \t]*$", re.M)
 
 
@@ -81,6 +86,8 @@ def read(path):
 def lint(root, floor=FLOOR):
     """(errors, warnings) for the store under root. Prints nothing: run() does."""
     errors, warnings = [], []
+    if not os.path.isfile(os.path.join(root, "INDEX.md")):
+        return ["INDEX.md is missing: is this the right tree?"], []
     index = read(os.path.join(root, "INDEX.md"))
     index_text = re.sub(r"<!--.*?-->", "", index, flags=re.S)
     linked = {a or b for a, b in LINK_TARGET.findall(index_text)}
@@ -215,6 +222,7 @@ def self_test():
         (None, [("CLAUDE.md", "A backup, knowledge/zz.md.bak, is not an entry name.\n")]),
         (None, [("INDEX.md", "- [`a[0]` is null](knowledge/a.md) - hook\n")]),
         (None, [("INDEX.md", "- *[a](knowledge/a.md)* - hook\n")]),
+        (None, [("INDEX.md", "- [a long\n  title](knowledge/a.md) - hook\n")]),
         ("INDEX.md links missing file", [("INDEX.md", index + "- [b](knowledge/b.md)\n")]),
         ("INDEX.md links missing file", [("INDEX.md", index + "- [b](./knowledge/b.md)\n")]),
         ("INDEX.md links missing file", [("INDEX.md", index + '- [b](knowledge/b.md "t")\n')]),
@@ -222,6 +230,10 @@ def self_test():
         ("has no INDEX.md line", [("knowledge/c.md", entry.format("c", "a"))]),
         ("has no INDEX.md line", [("INDEX.md", "<!--\n- [a](knowledge/a.md) - hook\n-->\n")]),
         (["knowledge/a.md has no INDEX.md line"], [("INDEX.md", "- [a](knowledge/a.md - hook\n")]),
+        (["knowledge/a.md has no INDEX.md line"], [("INDEX.md", "- [a](knowledge/a.md#why - hook (see #12)\n")]),
+        (["knowledge/a.md has no INDEX.md line"], [("INDEX.md", "- [x\n\n  y](knowledge/a.md) - hook\n")]),
+        (["knowledge/a.md has no INDEX.md line"], [("INDEX.md", "- [x\n- y](knowledge/a.md) - hook\n")]),
+        (["INDEX.md is missing: is this the right tree?"], [("INDEX.md", None)]),
         ("knowledge/a.md has no INDEX.md line", [("INDEX.md", "- [a][r] - hook\n\n[r]: knowledge/a.md\n")]),
         ("knowledge/a.md has no INDEX.md line", [("INDEX.md", "- [b](knowledge/b.md) - hook, see [a](knowledge/a.md)\n"),
                                                  ("knowledge/b.md", entry.format("b", "a"))]),
@@ -238,6 +250,11 @@ def self_test():
         ("INDEX.md has 2 lines for knowledge/a.md", [("INDEX.md", index + "- *[a](knowledge/a.md)* - hook\n")]),
         ("INDEX.md has 2 lines for knowledge/a.md", [("INDEX.md", index + "- ***[a](knowledge/a.md)*** - hook\n")]),
         ("INDEX.md has 2 lines for knowledge/a.md", [("INDEX.md", index + "- [`a[0]`](knowledge/a.md) - hook\n")]),
+        ("INDEX.md has 2 lines for knowledge/a.md", [("INDEX.md", index + "- _[a](knowledge/a.md)_ - hook\n")]),
+        ("INDEX.md has 2 lines for knowledge/a.md", [("INDEX.md", index + "- ___[a](knowledge/a.md)___ - hook\n")]),
+        ("INDEX.md has 2 lines for knowledge/a.md", [("INDEX.md", index + "- [a](knowledge/a.md 'why') - hook\n")]),
+        ("INDEX.md has 2 lines for knowledge/a.md", [("INDEX.md", index + "- [a](knowledge/a.md (why)) - hook\n")]),
+        ("INDEX.md has 2 lines for knowledge/a.md", [("INDEX.md", index + "- [a long\n  title](knowledge/a.md) - hook\n")]),
         ("CLAUDE.md names missing file knowledge/b-c.md", [("CLAUDE.md", "Rule; `knowledge/b-c.md`.\n")]),
         ("CLAUDE.md names missing file knowledge/sigv4-b2.md", [("CLAUDE.md", "Rule; `knowledge/sigv4-b2.md`.\n")]),
         ("CLAUDE.md names missing file knowledge/b.md", [("CLAUDE.md", "Rule; see ./knowledge/b.md.\n")]),
@@ -256,6 +273,8 @@ def self_test():
         ("missing frontmatter", [("knowledge/a.md", entry.format("a", "a").replace("description: d\n", "description:\n"))]),
         ("missing frontmatter", [("knowledge/a.md", entry.format("a", "a").replace("description: d\n", 'description: ""\n'))]),
         ("missing frontmatter", [("knowledge/a.md", entry.format("a", "a").replace("description: d\n", "description: null\n"))]),
+        ("missing frontmatter", [("knowledge/a.md", entry.format("a", "a").replace("description: d\n", "description: ''\n"))]),
+        ("missing frontmatter", [("knowledge/a.md", entry.format("a", "a").replace("description: d\n", "description: ~ \n"))]),
         ("missing frontmatter", [("knowledge/a.md", entry.format("a", "a").replace("description: d\n", "")
                                   + "\n---\n\ndescription: later\n---\n")]),
         ("missing frontmatter", [("knowledge/a.md", entry.format("a", "a").replace("  type: project\n", ""))]),
@@ -305,7 +324,7 @@ def self_test():
             for rel, text in files:
                 put(rel, text)
             out = io.StringIO()
-            with contextlib.redirect_stdout(out):
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):
                 errors, warnings = lint(root, floor=1)
             if out.getvalue():
                 failures.append(f"{files}: lint() printed {len(out.getvalue())} characters")
@@ -338,8 +357,15 @@ def self_test():
         for e in more:
             put(f"knowledge/{e}.md", entry.format(e, "a"))
         codes = [subprocess.run([sys.executable, script], capture_output=True).returncode]
-        put("knowledge/c.md", entry.format("c", "a"))
-        codes.append(subprocess.run([sys.executable, script], capture_output=True).returncode)
+        put("knowledge/c.md", entry.format("c", "a") + secrets[-1] + "\n")
+        r = subprocess.run([sys.executable, script], capture_output=True, text=True)
+        codes.append(r.returncode)
+        if r.stderr or r.stdout != ("WARN  knowledge/a.md: [[later]] resolves to no entry (worth writing?)\n"
+                                    "ERROR knowledge/c.md has no INDEX.md line\n"
+                                    "ERROR knowledge/c.md:9: credential-shaped string\n"
+                                    "2 error(s), 1 warning(s)\n"):
+            failures.append(f"the script printed {len(r.stdout)} and {len(r.stderr)} characters for a store "
+                            "with a credential, not exactly its warning, its two errors and the count")
         put("knowledge/c.md", None)
         put(f"knowledge/{more[-1]}.md", None)
         put("INDEX.md", index + "".join(f"- [{e}](knowledge/{e}.md) - hook\n" for e in more[:-1]))
