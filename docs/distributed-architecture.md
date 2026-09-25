@@ -60,7 +60,7 @@ clients --> any load balancer (no sticky sessions)
 - **The metadata store** is internal to the engine: transactional primitives (lock a bucket, lock a
   key, read and write the rows below) that the engine combines into one transaction per S3
   operation. The engine writes S3 semantics once, in C#, against these primitives; each store only
-  translates them into its SQL dialect. The contract stays internal because it will change many
+  translates them into its own queries. The contract stays internal because it will change many
   times while the engine grows, and a public interface would make each change a major version. A
   third store (FoundationDB, a PostgreSQL-compatible database) would be written inside the engine.
 - **`IBlobStore`** (`IntegratedS3.Abstractions.Blobs`, public): write-once blobs. Write a stream and
@@ -72,8 +72,9 @@ clients --> any load balancer (no sticky sessions)
   in its own CI.
 - **The engine**: versioning, preconditions, multipart, copy, tagging, ACLs, Object Lock, lifecycle
   and garbage collection, written once on top of the two contracts. It also gives blob stores a
-  narrow service for their own upkeep (see "Consumers"): replace one locator by another, and report
-  a blob as lost.
+  narrow service for their own upkeep (see "Consumers"): replace one locator by another, report a
+  blob as lost, and run a store's own jobs. That service and the job API are public in
+  `Abstractions`, because a store depends on nothing else.
 
 ### How it enters the code base
 
@@ -94,8 +95,10 @@ clients --> any load balancer (no sticky sessions)
     package; its contract suite and a constrainable in-memory store live in `IntegratedS3.Testing`.
   - `IntegratedS3.Engine` holds the engine, the internal metadata contract, both metadata stores on
     raw ADO.NET (Microsoft.Data.Sqlite and Npgsql; the host picks one with `UseSqlite` or
-    `UsePostgreSql`, and trimming drops the other), the local-disk blob store, and the
-    database-backed implementation of Core's `IStorageAuthorizationCompatibilityService`. Its row is
+    `UsePostgreSql`, and trimming drops the other's managed code), the local-disk blob store, and
+    the database-backed implementation of Core's `IStorageAuthorizationCompatibilityService`. That
+    interface addresses an object's ACL by bucket and key, with no version id, so the engine adds a
+    versioned interface and implements the old one for the latest version only. Its row ends as
     Abstractions, Protocol and Core. It ships with a `-preview` version suffix until it matches the
     Disk provider.
   - The S3 blob store goes into `IntegratedS3.Provider.S3`, which reuses its client and needs only
@@ -124,9 +127,10 @@ object metadata, tags and ACLs, and eventually consistent bucket configuration.
    tier").
 2. **LIST is strongly consistent**: it reads the index, with no cache. A page reflects every write
    that committed before it started; pagination is not a snapshot. *Matches AWS.*
-3. **Preconditions are atomic across the cluster.** `If-None-Match: *` and `If-Match` on PUT,
-   Complete, Copy and DELETE are evaluated under the key's lock, inside the commit transaction.
-   *Matches AWS's conditional writes.*
+3. **Preconditions are atomic across the cluster.** `If-None-Match: *` on PUT, Complete and Copy,
+   and `If-Match` on those and on DELETE, are evaluated under the key's lock, inside the commit
+   transaction. *Matches AWS's conditional writes*, including their status codes: `If-Match` on a
+   missing key or on a delete marker fails with 404, a mismatched ETag with 412.
 4. **A GET reads one snapshot.** It resolves the version once and streams bytes that never change, so
    a concurrent overwrite cannot mix two versions into one response. *Matches AWS.*
 5. **Version order within a key is commit order.** It comes from a per-key counter (`head.seq + 1`)
@@ -139,7 +143,10 @@ object metadata, tags and ACLs, and eventually consistent bucket configuration.
    `clock_timestamp()` read after the key's lock is taken, and never earlier than the key's previous
    LastModified, so a newer version never looks older than a noncurrent one. A node's clock is used
    only for the SigV4 clock-skew window; database hosts and nodes both need NTP, as with AWS.
-7. **Object ACLs and tags are read inside the request**, from the version row: *matches AWS*.
+   *Differs from AWS* for multipart uploads, whose LastModified AWS sets to the upload's initiation
+   date; here it is the commit time of CompleteMultipartUpload.
+7. **Object ACLs and tags are read inside the request**, from the version row: *matches AWS*. The
+   ACL a write carries is stored by that write's own transaction, never applied by a later call.
    **Bucket configuration** (CORS, policy, the bucket ACL, lifecycle and the rest) **is stale for at
    most T seconds** (proposed T = 5): it is cached per node, invalidated by `LISTEN`/`NOTIFY`, with a
    TTL as the safety net and a full flush after any reconnect. *Matches AWS* for bucket configuration.
@@ -157,7 +164,8 @@ object metadata, tags and ACLs, and eventually consistent bucket configuration.
 | `object_heads(bucket_id, key, seq, is_delete_marker, …)` | One row per key: the LIST index and the per-key lock. A partial index covers the heads that are not delete markers, so a page after a mass delete does not scan the markers |
 | `object_versions(bucket_id, key, seq, version_id, manifest or inline data, size, etag, checksums, headers, user metadata, tags, ACL, retention, legal hold, data key)` | One row per version |
 | `uploads`, `upload_parts(upload_id, part_no, manifest, size, md5, checksums)` | Multipart state |
-| `blob_refs(locator, state)` | Every blob a row references, and every blob the orphan sweep has claimed: the reverse index for locator swaps and the fence between a commit and the sweep |
+| `blob_refs(locator primary key, state, ref_count)` | Every blob a row references, and every blob the orphan sweep has claimed: the fence between a commit and the sweep, and the count for shared manifests (phase 3). A row stays until garbage collection has deleted its blob, and a `swept` row stays after that |
+| `blob_holders(locator, bucket_id, key, version or upload and part)` | The reverse index for relocation and lost-blob reports |
 | `gc_queue(locator, not_before)`, `orphan_candidates(locator, first_seen)`, `blob_read_leases(locator, node, until)` | Garbage collection and the orphan sweep |
 | `jobs`, `leases(name, owner, fence, until)`, `nodes` | Background work, single-owner work, membership |
 
@@ -170,18 +178,26 @@ make up an object.
 Every object write has the same shape. PUT is the example:
 
 1. Stream the body to the blob store, computing the digests on the way. No lock is held.
-2. In one transaction:
+2. In one transaction, which on PostgreSQL starts with `BEGIN ISOLATION LEVEL READ COMMITTED`
+   (the reasoning below holds only there, and `default_transaction_isolation` can be set per
+   database or role):
    1. Take a shared advisory lock keyed by the bucket's **name**, in a statement of its own. Under
       READ COMMITTED a statement's snapshot is taken before its own lock wait, so a read in the same
       statement would see the bucket as it was before a concurrent DeleteBucket or versioning change.
       Keying by name, not by a cached id, also covers a bucket deleted and re-created under the same
-      name.
+      name. The key is a 64-bit hash of the name in the two-key form with the engine's namespace, so
+      it cannot collide with the migration lock or a store's own locks. Every write under a bucket
+      takes this lock (CreateMultipartUpload and the object subresource writes included), and the
+      transaction checks that the bucket's id is the one the request was authorized against.
    2. Read the bucket row: existence, versioning state, Object Lock.
    3. Lock the key: insert the head row if it is missing (`ON CONFLICT DO NOTHING`), then
-      `SELECT … FOR UPDATE`. From here on, the latest committed version is fixed.
+      `SELECT … FOR UPDATE`, and repeat both until the select returns the row: under READ COMMITTED
+      a waiter whose row was deleted by the transaction it waited for gets no row. From here on, the
+      latest committed version is fixed. A transaction that leaves a key with no version deletes its
+      head row.
    4. Check the precondition in code against that version. `If-Match` on a missing key, or on a key
-      whose latest version is a delete marker, fails with 412, which a single
-      `INSERT … ON CONFLICT … DO UPDATE … WHERE` could not express.
+      whose latest version is a delete marker, fails with 404 as AWS documents, and a mismatched
+      ETag with 412, which a single `INSERT … ON CONFLICT … DO UPDATE … WHERE` could not express.
    5. Insert the version row and point the head at it. In an unversioned or suspended bucket, delete
       the replaced null version and queue its blobs for garbage collection.
    6. Record the new blobs in `blob_refs` (see "Crash safety").
@@ -195,8 +211,9 @@ The key's lock is held for a few round trips, never while the body is still arri
   and queues freed blobs. Object Lock, per-object retention and legal hold included, is checked in
   SQL against the database clock.
 - **UploadPart**: write the blob, verify any client checksum, then, in one transaction, take
-  `FOR SHARE` on the upload row, fail with `NoSuchUpload` unless the upload is still active, upsert
-  the part row, and queue the replaced part's blob. The last writer wins, as in S3. Because Complete
+  `FOR SHARE` on the upload row, fail with `NoSuchUpload` unless the upload is still active, lock the
+  part row as PUT locks the key, replace it, and queue the blob it held. The last writer wins, as in
+  S3. Because Complete
   takes `FOR UPDATE` on the same row, a part cannot commit after Complete has read the parts, and a
   retried UploadPart after a successful Complete gets `NoSuchUpload` instead of queuing a blob the
   object now references.
@@ -206,9 +223,11 @@ The key's lock is held for a few round trips, never while the body is still arri
   uploaded but not listed. No byte is copied, so the cost grows with the number of parts, not the
   object size (#239's goal). Complete racing Abort, or two Completes, serialize on the upload row, and
   exactly one wins.
-- **CopyObject**: a physical copy (server-side when the blob store offers it). A copy within one bucket
-  may later share the source's manifest, with a reference count in `blob_refs` updated in the same
-  transaction. Copies between buckets stay physical, so no transaction spans two buckets.
+- **CopyObject**: a physical copy (server-side once the blob store contract gains a copy capability,
+  which it does not have yet). A copy within one bucket may later share the source's manifest, with
+  a reference count in `blob_refs` updated in the same transaction; that transaction locks the
+  source locators' `blob_refs` rows and fails if one is no longer referenced. Copies between buckets
+  stay physical, so no transaction spans two buckets.
 - **ListObjectsV2**: a range scan over live heads in key order that stops after max-keys + 1. With a
   delimiter it skips ahead: at `photos/2024/` it emits that common prefix and seeks to the first key
   after the prefix. This needs the delimiter to reach the storage layer (#297). The cost grows with
@@ -236,7 +255,11 @@ data key before it is stored, like any blob.
 
 - Versioned SQL migrations run at startup under an advisory lock, replacing `EnsureCreated`. The lock
   is a session lock on a direct connection, because a migration can span several transactions
-  (`CREATE INDEX CONCURRENTLY` cannot run inside one). Each change adds first and removes only in a
+  (`CREATE INDEX CONCURRENTLY` cannot run inside one). The lock and the migration's DDL run on that
+  one connection. Nodes that find the lock taken poll with `pg_try_advisory_lock` and hold no
+  transaction open between polls: a waiter blocked in `pg_advisory_lock` holds a snapshot that a
+  concurrent index build waits for, a deadlock. A migration drops an INVALID index left by a failed
+  build before building it again. Each change adds first and removes only in a
   later release (expand, then contract), so old and new nodes run side by side during a rolling
   upgrade.
 - The stores use raw ADO.NET rather than EF: the locking SQL is exact, statements are batched into
@@ -250,6 +273,8 @@ A blob store declares what it can do, and the engine adapts; it never checks whi
 
 - **Maximum blob size.** The engine splits larger bodies into several blobs and lists them in the
   manifest, which multipart already needs anyway.
+- **Parallel writes.** A store declares how many blobs of one body it accepts at once, and the engine
+  writes a body's blobs with at most that parallelism.
 - **Range reads.** When a store cannot serve a byte range, the engine reads from the start of the
   blob and skips.
 - **Locators** are opaque and assigned by the store at write time. A store whose read URLs expire
@@ -270,38 +295,55 @@ becomes a property of the generic contracts.
 A store's own upkeep uses three generic mechanisms:
 
 - **Relocation.** A store that must move a blob (to another container, channel or disk) writes the
-  copy, then asks the engine to replace the old locator by the new one. The engine does a
-  compare-and-swap on the old value in every manifest and part row that holds it, found through
-  `blob_refs`, and queues the old blob for garbage collection. If nothing references the old locator
-  any more, the swap fails and the store deletes its copy. Phase 4's compaction uses the same
+  copy, then asks the engine to replace the old locator by the new one. In one transaction the engine
+  locks the old locator's `blob_refs` row, takes the key lock of each version and `FOR SHARE` on the
+  upload row of each part that holds it (found through `blob_holders`), swaps the locator in those
+  rows, moves the reference to the new locator, and queues the old blob for garbage collection. A
+  transaction that copies a locator into a new row (CompleteMultipartUpload, a shared-manifest copy)
+  locks the same `blob_refs` row and fails if the locator is no longer referenced, and garbage
+  collection deletes a blob only in a transaction that finds it unreferenced. Repeating a swap that
+  already committed reports success. A store never deletes its copy itself: after a failed swap the
+  copy is unreferenced, and the orphan sweep collects it. Phase 4's compaction uses the same
   mechanism.
 - **Lost blobs.** A store that finds a blob gone for good reports it. The engine records the loss and
-  lists the versions that reference it. A policy decides what those versions become: answering an
-  error on read (the default), or delete markers.
+  lists the versions and upload parts that reference it. A policy decides what those versions become:
+  answering an error on read (the default), or delete markers. Under either policy the version's
+  other blobs are kept.
 - **Private state and containers.** A store may keep private state, such as a cache of expiring URLs
-  or the reference counts of containers that hold several blobs, in its own tables. In a cluster that
-  state must be shared, for example in the same PostgreSQL database. A store whose containers hold
-  several blobs deletes a container when its last blob is deleted.
+  or the live blobs of containers that hold several blobs, in its own tables. On a single node it
+  keeps them in its own database file, because the engine's SQLite file has one writer; in a cluster
+  that state must be shared, for example in the same PostgreSQL database. A store whose containers
+  hold several blobs keeps the set of live blobs in each container, deletes a container when that
+  set is empty, and treats removing a blob that is not in the set as a no-op, so a retried delete
+  never takes a container's other blobs with it.
 
 **Gates.** The blob-store contract suite runs in CI against a constrained in-memory store: an 8 MiB
 maximum blob size, store-assigned locators, no range reads, injected throttling, short listing pages
-and rate-limited deletes. A convention test fails when a file under `src/` outside tests and samples
-names a consumer. It cannot see an option or branch written for a consumer under a neutral name; that
-half of the rule is a `judgment step` in review. A consumer runs the same suite against its own store
-in its own CI.
+and rate-limited deletes. The engine's provider contract and endpoint suites also run on a
+constrained store, so the engine itself is held to the capabilities: bodies over the maximum blob
+size, ranged GETs without range support, and throttled calls that answer 503 `SlowDown`. A
+convention test fails when a file under `src/` outside tests and samples names a consumer. It cannot
+see an option or branch written for a consumer under a neutral name; that half of the rule is a
+`judgment step` in review (HAZARD, #270). A consumer runs the same suite against its own store in its
+own CI.
 
 **PersonalS3 as the worked example.** It already has this shape: metadata in SQLite, chunks in Discord
 messages.
-- Its Discord storage becomes an `IBlobStore`: attachments hold the blobs, the store assigns the
-  locators, refreshes its expiring URLs in its own table, and keeps the reference counts of messages
-  that hold several chunks.
+- Its Discord storage becomes an `IBlobStore` in which a blob is one message: `MaxBlobSize` is ten
+  8 MiB attachments, and the store cuts a blob into attachments itself, so messages need no live-blob
+  sets, and redistribution and deletes act on whole messages as they do today. The engine writes a
+  body's messages with the parallelism the store declares. The locator is the store's own id, not
+  Discord's attachment id, because the URL refresh rewrites attachment ids; the store refreshes its
+  expiring URLs in its own table.
 - Channel redistribution becomes relocation; a message Discord lost becomes a lost-blob report, with
   the delete-marker policy PersonalS3 uses today.
 - Its metadata moves to the SQLite metadata store through a one-time import. The engine offers one
   generic bulk-import path, which the Disk-layout importer uses too.
 - Multipart expiry and the orphan sweep become engine jobs. Store-specific upkeep, such as URL refresh
   and redistribution, registers through the same generic job API and gets leases for free.
-- Its encryption either stays inside its store or moves to the engine's decorator.
+- Its encryption stays inside its store: moving it to the engine's decorator would mean rewriting
+  every stored chunk, or teaching the decorator PersonalS3's own format. Inline storage stays off
+  when encryption at rest is left to the store, since inline objects never reach the store.
 - Its rate-limit state stays inside its store. Running it as a cluster would need that store to
   coordinate its own quotas across nodes; the engine knows nothing about them.
 
@@ -316,14 +358,23 @@ messages.
   its blobs. Both inserts hit the same primary key, so the database serializes the two. Whichever
   comes second sees the first: a commit that finds its blob claimed fails and the client retries, and
   the sweep never deletes a referenced blob. The ages come only from the database clock, never from
-  the store's timestamps.
+  the store's timestamps. A candidate row is dropped when the sweep finds its blob referenced or gone;
+  a `blob_refs` row stays until garbage collection has deleted its blob, so the sweep never claims a
+  locator that is in `gc_queue`. A `swept` row is kept, and each pass deletes again the blobs whose
+  row is `swept`, which finishes a claim whose delete a crash interrupted.
+- **The sweep refuses to empty a store.** It claims nothing while `blob_refs` holds no referenced row
+  but the store lists blobs (a node pointed at a fresh, wrong or partly restored database), it stays
+  off while an import runs, and a store may decline a claim (for example in a container none of whose
+  blobs is referenced); a declined claim is logged for an operator.
 - **G bounds the longest upload**: a single body whose upload takes longer than G fails at its commit.
   With G = 24 hours that is a sustained rate below about 60 KiB/s for a 5 GiB part.
-- **Garbage collection** deletes a queued blob only after its `not_before`. A GET that is still
-  streaming a few minutes after it started records a read lease on its blobs and renews it; garbage
-  collection skips a blob with a live lease. The `not_before` delay therefore only has to cover the
-  time before the first lease is written, and a reader that resolved an old manifest never hits a
-  deleted blob.
+- **Garbage collection** deletes a queued blob only after its `not_before`. A reader that is still
+  reading a few minutes after it started records a read lease on its blobs and renews it; garbage
+  collection skips a blob with a live lease. Every reader of a blob leases it: GETs, the physical
+  copies of CopyObject and UploadPartCopy, replication and scrubbing. The lease insert fails when
+  garbage collection has claimed the blob, and a reader whose lease lapsed stops with an error instead
+  of reading on. The `not_before` delay must exceed the time before the first lease plus the longest
+  pause a node survives; compaction drops a volume only after every blob in it is collected.
 - **Failover.** Garbage collection deletes a blob only after the standbys have replayed the
   transaction that queued it, so a promoted standby never references a deleted blob.
 - A point-in-time restore of the metadata is safe only as far back as the `not_before` delay.
@@ -360,17 +411,19 @@ PostgreSQL is the only consensus in the system; everything else derives from it.
   the configured public base URL or forwarded headers when behind a proxy.
 - **Credentials** can live in the database, cached per node and invalidated by `NOTIFY`.
 - **Kestrel limits** (minimum body data rate, connection limits, timeouts) are set explicitly.
-- **Commits cannot be cancelled.** A commit runs with a token the request cannot cancel, because a
-  cancelled wait for a synchronous standby leaves the transaction committed locally, visible, and
-  possibly lost in a failover.
+- **Commits cannot be cancelled.** A commit runs with no cancellation token, on connections with
+  `Command Timeout=0`. Npgsql's default of 30 seconds would send PostgreSQL a cancel, which ends the
+  wait for a synchronous standby and reports success for a transaction that is committed locally,
+  visible, and possibly lost in a failover. A commit that reports the warning "canceling wait for
+  synchronous replication" is answered with a 500 and logged as a durability fault, never
+  acknowledged.
 
 ## Performance
 
 Targets are set as SLOs with the owner before phase 3; the levers, in order of production impact:
 
-1. **Streaming uploads.** A signed SHA-256 is checked while the body streams, and the commit happens
-   only after the check passes (#238). aws-chunked bodies are decoded as a stream instead of being
-   spooled to a temporary file first.
+1. **Streaming uploads.** No request path buffers or spools a whole body; each body streams straight
+   to the blob store (#238).
 2. **Hash once**: MD5 for the ETag, plus the checksum the client asked for or one default, using
    hardware CRC instructions.
 3. **Zero-copy multipart**, with the part digests stored at UploadPart.
@@ -439,16 +492,21 @@ I/O and small retry units.
   bucket.
 - **High availability**: streaming replication with automatic failover (Patroni, or a managed
   service). Consistency item 1 holds only with a synchronous standby: without one, an acknowledged
-  PUT can be lost in a failover. A synchronous standby costs one round trip to it per write.
+  PUT can be lost in a failover. A synchronous standby costs one round trip to it per write. With
+  Patroni this needs `synchronous_mode_strict`: plain `synchronous_mode` turns replication
+  asynchronous when no synchronous standby is left.
 - **Read scaling**: with `synchronous_commit = remote_apply`, reads routed to the current synchronous
   standbys see every write their client had acknowledged. That is read-your-own-writes, not
   linearizability: a standby applies a commit before the primary makes it visible, and an `ANY k`
-  quorum does not say which standbys those are. Standby reads are therefore limited to requests that
-  only need read-your-own-writes, and phase 5 runs the linearizability checker against them.
+  quorum does not say which standbys those are, and the set can change. A standby therefore serves a
+  read only when its replay position is at or past the client's last commit position; otherwise the
+  primary serves it. Standby reads are limited to requests that only need read-your-own-writes, and
+  phase 5 runs the linearizability checker against them.
 - **Beyond one primary**: shard by bucket (for example with Citus), or move the metadata store onto a
   range-sharded, ordered, transactional key-value store (FoundationDB, TiKV). Object operations stay
-  within one bucket: copies between buckets are physical. Bucket names, jobs, leases, the garbage
-  collection queue and `blob_refs` are global, and stay in one unsharded schema.
+  within one bucket: copies between buckets are physical. `blob_refs`, `gc_queue` and the read leases
+  are sharded with their bucket, since a locator is referenced from one bucket only. Bucket names,
+  jobs and leases stay unsharded, and the orphan sweep checks every shard.
 - **If PostgreSQL is down, the cluster is down**, because every read needs metadata. The cluster's
   availability is PostgreSQL's; that is accepted through phase 4.
 
@@ -480,19 +538,28 @@ The harness, suite and job names below are the ones the phase issues create.
 | Rule | Gate |
 |---|---|
 | The metadata stores behave the same | The engine's store-level suite (row and bucket locks across connections, jobs and leases, `not_before`, the `blob_refs` fence) on SQLite and on PostgreSQL (#290's lane) |
-| The engine behaves like S3 | `StorageProviderContractTests` for the engine on both stores, with new facts for the races: N parallel `If-None-Match: *` give one winner; `If-Match` on a missing key and on a delete marker give 412; preconditions on Complete, Copy and DELETE; Complete racing Abort gives one winner; UploadPart racing or following Complete never queues a referenced blob; no write lands in a deleted or re-created bucket. The harness calls 29 of 86 operations today and many facts return early (#268), so the engine lane also runs the endpoint and SDK suites |
+| The engine behaves like S3 | `StorageProviderContractTests` for the engine on both stores, with new facts for the races: N parallel `If-None-Match: *` give one winner; `If-Match` on a missing key and on a delete marker give 404, and a mismatched ETag 412; preconditions on Complete, Copy and DELETE; Complete racing Abort gives one winner; UploadPart racing or following Complete never queues a referenced blob; no write lands in a deleted or re-created bucket. The harness calls 29 of 86 operations today and many facts return early (#268), so the engine lane also runs the endpoint and SDK suites |
 | Blob stores are write-once and serve ranges correctly | `BlobStoreContractTests` against every store and the constrained in-memory store |
 | The cluster is linearizable | #291: the checker's self-test (known bad histories rejected, known good ones accepted), and the harness proved red on today's Disk provider with two nodes sharing a root; then three engine nodes on one PostgreSQL must stay green |
 | A crash never leaves a row pointing at a missing blob | Kill the process in the middle of PUT, Complete and DELETE, restart, scan the invariants, with a fault-injecting `IBlobStore` decorator |
 | The sweep never deletes a referenced blob | A store-level fact that races a commit against the sweep's claim on the same locator |
-| Readers never hit a collected blob | HAZARD until the read-lease fact exists (phase 2) |
-| Bucket configuration is at most T seconds stale | HAZARD until the cache-invalidation fact exists (phase 2) |
-| Time comes only from the database | `judgment step` in review, plus a fact that sets a node clock far off and checks LastModified and retention |
-| The key lock is never held while a body arrives | `judgment step` in review |
-| Blobs are flushed before their commit | The crash gate above, for local disk; HAZARD for other stores |
-| PgBouncer in transaction mode works | HAZARD until #290's lane runs through PgBouncer |
-| Rolling upgrades work | CI runs the previous release's node against the new schema |
-| No consumer-specific code | The convention test from "Consumers" (names only); `judgment step` for neutral-looking branches |
+| The sweep refuses to empty a store | Two store-level facts: an empty database over a populated store deletes nothing, and a store that declines a claim keeps its blob |
+| Heads never outlive their last version | Two facts: a DELETE of a missing key followed by LIST and DeleteBucket; N racing `If-None-Match: *` writes against a delete of the key's last version give exactly one winner |
+| Relocation never loses or leaks a blob | Store-level facts for a swap racing Complete, a copy and garbage collection, for a retried swap whose first commit succeeded, and for a swap racing a DELETE of a version that holds the locator; HAZARD until relocation exists (phase 2, #288) |
+| Version order is commit order | A fact that holds one PUT's body mid-stream and requires a second PUT of the same key on another connection to commit first and get the older version |
+| No write runs half under the old versioning mode | A fact that races PUTs against a versioning change and checks every committed version against the state it committed under |
+| The authorization layer is never replaced | A DI fact that `IStorageService` resolves to `AuthorizingStorageService` with the engine registered |
+| The engine adapts to store capabilities | The engine's provider contract and endpoint suites on the constrained store (see "Consumers") |
+| Readers never hit a collected blob | HAZARD until the read-lease fact exists (phase 2, #288) |
+| Bucket configuration is at most T seconds stale | HAZARD until the cache-invalidation fact exists (phase 2, #288) |
+| Time comes only from the database | A banned-API entry for `DateTime.Now`, `DateTime.UtcNow`, `DateTimeOffset.Now` and `DateTimeOffset.UtcNow` in `IntegratedS3.Engine`, plus a fact that sets a node clock far off and checks LastModified and retention |
+| The key lock is never held while a body arrives | The version-order fact above: a second PUT commits while the first body is held mid-stream |
+| Commits cannot be cancelled | A fact on #290's lane where a synchronous standby's WAL receiver is paused longer than the command timeout, asserting the commit still waits; HAZARD until that lane has a standby (#290) |
+| Garbage collection waits for standby replay | HAZARD until #290's lane has a standby (#290) |
+| Blobs are flushed before their commit | A store-level fact that the local-disk store's write returns only after `Flush(true)`; a power-cut test on a filesystem that drops unflushed writes (LazyFS) is HAZARD (#288); other stores HAZARD (#288) |
+| PgBouncer in transaction mode works | HAZARD until #290's lane runs through PgBouncer (#290) |
+| Rolling upgrades work | CI runs the previous release's node against the new schema; HAZARD until the engine's first release (#288) |
+| No consumer-specific code | The convention test from "Consumers" (names only); `judgment step` for neutral-looking branches (HAZARD, #270) |
 | No performance regression | Macro-benchmarks (`warp`) on one and three nodes, against the agreed SLOs. The in-process BenchmarkDotNet gate has never run, because no self-hosted runner exists (#270) |
 | Phase 4 never loses an acknowledged write | Partition and kill tests plus the checker, including a primary that is alive but cut off from the sealer |
 
