@@ -97,8 +97,8 @@ Clauses 1 to 5 each come from defects that passed a green suite here.
    `IntegratedS3.Testing` (#268), a SigV4 fix goes into its SigV4a twin, and an endpoint fix goes
    into every endpoint of the same shape.
 
-Gate: review only, by the verification pass every PR gets before it merges (Git & PRs). HAZARD:
-nothing mechanical checks these clauses (#270).
+Gate: none. The verification pass every PR gets (Git & PRs) checks these clauses, and nothing
+mechanical does (HAZARD, #270).
 
 ## CI
 
@@ -268,16 +268,17 @@ code (#262).
   `gh pr merge <n> --squash --subject "<title> (#<n>)" --body-file <body>`. The repo's default
   squash message is the branch's commit messages instead (HAZARD, #270). Keep the body's claims
   true to the merged code.
-- Every PR gets a verification pass before it merges: a skeptic subagent re-reads the PR at its
-  head sha against the current code, checks its tests against the clauses under Tests, re-runs the
-  claims in its body, mutation-tests any new gate, and reports what is false or broken. Each
-  finding is fixed, or answered in the PR with a written reason; fixes that add new claims are
-  verified again. This replaced the planned automated CI reviewer on 2026-09-23. HAZARD: nothing
-  enforces it (#270).
-- A PR merges only after CI on its head sha has finished green and every review thread is fixed or
-  answered with a written reason (HAZARD, not enforced: #270). `heavy` is dispatched and green for
-  changes that need it. A benchmark regression is fixed, or the baseline is re-recorded in the same
-  PR with the reason.
+- Every PR gets a verification pass: a skeptic subagent re-reads the PR at its head sha against
+  the current code, checks its tests against the clauses under Tests, re-runs the claims in its
+  body, breaks each new or changed gate in ways the PR's seen-red run did not, and reports what is
+  false or broken. The maintainer runs it for a contributor's or a bot's PR. The body's
+  `## Verification` section names the sha each pass ran at and answers each finding: fixed, or
+  why not. A later push that changes code or claims gets a pass over that change; a merge of the
+  base branch without conflicts does not.
+- A PR merges only after CI on its head sha has finished green, its verification pass is done, and
+  every review thread and finding is fixed or answered with a written reason (HAZARD, not
+  enforced: #270). `heavy` is dispatched and green for changes that need it. A benchmark regression
+  is fixed, or the baseline is re-recorded in the same PR with the reason.
 - `CHANGELOG.md` `Unreleased` gets a line for every user-visible change (HAZARD, #270).
 
 ## Where facts go

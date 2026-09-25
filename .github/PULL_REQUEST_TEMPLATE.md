@@ -21,7 +21,11 @@ Fixes #
 - [ ] Documentation updated where affected (`README.md`, `docs/`, XML doc comments)
 - [ ] Provider capability matrix (`docs/protocol-compatibility.md`) updated if provider support changed
 - [ ] `CHANGELOG.md` `Unreleased` section updated for user-visible changes
-- [ ] Verification pass run at the head sha; each finding fixed or answered below (`CLAUDE.md`, Git & PRs)
+- [ ] Verification pass run; its sha and the answer to each finding are under Verification below (`CLAUDE.md`, Git & PRs)
+
+## Verification
+
+<!-- The sha each verification pass ran at, and each finding: fixed, or why not. A later push that changes code or claims gets a pass over that change. -->
 
 ## Notes for reviewers
 
