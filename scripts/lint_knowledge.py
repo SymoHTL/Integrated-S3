@@ -3,20 +3,24 @@
 
 Fails (exit 1) on:
   * an INDEX.md link into knowledge/ whose target file does not exist
-  * a file under knowledge/ that no INDEX.md link points to (a link inside an HTML comment does
-    not count), or that leads more than one INDEX.md list item, as a merge that kept both sides
-    does
+  * a file under knowledge/ that no INDEX.md link points to, or that leads more than one INDEX.md
+    list item (-, *, + or 1.), as a merge that kept both sides does. A sub-item that starts with
+    a link counts as a line for that entry, so a see-also goes in the hook.
   * a knowledge/ path named in CLAUDE.md, INDEX.md or an entry that does not exist, and a missing
-    CLAUDE.md, whose pointers would otherwise go unchecked
+    CLAUDE.md, whose pointers would otherwise go unchecked. A path inside a URL or after another
+    directory (team-knowledge/, ../other-repo/knowledge/) is another store's and is skipped: name
+    another repo's entry that way, and write an example as knowledge/<slug>.md.
   * a file under knowledge/ that is not a .md entry directly in it: the store is flat
-  * an entry without frontmatter (a --- block at the top with non-empty name:, description: and
-    metadata type:), or whose name: is not its file name, so a [[slug]] link and the file it means
-    cannot drift apart
+  * an entry without frontmatter (a --- block at the top with non-empty name: and description:,
+    and a metadata: type: of user, feedback, project or reference), or whose name: is not its file
+    name, so a [[slug]] link and the file it means cannot drift apart
   * a credential-shaped string in INDEX.md or any file under knowledge/ (secret VALUES are banned;
-    variable names and flags are fine, and so are AWS's documented example keys)
-  * a merge-conflict marker in INDEX.md or any entry: a half-resolved INDEX.md merge is
-    otherwise a well-formed index with two extra lines
+    variable names and flags are fine, and so are AWS's documented example keys). The error names
+    the line and prints nothing of the value, because CI logs are public.
+  * a merge-conflict marker in INDEX.md, CLAUDE.md or any entry: a half-resolved INDEX.md merge
+    is otherwise a well-formed index with two extra lines
 
+Text inside an HTML comment in INDEX.md is skipped, except by the credential and conflict checks.
 Warns without failing on a [[wikilink]] that resolves to no entry: it marks an entry worth
 writing, or one renamed without updating the links to it.
 
@@ -49,16 +53,17 @@ CONFLICT_MARKER = re.compile(r"^(<<<<<<< |>>>>>>> )", re.M)
 LINK_TARGET = re.compile(
     r"\]\([ \t]*<?(?:\./)?(knowledge/[^)\s>#]+)[^)]*\)|^[ \t]*\[[^\]]+\]:[ \t]*<?(?:\./)?(knowledge/[^\s>#]+)", re.M)
 # The link that leads an INDEX.md list item: the entry the item is for.
-LEADING_LINK = re.compile(r"^[ \t]*[-*+][ \t]+\[[^\]]*\]\([ \t]*<?(?:\./)?(knowledge/[^)\s>#]+)", re.M)
+LEADING_LINK = re.compile(
+    r"^[ \t]*(?:[-*+]|\d+[.)])[ \t]+(?:\*\*|__)?\[[^\]]*\]\([ \t]*<?(?:\./)?(knowledge/[^)\s>#]+)", re.M)
 # A path into this repo's knowledge/ named anywhere in prose, such as `knowledge/x.md` in CLAUDE.md.
-# Not one inside a longer path or URL, which points into another repo.
-ENTRY_MENTION = re.compile(r"(?<![\w/.-])(?:\./)?(knowledge/[\w./-]+?\.md)\b", re.I)
+# Not one inside a longer path or URL, which points into another repo, and not knowledge/x.md.bak.
+ENTRY_MENTION = re.compile(r"(?<![\w/.-])(?:\./)?(knowledge/[\w./-]+?\.md)(?![\w-]|\.\w)", re.I)
 FRONTMATTER_TYPE = re.compile(r"^metadata:[ \t]*\n(?:[ \t]+\S.*\n)*?[ \t]+type:[ \t]*(user|feedback|project|reference)[ \t]*$", re.M)
 
 
 def read(path):
-    with open(path, encoding="utf-8", errors="replace") as f:
-        return f.read().replace("\r\n", "\n")
+    with open(path, encoding="utf-8", errors="replace") as f:  # text mode reads CRLF as \n
+        return f.read()
 
 
 def lint(root):
@@ -97,9 +102,11 @@ def lint(root):
         else:
             names.add(name.group(1))
 
-    mentions = dict(bodies)
+    mentions = {**bodies, "INDEX.md": index_text}
     if os.path.exists(os.path.join(root, "CLAUDE.md")):
         mentions["CLAUDE.md"] = read(os.path.join(root, "CLAUDE.md"))
+        if CONFLICT_MARKER.search(mentions["CLAUDE.md"]):
+            errors.append("CLAUDE.md: merge-conflict marker")
     else:
         errors.append("CLAUDE.md is missing, so the entry names it cites go unchecked")
     for where, body in mentions.items():
@@ -113,7 +120,8 @@ def lint(root):
         for pat in SECRET_PATTERNS:
             for hit in re.finditer(pat, body):
                 if (hit.groupdict().get("value") or hit.group(0)) not in ALLOWED_SECRETS:
-                    errors.append(f"{where}: credential-shaped string {hit.group(0)[:12]}...")
+                    line = body.count("\n", 0, hit.start()) + 1
+                    errors.append(f"{where}:{line}: credential-shaped string")
         for link in re.findall(r"\[\[([^\]]+)\]\]", body):
             if link not in names:
                 warnings.append(f"{where}: [[{link}]] resolves to no entry (worth writing?)")
@@ -137,17 +145,27 @@ def self_test():
     entry = "---\nname: {0}\ndescription: d\nmetadata:\n  type: project\n---\n\nBody [[{1}]].\n"
     index = "- [a](knowledge/a.md) - hook\n"
     token = "Ab_-" * 17
-    # One sample per SECRET_PATTERNS entry, each matching that pattern only: dropping a pattern fails.
-    secrets = [
-        "ghp_" + "x" * 36,
-        "github_pat_" + "x" * 40,
-        "sk-ant-" + "x" * 30,
-        "AKIA" + "Q" * 16,
-        "-----BEGIN RSA PRIVATE KEY-----",
-        "BeArEr " + "x" * 30,
-        "M" + "x" * 25 + "." + "y" * 6 + "." + "z" * 30,
+    alnum = "aB3dE5fG7hJ9kL1mN3pQ5rS7tU9vW1xY3zA5bC7dE9"
+    # Fake credentials shaped like real ones, each matching one pattern only, and together every
+    # alternative of every pattern and each pattern's minimum length: dropping or narrowing one fails.
+    secrets = [f"gh{c}_" + alnum[:36] for c in "pousr"] + [
+        "github_pat_11" + alnum[:20] + "_" + alnum[:30],
+        "sk-ant-api03-" + alnum[:30] + "_x-" + alnum[:8],
+        "AKIA2E0A8F3B244C9986",
+        "-----BEGIN OPENSSH PRIVATE KEY-----",
+        "-----BEGIN PRIVATE KEY-----",
+        "Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk",
+        "BEARER " + alnum[:25],
+        "MTIzNDU2Nzg5MDEyMzQ1Njc4OQ.Gx1-ab." + alnum[:38],
+        "NzQ4MjU5OTk5OTk5OTk5OTk5OQ.Zz9_ef." + alnum[:38],
+        "OTk5OTk5OTk5OTk5OTk5OTk5OQ.Yx_2cd." + alnum[:38],
         "https://discordapp.com/api/webhooks/123456789012345678/" + token,
-        "INTEGRATEDS3_S3COMPAT_SECRET_KEY=" + "x" * 40,
+        "https://discord.com/api/v10/webhooks/123456789012345678/" + token,
+        "INTEGRATEDS3_S3COMPAT_SECRET_KEY=" + alnum[:40],
+        '"KeyBase64": "q83vEjRWeJq83vEjRWeJq83vEjRWeJq83vEjRWeJq80="',
+        "password: hunter2hunter2hu",
+        "api-token = " + alnum[:20],
+        "secret-access-key: " + alnum[:20],
     ]
     cases = [  # (expected error substring, or None for a clean store; files to write over the clean store, None deletes)
         (None, []),
@@ -164,6 +182,9 @@ def self_test():
         (None, [("knowledge/a.md", entry.format("a", "a") + "AKIAIOSFODNN7EXAMPLE\n")]),
         (None, [("knowledge/a.md", entry.format("a", "a") + "aws_secret_access_key = wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY\n")]),
         (None, [("knowledge/a.md", entry.format("a", "a").replace("  type: project\n", "  local_reason: x\n  type: user\n"))]),
+        (None, [("knowledge/a.md", entry.format("a", "a").replace("\n", "\r\n"))]),
+        (None, [("INDEX.md", index + "<!-- - [old](knowledge/old.md) - deleted, see `knowledge/old.md` -->\n")]),
+        (None, [("CLAUDE.md", "A backup, knowledge/zz.md.bak, is not an entry name.\n")]),
         ("INDEX.md links missing file", [("INDEX.md", index + "- [b](knowledge/b.md)\n")]),
         ("INDEX.md links missing file", [("INDEX.md", index + "- [b](./knowledge/b.md)\n")]),
         ("INDEX.md links missing file", [("INDEX.md", index + '- [b](knowledge/b.md "t")\n')]),
@@ -172,7 +193,10 @@ def self_test():
         ("has no INDEX.md line", [("INDEX.md", "<!--\n- [a](knowledge/a.md) - hook\n-->\n")]),
         ("INDEX.md has 2 lines for knowledge/a.md", [("INDEX.md", index + index)]),
         ("INDEX.md has 2 lines for knowledge/a.md", [("INDEX.md", index + "* [a](./knowledge/a.md#why) - hook\n")]),
+        ("INDEX.md has 2 lines for knowledge/a.md", [("INDEX.md", index + "1. **[a](knowledge/a.md)** - hook\n")]),
         ("CLAUDE.md names missing file knowledge/b-c.md", [("CLAUDE.md", "Rule; `knowledge/b-c.md`.\n")]),
+        ("CLAUDE.md names missing file knowledge/sigv4-b2.md", [("CLAUDE.md", "Rule; `knowledge/sigv4-b2.md`.\n")]),
+        ("CLAUDE.md names missing file knowledge/b.md", [("CLAUDE.md", "Rule; see ./knowledge/b.md.\n")]),
         ("CLAUDE.md names missing file knowledge/sub/b.md", [("CLAUDE.md", "Rule; knowledge/sub/b.md.\n")]),
         ("CLAUDE.md names missing file knowledge/b.MD", [("CLAUDE.md", "Rule; knowledge/b.MD.\n")]),
         ("CLAUDE.md is missing", [("CLAUDE.md", None)]),
@@ -186,18 +210,21 @@ def self_test():
         ("missing frontmatter", [("knowledge/a.md", entry.format("a", "a").replace("description: d\n", "description:\n"))]),
         ("missing frontmatter", [("knowledge/a.md", entry.format("a", "a").replace("  type: project\n", ""))]),
         ("missing frontmatter", [("knowledge/a.md", entry.format("a", "a").replace("  type: project\n", "  type:\n"))]),
+        ("missing frontmatter", [("knowledge/a.md", entry.format("a", "a").replace("  type: project\n", "  type: lesson\n"))]),
         ("missing frontmatter", [("knowledge/a.md", entry.format("a", "a").replace("name: a\n", "name:\n"))]),
         ("is not the file name", [("knowledge/a.md", entry.format("b", "a"))]),
         ("merge-conflict marker", [("INDEX.md", index + "<<<<<<< HEAD\n")]),
         ("merge-conflict marker", [("knowledge/a.md", entry.format("a", "a") + ">>>>>>> branch\n")]),
-        ("credential-shaped string", [("INDEX.md", index + secrets[0] + "\n")]),
-        ("credential-shaped string", [("knowledge/sub/y.txt", secrets[0] + "\n")]),
-        ("credential-shaped string", [("knowledge/a.md", entry.format("a", "a") + "https://discord.com/api/v10/webhooks/1/" + token + "\n")]),
-    ] + [("credential-shaped string", [("knowledge/a.md", entry.format("a", "a") + s + "\n")]) for s in secrets]
+        ("CLAUDE.md: merge-conflict marker", [("CLAUDE.md", "Rules.\n<<<<<<< HEAD\n")]),
+        ("INDEX.md:2: credential-shaped string", [("INDEX.md", index + secrets[0] + "\n")]),
+        ("knowledge/sub/y.txt:1: credential-shaped string", [("knowledge/sub/y.txt", secrets[0] + "\n")]),
+    ] + [("knowledge/a.md:9: credential-shaped string", [("knowledge/a.md", entry.format("a", "a") + s + "\n")])
+         for s in secrets]
 
     failures = []
-    if len(secrets) != len(SECRET_PATTERNS):
-        failures.append(f"{len(secrets)} secret samples for {len(SECRET_PATTERNS)} SECRET_PATTERNS")
+    for p in SECRET_PATTERNS:
+        if not any(re.search(p, s) for s in secrets):
+            failures.append(f"no secret sample for pattern {p[:20]}...")
     for s in secrets:
         matching = [p for p in SECRET_PATTERNS if re.search(p, s)]
         if len(matching) != 1:
@@ -223,11 +250,13 @@ def self_test():
             reset("a")
             for rel, text in files:
                 put(rel, text)
-            errors, _ = lint(root)
-            if expected is None and errors:
-                failures.append(f"clean store {files} gave {errors}")
+            errors, warnings = lint(root)
+            if expected is None and (errors or warnings):
+                failures.append(f"clean store {files} gave {errors + warnings}")
             elif expected is not None and not any(expected in e for e in errors):
                 failures.append(f"{files} gave {errors}, expected '{expected}'")
+            elif any(s[4:12] in e for s in secrets for e in errors):
+                failures.append(f"{files}: an error prints part of a credential")
 
         reset("later")
         if lint(root)[1] != ["knowledge/a.md: [[later]] resolves to no entry (worth writing?)"]:

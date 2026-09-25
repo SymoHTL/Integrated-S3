@@ -10,7 +10,7 @@ What runs where (`.github/workflows/ci.yml`):
 | Job | Trigger | What it proves |
 |---|---|---|
 | `build-test-smoke` | push to `main`, PRs | ubuntu Release build, `IntegratedS3.Tests`, E2E `Suite=Smoke` |
-| `knowledge-lint` | push to `main`, PRs | `INDEX.md` and `knowledge/` pass `scripts/lint_knowledge.py` |
+| `knowledge-lint` | push to `main`, PRs | the `scripts/lint_knowledge.py` self-test prints `self-test OK`, then `INDEX.md`, `knowledge/` and the entry names `CLAUDE.md` cites pass the lint |
 | `heavy` | `workflow_dispatch` with `run-heavy` | full suite with E2E Full and coverage, AOT script, on ubuntu and windows |
 | `benchmarks` | `workflow_dispatch` with `run-benchmarks`, self-hosted runner | BenchmarkDotNet regression gate |
 
