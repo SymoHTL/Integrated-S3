@@ -12,6 +12,7 @@ namespace IntegratedS3.Testing;
 public abstract class BlobStoreContractTests
 {
     private const int MaxThrottledAttempts = 50;
+    private const int MaxListPages = 100;
 
     /// <summary>
     /// Creates the store under test. Each test calls it once and expects an empty store.
@@ -105,7 +106,9 @@ public abstract class BlobStoreContractTests
     /// <summary>
     /// Verifies the size limit. A store with <see cref="BlobStoreCapabilities.MaxBlobSize"/> accepts a blob of
     /// exactly that size and refuses one byte more, with or without a declared length. A store without a limit
-    /// accepts a blob larger than any limit the constrained test store uses.
+    /// accepts a blob larger than any limit the constrained test store uses. The fact holds the blob in memory, so
+    /// it checks limits up to <see cref="int.MaxValue"/> - 1 bytes; a store whose own limit is larger declares a
+    /// smaller one, which only makes the engine split a body into more blobs.
     /// </summary>
     [Fact]
     public async Task BlobStoreContract_Write_HonoursMaxBlobSize()
@@ -132,7 +135,7 @@ public abstract class BlobStoreContractTests
 
     /// <summary>
     /// Verifies that reading a deleted blob, or any string the store never issued as a locator, throws
-    /// <see cref="BlobNotFoundException"/>, and never reads anything outside the store.
+    /// <see cref="BlobNotFoundException"/>.
     /// </summary>
     [Fact]
     public async Task BlobStoreContract_OpenRead_DeletedOrNeverIssuedLocator_ThrowsBlobNotFound()
@@ -165,13 +168,13 @@ public abstract class BlobStoreContractTests
 
     /// <summary>
     /// Verifies the listing: walking it page by page from a cursor returns every stored blob exactly once, with
-    /// its length and creation time, and leaves out deleted blobs. Pages may be shorter than asked.
+    /// its length, and leaves out deleted blobs. Pages may be shorter than asked, even empty before the end, as a
+    /// store that lists a sparse backing collection returns them.
     /// </summary>
     [Fact]
     public async Task BlobStoreContract_List_WalksEveryBlobExactlyOnce_AcrossPagesAndCursors()
     {
         var store = await CreateStoreAsync();
-        var before = DateTimeOffset.UtcNow.AddMinutes(-5);
         var written = new List<BlobWriteResult>();
         for (var index = 0; index < 7; index++) {
             written.Add(await WriteAsync(store, CreateBytes(100 + index, seed: 100 + index)));
@@ -187,10 +190,9 @@ public abstract class BlobStoreContractTests
         do {
             var page = await RetryAsync(() => store.ListAsync(cursor, maxEntries: 3).AsTask());
             Assert.True(page.Entries.Count <= 3, $"A page asked for at most 3 entries returned {page.Entries.Count}.");
-            Assert.True(page.Entries.Count > 0 || page.NextCursor is null, "A page with no entries must end the listing.");
             seen.AddRange(page.Entries);
             cursor = page.NextCursor;
-            Assert.True(++pages <= 20, "The listing did not end.");
+            Assert.True(++pages <= MaxListPages, "The listing did not end.");
         }
         while (cursor is not null);
 
@@ -200,22 +202,78 @@ public abstract class BlobStoreContractTests
         Assert.DoesNotContain(seen, entry => entry.Locator == deleted.Locator);
         foreach (var entry in seen) {
             Assert.Equal(written.Single(blob => blob.Locator == entry.Locator).Length, entry.Length);
-            Assert.InRange(entry.CreatedUtc, before, DateTimeOffset.UtcNow.AddMinutes(5));
         }
     }
 
     /// <summary>
-    /// Verifies that an empty store lists nothing and ends the listing at once.
+    /// Verifies that an empty store lists nothing, and that its listing ends.
     /// </summary>
     [Fact]
     public async Task BlobStoreContract_List_OfAnEmptyStore_IsEmptyAndComplete()
     {
         var store = await CreateStoreAsync();
 
-        var page = await RetryAsync(() => store.ListAsync(null, maxEntries: 10).AsTask());
+        string? cursor = null;
+        var pages = 0;
+        do {
+            var page = await RetryAsync(() => store.ListAsync(cursor, maxEntries: 10).AsTask());
+            Assert.Empty(page.Entries);
+            cursor = page.NextCursor;
+            Assert.True(++pages <= MaxListPages, "The listing did not end.");
+        }
+        while (cursor is not null);
+    }
 
-        Assert.Empty(page.Entries);
-        Assert.Null(page.NextCursor);
+    /// <summary>
+    /// Verifies the listing guarantee the orphan sweep relies on: a blob that exists for the whole walk appears
+    /// exactly once, even when blobs the walk has already returned are deleted between pages.
+    /// </summary>
+    [Fact]
+    public async Task BlobStoreContract_List_ABlobThatExistsForTheWholeWalk_AppearsExactlyOnce_WhenSeenBlobsAreDeletedMidWalk()
+    {
+        var store = await CreateStoreAsync();
+        var written = new List<string>();
+        for (var index = 0; index < 7; index++) {
+            written.Add((await WriteAsync(store, CreateBytes(50, seed: 200 + index))).Locator);
+        }
+
+        var seen = new List<string>();
+        string? cursor = null;
+        string? deletedMidWalk = null;
+        var pages = 0;
+        do {
+            var page = await RetryAsync(() => store.ListAsync(cursor, maxEntries: 2).AsTask());
+            seen.AddRange(page.Entries.Select(static entry => entry.Locator));
+            cursor = page.NextCursor;
+            if (deletedMidWalk is null && seen.Count > 0 && cursor is not null) {
+                deletedMidWalk = seen[0];
+                await DeleteAsync(store, deletedMidWalk);
+            }
+
+            Assert.True(++pages <= MaxListPages, "The listing did not end.");
+        }
+        while (cursor is not null);
+
+        Assert.NotNull(deletedMidWalk);
+        Assert.Equal(written.Order(StringComparer.Ordinal), seen.Order(StringComparer.Ordinal));
+    }
+
+    /// <summary>
+    /// Verifies that strings close to a live blob's locator, which the store never issued, name no blob, and
+    /// that the live blob still reads back.
+    /// </summary>
+    [Fact]
+    public async Task BlobStoreContract_OpenRead_VariantsOfALiveLocator_ThrowBlobNotFound()
+    {
+        var store = await CreateStoreAsync();
+        var bytes = CreateBytes(64, seed: 11);
+        var live = await WriteAsync(store, bytes);
+
+        foreach (var variant in new[] { live.Locator + "x", live.Locator[..^1], live.Locator + "/" }.Where(static variant => variant.Length > 0)) {
+            await Assert.ThrowsAsync<BlobNotFoundException>(() => RetryAsync(() => store.OpenReadAsync(variant).AsTask()));
+        }
+
+        Assert.Equal(bytes, await ReadAllAsync(store, live.Locator));
     }
 
     /// <summary>

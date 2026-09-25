@@ -22,6 +22,10 @@ public sealed class InMemoryBlobStore : IBlobStore
     public InMemoryBlobStore(InMemoryBlobStoreOptions? options = null)
     {
         _options = options ?? new InMemoryBlobStoreOptions();
+        if (_options.MaxListPageSize is < 1) {
+            throw new ArgumentOutOfRangeException(nameof(options), _options.MaxListPageSize, "MaxListPageSize must be at least 1.");
+        }
+
         Capabilities = new BlobStoreCapabilities
         {
             MaxBlobSize = _options.MaxBlobSize,
@@ -68,7 +72,7 @@ public sealed class InMemoryBlobStore : IBlobStore
         }
 
         var locator = "mem-" + Guid.NewGuid().ToString("N");
-        _blobs[locator] = new StoredBlob(buffer.ToArray(), DateTimeOffset.UtcNow);
+        _blobs[locator] = new StoredBlob(buffer.ToArray());
         return new BlobWriteResult { Locator = locator, Length = buffer.Length };
     }
 
@@ -123,7 +127,7 @@ public sealed class InMemoryBlobStore : IBlobStore
             .ToList();
 
         var entries = page.Take(pageSize)
-            .Select(static pair => new BlobListEntry { Locator = pair.Key, Length = pair.Value.Data.Length, CreatedUtc = pair.Value.CreatedUtc })
+            .Select(static pair => new BlobListEntry { Locator = pair.Key, Length = pair.Value.Data.Length })
             .ToList();
         return ValueTask.FromResult(new BlobListPage
         {
@@ -139,7 +143,7 @@ public sealed class InMemoryBlobStore : IBlobStore
         }
     }
 
-    private sealed record StoredBlob(byte[] Data, DateTimeOffset CreatedUtc);
+    private sealed record StoredBlob(byte[] Data);
 }
 
 /// <summary>

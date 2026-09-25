@@ -1,7 +1,9 @@
 namespace IntegratedS3.Abstractions.Blobs;
 
 /// <summary>
-/// Thrown by <see cref="IBlobStore.OpenReadAsync"/> when no blob exists at the locator.
+/// Thrown by <see cref="IBlobStore.OpenReadAsync"/> when no blob exists at the locator. A store throws it only
+/// when it knows the blob does not exist; an error that leaves that open, such as a timeout, is thrown as the
+/// store's own exception.
 /// </summary>
 public sealed class BlobNotFoundException : Exception
 {

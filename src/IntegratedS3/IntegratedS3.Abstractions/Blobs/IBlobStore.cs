@@ -29,7 +29,9 @@ public interface IBlobStore
     /// <param name="cancellationToken">A token to cancel the write. A cancelled write returns no locator.</param>
     /// <returns>
     /// The new blob's locator, assigned by the store and unique for every write (two writes of the same bytes
-    /// get two locators), and the number of bytes stored.
+    /// get two locators), and the number of bytes stored. When it returns, the blob is durable and readable
+    /// through every instance of the store that shares its storage: a store never acknowledges a write it has
+    /// only buffered, because the engine commits the metadata that references the blob right after.
     /// </returns>
     /// <exception cref="ArgumentException">The content is larger than <see cref="BlobStoreCapabilities.MaxBlobSize"/>.</exception>
     /// <exception cref="BlobStoreThrottledException">The store asks the caller to slow down.</exception>
@@ -45,7 +47,11 @@ public interface IBlobStore
     /// when <see cref="BlobStoreCapabilities.SupportsRangeReads"/> is <see langword="false"/>.
     /// </param>
     /// <param name="cancellationToken">A token to cancel the open.</param>
-    /// <returns>A stream of the requested bytes, which the caller disposes.</returns>
+    /// <returns>
+    /// A stream of the requested bytes, which the caller disposes. A length past the end of the blob is clipped to
+    /// the end; an offset at or past the end, or a length of 0, gives an empty stream. An exception while the
+    /// caller reads the stream ends that read only; the engine does not interpret its type.
+    /// </returns>
     /// <exception cref="BlobNotFoundException">No blob exists at <paramref name="locator"/>.</exception>
     /// <exception cref="BlobStoreThrottledException">The store asks the caller to slow down.</exception>
     ValueTask<Stream> OpenReadAsync(string locator, long offset = 0, long? length = null, CancellationToken cancellationToken = default);
