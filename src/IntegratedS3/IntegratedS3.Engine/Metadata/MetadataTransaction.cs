@@ -637,17 +637,18 @@ internal sealed class MetadataTransaction : IAsyncDisposable
     }
 
     /// <summary>
-    /// Returns which of <paramref name="locators"/> have a <c>blob_refs</c> row, referenced or swept.
+    /// Returns the <paramref name="locators"/> that have a <c>blob_refs</c> row, each with whether the orphan sweep
+    /// claimed it (<see langword="true"/>) or a commit referenced it (<see langword="false"/>).
     /// </summary>
-    public async ValueTask<HashSet<string>> FindKnownBlobsAsync(IReadOnlyCollection<string> locators, CancellationToken cancellationToken = default)
+    public async ValueTask<Dictionary<string, bool>> ClassifyBlobsAsync(IEnumerable<string> locators, CancellationToken cancellationToken = default)
     {
-        var known = new HashSet<string>(StringComparer.Ordinal);
-        await using var command = Command("SELECT 1 FROM blob_refs WHERE locator = @locator;");
+        var known = new Dictionary<string, bool>(StringComparer.Ordinal);
+        await using var command = Command("SELECT swept FROM blob_refs WHERE locator = @locator;");
         var parameter = command.Parameters.Add("@locator", SqliteType.Text);
         foreach (var locator in locators) {
             parameter.Value = locator;
-            if (await command.ExecuteScalarAsync(cancellationToken) is not null) {
-                known.Add(locator);
+            if (await command.ExecuteScalarAsync(cancellationToken) is { } swept) {
+                known[locator] = Convert.ToInt64(swept, System.Globalization.CultureInfo.InvariantCulture) != 0;
             }
         }
 
