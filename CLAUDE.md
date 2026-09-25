@@ -268,17 +268,21 @@ code (#262).
   `gh pr merge <n> --squash --subject "<title> (#<n>)" --body-file <body>`. The repo's default
   squash message is the branch's commit messages instead (HAZARD, #270). Keep the body's claims
   true to the merged code.
-- Every PR gets a verification pass: a skeptic subagent re-reads the PR at its head sha against
-  the current code, checks its tests against the clauses under Tests, re-runs the claims in its
-  body, breaks each new or changed gate in ways the PR's seen-red run did not, and reports what is
-  false or broken. The maintainer runs it for a contributor's or a bot's PR. The body's
-  `## Verification` section names the sha each pass ran at and answers each finding: fixed, or
-  why not. A later push that changes code or claims gets a pass over that change; a merge of the
-  base branch without conflicts does not.
-- A PR merges only after CI on its head sha has finished green, its verification pass is done, and
-  every review thread and finding is fixed or answered with a written reason (HAZARD, not
-  enforced: #270). `heavy` is dispatched and green for changes that need it. A benchmark regression
-  is fixed, or the baseline is re-recorded in the same PR with the reason.
+- Every PR gets a verification pass (HAZARD, #270). A skeptic subagent re-reads the PR at its head
+  sha against the current code, checks its tests against the clauses under Tests, re-runs the
+  claims in its body, and violates the rule behind each new or changed gate in ways the PR's
+  seen-red run did not. It reports what is false, and each violation a gate misses. The body's
+  `## Verification` section names the sha each pass ran at and answers each finding: fixed, or why
+  not. Any later change to code, rules or claims gets a pass over that change. The answers do not,
+  and neither does a merge of the base branch without conflicts, unless the base changed what the
+  PR's claims or gates rely on.
+- For a contributor's or a bot's PR, the maintainer runs the pass and writes the `## Verification`
+  section. A fork's code runs only in CI or in a container without credentials, never where the
+  maintainer's `gh` token is (HAZARD, #270).
+- A PR merges only after CI on its head sha has finished green, every verification pass it needs
+  has run, and every review thread and finding is fixed or answered with a written reason (HAZARD,
+  not enforced: #270). `heavy` is dispatched and green for changes that need it. A benchmark
+  regression is fixed, or the baseline is re-recorded in the same PR with the reason.
 - `CHANGELOG.md` `Unreleased` gets a line for every user-visible change (HAZARD, #270).
 
 ## Where facts go
