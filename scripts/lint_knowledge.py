@@ -66,8 +66,8 @@ LINK_TARGET = re.compile(
 # The link that leads an INDEX.md list item: the entry the item is for. Its text may hold one level
 # of brackets and wrap, but not across a blank line or into the next item; its (target "title")
 # must close on its line: [a](knowledge/a.md without ")" is plain text. A wrap across a heading, a
-# quote, a fence, a thematic break or an empty item still counts, though it renders no link; no
-# realistic edit makes one.
+# quote, a fence, a thematic break, an HTML block or an empty item still counts, though it renders
+# no link; no realistic edit makes one.
 LEADING_LINK = re.compile(
     r"^[ \t]*(?:[-*+]|\d+[.)])[ \t]+(?:\*{1,3}|_{1,3})?\[(?:[^\[\]\n]|\[[^\[\]\n]*\]"
     r"|\n(?![ \t]*(?:\n|[-*+][ \t]|\d+[.)][ \t])))*\]"
@@ -240,8 +240,12 @@ def self_test():
         (["knowledge/a.md has no INDEX.md line"], [("INDEX.md", "".join(
             f"{m} [x\n{n} y](knowledge/a.md) - hook\n" for m, n in
             [("-", "  -"), ("-", "\t-"), ("*", "*"), ("+", "+"), ("1)", "2)"), ("10.", "11.")])
-            + "- [x\n  \n  y](knowledge/a.md) - hook\n")]),
-        (["knowledge/a.md has no INDEX.md line"], [("INDEX.md", "- [a](knowledge/a.md>) - hook\n- [a](<knowledge/a.md) - hook\n")]),
+            + "- [x\n  \n  y](knowledge/a.md) - hook\n- [x\n\t\n  y](knowledge/a.md) - hook\n"
+            + "- [x\n    - y](knowledge/a.md) - hook\n- [x\n-\ty](knowledge/a.md) - hook\n- [x\n1.\ty](knowledge/a.md) - hook\n")]),
+        (["knowledge/a.md has no INDEX.md line"], [("INDEX.md", "- [a](knowledge/a.md>) - hook\n- [a](<knowledge/a.md) - hook\n"
+                                                                '- [a](<knowledge/a.md>"t") - hook\n- [a](<knowledge/a.md>>) - hook\n'
+                                                                "- [a](<<knowledge/a.md>) - hook\n- [a](<knowledge/a.md>#why) - hook\n"
+                                                                "- [a](< knowledge/a.md>) - hook\n- [a](<knowledge/a.md#x>>) - hook\n")]),
         (["knowledge/a.md has no INDEX.md line"], [("INDEX.md", "- [a [b\n\n  c] d](knowledge/a.md) - hook\n"
                                                                 "- [a](knowledge/a.md (why (not))) - hook\n"
                                                                 "- [a](knowledge/a.md (why\n\n  not)) - hook\n"
@@ -262,6 +266,7 @@ def self_test():
         ("INDEX.md has 2 lines for knowledge/a.md", [("INDEX.md", index + "10. [a](knowledge/a.md) - hook\n")]),
         ("INDEX.md has 2 lines for knowledge/a.md", [("INDEX.md", index + "- __[a](knowledge/a.md)__ - hook\n")]),
         ("INDEX.md has 2 lines for knowledge/a.md", [("INDEX.md", index + "- [a](<knowledge/a.md>) - hook\n")]),
+        ("INDEX.md has 2 lines for knowledge/a.md", [("INDEX.md", index + "- [a](<./knowledge/a.md#why>) - hook\n")]),
         ("INDEX.md has 2 lines for knowledge/a.md", [("INDEX.md", index + "1.  [a](knowledge/a.md) - hook\n")]),
         ("INDEX.md has 2 lines for knowledge/a.md", [("INDEX.md", index + "- *[a](knowledge/a.md)* - hook\n")]),
         ("INDEX.md has 2 lines for knowledge/a.md", [("INDEX.md", index + "- ***[a](knowledge/a.md)*** - hook\n")]),
@@ -363,8 +368,9 @@ def self_test():
         if lint(root, floor=1)[1] != ["knowledge/a.md: [[later]] resolves to no entry (worth writing?)"]:
             failures.append(f"dangling wikilink gave {lint(root, floor=1)[1]}")
         # The script as CI runs it, from scripts/ under the store, at its own FLOOR: exit 0 with FLOOR
-        # entries and a warning; 1 with an unindexed entry and every credential sample, printing exactly
-        # the expected lines and nothing on stderr; and 1 with one entry fewer than FLOOR.
+        # entries and a warning; 1 with every credential sample in INDEX.md, in an unindexed entry and
+        # in a stray file, printing exactly the expected lines, the warning first and the count last,
+        # and nothing on stderr; and 1 with one entry fewer than FLOOR.
         if FLOOR < 5:
             failures.append(f"FLOOR is {FLOOR}; below 5 it stops telling a real store from an empty one")
         script = os.path.join(root, "scripts", "lint_knowledge.py")
@@ -375,19 +381,26 @@ def self_test():
         for e in more:
             put(f"knowledge/{e}.md", entry.format(e, "a"))
         codes = [subprocess.run([sys.executable, script], capture_output=True).returncode]
-        put("knowledge/c.md", entry.format("c", "a") + "".join(s + "\n" for s in secrets))
-        put("INDEX.md", index + "".join(f"- [{e}](knowledge/{e}.md) - hook\n" for e in more) + secrets[0] + "\n")
+        samples = "".join(s + "\n" for s in secrets)
+        put("knowledge/c.md", entry.format("c", "a") + samples)
+        put("knowledge/sub/y.txt", samples)
+        put("INDEX.md", index + "".join(f"- [{e}](knowledge/{e}.md) - hook\n" for e in more) + samples)
         r = subprocess.run([sys.executable, script], capture_output=True, text=True)
         codes.append(r.returncode)
         expected = (["WARN  knowledge/a.md: [[later]] resolves to no entry (worth writing?)",
-                     "ERROR knowledge/c.md has no INDEX.md line",
-                     f"ERROR INDEX.md:{len(more) + 2}: credential-shaped string"]
-                    + [f"ERROR knowledge/c.md:{9 + i}: credential-shaped string" for i in range(len(secrets))]
-                    + [f"{len(secrets) + 2} error(s), 1 warning(s)"])
-        if r.stderr or sorted(r.stdout.splitlines()) != sorted(expected) or not r.stdout.endswith("\n"):
+                     "ERROR knowledge/c.md has no INDEX.md line", "ERROR knowledge/sub/y.txt has no INDEX.md line",
+                     "ERROR knowledge/sub/y.txt: not a .md entry directly in knowledge/"]
+                    + [f"ERROR {where}:{first + i}: credential-shaped string" for where, first in
+                       [("INDEX.md", len(more) + 2), ("knowledge/c.md", 9), ("knowledge/sub/y.txt", 1)]
+                       for i in range(len(secrets))]
+                    + [f"{3 * len(secrets) + 3} error(s), 1 warning(s)"])
+        out = r.stdout.splitlines()
+        if (r.stderr or sorted(out) != sorted(expected) or out[:1] != expected[:1] or out[-1:] != expected[-1:]
+                or not r.stdout.endswith("\n")):
             failures.append(f"the script printed {len(r.stdout)} and {len(r.stderr)} characters for a store "
                             "with every credential sample, not exactly its warning, its errors and the count")
         put("knowledge/c.md", None)
+        put("knowledge/sub/y.txt", None)
         put(f"knowledge/{more[-1]}.md", None)
         put("INDEX.md", index + "".join(f"- [{e}](knowledge/{e}.md) - hook\n" for e in more[:-1]))
         codes.append(subprocess.run([sys.executable, script], capture_output=True).returncode)
