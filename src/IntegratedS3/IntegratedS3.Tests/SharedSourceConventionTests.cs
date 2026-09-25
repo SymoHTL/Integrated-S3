@@ -32,9 +32,8 @@ public sealed class SharedSourceConventionTests
             .ToArray();
 
         var declarations = files
-            .SelectMany(path => CSharpSyntaxTree.ParseText(File.ReadAllText(Path.Combine(sourceRoot, path)), ParseOptions)
-                .GetRoot()
-                .DescendantNodes()
+            .SelectMany(path => Roots(File.ReadAllText(Path.Combine(sourceRoot, path)))
+                .SelectMany(static root => root.DescendantNodes())
                 .Select(DeclaredSharedName)
                 .OfType<string>()
                 .Select(name => $"{path.Replace('\\', '/')}: {name}"))
@@ -44,14 +43,24 @@ public sealed class SharedSourceConventionTests
         Assert.True(
             declarations.Length == 0,
             "Declared outside src/IntegratedS3/Shared, which holds the one definition; link the shared file into the "
-            + "project instead of keeping a copy:" + Environment.NewLine + string.Join(Environment.NewLine, declarations));
+            + "project instead of keeping a copy, or rename a declaration that means something else:" + Environment.NewLine + string.Join(Environment.NewLine, declarations));
     }
 
+    // Only a project's own output folders are generated; a source folder named bin or obj deeper down still compiles.
     private static bool IsExcluded(string[] segments)
     {
         return segments[0].Equals("Shared", StringComparison.OrdinalIgnoreCase)
-            || segments.Any(static segment => segment.Equals("bin", StringComparison.OrdinalIgnoreCase)
-                || segment.Equals("obj", StringComparison.OrdinalIgnoreCase));
+            || (segments.Length > 2 && segments[1] is "bin" or "obj");
+    }
+
+    // The code under an inactive #if is trivia to the parser, so it is parsed again on its own.
+    private static IEnumerable<SyntaxNode> Roots(string text)
+    {
+        var root = CSharpSyntaxTree.ParseText(text, ParseOptions).GetRoot();
+        return root.DescendantTrivia()
+            .Where(static trivia => trivia.IsKind(SyntaxKind.DisabledTextTrivia))
+            .Select(static trivia => CSharpSyntaxTree.ParseText(trivia.ToString(), ParseOptions).GetRoot())
+            .Prepend(root);
     }
 
     private static string? DeclaredSharedName(SyntaxNode node)
@@ -59,8 +68,11 @@ public sealed class SharedSourceConventionTests
         return node switch
         {
             BaseTypeDeclarationSyntax type when SharedTypes.Contains(type.Identifier.ValueText) => $"type {type.Identifier.ValueText}",
+            DelegateDeclarationSyntax type when SharedTypes.Contains(type.Identifier.ValueText) => $"delegate {type.Identifier.ValueText}",
             MethodDeclarationSyntax method when SharedMethods.Contains(method.Identifier.ValueText) => $"method {method.Identifier.ValueText}",
             LocalFunctionStatementSyntax function when SharedMethods.Contains(function.Identifier.ValueText) => $"local function {function.Identifier.ValueText}",
+            PropertyDeclarationSyntax property when SharedMethods.Contains(property.Identifier.ValueText) => $"property {property.Identifier.ValueText}",
+            VariableDeclaratorSyntax variable when SharedMethods.Contains(variable.Identifier.ValueText) => $"field or local {variable.Identifier.ValueText}",
             _ => null
         };
     }
