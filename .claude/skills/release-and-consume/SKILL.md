@@ -56,7 +56,8 @@ used, because restore never replaces a cached version (PersonalS3 #98):
    produced` is not a break: step 5 deletes it.
 4. Throw the probe away: `git checkout -- Directory.Packages.props` in that worktree, and
    `rm -rf ~/.nuget/packages/integrateds3.*/<version>-probe.<n>`.
-5. Squash-merge the release PR.
+5. Squash-merge the release PR. If step 3 changed it after its passes, the change first gets CI
+   green on the new head sha and a verification pass over that change (`CLAUDE.md`, Git & PRs).
 
 ## 3. Dry run
 
