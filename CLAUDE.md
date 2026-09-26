@@ -240,6 +240,16 @@ code (#262).
   `LayeringConventionTests`, which reads what restore resolved: every packable project in the
   solution has a row, restores exactly its allowed project references, and the three core packages
   resolve no banned package or framework reference, direct or transitive.
+- **S3 object semantics have one definition**, in `src/IntegratedS3/Shared/`, compiled into each
+  project that needs it as linked source (`<Compile Include="..\Shared\…" LinkBase="Shared" />`),
+  never copied. The compiler does not catch a copy: a private one shadows the linked one and builds
+  with 0 warnings. Gate: `SharedSourceConventionTests`, for declarations named `Crc32Accumulator`,
+  `BuildCompositeChecksum` or `NormalizeRange` in `.cs` files under `src/IntegratedS3/` outside
+  `Shared/` only. HAZARD (#307) for a copy under another name (AspNetCore's
+  `NormalizeRangeForResponse` mirrors `NormalizeRange`), for `.razor` and `.cshtml` files and files
+  outside `src/IntegratedS3/`, and for the other shared names: AspNetCore still copies five of them,
+  and the S3 provider copies `TryGetChecksumValue` and has two of the same name that mean something
+  else.
 - **Zero warnings, and no suppression to get green.** Gate: `TreatWarningsAsErrors`, nullable
   warnings as errors, and NuGetAudit in `src/IntegratedS3/Directory.Build.props`. None of them sees
   a new `<NoWarn>` or `#pragma warning disable` (HAZARD, #270). The CVE suppressions are stale

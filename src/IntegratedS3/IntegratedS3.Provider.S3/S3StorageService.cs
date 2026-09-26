@@ -1601,7 +1601,7 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
                 Object = objectInfo,
                 Content = result.Content,
                 TotalContentLength = result.TotalContentLength,
-                Range = NormalizeRange(request.Range, result.TotalContentLength)
+                Range = ClampRangeToContentLength(request.Range, result.TotalContentLength)
             });
         }
         catch (AmazonS3Exception ex) when ((int)ex.StatusCode == 304)
@@ -2519,7 +2519,7 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
         return null;
     }
 
-    private static ObjectRange? NormalizeRange(ObjectRange? requestedRange, long totalContentLength)
+    private static ObjectRange? ClampRangeToContentLength(ObjectRange? requestedRange, long totalContentLength)
     {
         if (requestedRange is null || totalContentLength <= 0)
             return null;

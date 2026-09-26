@@ -19,6 +19,7 @@ using IntegratedS3.AspNetCore.DependencyInjection;
 using IntegratedS3.AspNetCore.Services;
 using IntegratedS3.Protocol;
 using IntegratedS3.Protocol.Internal;
+using IntegratedS3.Shared;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Http.Features;
@@ -7090,7 +7091,7 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
     /// Resolves a requested byte range against a known object size using the same semantics as the
     /// storage providers. Returns the normalized (inclusive start/end) range on success, or
     /// <see langword="null"/> with <paramref name="unsatisfiable"/> set when the range cannot be
-    /// satisfied. Mirrors <c>DiskStorageService.NormalizeRange</c> so HEAD range handling matches GET.
+    /// satisfied. Mirrors <c>ObjectRanges.NormalizeRange</c> so HEAD range handling matches GET.
     /// </summary>
     private static ObjectRange? NormalizeRangeForResponse(ObjectRange requestedRange, long contentLength, out bool unsatisfiable)
     {
@@ -10229,67 +10230,6 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
             if (tempFilePath is not null && File.Exists(tempFilePath)) {
                 File.Delete(tempFilePath);
             }
-        }
-    }
-
-    private struct Crc32Accumulator
-    {
-        private static readonly uint[] Crc32Table = CreateTable(0xEDB88320u);
-        private static readonly uint[] Crc32cTable = CreateTable(0x82F63B78u);
-
-        private readonly uint[] _table;
-        private uint _current;
-
-        public static Crc32Accumulator Create()
-        {
-            return new Crc32Accumulator(Crc32Table);
-        }
-
-        public static Crc32Accumulator CreateCastagnoli()
-        {
-            return new Crc32Accumulator(Crc32cTable);
-        }
-
-        private Crc32Accumulator(uint[] table)
-        {
-            _table = table;
-            _current = 0xFFFFFFFFu;
-        }
-
-        public void Append(ReadOnlySpan<byte> buffer)
-        {
-            foreach (var value in buffer) {
-                _current = (_current >> 8) ^ _table[(byte)(_current ^ value)];
-            }
-        }
-
-        public byte[] GetHashBytes()
-        {
-            var finalized = ~_current;
-            return
-            [
-                (byte)(finalized >> 24),
-                (byte)(finalized >> 16),
-                (byte)(finalized >> 8),
-                (byte)finalized
-            ];
-        }
-
-        private static uint[] CreateTable(uint polynomial)
-        {
-            var table = new uint[256];
-            for (uint i = 0; i < table.Length; i++) {
-                var value = i;
-                for (var bit = 0; bit < 8; bit++) {
-                    value = (value & 1) == 0
-                        ? value >> 1
-                        : polynomial ^ (value >> 1);
-                }
-
-                table[i] = value;
-            }
-
-            return table;
         }
     }
 
