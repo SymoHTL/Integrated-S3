@@ -15,11 +15,14 @@ release without step 0's check or the probe. Nothing enforces that (HAZARD, #314
 3.1, 4.1 and 4.2 check it.
 
 To start again at step 0, which several steps below ask for: close the open release PR, if any,
-and use the branch `release/<version>-2` (the old branch stays: this repo deletes no branch on
-merge, and closing a PR keeps its branch). If step 0 now calls a major, bump again and rename the unreleased `<version>` section to
-the new version. Otherwise the new release PR moves the new `Unreleased` lines into the
-`<version>` section, or is an empty commit `release: <version>` when there is nothing to move, so
-that it still has a merge commit for steps 3.1 and 4.1.
+and use the branch `release/<version>-2`, then `-3` and so on (the old branch stays: this repo
+deletes no branch on merge, and closing a PR keeps its branch). If the old release PR was closed
+unmerged, `main` has neither the bump nor the `<version>` section: redo steps 1.2-1.4 on the new
+branch. If it merged and step 0 now calls a major, bump again, redo step 1.3, rename the
+`<version>` section to the new version and move the new `Unreleased` lines into it. Otherwise the
+new release PR moves the new `Unreleased` lines into the `<version>` section, or is an empty commit
+`release: <version>` when there is nothing to move, so that it still has a merge commit for steps
+3.1 and 4.1.
 
 ## 0. Decide the version
 
@@ -87,24 +90,29 @@ used, because restore never replaces a cached version (PersonalS3 #98):
    A break in what PersonalS3 implements or calls fails here; PersonalS3 restores only
    Abstractions, AspNetCore, Core and Protocol, so a pass never downgrades step 0's call. For a
    major, the build fails on the members PersonalS3 has not implemented yet, and then the suite,
-   the ratchet and the AOT binary have nothing to run. So for a major, or when the build fails on a
-   planned minor (then it is a major: redo steps 1.2-1.4), implement the members and migrations in
-   the probe worktree as step 5.4 will, keep that diff for step 5, and run the four checks on it.
+   the ratchet and the AOT binary have nothing to run. So for a major, or when a planned minor fails
+   to compile against what PersonalS3 implements or calls (CS0535 and the like; then it is a major:
+   redo steps 1.2-1.4 and retitle the PR `release: <version>`), implement the members and
+   migrations in the probe worktree as step 5.4 will (step 2.4 keeps them), and run the four checks
+   on it. A restore failure (NU1102, NU1301) or a locked `bin/` (MSB3027) is no break: fix its
+   cause and build again.
    A failure outside what the `CHANGELOG.md` section lists stops the release. A `new warning`
    stops the release until a PR to `main` removes it (close the release PR first, so that the
    freeze ends with it, then start again at step 0), or the `CHANGELOG.md` section tells consumers
    what to change. A baseline line `no longer produced` is not a break: step 5 deletes it.
-4. Throw the probe away: `git checkout -- Directory.Packages.props` in that worktree (keep a
-   major's diff from step 2.3 elsewhere first), and
+4. Throw the probe away. For a major, first commit step 2.3's changes in that worktree without
+   the pins, and note the sha for step 5.4:
+   `git add -A -- . ':!Directory.Packages.props' && git commit -m "probe: members for <version>"`.
+   Then `git checkout -- Directory.Packages.props` there, and
    `rm -rf ~/.nuget/packages/integrateds3.*/<version>-probe.<n>`.
 5. Squash-merge the release PR, and only if it holds `main`'s head:
    `git fetch origin && git merge-base --is-ancestor origin/main HEAD` in the release worktree.
    Otherwise merge `origin/main` into it, move the merged `Unreleased` lines into the `<version>`
    section (a conflict at the `<version>` heading resolves the same way), push, and repeat steps
-   0.1-0.3 and 2; the merge gets CI green on the new head sha and a verification pass over it
-   (`CLAUDE.md`, Git & PRs). If step 2.3 changed the release PR after its passes, repeat steps
-   2.1-2.4 with a new `<n>` on the new head, and the change gets CI green on that head sha and a
-   verification pass over it.
+   0.1-0.3 and 2, after redoing steps 1.2-1.4 and retitling the PR if step 0.2 now calls a major;
+   the merge gets CI green on the new head sha and a verification pass over it (`CLAUDE.md`, Git &
+   PRs). If step 2.3 changed the release PR after its passes, repeat steps 2.1-2.4 with a new `<n>`
+   on the new head, and the change gets CI green on that head sha and a verification pass over it.
 
 ## 3. Dry run
 
@@ -157,8 +165,8 @@ used, because restore never replaces a cached version (PersonalS3 #98):
 3. Bump both pins in `Directory.Packages.props`, `IntegratedS3.Abstractions` and
    `IntegratedS3.AspNetCore`, to `<version>`. Restore without `--no-restore`.
 4. A major: implement the new members (11.0.0 added four to `IStorageCatalogStore`, PersonalS3
-   #82), starting from the diff step 2.3 kept. A new column is a numbered schema migration, with a
-   test seen red without it.
+   #82), starting from the commit step 2.4 kept (`git cherry-pick <sha>`). A new column is a
+   numbered schema migration, with a test seen red without it.
 5. Build and test with the commands in PersonalS3's `CLAUDE.md`, including its warning ratchet.
    A package bump reaches the Native AOT binary. Push the branch, then dispatch `heavy`
    (`gh workflow run ci.yml -R SymoHTL/PersonalS3 --ref <branch> -f run-heavy=true`), which builds
