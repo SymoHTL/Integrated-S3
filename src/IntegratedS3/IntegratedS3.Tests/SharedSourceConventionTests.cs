@@ -44,6 +44,16 @@ public sealed class SharedSourceConventionTests
             declarations.Length == 0,
             "Declared outside src/IntegratedS3/Shared, which holds the one definition; link the shared file into the "
             + "project instead of keeping a copy, or rename a declaration that means something else:" + Environment.NewLine + string.Join(Environment.NewLine, declarations));
+
+        // The names above guard only while Shared/ still declares each of them, exactly once.
+        var definitions = Directory.EnumerateFiles(Path.Combine(sourceRoot, "Shared"), "*.cs", SearchOption.AllDirectories)
+            .SelectMany(path => Roots(File.ReadAllText(path)).SelectMany(static root => root.DescendantNodes()))
+            .Select(DeclaredSharedName)
+            .OfType<string>()
+            .Order(StringComparer.Ordinal)
+            .ToArray();
+        string[] expected = ["method BuildCompositeChecksum", "method NormalizeRange", "type Crc32Accumulator"];
+        Assert.Equal(expected, definitions);
     }
 
     // Only a project's own output folders are generated; a source folder named bin or obj deeper down still compiles.
@@ -73,6 +83,12 @@ public sealed class SharedSourceConventionTests
             LocalFunctionStatementSyntax function when SharedMethods.Contains(function.Identifier.ValueText) => $"local function {function.Identifier.ValueText}",
             PropertyDeclarationSyntax property when SharedMethods.Contains(property.Identifier.ValueText) => $"property {property.Identifier.ValueText}",
             VariableDeclaratorSyntax variable when SharedMethods.Contains(variable.Identifier.ValueText) => $"field or local {variable.Identifier.ValueText}",
+            EventDeclarationSyntax @event when SharedMethods.Contains(@event.Identifier.ValueText) => $"event {@event.Identifier.ValueText}",
+            ParameterSyntax parameter when SharedMethods.Contains(parameter.Identifier.ValueText) => $"parameter {parameter.Identifier.ValueText}",
+            SingleVariableDesignationSyntax variable when SharedMethods.Contains(variable.Identifier.ValueText) => $"pattern or out variable {variable.Identifier.ValueText}",
+            ForEachStatementSyntax loop when SharedMethods.Contains(loop.Identifier.ValueText) => $"foreach variable {loop.Identifier.ValueText}",
+            TupleElementSyntax element when SharedMethods.Contains(element.Identifier.ValueText) => $"tuple element {element.Identifier.ValueText}",
+            AnonymousObjectMemberDeclaratorSyntax { NameEquals: { } member } when SharedMethods.Contains(member.Name.Identifier.ValueText) => $"anonymous member {member.Name.Identifier.ValueText}",
             _ => null
         };
     }
