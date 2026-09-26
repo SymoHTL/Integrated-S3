@@ -9,7 +9,8 @@ namespace IntegratedS3.Abstractions.Blobs;
 /// <remarks>
 /// Implementations run the shared contract suite, <c>BlobStoreContractTests</c> in the
 /// <c>IntegratedS3.Testing</c> package, in their own CI. A store declares what it can do in
-/// <see cref="Capabilities"/>, and the engine adapts to it instead of checking which store it has.
+/// <see cref="Capabilities"/>, and the engine adapts to it instead of checking which store it has. One instance
+/// serves many requests and background jobs, so its members may be called concurrently.
 /// </remarks>
 public interface IBlobStore
 {
@@ -21,7 +22,10 @@ public interface IBlobStore
     /// <summary>
     /// Reads <paramref name="content"/> to its end and stores it as a new blob.
     /// </summary>
-    /// <param name="content">The bytes of the blob. The store reads it to its end and does not dispose it.</param>
+    /// <param name="content">
+    /// The bytes of the blob. It may be forward-only: the store reads it once, from its current position to its end,
+    /// and does not seek it, read its length or dispose it.
+    /// </param>
     /// <param name="length">
     /// The exact number of bytes <paramref name="content"/> yields, when the caller knows it; otherwise
     /// <see langword="null"/>. Never larger than <see cref="BlobStoreCapabilities.MaxBlobSize"/>.
@@ -76,7 +80,9 @@ public interface IBlobStore
     /// <param name="cancellationToken">A token to cancel the listing.</param>
     /// <returns>
     /// The next entries. A blob that exists for the whole walk appears exactly once; a blob written or
-    /// deleted during the walk may or may not appear.
+    /// deleted during the walk may or may not appear, but a blob that was listed and then deleted does not appear
+    /// again later in the same walk. A walk ends: after finitely many pages, <see cref="BlobListPage.NextCursor"/>
+    /// is <see langword="null"/>.
     /// </returns>
     /// <exception cref="BlobStoreThrottledException">The store asks the caller to slow down.</exception>
     ValueTask<BlobListPage> ListAsync(string? cursor, int maxEntries, CancellationToken cancellationToken = default);

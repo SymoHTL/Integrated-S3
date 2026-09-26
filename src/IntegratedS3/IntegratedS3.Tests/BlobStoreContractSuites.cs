@@ -15,6 +15,9 @@ public sealed class LocalDiskBlobStoreContractTests : BlobStoreContractTests, ID
     protected override ValueTask<IBlobStore> CreateStoreAsync()
         => ValueTask.FromResult<IBlobStore>(new LocalDiskBlobStore(RootPath));
 
+    protected override ValueTask<IBlobStore> ReopenAsync(IBlobStore store)
+        => ValueTask.FromResult<IBlobStore>(new LocalDiskBlobStore(RootPath));
+
     // The contract's never-issued locators are malformed for this store; a well-formed one has no directories yet.
     [Fact]
     public async Task Delete_OfAWellFormedLocatorWhoseDirectoriesDoNotExist_Succeeds()
@@ -40,6 +43,20 @@ public sealed class LocalDiskBlobStoreContractTests : BlobStoreContractTests, ID
             await Assert.ThrowsAsync<BlobNotFoundException>(() => store.OpenReadAsync(locator).AsTask());
             await store.DeleteAsync(locator);
             Assert.Equal("outside", await File.ReadAllTextAsync(outside));
+        }
+
+        // No separator at all: root/../../<locator> is a file in the root's grandparent when the locator starts
+        // with four dots.
+        var dotted = "...." + Guid.NewGuid().ToString("N")[..28];
+        var grandparentFile = Path.Combine(Path.GetDirectoryName(_parentPath)!, dotted);
+        await File.WriteAllTextAsync(grandparentFile, "outside");
+        try {
+            await Assert.ThrowsAsync<BlobNotFoundException>(() => store.OpenReadAsync(dotted).AsTask());
+            await store.DeleteAsync(dotted);
+            Assert.Equal("outside", await File.ReadAllTextAsync(grandparentFile));
+        }
+        finally {
+            File.Delete(grandparentFile);
         }
     }
 
@@ -125,6 +142,32 @@ public sealed class LocalDiskBlobStoreContractTests : BlobStoreContractTests, ID
         Assert.Equal(bytes[1234..5678], copy.ToArray());
     }
 
+    // The byte[] overloads, sync and async, write at the offset into the caller's buffer.
+    [Fact]
+    public async Task ByteArrayReads_OfARange_FillTheCallersBufferFromItsOffset()
+    {
+        var store = new LocalDiskBlobStore(RootPath);
+        var bytes = CreateBytes(10_000, seed: 9);
+        var written = await store.WriteAsync(new MemoryStream(bytes), bytes.Length);
+
+        using var sync = await store.OpenReadAsync(written.Locator, 1234, 4444);
+        await using var asynchronous = await store.OpenReadAsync(written.Locator, 1234, 4444);
+        var syncBuffer = new byte[7 + 4444];
+        var asyncBuffer = new byte[7 + 4444];
+        for (int total = 0, read; total < 4444; total += read) {
+            read = sync.Read(syncBuffer, 7 + total, 4444 - total);
+            Assert.True(read > 0);
+        }
+
+        for (int total = 0, read; total < 4444; total += read) {
+            read = await asynchronous.ReadAsync(asyncBuffer, 7 + total, 4444 - total);
+            Assert.True(read > 0);
+        }
+
+        Assert.Equal(bytes[1234..5678], syncBuffer[7..]);
+        Assert.Equal(bytes[1234..5678], asyncBuffer[7..]);
+    }
+
     [Fact]
     public async Task Write_CancelledMidStream_ThrowsAndLeavesNothingListed()
     {
@@ -135,6 +178,59 @@ public sealed class LocalDiskBlobStoreContractTests : BlobStoreContractTests, ID
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => store.WriteAsync(content, null, cts.Token).AsTask());
 
         Assert.Empty((await store.ListAsync(null, 10)).Entries);
+    }
+
+    // A client that goes away mid-body: the write fails, and its partial file is gone before the sweep's grace period.
+    [Fact]
+    public async Task Write_WhoseContentFailsMidStream_ThrowsAndLeavesNothingListed()
+    {
+        var store = new LocalDiskBlobStore(RootPath);
+
+        await Assert.ThrowsAsync<IOException>(() => store.WriteAsync(new FailingStream(new byte[300_000], failAfterBytes: 100_000), null).AsTask());
+
+        Assert.Empty((await store.ListAsync(null, 10)).Entries);
+    }
+
+    // CreateNew fails on an existing file, as a locator collision would, and that file is another write's blob.
+    [Fact]
+    public async Task Write_ToALiveBlobsLocator_Throws_AndLeavesThatBlobUnchanged()
+    {
+        var store = new LocalDiskBlobStore(RootPath);
+        var bytes = CreateBytes(1000, seed: 12);
+        var live = await store.WriteAsync(new MemoryStream(bytes), bytes.Length);
+
+        await Assert.ThrowsAnyAsync<IOException>(() => store.WriteToAsync(live.Locator, new MemoryStream(CreateBytes(10, seed: 13)), CancellationToken.None).AsTask());
+
+        await using var stream = await store.OpenReadAsync(live.Locator);
+        using var copy = new MemoryStream();
+        await stream.CopyToAsync(copy);
+        Assert.Equal(bytes, copy.ToArray());
+    }
+
+    // A deleted or unmounted root is not an empty store: every call throws an IOException that names it, and a
+    // write does not create it again.
+    [Fact]
+    public async Task EveryCall_WithTheRootGone_ThrowsAnIOExceptionNamingIt_AndAWriteDoesNotCreateIt()
+    {
+        var store = new LocalDiskBlobStore(RootPath);
+        var written = await store.WriteAsync(new MemoryStream([1, 2, 3]), 3);
+        var root = Path.GetFullPath(RootPath);
+        Directory.Delete(root, recursive: true);
+
+        await AssertRootMissingAsync(() => store.OpenReadAsync(written.Locator).AsTask());
+        await AssertRootMissingAsync(() => store.OpenReadAsync("not-a-locator").AsTask());
+        await AssertRootMissingAsync(() => store.DeleteAsync(written.Locator).AsTask());
+        await AssertRootMissingAsync(() => store.DeleteAsync("not-a-locator").AsTask());
+        await AssertRootMissingAsync(() => store.ListAsync(null, 10).AsTask());
+        await AssertRootMissingAsync(() => store.WriteAsync(new MemoryStream([4, 5, 6]), 3).AsTask());
+
+        Assert.False(Directory.Exists(root));
+
+        async Task AssertRootMissingAsync(Func<Task> call)
+        {
+            var exception = await Assert.ThrowsAsync<IOException>(call);
+            Assert.Contains(root, exception.Message, StringComparison.Ordinal);
+        }
     }
 
     // Directory creation races: 512 writes from two instances into one empty root.
@@ -183,16 +279,34 @@ public sealed class LocalDiskBlobStoreContractTests : BlobStoreContractTests, ID
             return read;
         }
     }
+
+    private sealed class FailingStream(byte[] data, int failAfterBytes) : MemoryStream(data, writable: false)
+    {
+        public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
+        {
+            if (Position >= failAfterBytes) {
+                throw new IOException("The client went away.");
+            }
+
+            return await base.ReadAsync(buffer, cancellationToken);
+        }
+    }
 }
 
 public sealed class InMemoryBlobStoreContractTests : BlobStoreContractTests
 {
     protected override ValueTask<IBlobStore> CreateStoreAsync()
         => ValueTask.FromResult<IBlobStore>(new InMemoryBlobStore());
+
+    // An in-memory store's storage is the instance itself.
+    protected override ValueTask<IBlobStore> ReopenAsync(IBlobStore store) => ValueTask.FromResult(store);
 }
 
 public sealed class ConstrainedInMemoryBlobStoreContractTests : BlobStoreContractTests
 {
     protected override ValueTask<IBlobStore> CreateStoreAsync()
         => ValueTask.FromResult<IBlobStore>(InMemoryBlobStore.CreateConstrained());
+
+    // An in-memory store's storage is the instance itself.
+    protected override ValueTask<IBlobStore> ReopenAsync(IBlobStore store) => ValueTask.FromResult(store);
 }

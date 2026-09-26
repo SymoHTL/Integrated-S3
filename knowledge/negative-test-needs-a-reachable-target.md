@@ -11,9 +11,10 @@ Two misses in one PR (#298, the `IBlobStore` contract and `LocalDiskBlobStore`):
   and `OpenReadAsync("..\outside")` throw `BlobNotFoundException`. The store builds a path as
   `Path.Combine(root, locator[..2], locator[2..4], locator)`, and `locator[2..4]` is `/o`, a rooted
   segment, so `Path.Combine` starts over there and the path lands on the drive root, where no
-  `outside` file exists. The first verification pass removed the locator check from `OpenReadAsync`
-  and from `DeleteAsync`: all 49 blob store tests stayed green, while
-  `abcd/../../../../outside.txt` reached the root's parent and could read or delete a file there.
+  `outside` file exists. The first verification pass, at c0bf1ca, removed the locator check from
+  `OpenReadAsync` in one mutant and from `DeleteAsync` in another: each left all 34 blob store tests
+  green (its run of 49 also held 15 convention tests), while `abcd/../../../../outside.txt` reached
+  the root's parent and could read or delete a file there.
 - **The delete case never reached its path.** "Deleting a locator the store never issued succeeds"
   used malformed locators, which the validator rejects before any file system call. A mutant that
   let `DirectoryNotFoundException` escape from `File.Delete` passed the whole contract suite; only
@@ -29,5 +30,6 @@ forbidden target where the escape would land (a file beside the root, a live blo
 variant), and assert afterwards that it is intact. Record the mutation in the PR, as #298 does.
 
 Gate: `LocalDiskBlobStoreContractTests.EscapingLocators_NeitherReadNorDeleteAFileOutsideTheRoot`
-and `Delete_OfAWellFormedLocatorWhoseDirectoriesDoNotExist_Succeeds`, for these two stores' cases
-only. HAZARD for other negative tests (#270): no tool checks that a negative test can fail.
+and `LocalDiskBlobStoreContractTests.Delete_OfAWellFormedLocatorWhoseDirectoriesDoNotExist_Succeeds`,
+both tests of `LocalDiskBlobStore`, so they gate these two cases in that store only. HAZARD for
+other stores and other negative tests (#270): no tool checks that a negative test can fail.

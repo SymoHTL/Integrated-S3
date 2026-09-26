@@ -5,9 +5,10 @@ namespace IntegratedS3.Testing;
 
 /// <summary>
 /// Reusable xUnit contract tests for <see cref="IBlobStore"/> implementations. Derive from this class, return
-/// a new empty store from <see cref="CreateStoreAsync"/>, and run it in your CI. Every call retries when the
-/// store throttles, as the engine does, so a store that throttles still passes. Each fact asserts on both
-/// sides of a capability, so no fact passes without checking something.
+/// a new empty store from <see cref="CreateStoreAsync"/> and another instance over its storage from
+/// <see cref="ReopenAsync"/>, and run it in your CI. Every call retries when the store throttles, as the engine
+/// does, so a store that throttles still passes. Each fact asserts on both sides of a capability, so no fact
+/// passes without checking something. The suite writes forward-only streams, as the engine does.
 /// </summary>
 public abstract class BlobStoreContractTests
 {
@@ -21,23 +22,79 @@ public abstract class BlobStoreContractTests
     protected abstract ValueTask<IBlobStore> CreateStoreAsync();
 
     /// <summary>
+    /// Opens another instance over the storage of <paramref name="store"/>, as another node or a restarted process
+    /// opens it. A store whose storage is the instance itself returns <paramref name="store"/>.
+    /// </summary>
+    /// <param name="store">A store <see cref="CreateStoreAsync"/> returned.</param>
+    /// <returns>Another instance over the same storage.</returns>
+    protected abstract ValueTask<IBlobStore> ReopenAsync(IBlobStore store);
+
+    /// <summary>
     /// Verifies that a blob reads back byte for byte, and that the write reports the number of bytes stored.
     /// </summary>
     /// <param name="size">The blob size in bytes.</param>
+    /// <param name="declareLength">Whether the write declares the length; the engine does not always know it.</param>
     [Theory]
-    [InlineData(0)]
-    [InlineData(1)]
-    [InlineData(100_003)]
-    public async Task BlobStoreContract_Write_ThenRead_ReturnsTheSameBytes(int size)
+    [InlineData(0, true)]
+    [InlineData(1, true)]
+    [InlineData(100_003, true)]
+    [InlineData(0, false)]
+    [InlineData(100_003, false)]
+    public async Task BlobStoreContract_Write_ThenRead_ReturnsTheSameBytes(int size, bool declareLength)
     {
         var store = await CreateStoreAsync();
         var bytes = CreateBytes(size, seed: size);
 
-        var written = await WriteAsync(store, bytes);
+        var written = await WriteAsync(store, bytes, declareLength);
 
         Assert.Equal(size, written.Length);
         Assert.False(string.IsNullOrEmpty(written.Locator));
         Assert.Equal(bytes, await ReadAllAsync(store, written.Locator));
+    }
+
+    /// <summary>
+    /// Verifies that a blob is readable through another instance of the store as soon as the write returns: a
+    /// store never acknowledges a write it has only buffered.
+    /// </summary>
+    [Fact]
+    public async Task BlobStoreContract_Write_IsReadableThroughAnotherInstance_AsSoonAsItReturns()
+    {
+        var store = await CreateStoreAsync();
+        var bytes = CreateBytes(5000, seed: 21);
+        var written = await WriteAsync(store, bytes);
+
+        var other = await ReopenAsync(store);
+
+        Assert.Equal(bytes, await ReadAllAsync(other, written.Locator));
+    }
+
+    /// <summary>
+    /// Verifies that another instance of the store resumes a listing from a cursor the first one returned, as the
+    /// orphan sweep does after a restart.
+    /// </summary>
+    [Fact]
+    public async Task BlobStoreContract_List_ResumesFromACursor_InAnotherInstance()
+    {
+        var store = await CreateStoreAsync();
+        var written = new List<string>();
+        for (var index = 0; index < 5; index++) {
+            written.Add((await WriteAsync(store, CreateBytes(10, seed: 300 + index))).Locator);
+        }
+
+        var first = await RetryAsync(() => store.ListAsync(null, maxEntries: 2).AsTask());
+        Assert.NotNull(first.NextCursor);
+        var seen = first.Entries.Select(static entry => entry.Locator).ToList();
+        var other = await ReopenAsync(store);
+        var cursor = first.NextCursor;
+        var pages = 1;
+        while (cursor is not null) {
+            var page = await RetryAsync(() => other.ListAsync(cursor, maxEntries: 2).AsTask());
+            seen.AddRange(page.Entries.Select(static entry => entry.Locator));
+            cursor = page.NextCursor;
+            Assert.True(++pages <= MaxListPages, "The listing did not end.");
+        }
+
+        Assert.Equal(written.Order(StringComparer.Ordinal), seen.Order(StringComparer.Ordinal));
     }
 
     /// <summary>
@@ -71,7 +128,8 @@ public abstract class BlobStoreContractTests
         var store = await CreateStoreAsync();
         var payloads = Enumerable.Range(0, 32).Select(static index => CreateBytes(1000 + index, seed: index)).ToArray();
 
-        var written = await Task.WhenAll(payloads.Select(payload => WriteAsync(store, payload)));
+        // Task.Run, so that a store whose writes complete synchronously is still called from several threads at once.
+        var written = await Task.WhenAll(payloads.Select(payload => Task.Run(() => WriteAsync(store, payload))));
 
         Assert.Equal(payloads.Length, written.Select(static result => result.Locator).Distinct(StringComparer.Ordinal).Count());
         for (var index = 0; index < payloads.Length; index++) {
@@ -100,6 +158,8 @@ public abstract class BlobStoreContractTests
         Assert.Equal(bytes[9990..], await ReadAllAsync(store, written.Locator, 9990, null));
         Assert.Equal(bytes[9990..], await ReadAllAsync(store, written.Locator, 9990, 500));
         Assert.Empty(await ReadAllAsync(store, written.Locator, 10_000, null));
+        Assert.Empty(await ReadAllAsync(store, written.Locator, 20_000, null));
+        Assert.Empty(await ReadAllAsync(store, written.Locator, 20_000, 5));
         Assert.Empty(await ReadAllAsync(store, written.Locator, 500, 0));
     }
 
@@ -107,8 +167,9 @@ public abstract class BlobStoreContractTests
     /// Verifies the size limit. A store with <see cref="BlobStoreCapabilities.MaxBlobSize"/> accepts a blob of
     /// exactly that size and refuses one byte more, with or without a declared length. A store without a limit
     /// accepts a blob larger than any limit the constrained test store uses. The fact holds the blob in memory, so
-    /// it checks limits up to <see cref="int.MaxValue"/> - 1 bytes; a store whose own limit is larger declares a
-    /// smaller one, which only makes the engine split a body into more blobs.
+    /// it checks limits up to <see cref="Array.MaxLength"/> - 1 bytes, the largest limit whose one byte more still
+    /// fits in an array; a store whose own limit is larger declares a smaller one, which only makes the engine split
+    /// a body into more blobs.
     /// </summary>
     [Fact]
     public async Task BlobStoreContract_Write_HonoursMaxBlobSize()
@@ -123,7 +184,7 @@ public abstract class BlobStoreContractTests
             return;
         }
 
-        Assert.InRange(max, 1, int.MaxValue - 1);
+        Assert.InRange(max, 1, Array.MaxLength - 1);
         var exact = CreateBytes((int)max, seed: 4);
         var accepted = await WriteAsync(store, exact);
         Assert.Equal(max, accepted.Length);
@@ -164,6 +225,28 @@ public abstract class BlobStoreContractTests
         await DeleteAsync(store, "not-a-locator");
 
         await Assert.ThrowsAsync<BlobNotFoundException>(() => RetryAsync(() => store.OpenReadAsync(written.Locator).AsTask()));
+    }
+
+    /// <summary>
+    /// Verifies that retrying a delete through another instance, as the engine does after a restart, removes nothing
+    /// else: the other blob still reads back byte for byte. A store that keeps several blobs in one container tracks
+    /// which of them are live, so the retry is a no-op.
+    /// </summary>
+    [Fact]
+    public async Task BlobStoreContract_Delete_RetriedThroughAnotherInstance_LeavesTheOtherBlobUnchanged()
+    {
+        var store = await CreateStoreAsync();
+        var deleted = await WriteAsync(store, CreateBytes(3000, seed: 40));
+        var keptBytes = CreateBytes(3000, seed: 41);
+        var kept = await WriteAsync(store, keptBytes);
+
+        await DeleteAsync(store, deleted.Locator);
+        var other = await ReopenAsync(store);
+        await DeleteAsync(other, deleted.Locator);
+
+        Assert.Equal(keptBytes, await ReadAllAsync(store, kept.Locator));
+        Assert.Equal(keptBytes, await ReadAllAsync(other, kept.Locator));
+        await Assert.ThrowsAsync<BlobNotFoundException>(() => RetryAsync(() => other.OpenReadAsync(deleted.Locator).AsTask()));
     }
 
     /// <summary>
@@ -226,7 +309,8 @@ public abstract class BlobStoreContractTests
 
     /// <summary>
     /// Verifies the listing guarantee the orphan sweep relies on: a blob that exists for the whole walk appears
-    /// exactly once, even when blobs the walk has already returned are deleted between pages.
+    /// exactly once, even when blobs the walk has already returned are deleted between pages (the last one too,
+    /// which a cursor that names a locator points at), and a deleted blob does not appear again.
     /// </summary>
     [Fact]
     public async Task BlobStoreContract_List_ABlobThatExistsForTheWholeWalk_AppearsExactlyOnce_WhenSeenBlobsAreDeletedMidWalk()
@@ -246,8 +330,13 @@ public abstract class BlobStoreContractTests
             seen.AddRange(page.Entries.Select(static entry => entry.Locator));
             cursor = page.NextCursor;
             if (deletedMidWalk is null && seen.Count > 0 && cursor is not null) {
+                // The first blob seen, and the last one, which a cursor that names a locator points at: the sweep
+                // deletes both kinds between pages.
                 deletedMidWalk = seen[0];
                 await DeleteAsync(store, deletedMidWalk);
+                if (seen[^1] != deletedMidWalk) {
+                    await DeleteAsync(store, seen[^1]);
+                }
             }
 
             Assert.True(++pages <= MaxListPages, "The listing did not end.");
@@ -259,8 +348,8 @@ public abstract class BlobStoreContractTests
     }
 
     /// <summary>
-    /// Verifies that strings close to a live blob's locator, which the store never issued, name no blob, and
-    /// that the live blob still reads back.
+    /// Verifies that strings close to a live blob's locator, which the store never issued, name no blob, an
+    /// uppercase copy included, and that the live blob still reads back.
     /// </summary>
     [Fact]
     public async Task BlobStoreContract_OpenRead_VariantsOfALiveLocator_ThrowBlobNotFound()
@@ -269,7 +358,10 @@ public abstract class BlobStoreContractTests
         var bytes = CreateBytes(64, seed: 11);
         var live = await WriteAsync(store, bytes);
 
-        foreach (var variant in new[] { live.Locator + "x", live.Locator[..^1], live.Locator + "/" }.Where(static variant => variant.Length > 0)) {
+        var variants = new[] { live.Locator.ToUpperInvariant(), live.Locator + "x", live.Locator[..^1], live.Locator + "/" }
+            .Where(variant => variant.Length > 0 && !string.Equals(variant, live.Locator, StringComparison.Ordinal))
+            .Distinct(StringComparer.Ordinal);
+        foreach (var variant in variants) {
             await Assert.ThrowsAsync<BlobNotFoundException>(() => RetryAsync(() => store.OpenReadAsync(variant).AsTask()));
         }
 
@@ -297,7 +389,14 @@ public abstract class BlobStoreContractTests
     /// <param name="declareLength">Whether to pass the length to the store.</param>
     /// <returns>The write result.</returns>
     protected static Task<BlobWriteResult> WriteAsync(IBlobStore store, byte[] bytes, bool declareLength = true)
-        => RetryAsync(() => store.WriteAsync(new MemoryStream(bytes, writable: false), declareLength ? bytes.Length : null).AsTask());
+        => RetryAsync(async () => {
+            // The engine hands a store a forward-only stream (a request body under its digest wrappers) and keeps
+            // using it afterwards, so the suite does the same.
+            var content = new ForwardOnlyStream(bytes);
+            var result = await store.WriteAsync(content, declareLength ? bytes.Length : null);
+            Assert.False(content.Disposed, "The store disposed the caller's content stream.");
+            return result;
+        });
 
     /// <summary>
     /// Deletes a blob, retrying while the store throttles.
@@ -344,6 +443,54 @@ public abstract class BlobStoreContractTests
             catch (BlobStoreThrottledException exception) when (attempt < MaxThrottledAttempts) {
                 await Task.Delay(exception.RetryAfter ?? TimeSpan.FromMilliseconds(attempt));
             }
+        }
+    }
+
+    // A read-only stream with no length, no position and no seeking, which records whether it was disposed.
+    private sealed class ForwardOnlyStream(byte[] bytes) : Stream
+    {
+        private readonly MemoryStream _inner = new(bytes, writable: false);
+
+        public bool Disposed { get; private set; }
+
+        public override bool CanRead => true;
+
+        public override bool CanSeek => false;
+
+        public override bool CanWrite => false;
+
+        public override long Length => throw new NotSupportedException();
+
+        public override long Position
+        {
+            get => throw new NotSupportedException();
+            set => throw new NotSupportedException();
+        }
+
+        public override int Read(byte[] buffer, int offset, int count) => _inner.Read(buffer, offset, count);
+
+        public override int Read(Span<byte> buffer) => _inner.Read(buffer);
+
+        public override Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
+            => _inner.ReadAsync(buffer, offset, count, cancellationToken);
+
+        public override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
+            => _inner.ReadAsync(buffer, cancellationToken);
+
+        public override void Flush()
+        {
+        }
+
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+
+        public override void SetLength(long value) => throw new NotSupportedException();
+
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+
+        protected override void Dispose(bool disposing)
+        {
+            Disposed = true;
+            base.Dispose(disposing);
         }
     }
 }
