@@ -8,4 +8,8 @@
   <ItemGroup>
     <ProjectReference Include="..\IntegratedS3.Abstractions\IntegratedS3.Abstractions.csproj" />
   </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="IntegratedS3.Tests" />
+  </ItemGroup>
 </Project>

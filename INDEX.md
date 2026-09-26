@@ -35,7 +35,7 @@ in GitHub issues.
   20 properties, dropping SSE and `If-None-Match` (#273). Gate copies with a reflection test
 - [A negative test needs a reachable target](knowledge/negative-test-needs-a-reachable-target.md)
   HARD — in #298 `../outside` resolved to an empty drive root and a delete case used locators the
-  validator rejected first, so removing the guard left all 49 blob store tests green; use inputs the
+  validator rejected first, so removing the guard left all 34 blob store tests green; use inputs the
   validator accepts, plant the target where the escape lands, assert it intact
 - [Early-return tests report Passed](knowledge/early-return-tests-report-passed.md) HARD — 28
   conformance tests `return` when their environment is missing, so CI says "Skipped 0" while the S3

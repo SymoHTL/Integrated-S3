@@ -5,7 +5,10 @@ namespace IntegratedS3.Engine.Blobs;
 /// <summary>
 /// An <see cref="IBlobStore"/> on a local or shared filesystem. Each blob is one file, named by a random
 /// locator (a version 4 GUID: 122 random bits) and spread over two levels of directories (<c>ab/cd/abcd…</c>). Files are created once and
-/// never renamed or modified, so several nodes can share one directory without any locking.
+/// never renamed or modified, so several nodes can share one directory without any locking. A root directory that is
+/// missing after construction is an I/O error, never an empty store: every call throws an <see cref="IOException"/>
+/// that names it, and a write does not create it. A shared root must be mounted before the engine starts, since an
+/// empty mount point looks like an empty store.
 /// </summary>
 public sealed class LocalDiskBlobStore : IBlobStore
 {
@@ -36,13 +39,25 @@ public sealed class LocalDiskBlobStore : IBlobStore
     public BlobStoreCapabilities Capabilities { get; } = new() { SupportsRangeReads = true };
 
     /// <inheritdoc />
-    public async ValueTask<BlobWriteResult> WriteAsync(Stream content, long? length = null, CancellationToken cancellationToken = default)
+    public ValueTask<BlobWriteResult> WriteAsync(Stream content, long? length = null, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(content);
 
-        var locator = Guid.NewGuid().ToString("N");
+        return WriteToAsync(Guid.NewGuid().ToString("N"), content, cancellationToken);
+    }
+
+    // Writes a new blob at the given locator. The tests pass a live blob's locator, as a locator collision would.
+    internal async ValueTask<BlobWriteResult> WriteToAsync(string locator, Stream content, CancellationToken cancellationToken)
+    {
         var path = GetPath(locator);
-        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        var directory = Path.GetDirectoryName(path)!;
+        if (!Directory.Exists(directory)) {
+            // Only ab/ and ab/cd/ are created here, under a root that exists.
+            // ponytail: a root removed between the check and CreateDirectory is created again, since .NET has no mkdir
+            // that refuses a missing parent; the window is one system call wide.
+            ThrowIfRootMissing();
+            Directory.CreateDirectory(directory);
+        }
 
         // A file at its final name that no metadata row references is an orphan for the sweep, never a blob a
         // client can read, so the write needs no temporary name and no rename.
@@ -50,8 +65,10 @@ public sealed class LocalDiskBlobStore : IBlobStore
         // write may create; ext4 and xfs journal them with the file's fsync, other filesystems may lose a
         // just-written blob on power failure until directory fsyncs are added.
         var written = 0L;
+        var created = false;
         try {
             await using (var file = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.None, bufferSize: 0, FileOptions.Asynchronous)) {
+                created = true;
                 var buffer = new byte[CopyBufferSize];
                 int read;
                 while ((read = await content.ReadAsync(buffer, cancellationToken)) > 0) {
@@ -65,7 +82,11 @@ public sealed class LocalDiskBlobStore : IBlobStore
             }
         }
         catch {
-            TryDelete(path);
+            // Only a file this call created: CreateNew fails on an existing file, which is another write's blob.
+            if (created) {
+                TryDelete(path);
+            }
+
             throw;
         }
 
@@ -83,6 +104,7 @@ public sealed class LocalDiskBlobStore : IBlobStore
         cancellationToken.ThrowIfCancellationRequested();
 
         if (!IsLocator(locator)) {
+            ThrowIfRootMissing();
             throw new BlobNotFoundException(locator);
         }
 
@@ -92,6 +114,7 @@ public sealed class LocalDiskBlobStore : IBlobStore
             handle = File.OpenHandle(GetPath(locator), FileMode.Open, FileAccess.Read, FileShare.Read | FileShare.Delete, FileOptions.Asynchronous);
         }
         catch (Exception exception) when (exception is FileNotFoundException or DirectoryNotFoundException) {
+            ThrowIfRootMissing(exception);
             throw new BlobNotFoundException(locator, exception);
         }
 
@@ -111,10 +134,13 @@ public sealed class LocalDiskBlobStore : IBlobStore
                 File.Delete(GetPath(locator));
             }
             catch (DirectoryNotFoundException) {
-                // The blob never existed, which is a successful delete.
+                // The blob never existed, which is a successful delete if the root is there.
             }
         }
 
+        // Checked on every delete, not only after a DirectoryNotFoundException, so that a delete under a missing root
+        // fails whatever File.Delete reports on the platform.
+        ThrowIfRootMissing();
         return ValueTask.CompletedTask;
     }
 
@@ -162,12 +188,25 @@ public sealed class LocalDiskBlobStore : IBlobStore
             }
         }
 
+        // A missing root lists as nothing at all, which would read as an empty store.
+        ThrowIfRootMissing();
         return ValueTask.FromResult(new BlobListPage { Entries = entries, NextCursor = null });
     }
 
     private string GetPath(string locator)
         => Path.Combine(_rootPath, locator[..2], locator[2..4], locator);
 
+    // A deleted or unmounted root: the store cannot say what it holds, so no call answers "not found" or an empty page.
+    private void ThrowIfRootMissing(Exception? innerException = null)
+    {
+        if (!Directory.Exists(_rootPath)) {
+            throw new IOException($"The blob store's root directory '{_rootPath}' does not exist or cannot be reached.", innerException);
+        }
+    }
+
+    // The canonical form WriteAsync issues: exactly 32 lowercase hex digits. Every locator and cursor is checked
+    // against it before it becomes a path, so no other string names a file, an uppercase copy of a locator on a
+    // case-insensitive filesystem included.
     private static bool IsLocator(string? value)
     {
         if (value is not { Length: LocatorLength }) {

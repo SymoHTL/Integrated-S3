@@ -28,7 +28,8 @@ public sealed class BlobListEntry
     public required string Locator { get; init; }
 
     /// <summary>
-    /// Gets the blob's size in bytes.
+    /// Gets the length <see cref="IBlobStore.WriteAsync"/> reported for the blob (<see cref="BlobWriteResult.Length"/>),
+    /// whatever the store keeps internally.
     /// </summary>
     public required long Length { get; init; }
 }
