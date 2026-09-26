@@ -6,9 +6,11 @@ namespace IntegratedS3.Engine.Blobs;
 /// An <see cref="IBlobStore"/> on a local or shared filesystem. Each blob is one file, named by a random
 /// locator (a version 4 GUID: 122 random bits) and spread over two levels of directories (<c>ab/cd/abcd…</c>). Files are created once and
 /// never renamed or modified, so several nodes can share one directory without any locking. A root directory that is
-/// missing after construction is an I/O error, never an empty store: every call throws an <see cref="IOException"/>
-/// that names it, and a write does not create it. A shared root must be mounted before the engine starts, since an
-/// empty mount point looks like an empty store.
+/// missing after construction, or replaced by a file, is an I/O error, never an empty store: every call throws an
+/// <see cref="IOException"/> that names it, and a write does not create it. A shared root must be mounted before the
+/// engine starts, since an empty mount point looks like an empty store. HAZARD (#289): so does a share unmounted
+/// while the engine runs, whose mount point stays behind: live locators answer not found, listings come back empty,
+/// and writes land under the mount point, hidden once the share is back.
 /// </summary>
 public sealed class LocalDiskBlobStore : IBlobStore
 {
@@ -49,6 +51,10 @@ public sealed class LocalDiskBlobStore : IBlobStore
     // Writes a new blob at the given locator. The tests pass a live blob's locator, as a locator collision would.
     internal async ValueTask<BlobWriteResult> WriteToAsync(string locator, Stream content, CancellationToken cancellationToken)
     {
+        if (!IsLocator(locator)) {
+            throw new ArgumentException("The locator is not one this store issues.", nameof(locator));
+        }
+
         var path = GetPath(locator);
         var directory = Path.GetDirectoryName(path)!;
         if (!Directory.Exists(directory)) {
@@ -196,7 +202,8 @@ public sealed class LocalDiskBlobStore : IBlobStore
     private string GetPath(string locator)
         => Path.Combine(_rootPath, locator[..2], locator[2..4], locator);
 
-    // A deleted or unmounted root: the store cannot say what it holds, so no call answers "not found" or an empty page.
+    // A deleted root, or a file in its place: the store cannot say what it holds, so no call answers "not found" or an
+    // empty page. An unmounted share whose mount point stays behind passes this check (the HAZARD on the class).
     private void ThrowIfRootMissing(Exception? innerException = null)
     {
         if (!Directory.Exists(_rootPath)) {

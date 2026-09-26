@@ -123,7 +123,7 @@ public sealed class InMemoryBlobStore : IBlobStore
         var page = _blobs
             .Where(pair => cursor is null || string.CompareOrdinal(pair.Key, cursor) > 0)
             .OrderBy(static pair => pair.Key, StringComparer.Ordinal)
-            .Take(pageSize + 1)
+            .Take(pageSize < int.MaxValue ? pageSize + 1 : pageSize)
             .ToList();
 
         var entries = page.Take(pageSize)

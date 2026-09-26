@@ -42,6 +42,7 @@ public sealed class LocalDiskBlobStoreContractTests : BlobStoreContractTests, ID
         foreach (var locator in new[] { "abcd/../../../../outside.txt", "abcd\\..\\..\\..\\..\\outside.txt" }) {
             await Assert.ThrowsAsync<BlobNotFoundException>(() => store.OpenReadAsync(locator).AsTask());
             await store.DeleteAsync(locator);
+            await Assert.ThrowsAsync<ArgumentException>(() => store.WriteToAsync(locator, new MemoryStream([1]), CancellationToken.None).AsTask());
             Assert.Equal("outside", await File.ReadAllTextAsync(outside));
         }
 
@@ -83,6 +84,7 @@ public sealed class LocalDiskBlobStoreContractTests : BlobStoreContractTests, ID
         Plant(Path.Combine("aa", "00", ".nfs0000000000000001"));
         Plant(Path.Combine("aa", "00", "aa00000000000000000000000000000z"));
         Plant(Path.Combine("aa", "00", "bb000000000000000000000000000000"));
+        Plant(Path.Combine("aa", "00", "aa010000000000000000000000000001"));
 
         var expectedCursors = new Dictionary<int, string?[]>
         {
@@ -207,30 +209,54 @@ public sealed class LocalDiskBlobStoreContractTests : BlobStoreContractTests, ID
         Assert.Equal(bytes, copy.ToArray());
     }
 
-    // A deleted or unmounted root is not an empty store: every call throws an IOException that names it, and a
-    // write does not create it again.
-    [Fact]
-    public async Task EveryCall_WithTheRootGone_ThrowsAnIOExceptionNamingIt_AndAWriteDoesNotCreateIt()
+    // A deleted root, or a file in its place, is not an empty store: every call throws an IOException that names it,
+    // and a write does not create it again.
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task EveryCall_WithTheRootGone_ThrowsAnIOExceptionNamingIt_AndAWriteDoesNotCreateIt(bool replacedByAFile)
     {
         var store = new LocalDiskBlobStore(RootPath);
         var written = await store.WriteAsync(new MemoryStream([1, 2, 3]), 3);
         var root = Path.GetFullPath(RootPath);
         Directory.Delete(root, recursive: true);
+        if (replacedByAFile) {
+            await File.WriteAllTextAsync(root, "not a directory");
+        }
 
         await AssertRootMissingAsync(() => store.OpenReadAsync(written.Locator).AsTask());
         await AssertRootMissingAsync(() => store.OpenReadAsync("not-a-locator").AsTask());
         await AssertRootMissingAsync(() => store.DeleteAsync(written.Locator).AsTask());
         await AssertRootMissingAsync(() => store.DeleteAsync("not-a-locator").AsTask());
         await AssertRootMissingAsync(() => store.ListAsync(null, 10).AsTask());
+        await AssertRootMissingAsync(() => store.ListAsync(written.Locator, 10).AsTask());
         await AssertRootMissingAsync(() => store.WriteAsync(new MemoryStream([4, 5, 6]), 3).AsTask());
 
         Assert.False(Directory.Exists(root));
+        Assert.Equal(replacedByAFile, File.Exists(root));
+        if (replacedByAFile) {
+            File.Delete(root);
+        }
 
         async Task AssertRootMissingAsync(Func<Task> call)
         {
             var exception = await Assert.ThrowsAsync<IOException>(call);
             Assert.Contains(root, exception.Message, StringComparison.Ordinal);
         }
+    }
+
+    // BlobNotFoundException only when the store knows: something that is not a blob at a locator's path is an error.
+    [Fact]
+    public async Task OpenRead_OfAPathThatHoldsADirectory_IsNotBlobNotFound()
+    {
+        var store = new LocalDiskBlobStore(RootPath);
+        const string locator = "0123456789abcdef0123456789abcdef";
+        Directory.CreateDirectory(Path.Combine(RootPath, "01", "23", locator));
+
+        var exception = await Record.ExceptionAsync(() => store.OpenReadAsync(locator).AsTask());
+
+        Assert.NotNull(exception);
+        Assert.IsNotType<BlobNotFoundException>(exception);
     }
 
     // Directory creation races: 512 writes from two instances into one empty root.
