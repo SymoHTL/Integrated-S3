@@ -592,7 +592,7 @@ The harness, suite and job names below are the ones the phase issues create.
 | A write's ACL is stored by the write's own transaction | HAZARD until its fact exists (#288): a PUT's ACL is stored with its version, in one transaction |
 | The engine adapts to store capabilities | The engine's provider contract and endpoint suites on the constrained store (see "Consumers") |
 | A body's blobs are written with at most the parallelism the store declares | HAZARD until the contract declares parallel writes and the constrained store limits them (#288) |
-| Readers never hit a collected blob | HAZARD until the read-lease fact exists (phase 2, #288) |
+| Readers never hit a collected blob | HAZARD until the read-lease fact exists (phase 1, #288) |
 | Bucket configuration is at most T seconds stale | HAZARD until the cache-invalidation fact exists (phase 2, #288) |
 | Time comes only from the database | A banned-API entry in `IntegratedS3.Engine` for every clock read outside the metadata store's clock: `DateTime.Now`, `DateTime.UtcNow`, `DateTime.Today`, `DateTimeOffset.Now`, `DateTimeOffset.UtcNow`, `TimeProvider.GetUtcNow` and `TimeProvider.GetLocalNow`. No banned-API analyzer exists yet: HAZARD (#270). Also a fact that sets a node clock far off and checks LastModified and retention |
 | The key lock is never held while a body arrives | The version-order fact above: a second PUT commits while the first body is held mid-stream |
@@ -616,12 +616,13 @@ The order of work; each phase ends when its gates are green. Status lives in the
 1. **Engine on SQLite and local disk**, matching today's single-node behaviour: streaming uploads,
    hashing on the way, manifest-based multipart, LIST by page, database time, bucket configuration,
    ACLs and policy in the database, garbage collection and jobs, importers for existing Disk data and
-   other stores' metadata, and the store upkeep service: relocation, lost-blob reports and the store
-   job API. Ships as an added package. PersonalS3 moves onto the engine in this phase, after those
-   three have landed.
+   other stores' metadata, read leases, and the store upkeep service: relocation, lost-blob reports
+   and the store job API. Ships as an added package. PersonalS3 moves onto the engine in this phase,
+   after read leases and the upkeep service have landed: a read of a large object from a remote store
+   can outlast the `not_before` delay.
 2. **Cluster mode**: the PostgreSQL store with migrations; shared-filesystem and S3 blob stores;
-   invalidated caches; leases; read leases; the node behaviour above. Done when the linearizability
-   and crash gates pass on three nodes.
+   invalidated caches; leases; the node behaviour above. Done when the linearizability and crash
+   gates pass on three nodes.
 3. **Performance**: inline small objects, shared-manifest copy within a bucket, the CPU and I/O
    levers, and the macro-benchmark gate at the agreed SLOs.
 4. **Own storage cluster**: volumes, sealing, repair, scrubbing, compaction, rebalancing. Done when
