@@ -227,10 +227,10 @@ The key's lock is held for a few round trips, never while the body is still arri
 Every transaction takes its locks in one order: the bucket's advisory lock, then key rows in key
 order, each followed by its upload rows and their part rows, then `blob_refs` rows in locator order,
 skipping the levels it does not need. A relocation takes the new locator's `blob_refs` row last,
-after the old one's: no other transaction knows the new locator yet, and the orphan sweep's claim
-locks that one row alone. The engine retries a transaction that PostgreSQL aborted as a deadlock
-(SQLSTATE 40P01). A retry ends a deadlocked race in the same state as a clean one, so the facts
-for this order force the interleaving and assert that no retry happened.
+after the old one's: no other transaction knows the new locator yet, and the orphan sweep claims
+only locators that have no `blob_refs` row. The engine retries a transaction that PostgreSQL aborted
+as a deadlock (SQLSTATE 40P01). A retry ends a deadlocked race in the same state as a clean one, so
+the facts for this order force the interleaving and assert that no retry happened.
 
 - **DELETE, CopyObject and CompleteMultipartUpload** commit the same way: the same bucket lock, the
   same key lock, preconditions checked under it. DELETE writes a delete marker or removes a version,
@@ -266,12 +266,12 @@ for this order force the interleaving and assert that no retry happened.
 - **DeleteBucket, versioning changes, Object Lock configuration**: take the bucket's advisory lock
   exclusively. DeleteBucket then checks that no version and no delete marker remains; uploads in
   progress go with the bucket, and their parts are queued for garbage collection, as on an AWS
-  general purpose bucket (AWS refuses the delete only for a directory bucket). No write can land in
-  a bucket being deleted, and no write runs half under the old versioning mode. Advisory locks live
-  in shared memory and write nothing to table rows. `FOR SHARE` on the bucket row would do the same
-  job, but many concurrent transactions locking one hot parent row cause MultiXact contention in
-  PostgreSQL. (A foreign key would not: its check takes `FOR KEY SHARE`, which does not conflict
-  with the update that changes the versioning state.)
+  general purpose bucket (AWS documents the refusal for uploads in progress only for directory
+  buckets). No write can land in a bucket being deleted, and no write runs half under the old
+  versioning mode. Advisory locks live in shared memory and write nothing to table rows. `FOR SHARE`
+  on the bucket row would do the same job, but many concurrent transactions locking one hot parent
+  row cause MultiXact contention in PostgreSQL. (A foreign key would not: its check takes `FOR KEY
+  SHARE`, which does not conflict with the update that changes the versioning state.)
 - **CreateBucket**: the unique name decides, so exactly one create wins across the cluster.
 
 ### Small objects
@@ -331,10 +331,10 @@ A store's own upkeep uses three generic mechanisms:
 
 - **Relocation.** A store that must move a blob (to another container, channel or disk) writes the
   copy, then asks the engine to replace the old locator by the new one. In one transaction the
-  engine reads the old locator's holders from `blob_holders`, takes the bucket lock, then the
-  holders' key locks and `FOR SHARE` on their upload rows in key order (each key before its
-  uploads), then the part rows that hold the old locator, and only then the old locator's
-  `blob_refs` row. It re-reads the holders, and rolls back and starts over if they changed. It swaps
+  engine reads the old locator's holders from `blob_holders`, takes the bucket lock, then, key by
+  key in key order, the holder's key lock, `FOR SHARE` on its upload rows and the part rows among
+  them that hold the old locator, and only then the old locator's `blob_refs` row, as the one lock
+  order above says. It re-reads the holders, and rolls back and starts over if they changed. It swaps
   the locator only in the rows that still hold the old one, and fails if none does; a repeated swap
   whose first attempt committed finds the new locator referenced instead and reports success. The
   swap records the new locator in `blob_refs` and `blob_holders` and queues the old blob for garbage
@@ -409,31 +409,38 @@ messages.
   know, so its sweep claims nothing, and a walk that refuses the claims because it found blobs the
   database does not know logs its counts.
 - **Marker blobs bind a database to its store** (#308). Every complete walk writes a small marker
-  naming the database and a walk number that only grows, and references it; the previous marker is
-  queued only after a complete walk has listed the new one. A walk that finds a marker it does not
-  know (another database's, or its own with a walk number newer than the database's, after a
-  restore) stops all claims until an operator turns the sweep back on. Its own marker with a walk
-  number the database has reached, at a locator it does not reference, is the copy a relocation
-  left when its swap failed, and is swept like any unreferenced blob. A listing may miss a blob
-  written or deleted while it runs, so before its first claim of a pass the sweep also reads its
-  own current marker by its locator, and claims nothing if it is gone.
+  naming the database, a walk number that only grows and a random nonce, which the database records
+  with the marker; the previous marker is queued only after a complete walk has listed the new one.
+  A walk that finds a marker it does not know stops all claims and garbage collection until an
+  operator turns them back on: another database's marker, its own with a walk number newer than the
+  database's (after a restore), or its own with a nonce the database never recorded. That last case
+  is a copy of the database, a cloned node or a backup restored on a second host while the first
+  still runs, which carries the same id and would otherwise sweep the other copy's new blobs, and
+  whose garbage collection would delete blobs the other copy still references. Its own marker with a
+  recorded nonce, at a locator it does not reference, is the copy a relocation left when its swap
+  failed (a relocation copies the bytes, nonce included), and is swept like any unreferenced blob. A
+  listing may miss a blob written or deleted while it runs, so before its first claim of a pass the
+  sweep also reads its own current marker by its locator, and claims nothing if it is gone.
 - **An import turns the sweep off** when it starts, and only an operator turns it back on (#308). A
   migration may run several imports, and a sweep turned on between them would claim the blobs of
   the parts not yet imported once the database knew at least as many blobs as it did not. A sweep
   turned off by a marker or an import logs why on every pass.
 - **G bounds the longest upload**: a single body whose upload takes longer than G fails at its commit.
   With G = 24 hours that is a sustained rate below about 60 KiB/s for a 5 GiB part.
-- **Garbage collection** deletes a queued blob only after its `not_before`. A reader that is still
+- **Garbage collection** deletes a queued blob only once the delay has passed since it first saw the
+  queued row, which it stamps then: a `not_before` computed inside the queuing transaction can
+  already have passed when a commit that waited for a standby becomes visible. A reader that is still
   reading a few minutes after it started records a read lease on its blobs and renews it; garbage
   collection skips a blob with a live lease. Every reader of a blob leases it: GETs, the physical
   copies of CopyObject and UploadPartCopy, replication and scrubbing. The lease insert fails when
   garbage collection has claimed the blob, and a reader whose lease lapsed stops with an error
   instead of reading on. A lease write is the one transaction that commits with
-  `synchronous_commit = local` (see "Commits cannot be cancelled"), so long reads keep working while
-  no synchronous standby is left: garbage collection only has to see a lease on the primary that
-  wrote it, and a read whose lease a failover lost can end with an error, as a lapsed one does. The
-  `not_before` delay must exceed the time before the first lease plus the longest pause a node
-  survives; compaction drops a volume only after every blob in it is collected.
+  `synchronous_commit = local` (see "Commits cannot be cancelled"), and takes a read-pool connection
+  outside the write cap, so long reads keep working while no synchronous standby is left: garbage
+  collection only has to see a lease on the primary that wrote it, and a read whose lease a failover
+  lost can end with an error, as a lapsed one does. The delay must exceed the time before the first
+  lease plus the longest pause a node survives; compaction drops a volume only after every blob in
+  it is collected.
 - **Failover.** Garbage collection deletes a blob only after the standbys have replayed the
   transaction that queued it, so a promoted standby never references a deleted blob.
 - A point-in-time restore of the metadata is safe only as far back as the `not_before` delay.
@@ -460,6 +467,11 @@ PostgreSQL is the only consensus in the system; everything else derives from it.
   - the migration lock is a session lock on a direct connection (see "Schema and access");
   - prepared statements need PgBouncer 1.21 or later with `max_prepared_statements` set.
 
+  PgBouncer assigns a server connection to a client for the length of a transaction, and caps the
+  server connections per user and database (`default_pool_size`). Reads and lease writes therefore
+  reach PostgreSQL through a pooler pool of their own (their own user or database entry), so
+  commits that wait for a standby cannot fill the pool the reads need.
+
 ## Node behaviour in cluster mode
 
 - **Readiness** means "this node reaches the metadata store and the blob store". It does not depend
@@ -480,12 +492,13 @@ PostgreSQL is the only consensus in the system; everything else derives from it.
   strict mode has no synchronous standby left, a commit waits with no timeout and keeps its
   connection, so reads take connections from a pool of their own, and the number of write
   transactions in flight is capped, counted from `BEGIN`: a write that waits for a key or bucket
-  lock held by a waiting commit holds a connection too. A write over the cap answers 503
-  `SlowDown`. Every engine transaction sets `synchronous_commit = on` itself, as it sets its
-  isolation level: Patroni's documentation warns that transactions with `synchronous_commit` set to
-  `off` or `local` "may be lost on fail over", and a role or database default can set either. The
-  one exception is a read lease, which sets `local` on purpose: losing one in a failover costs at
-  most that read (see "Crash safety").
+  lock held by a waiting commit holds a connection too. A write over the cap answers 503 `SlowDown`.
+  A read lease is a write that never waits for a standby, so it takes a connection from the read
+  pool and does not count toward the cap. Every engine transaction sets `synchronous_commit = on`
+  itself, as it sets its isolation level: Patroni's documentation warns that transactions with
+  `synchronous_commit` set to `off` or `local` "may be lost on fail over", and a role or database
+  default can set either. The one exception is a read lease, which sets `local` on purpose: losing
+  one in a failover costs at most that read (see "Crash safety").
 
 ## Performance
 
@@ -613,17 +626,18 @@ The harness, suite and job names below are the ones the phase issues create.
 | Rule | Gate |
 |---|---|
 | The metadata stores behave the same | The engine's store-level suite (row and bucket locks across connections, jobs and leases, `not_before`, the `blob_refs` fence) on SQLite and on PostgreSQL (#290's lane) |
-| The engine behaves like S3 | `StorageProviderContractTests` for the engine on both stores, with new facts for the races: N parallel `If-None-Match: *` give one winner; a write's or copy's `If-Match` on a missing key and on a delete marker give 404, and a mismatched ETag 412; preconditions on Complete and Copy (HAZARD until #313 adds them to the requests); Complete racing Abort gives one winner; UploadPart racing or following Complete never queues a referenced blob; no write lands in a deleted or re-created bucket. The harness calls 29 of 86 operations today and many facts return early (#268), so the engine lane also runs the endpoint and SDK suites |
-| DELETE's `If-Match` follows AWS's conditional deletes | HAZARD until #313 adds it to the request, then engine facts in `StorageProviderContractTests`: `If-Match`, `*` included, on a delete marker gives 412 and a mismatched ETag 412; a matching ETag, and `*` on an existing object, delete it; on a key with no version it gives 404 `NoSuchKey` |
+| The engine behaves like S3 | `StorageProviderContractTests` for the engine on both stores, with new facts for the races: N parallel `If-None-Match: *` give one winner; a PUT's `If-Match` on a missing key and on a delete marker gives 404, and a mismatched ETag 412; the preconditions on Complete and on a copy's destination, `If-Match` included (HAZARD until #313 adds them to the requests); Complete racing Abort gives one winner; UploadPart racing or following Complete never queues a referenced blob; no write lands in a deleted or re-created bucket. The harness calls 29 of 86 operations today and many facts return early (#268), so the engine lane also runs the endpoint and SDK suites |
+| DELETE's `If-Match`, and a batch delete's per-object `<ETag>`, follow AWS's conditional deletes | HAZARD until #313 adds them to the requests, then engine facts in `StorageProviderContractTests`: `If-Match`, `*` included, on a delete marker gives 412 and a mismatched ETag 412; a matching ETag, and `*` on an existing object, delete it; on a key with no version it gives 404 `NoSuchKey`; a batch delete reports a mismatched `<ETag>` in its `<Error>` element and deletes the other objects |
 | Blob stores are write-once and serve ranges correctly | `BlobStoreContractTests` against every store and the constrained in-memory store |
 | A retried delete never takes a container's other blobs | `BlobStoreContract_Delete_RetriedThroughAnotherInstance_LeavesTheOtherBlobUnchanged` in the blob-store contract suite (#298): it writes two blobs, deletes one twice through two store instances, and reads the other back |
 | The cluster is linearizable | #291: the checker's self-test (known bad histories rejected, known good ones accepted), and the harness proved red on today's Disk provider with two nodes sharing a root; then three engine nodes on one PostgreSQL must stay green |
 | A crash never leaves a row pointing at a missing blob | Kill the process in the middle of PUT, Complete and DELETE, restart, scan the invariants, with a fault-injecting `IBlobStore` decorator |
 | The sweep never deletes a referenced blob | A store-level fact that races a commit against the sweep's claim on the same locator |
 | Across metadata shards, the sweep never deletes a referenced blob | HAZARD until metadata sharding exists (phase 5, #288) |
-| Walk counts gate every claim, and a refusing walk logs its counts | Store-level facts that each delete nothing: an empty database over a populated store; a walk over an empty store before foreign blobs appear; a database that knows fewer blobs than it does not, after its first writes; once markers exist (#308), a database whose only known blob is its marker. One of them reads the refusal's log line, which none of #312's facts does yet |
-| Marker blobs bind a database to its store | HAZARD until the marker facts exist (#308): another database's marker; a restored database meeting its own newer marker; a pass whose listing misses every marker while the database's own is gone; the previous marker kept until a complete walk has listed the new one |
+| Walk counts gate every claim, and a refusing walk logs its counts | Store-level facts that each delete nothing: an empty database over a populated store; a walk over an empty store before foreign blobs appear; a database that knows fewer blobs than it does not, after its first writes; once markers exist (#308), a database whose only known blob is its marker. The log line: HAZARD until one of them reads it (phase 1, #288) |
+| Marker blobs bind a database to its store | HAZARD until the marker facts exist (#308): another database's marker; a restored database meeting its own newer marker; a copy of the database meeting its twin's marker (same id, a nonce it never recorded), which stops claims and garbage collection; a relocation's leftover marker (a recorded nonce, an unreferenced locator), which is swept; a pass whose listing misses every marker while the database's own is gone; the previous marker kept until a complete walk has listed the new one |
 | An import turns the sweep off until an operator turns it back on, and a turned-off sweep logs why | HAZARD until the import facts exist (#308) |
+| DeleteBucket refuses while a version or a delete marker remains, and takes uploads in progress with it | `DeleteBucket_WithAnUploadInProgress_Succeeds_AndCollectsItsParts` (#312); for a bucket that holds only noncurrent versions or only delete markers, HAZARD until #312's contract facts for them land |
 | Heads never outlive their last version | Two facts: a DELETE of a missing key followed by LIST and DeleteBucket; a delete of the key's last version that holds the key's lock while N `If-None-Match: *` writes start, after which exactly one write wins |
 | A version id carries seq only as an ordering hint | A fact that deletes a key's last version and writes the key again: the new version's id differs from every deleted one although its seq restarts |
 | Relocation never loses or leaks a blob | Store-level facts for a swap racing Complete, a copy and garbage collection, for a retried swap whose first commit succeeded, for a swap racing a DELETE of a version that holds the locator, and for a swap whose holders change before it locks them; HAZARD until relocation exists (phase 1, #288) |
@@ -637,21 +651,22 @@ The harness, suite and job names below are the ones the phase issues create.
 | A body's blobs are written with at most the parallelism the store declares | HAZARD until the contract declares parallel writes and the constrained store limits them (phase 1, #288) |
 | A store that encrypts on its own gets no inline objects | HAZARD until the declaration exists (phase 1, #288): a fact writes a body under the inline threshold to a store that declares it, and finds the body in the store, not in the row |
 | Inline data is encrypted with the object's data key | HAZARD until encryption at rest exists (phase 2, #288): a fact reads an inline object's raw version row and finds no plaintext |
-| Readers never hit a collected blob | HAZARD until the read-lease fact exists (phase 1, #288) |
+| Readers never hit a collected blob, except a read whose lease a failover lost, which ends with an error | HAZARD until the read-lease fact exists (phase 1, #288) |
+| The collection delay counts from when garbage collection first sees a queued row | HAZARD until #290's lane has a synchronous standby (#290): an overwrite whose commit waits behind a stopped standby for longer than the delay keeps the old blob for the full delay after it becomes visible |
 | Bucket configuration is at most T seconds stale | HAZARD until the cache-invalidation fact exists (phase 2, #288) |
 | LastModified never goes backwards within a key | HAZARD until its fact exists (phase 1, #288): with the store's clock set back between two PUTs of one key, the newer version's LastModified is not earlier than the older one's |
 | CreateBucket has one winner | HAZARD until its fact exists (phase 1, #288): N parallel CreateBucket calls for one name give exactly one success |
 | A swept blob is deleted again until it is gone | `OrphanSweep_FinishesAClaimWhoseDeleteNeverRan` (#312) |
-| Time comes only from the database | A convention test that reads `IntegratedS3.Engine`'s IL and fails on a call to `DateTime.Now`, `DateTime.UtcNow`, `DateTime.Today`, `DateTimeOffset.Now`, `DateTimeOffset.UtcNow`, `TimeProvider.GetUtcNow` or `TimeProvider.GetLocalNow` anywhere but the metadata store's own clock read, its one allowed caller; HAZARD until it exists (phase 1, #288). Also a fact that sets a node clock far off and checks LastModified and retention |
+| Time comes only from the database | A convention test that reads `IntegratedS3.Engine`'s IL and fails on a call to `DateTime.Now`, `DateTime.UtcNow`, `DateTime.Today`, `DateTimeOffset.Now`, `DateTimeOffset.UtcNow`, `TimeProvider.GetUtcNow`, `TimeProvider.GetLocalNow` or the parameterless `Guid.CreateVersion7()`, which reads the node's clock inside the runtime, anywhere but the metadata store's own clock read, its one allowed caller; HAZARD until it exists (phase 1, #288). Also a fact that sets a node clock far off and checks LastModified and retention |
 | The key lock is never held while a body arrives | The version-order fact above: a second PUT commits while the first body is held mid-stream |
 | Commits cannot be cancelled | A fact on #290's lane where a synchronous standby's WAL receiver is paused longer than Npgsql's default 30 s command timeout, asserting the commit still waits, and one that cancels the wait and gets a 500, never a success; HAZARD until that lane has a standby (#290) |
 | Every acknowledged write is on two nodes | HAZARD until #290's lane has a synchronous standby (#290): with the standby stopped, a write under Patroni's `synchronous_mode_strict` blocks instead of committing on the primary alone |
-| Reads keep working while commits wait for a standby, and write transactions in flight are capped | HAZARD until #290's lane has a synchronous standby (#290): with the standby stopped under strict mode, GETs still answer, one of them long enough to record and renew a read lease, and a write over the cap, one waiting for a key lock behind a waiting commit included, answers 503 `SlowDown` |
-| Every transaction sets its isolation level and `synchronous_commit` | HAZARD until its fact exists on #290's lane (#290): under a role whose defaults are `serializable` and `synchronous_commit = local`, a transaction still runs under READ COMMITTED and commits with `synchronous_commit = on`, and a read lease with `local` |
+| Reads keep working while commits wait for a standby, and write transactions in flight are capped | HAZARD until #290's lane has a synchronous standby (#290): with the standby stopped under strict mode, GETs still answer, one of them long enough to record and renew a read lease while the write cap is full, and a write over the cap, one waiting for a key lock behind a waiting commit included, answers 503 `SlowDown` |
+| Every transaction sets its isolation level and `synchronous_commit` | HAZARD until its fact exists on #290's lane (#290): under a role whose defaults are `serializable` and `synchronous_commit = local`, a transaction still runs under READ COMMITTED and commits with `synchronous_commit = on`; under a role whose default is `on`, a read lease commits with `local` |
 | Garbage collection waits for standby replay | HAZARD until #290's lane has a standby (#290) |
 | Blobs are flushed before their commit | HAZARD (#288): no seam shows that the local-disk store called `Flush(true)`, so a missing flush passes every read-back test. A power-cut test on a filesystem that drops unflushed writes (LazyFS) would see it; other stores are HAZARD too (#288) |
 | A migration never deadlocks a waiting node and never leaves an INVALID index | HAZARD until #290's lane runs a migration while other nodes wait (#290): polling with `pg_try_advisory_lock`, the lock and the DDL on one connection, an INVALID index dropped before its rebuild |
-| PgBouncer in transaction mode works | HAZARD until #290's lane runs through PgBouncer (#290) |
+| PgBouncer in transaction mode works, and reads keep a pooler pool of their own | HAZARD until #290's lane runs through PgBouncer (#290): the standby-outage GET of the row above, through PgBouncer with the write pool full |
 | Readiness depends only on the node's metadata and blob stores | HAZARD until cluster mode (phase 2, #288): a node whose other backends are down still reports ready |
 | Every metadata write of single-owner work checks its fencing number | HAZARD until cluster mode (phase 2, #288): a leader paused past its lease resumes, and its write is rejected. Phase 1's jobs and leases run in one process, which holds every lease, so no second owner exists before then |
 | Rolling upgrades work | CI runs the previous release's node against the new schema; HAZARD until phase 2 adds that job (#288) |
@@ -668,16 +683,16 @@ The order of work; each phase ends when its gates are green. Status lives in the
 1. **Engine on SQLite and local disk**, matching today's single-node behaviour: streaming uploads,
    hashing on the way, small objects inline, manifest-based multipart, LIST by page, database time,
    bucket configuration, ACLs and policy in the database, garbage collection, jobs and leases (their
-   fencing checks come with cluster mode), the conditions #313 adds to DELETE, Complete and Copy,
-   the sweep's markers and import guard (#308), importers for existing Disk data and other stores'
-   metadata, read leases, the store declarations for parallel writes and for a store that encrypts
-   on its own, and the store upkeep service: relocation, lost-blob reports and the store job API.
-   Ships as an added package. PersonalS3 moves onto the engine in this phase, after read leases,
-   the upkeep service, #308 and both declarations have landed: a read of a large object from a
-   remote store can outlast the `not_before` delay, an import that stops halfway passes the walk
-   counts, PersonalS3 writes a body's messages in parallel today, and its store encrypts on its
-   own, so without the declaration its small objects would sit in the engine's database in
-   plaintext.
+   fencing checks come with cluster mode), the conditions #313 adds to DELETE, the batch delete,
+   Complete and Copy, the sweep's markers and import guard (#308), importers for existing Disk data
+   and other stores' metadata, read leases, the store declarations for parallel writes and for a
+   store that encrypts on its own, and the store upkeep service: relocation, lost-blob reports and
+   the store job API. Ships as an added package. PersonalS3 moves onto the engine in this phase,
+   after read leases, the upkeep service, #308 and both declarations have landed: a read of a large
+   object from a remote store can outlast the `not_before` delay, an import that stops halfway
+   passes the walk counts, PersonalS3 writes a body's messages in parallel today, and its store
+   encrypts on its own, so without the declaration its small objects would sit in the engine's
+   database in plaintext.
 2. **Cluster mode**: the PostgreSQL store with migrations, and a CI job that runs the previous
    release's node against the new schema; shared-filesystem and S3 blob stores; encryption at rest;
    invalidated caches; fencing checks on single-owner work; the node behaviour above. Done when the
