@@ -47,6 +47,10 @@ in GitHub issues.
   `CorrelationIdValidationTests.cs` binary to git, grep and ripgrep (use `grep -a`), five test
   files declare classes named like the production `ScopeBasedIntegratedS3AuthorizationService`, and
   the endpoint file is 12,550 lines
+- [A name gate misses declaration forms](knowledge/name-gate-misses-declaration-forms.md) HARD —
+  each of four passes over #303 compiled a copy `SharedSourceConventionTests` passed: a tuple
+  literal's element, a query `let`, a class named after a shared method, a `<Compile>` item without
+  `.cs`. Check every gated name against every kind, and put a compiled probe of each form through it
 - [A public interface member is a major](knowledge/public-interface-member-is-a-major.md) HARD —
   11.0.0 added eight abstract members, four EF columns and two indexes; `EnsureCreated` never
   alters an existing database, so 10.0.x EF databases fail object reads and writes (#272). Nothing
@@ -59,8 +63,8 @@ in GitHub issues.
   ships nothing (three on 2026-04-07), and nuget.org versions are immutable
 - [Benchmark gate](knowledge/benchmark-gate.md) RECIPE — `bench.sh` right before
   `bench-compare.sh` (`PYTHON=py` on the maintainer machine); a stale `benchmarks/artifacts`
-  compares to PASS, a missing benchmark only warns, a 0% allocation threshold fails on noise, and
-  the baseline predates BenchmarkDotNet 0.15.8 except `ChecksumBenchmarks`
+  compares to PASS, a missing benchmark only warns, noise fails allocation rows and, on a busy
+  machine, mean rows, and the baseline predates BenchmarkDotNet 0.15.8 except `ChecksumBenchmarks`
 - [Audit to issues](knowledge/audit-to-issues.md) RECIPE — finders in waves of about 4, one skeptic
   per finding that proves it red on the current sha, dedup against open and closed issues,
   idempotent filing, and security findings to a private advisory, never the public tracker

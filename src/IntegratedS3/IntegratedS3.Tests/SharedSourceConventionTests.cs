@@ -13,9 +13,8 @@ namespace IntegratedS3.Tests;
 /// </summary>
 public sealed class SharedSourceConventionTests
 {
-    private static readonly string[] SharedTypes = ["Crc32Accumulator"];
-
-    private static readonly string[] SharedMethods = ["BuildCompositeChecksum", "NormalizeRange"];
+    // Checked against every kind of declaration: a copy may be a class NormalizeRange or a method Crc32Accumulator.
+    private static readonly string[] SharedNames = ["BuildCompositeChecksum", "Crc32Accumulator", "NormalizeRange"];
 
     private static readonly CSharpParseOptions ParseOptions = new(LanguageVersion.Preview);
 
@@ -77,24 +76,24 @@ public sealed class SharedSourceConventionTests
     {
         return node switch
         {
-            BaseTypeDeclarationSyntax type when SharedTypes.Contains(type.Identifier.ValueText) => $"type {type.Identifier.ValueText}",
-            DelegateDeclarationSyntax type when SharedTypes.Contains(type.Identifier.ValueText) => $"delegate {type.Identifier.ValueText}",
-            MethodDeclarationSyntax method when SharedMethods.Contains(method.Identifier.ValueText) => $"method {method.Identifier.ValueText}",
-            LocalFunctionStatementSyntax function when SharedMethods.Contains(function.Identifier.ValueText) => $"local function {function.Identifier.ValueText}",
-            PropertyDeclarationSyntax property when SharedMethods.Contains(property.Identifier.ValueText) => $"property {property.Identifier.ValueText}",
-            VariableDeclaratorSyntax variable when SharedMethods.Contains(variable.Identifier.ValueText) => $"field or local {variable.Identifier.ValueText}",
-            EventDeclarationSyntax @event when SharedMethods.Contains(@event.Identifier.ValueText) => $"event {@event.Identifier.ValueText}",
-            ParameterSyntax parameter when SharedMethods.Contains(parameter.Identifier.ValueText) => $"parameter {parameter.Identifier.ValueText}",
-            SingleVariableDesignationSyntax variable when SharedMethods.Contains(variable.Identifier.ValueText) => $"pattern or out variable {variable.Identifier.ValueText}",
-            ForEachStatementSyntax loop when SharedMethods.Contains(loop.Identifier.ValueText) => $"foreach variable {loop.Identifier.ValueText}",
-            TupleElementSyntax element when SharedMethods.Contains(element.Identifier.ValueText) => $"tuple element {element.Identifier.ValueText}",
-            AnonymousObjectMemberDeclaratorSyntax { NameEquals: { } member } when SharedMethods.Contains(member.Name.Identifier.ValueText) => $"anonymous member {member.Name.Identifier.ValueText}",
-            ArgumentSyntax { NameColon: { } element, Parent: TupleExpressionSyntax } when SharedMethods.Contains(element.Name.Identifier.ValueText) => $"tuple element {element.Name.Identifier.ValueText}",
-            FromClauseSyntax clause when SharedMethods.Contains(clause.Identifier.ValueText) => $"query variable {clause.Identifier.ValueText}",
-            LetClauseSyntax clause when SharedMethods.Contains(clause.Identifier.ValueText) => $"query variable {clause.Identifier.ValueText}",
-            JoinClauseSyntax clause when SharedMethods.Contains(clause.Identifier.ValueText) => $"query variable {clause.Identifier.ValueText}",
-            JoinIntoClauseSyntax clause when SharedMethods.Contains(clause.Identifier.ValueText) => $"query variable {clause.Identifier.ValueText}",
-            QueryContinuationSyntax continuation when SharedMethods.Contains(continuation.Identifier.ValueText) => $"query variable {continuation.Identifier.ValueText}",
+            BaseTypeDeclarationSyntax type when SharedNames.Contains(type.Identifier.ValueText) => $"type {type.Identifier.ValueText}",
+            DelegateDeclarationSyntax type when SharedNames.Contains(type.Identifier.ValueText) => $"delegate {type.Identifier.ValueText}",
+            MethodDeclarationSyntax method when SharedNames.Contains(method.Identifier.ValueText) => $"method {method.Identifier.ValueText}",
+            LocalFunctionStatementSyntax function when SharedNames.Contains(function.Identifier.ValueText) => $"local function {function.Identifier.ValueText}",
+            PropertyDeclarationSyntax property when SharedNames.Contains(property.Identifier.ValueText) => $"property {property.Identifier.ValueText}",
+            VariableDeclaratorSyntax variable when SharedNames.Contains(variable.Identifier.ValueText) => $"field or local {variable.Identifier.ValueText}",
+            EventDeclarationSyntax @event when SharedNames.Contains(@event.Identifier.ValueText) => $"event {@event.Identifier.ValueText}",
+            ParameterSyntax parameter when SharedNames.Contains(parameter.Identifier.ValueText) => $"parameter {parameter.Identifier.ValueText}",
+            SingleVariableDesignationSyntax variable when SharedNames.Contains(variable.Identifier.ValueText) => $"pattern or out variable {variable.Identifier.ValueText}",
+            ForEachStatementSyntax loop when SharedNames.Contains(loop.Identifier.ValueText) => $"foreach variable {loop.Identifier.ValueText}",
+            TupleElementSyntax element when SharedNames.Contains(element.Identifier.ValueText) => $"tuple element {element.Identifier.ValueText}",
+            AnonymousObjectMemberDeclaratorSyntax { NameEquals: { } member } when SharedNames.Contains(member.Name.Identifier.ValueText) => $"anonymous member {member.Name.Identifier.ValueText}",
+            ArgumentSyntax { NameColon: { } element, Parent: TupleExpressionSyntax } when SharedNames.Contains(element.Name.Identifier.ValueText) => $"tuple element {element.Name.Identifier.ValueText}",
+            FromClauseSyntax clause when SharedNames.Contains(clause.Identifier.ValueText) => $"query variable {clause.Identifier.ValueText}",
+            LetClauseSyntax clause when SharedNames.Contains(clause.Identifier.ValueText) => $"query variable {clause.Identifier.ValueText}",
+            JoinClauseSyntax clause when SharedNames.Contains(clause.Identifier.ValueText) => $"query variable {clause.Identifier.ValueText}",
+            JoinIntoClauseSyntax clause when SharedNames.Contains(clause.Identifier.ValueText) => $"query variable {clause.Identifier.ValueText}",
+            QueryContinuationSyntax continuation when SharedNames.Contains(continuation.Identifier.ValueText) => $"query variable {continuation.Identifier.ValueText}",
             _ => null
         };
     }

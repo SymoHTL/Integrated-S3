@@ -1,6 +1,6 @@
 ---
 name: benchmark-gate
-description: How to run the BenchmarkDotNet regression gate, and where it lies - it only works in-process, the baseline holds only for the machine and toolchain it was recorded on (BDN 0.15.2, now 0.15.8), the 0% allocation threshold reads a few bytes of noise as a regression, a missing benchmark only warns, and a compare without a fresh run compares whatever stale artifacts the checkout holds and can print PASS.
+description: How to run the BenchmarkDotNet regression gate, and where it lies - it only works in-process, the baseline holds only for the machine and toolchain it was recorded on (BDN 0.15.2, now 0.15.8), the 0% allocation threshold reads a few bytes of noise as a regression and a busy machine fails mean rows too, a missing benchmark only warns, and a compare without a fresh run compares whatever stale artifacts the checkout holds and can print PASS.
 metadata:
   type: reference
 ---
@@ -25,11 +25,13 @@ metadata:
   checkout that still holds the run the baseline was promoted from compares that run with itself:
   every row +0.0 %, "PASS", exit 0. The same holds right after `--update-baseline`, which copies
   the run's report into the baseline.
-- **Allocation noise.** The allocation threshold is 0 %, and the per-operation allocations of the
-  large payloads move by a few bytes from run to run, more under load: in #303's re-record the
-  untouched `Md5_ETag` at 1 MiB allocated 46 B against the baseline's 40 B, and a later run of the
-  re-recorded code on a busy machine failed four allocation rows (`Sha1` at 8 MiB by 28 B). A
-  failing allocation row in untouched code is noise until a run on a quiet machine repeats it.
+- **Noise.** The allocation threshold is 0 %, and the per-operation allocations of the large
+  payloads move by a few bytes from run to run, more under load: in #303's re-record the untouched
+  `Md5_ETag` at 1 MiB allocated 46 B against the baseline's 40 B. A later run of the re-recorded
+  code on a busy machine failed eight rows, four on allocations (`Sha1` at 8 MiB by 28 B) and six
+  on the 15 % mean threshold (`Sha1` at 64 KiB by 25 %), all but `Crc32c` at 8 MiB in code #303
+  did not touch. A failing row in untouched code, allocation or mean, is noise until a run on a
+  quiet machine repeats it.
 - **A missing benchmark only warns.** A baseline benchmark missing from the run prints `WARNING`
   and still passes. A new benchmark is not gated.
 - **Stale baseline.** The baseline (`benchmarks/baseline/README.md`) was captured on 2026-07-04 on
