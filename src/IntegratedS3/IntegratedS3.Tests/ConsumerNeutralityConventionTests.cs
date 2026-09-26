@@ -6,7 +6,7 @@ namespace IntegratedS3.Tests;
 /// <summary>
 /// IntegratedS3 serves every consumer through its generic contracts; what a consumer needs becomes a property
 /// of those contracts, never a branch for that consumer (docs/distributed-architecture.md, "Consumers"). A
-/// shipped source file that names a consumer is the first step of such a branch.
+/// shipped source file that names a consumer, in its path or its content, is the first step of such a branch.
 /// </summary>
 public sealed class ConsumerNeutralityConventionTests
 {
@@ -32,13 +32,19 @@ public sealed class ConsumerNeutralityConventionTests
         Assert.Contains(shippedFiles, static path => path.EndsWith(Path.Combine("IntegratedS3.Engine", "IntegratedS3.Engine.csproj"), StringComparison.Ordinal));
 
         var offenders = shippedFiles
-            .SelectMany(path => File.ReadLines(path).Select((line, index) => (Path: Path.GetRelativePath(sourceRoot, path), Line: line, Number: index + 1)))
-            .Where(static entry => ConsumerNames.Any(name => entry.Line.Contains(name, StringComparison.OrdinalIgnoreCase)))
-            .Select(static entry => $"{entry.Path}:{entry.Number}: {entry.Line.Trim()}")
+            .Select(path => Path.GetRelativePath(sourceRoot, path))
+            .Where(NamesAConsumer)
+            .Select(static path => $"{path}: its path")
+            .Concat(shippedFiles
+                .SelectMany(path => File.ReadLines(path).Select((line, index) => (Path: Path.GetRelativePath(sourceRoot, path), Line: line, Number: index + 1)))
+                .Where(static entry => NamesAConsumer(entry.Line))
+                .Select(static entry => $"{entry.Path}:{entry.Number}: {entry.Line.Trim()}"))
             .ToList();
 
         Assert.True(offenders.Count == 0, "Shipped source names a consumer; make the need a property of a generic contract instead:\n" + string.Join('\n', offenders));
     }
+
+    private static bool NamesAConsumer(string text) => ConsumerNames.Any(name => text.Contains(name, StringComparison.OrdinalIgnoreCase));
 
     private static bool IsShipped(string relativePath)
     {

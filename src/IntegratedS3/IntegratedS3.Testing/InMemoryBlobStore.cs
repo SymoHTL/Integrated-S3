@@ -6,7 +6,8 @@ namespace IntegratedS3.Testing;
 /// <summary>
 /// An in-memory <see cref="IBlobStore"/> for tests, with optional constraints that imitate a limited remote
 /// store: a maximum blob size, no range reads, short listing pages, and injected throttling. The constraints
-/// are deterministic, so a failure reproduces. <see cref="CreateConstrained"/> turns all of them on.
+/// are deterministic, but locators are random, so which blobs share a listing page differs from run to run.
+/// <see cref="CreateConstrained"/> turns all of them on.
 /// </summary>
 public sealed class InMemoryBlobStore : IBlobStore
 {

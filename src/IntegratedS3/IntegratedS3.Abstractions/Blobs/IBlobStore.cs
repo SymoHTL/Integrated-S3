@@ -3,14 +3,15 @@ namespace IntegratedS3.Abstractions.Blobs;
 /// <summary>
 /// A store of write-once blobs: the byte layer under the storage engine, which keeps every object's
 /// metadata and decides which blobs make up an object. A store never overwrites, renames, appends to or
-/// edits a blob, so it needs no locking of its own, and a blob that no metadata row references yet is
-/// invisible to clients.
+/// edits a blob, so no blob needs a lock, and a blob that no metadata row references yet is invisible to
+/// clients.
 /// </summary>
 /// <remarks>
 /// Implementations run the shared contract suite, <c>BlobStoreContractTests</c> in the
 /// <c>IntegratedS3.Testing</c> package, in their own CI. A store declares what it can do in
 /// <see cref="Capabilities"/>, and the engine adapts to it instead of checking which store it has. One instance
-/// serves many requests and background jobs, so its members may be called concurrently.
+/// serves many requests and background jobs, so its members may be called concurrently, and whatever state an
+/// instance keeps across calls, such as an index, must be safe for that.
 /// </remarks>
 public interface IBlobStore
 {
@@ -24,7 +25,9 @@ public interface IBlobStore
     /// </summary>
     /// <param name="content">
     /// The bytes of the blob. It may be forward-only: the store reads it once, from its current position to its end,
-    /// and does not seek it, read its length or dispose it.
+    /// and does not seek it, read its length or dispose it. A read may return fewer bytes than it asked for, and the
+    /// engine's often do (its first read of a blob can return a single byte); only a read that returns 0 ends the
+    /// content.
     /// </param>
     /// <param name="length">
     /// The exact number of bytes <paramref name="content"/> yields, when the caller knows it; otherwise
@@ -32,8 +35,8 @@ public interface IBlobStore
     /// </param>
     /// <param name="cancellationToken">A token to cancel the write. A cancelled write returns no locator.</param>
     /// <returns>
-    /// The new blob's locator, assigned by the store and unique for every write (two writes of the same bytes
-    /// get two locators), and the number of bytes stored. When it returns, the blob is durable and readable
+    /// The new blob's locator, assigned by the store and unique for every write, whichever instance of the store
+    /// takes it (two writes of the same bytes get two locators), and the number of bytes stored. When it returns, the blob is durable and readable
     /// through every instance of the store that shares its storage: a store never acknowledges a write it has
     /// only buffered, because the engine commits the metadata that references the blob right after.
     /// </returns>
@@ -44,7 +47,10 @@ public interface IBlobStore
     /// <summary>
     /// Opens a blob for reading.
     /// </summary>
-    /// <param name="locator">A locator returned by <see cref="WriteAsync"/>.</param>
+    /// <param name="locator">
+    /// A locator returned by <see cref="WriteAsync"/>. Locators compare ordinally, case included; any other string
+    /// names no blob.
+    /// </param>
     /// <param name="offset">The first byte to return. Always 0 when <see cref="BlobStoreCapabilities.SupportsRangeReads"/> is <see langword="false"/>.</param>
     /// <param name="length">
     /// The number of bytes to return, or <see langword="null"/> to read to the end. Always <see langword="null"/>
@@ -56,14 +62,18 @@ public interface IBlobStore
     /// the end; an offset at or past the end, or a length of 0, gives an empty stream. An exception while the
     /// caller reads the stream ends that read only; the engine does not interpret its type.
     /// </returns>
-    /// <exception cref="BlobNotFoundException">No blob exists at <paramref name="locator"/>.</exception>
+    /// <exception cref="BlobNotFoundException">
+    /// No blob exists at <paramref name="locator"/>: it was deleted, or the store never issued it.
+    /// </exception>
     /// <exception cref="BlobStoreThrottledException">The store asks the caller to slow down.</exception>
     ValueTask<Stream> OpenReadAsync(string locator, long offset = 0, long? length = null, CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Deletes a blob. Deleting a blob that does not exist, or no longer exists, succeeds.
     /// </summary>
-    /// <param name="locator">A locator returned by <see cref="WriteAsync"/>.</param>
+    /// <param name="locator">
+    /// A locator returned by <see cref="WriteAsync"/>. Deleting any other string deletes nothing and succeeds.
+    /// </param>
     /// <param name="cancellationToken">A token to cancel the delete.</param>
     /// <exception cref="BlobStoreThrottledException">The store asks the caller to slow down.</exception>
     ValueTask DeleteAsync(string locator, CancellationToken cancellationToken = default);
@@ -80,8 +90,8 @@ public interface IBlobStore
     /// <param name="cancellationToken">A token to cancel the listing.</param>
     /// <returns>
     /// The next entries. A blob that exists for the whole walk appears exactly once; a blob written or
-    /// deleted during the walk may or may not appear, but a blob that was listed and then deleted does not appear
-    /// again later in the same walk. A walk ends: after finitely many pages, <see cref="BlobListPage.NextCursor"/>
+    /// deleted during the walk may or may not appear, and appears at most once: a blob that was listed and then
+    /// deleted does not appear again later in the same walk. A walk ends: after finitely many pages, <see cref="BlobListPage.NextCursor"/>
     /// is <see langword="null"/>.
     /// </returns>
     /// <exception cref="BlobStoreThrottledException">The store asks the caller to slow down.</exception>

@@ -8,7 +8,8 @@ namespace IntegratedS3.Testing;
 /// a new empty store from <see cref="CreateStoreAsync"/> and another instance over its storage from
 /// <see cref="ReopenAsync"/>, and run it in your CI. Every call retries when the store throttles, as the engine
 /// does, so a store that throttles still passes. Each fact asserts on both sides of a capability, so no fact
-/// passes without checking something. The suite writes forward-only streams, as the engine does.
+/// passes without checking something. The suite writes forward-only streams whose reads are short, as the engine's
+/// are.
 /// </summary>
 public abstract class BlobStoreContractTests
 {
@@ -108,6 +109,32 @@ public abstract class BlobStoreContractTests
     }
 
     /// <summary>
+    /// Verifies that two instances over one storage, as two nodes or a process before and after a restart open it, each
+    /// write blobs the other reads and lists: every write gets its own locator whichever instance takes it, and a blob
+    /// written through one instance is readable and listed through the other, also through the one opened first.
+    /// </summary>
+    [Fact]
+    public async Task BlobStoreContract_WritesThroughTwoInstances_GetTheirOwnLocators_AndAreReadAndListedThroughBoth()
+    {
+        var store = await CreateStoreAsync();
+        var other = await ReopenAsync(store);
+        var firstBytes = CreateBytes(3000, seed: 50);
+        var secondBytes = CreateBytes(3000, seed: 51);
+
+        var first = await WriteAsync(store, firstBytes);
+        var second = await WriteAsync(other, secondBytes);
+
+        Assert.NotEqual(first.Locator, second.Locator);
+        foreach (var instance in new[] { store, other }) {
+            Assert.Equal(firstBytes, await ReadAllAsync(instance, first.Locator));
+            Assert.Equal(secondBytes, await ReadAllAsync(instance, second.Locator));
+            Assert.Equal(
+                new[] { first.Locator, second.Locator }.Order(StringComparer.Ordinal),
+                (await WalkAsync(instance, 10)).Order(StringComparer.Ordinal));
+        }
+    }
+
+    /// <summary>
     /// Verifies that blobs are write-once: two writes of the same bytes get two locators, and neither a later
     /// write nor deleting one blob changes what another locator reads.
     /// </summary>
@@ -151,6 +178,10 @@ public abstract class BlobStoreContractTests
     /// Verifies that one instance serves reads, listings and deletes while it writes, as the engine's requests and its
     /// orphan sweep call it: a blob that exists for the whole run always reads back and is listed once per walk.
     /// </summary>
+    /// <remarks>
+    /// A race fails this fact only when the threads meet: a store whose reads are unlocked while its writes, deletes
+    /// and listings are locked passed 9 of 10 runs on 32 threads and 10 of 10 on four cores (HAZARD, #289).
+    /// </remarks>
     [Fact]
     public async Task BlobStoreContract_ReadsListingsAndDeletes_WhileWriting_SeeEveryLiveBlob()
     {
@@ -578,10 +609,14 @@ public abstract class BlobStoreContractTests
         }
     }
 
-    // A read-only stream with no length, no position and no seeking, which records whether it was disposed.
+    // A read-only stream with no length, no position and no seeking, which records whether it was disposed. Its reads
+    // are short, as the engine's are: the first returns one byte (the engine pushes back the byte that showed it more
+    // of the body follows), and every later one at most MaxRead bytes, as a request body arrives.
     private sealed class ForwardOnlyStream(byte[] bytes) : Stream
     {
+        private const int MaxRead = 4093;
         private readonly MemoryStream _inner = new(bytes, writable: false);
+        private int _reads;
 
         public bool Disposed { get; private set; }
 
@@ -599,15 +634,15 @@ public abstract class BlobStoreContractTests
             set => throw new NotSupportedException();
         }
 
-        public override int Read(byte[] buffer, int offset, int count) => _inner.Read(buffer, offset, count);
+        public override int Read(byte[] buffer, int offset, int count) => _inner.Read(buffer, offset, Limit(count));
 
-        public override int Read(Span<byte> buffer) => _inner.Read(buffer);
+        public override int Read(Span<byte> buffer) => _inner.Read(buffer[..Limit(buffer.Length)]);
 
         public override Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
-            => _inner.ReadAsync(buffer, offset, count, cancellationToken);
+            => _inner.ReadAsync(buffer, offset, Limit(count), cancellationToken);
 
         public override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
-            => _inner.ReadAsync(buffer, cancellationToken);
+            => _inner.ReadAsync(buffer[..Limit(buffer.Length)], cancellationToken);
 
         public override void Flush()
         {
@@ -624,5 +659,7 @@ public abstract class BlobStoreContractTests
             Disposed = true;
             base.Dispose(disposing);
         }
+
+        private int Limit(int count) => count == 0 ? 0 : Math.Min(count, _reads++ == 0 ? 1 : MaxRead);
     }
 }
