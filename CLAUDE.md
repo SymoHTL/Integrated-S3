@@ -335,7 +335,8 @@ code (#262).
   (#270).
 - **Procedures** longer than about 15 lines: a skill in `.claude/skills/`, whose `description`
   says when to use it. What went wrong behind a skill's steps stays in `knowledge/`. HAZARD (#270):
-  the knowledge lint reads no skill, so a `knowledge/` path a skill cites can go stale unseen.
+  the knowledge lint reads no skill, so a `knowledge/` path a skill cites can go stale unseen,
+  and nothing checks a skill path or name that this file, `INDEX.md`, an entry or a doc cites.
 - **User docs**: `README.md` and `docs/`. The dated audit snapshots
   (`docs/s3-compliance-audit-2026-07-04.md`, `docs/seaweedfs-comparison-2026-07-04.md`) stay as
   they were written.

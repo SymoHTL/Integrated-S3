@@ -43,7 +43,7 @@ Choose the lane based on user intent:
 - **Issue lane**: create, comment, label, assign, close/reopen issues
 - **PR lane**: create/update PR, view diff/status, review, merge
 - **Checks lane**: inspect checks/workflows, identify failing jobs/log links
-- **Release lane**: tags, changelog notes, draft/publish releases
+- **Release lane**: an IntegratedS3 release, which follows its own skill (below)
 - **Repo lane**: metadata, forks, clone defaults, branch protections (informational)
 
 Completion check:
@@ -119,4 +119,4 @@ Return a compact summary with:
 - `/gh-cli Create a draft PR from my branch to main and request @team/backend.`
 - `/gh-cli Find open bugs labeled regression in this repo and summarize top 5 by recency.`
 - `/gh-cli Check why the latest CI run failed and point me to the first actionable error.`
-- `/gh-cli Draft a v1.8.0 release with notes from merged PRs since v1.7.0.`
+- `/gh-cli List the merged PRs since v11.0.0 for the next release's CHANGELOG check.`
