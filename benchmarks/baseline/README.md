@@ -25,7 +25,8 @@ gate. This baseline was captured on:
 | BenchmarkDotNet | 0.15.2, `InProcessEmitToolchain`, Warmup=3 Iteration=6 |
 | Captured | 2026-07-04 |
 
-> BenchmarkDotNet reports "Unknown processor" on this box; the CPU above is from `Win32_Processor`.
+> BenchmarkDotNet 0.15.2 reported "Unknown processor" on this box for the July files; the CPU above
+> is from `Win32_Processor`. The re-recorded `ChecksumBenchmarks` report names it.
 
 `ChecksumBenchmarks` was re-recorded on 2026-09-26 on the same machine (Windows 10.0.26200.9457,
 runtime 10.0.12, BenchmarkDotNet 0.15.8), when its CRC-32C case began to run the shipped

@@ -59,8 +59,8 @@ in GitHub issues.
   ships nothing (three on 2026-04-07), and nuget.org versions are immutable
 - [Benchmark gate](knowledge/benchmark-gate.md) RECIPE — `bench.sh` right before
   `bench-compare.sh` (`PYTHON=py` on the maintainer machine); a stale `benchmarks/artifacts`
-  compares to PASS, a missing benchmark only warns, and the baseline predates BenchmarkDotNet
-  0.15.8
+  compares to PASS, a missing benchmark only warns, a 0% allocation threshold fails on noise, and
+  the baseline predates BenchmarkDotNet 0.15.8 except `ChecksumBenchmarks`
 - [Audit to issues](knowledge/audit-to-issues.md) RECIPE — finders in waves of about 4, one skeptic
   per finding that proves it red on the current sha, dedup against open and closed issues,
   idempotent filing, and security findings to a private advisory, never the public tracker

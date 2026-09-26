@@ -89,6 +89,12 @@ public sealed class SharedSourceConventionTests
             ForEachStatementSyntax loop when SharedMethods.Contains(loop.Identifier.ValueText) => $"foreach variable {loop.Identifier.ValueText}",
             TupleElementSyntax element when SharedMethods.Contains(element.Identifier.ValueText) => $"tuple element {element.Identifier.ValueText}",
             AnonymousObjectMemberDeclaratorSyntax { NameEquals: { } member } when SharedMethods.Contains(member.Name.Identifier.ValueText) => $"anonymous member {member.Name.Identifier.ValueText}",
+            ArgumentSyntax { NameColon: { } element, Parent: TupleExpressionSyntax } when SharedMethods.Contains(element.Name.Identifier.ValueText) => $"tuple element {element.Name.Identifier.ValueText}",
+            FromClauseSyntax clause when SharedMethods.Contains(clause.Identifier.ValueText) => $"query variable {clause.Identifier.ValueText}",
+            LetClauseSyntax clause when SharedMethods.Contains(clause.Identifier.ValueText) => $"query variable {clause.Identifier.ValueText}",
+            JoinClauseSyntax clause when SharedMethods.Contains(clause.Identifier.ValueText) => $"query variable {clause.Identifier.ValueText}",
+            JoinIntoClauseSyntax clause when SharedMethods.Contains(clause.Identifier.ValueText) => $"query variable {clause.Identifier.ValueText}",
+            QueryContinuationSyntax continuation when SharedMethods.Contains(continuation.Identifier.ValueText) => $"query variable {continuation.Identifier.ValueText}",
             _ => null
         };
     }
