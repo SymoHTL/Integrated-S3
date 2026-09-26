@@ -39,7 +39,8 @@ defaults:
 
 jobs:
   # ── KNOWLEDGE LINT (automatic on push/PR) ─────────────────────────────────
-  # INDEX.md <-> knowledge/*.md both ways, frontmatter, no credentials or conflict markers.
+  # The checks are listed in the docstring of scripts/lint_knowledge.py. Its self-test runs first and
+  # must print "self-test OK": a broken exit code would pass a step that trusts only the exit code.
   knowledge-lint:
     name: Knowledge lint
     runs-on: ubuntu-latest
@@ -48,9 +49,9 @@ jobs:
       - uses: actions/checkout@v7
 
       - name: Lint self-test
-        run: python3 scripts/lint_knowledge.py --self-test
+        run: python3 scripts/lint_knowledge.py --self-test | tee /dev/stderr | grep -x 'self-test OK' > /dev/null
 
-      - name: Lint INDEX.md and knowledge/
+      - name: Lint INDEX.md, knowledge/ and the entry names CLAUDE.md cites
         run: python3 scripts/lint_knowledge.py
 
   # ── FREE-TIER GATE (automatic on push/PR) ─────────────────────────────────
