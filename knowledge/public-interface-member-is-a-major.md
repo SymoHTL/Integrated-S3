@@ -42,10 +42,19 @@ cannot be changed ([[nuget-release-postmortem]]).
 
 **How to apply:**
 
-- A PR that adds an abstract interface member, a column or an index says so under Breaking in
-  `CHANGELOG.md`, with the consumer's migration step. It ships a major version.
-- Before the release, build the consumer (PersonalS3) against a local pack with a unique
-  prerelease version, and see it fail first.
+- A break ships a major version, and its PR says so under Breaking in `CHANGELOG.md`, with the
+  consumer's migration step. A break is any of:
+  - a public member removed or changed;
+  - an abstract member added to a public interface in any shipped package, Core and AspNetCore
+    included;
+  - a column or index added to the EF model;
+  - a package dependency added, removed or moved to a new major;
+  - a changed default behaviour.
+- Before the release, build the consumer (PersonalS3) against a probe pack: step 2 of the
+  `release-and-consume` skill. It fails for a break in what PersonalS3 implements or calls.
+  PersonalS3 restores only Abstractions, AspNetCore, Core and Protocol, so a break in the other
+  packages (the EF columns of #272 among them) or a changed default passes it, and a green probe
+  never downgrades the call.
 
 Gate: none. #270 tracks package validation against the last release (`EnablePackageValidation`);
 #272 adds the schema upgrade test and a schema snapshot.

@@ -1,11 +1,13 @@
 ---
 name: audit-to-issues
-description: How to turn a whole-repo audit into well-scoped GitHub issues without false positives or re-filed fixes - scoped finders in waves of about 4, one skeptic per finding that proves it with a test failing on the current sha, dedup against open and closed issues, idempotent filing, and security findings to a private advisory.
-metadata:
-  type: reference
+description: Turn a whole-repo audit into well-scoped GitHub issues without false positives or re-filed fixes - scoped finders in waves of about 4, one skeptic per finding that proves it with a test failing on the current sha, dedup against open and closed issues, idempotent filing, and security findings to a private advisory. Use when asked to audit the codebase, sweep for bugs, or file findings as issues.
 ---
 
-**Recipe**, as used for the issues in #147–#167 (July 2026) and #261–#278 (September 2026):
+# Audit the repo, then file what survives as issues
+
+Why the steps are shaped this way, with the audits that went wrong:
+`knowledge/audit-to-issues-postmortem.md`. As used for the issues in #147–#167 (July 2026) and
+#261–#278 (September 2026):
 
 1. **Scoped finders.** Run one agent per subsystem and lens. The lenses are correctness, security,
    concurrency, performance, resource leaks, testing and CI. This repo takes about 12 finders.
@@ -34,23 +36,13 @@ metadata:
    vulnerability reporting, so file a draft advisory instead:
    `gh api -X POST repos/<owner>/<repo>/security-advisories --input <json>`, with `summary`,
    `description`, `severity`, `cwe_ids` and `vulnerabilities`. Keep the details out of public issues,
-   PRs, `CLAUDE.md` and this store until the fix ships.
+   PRs, `CLAUDE.md` and `knowledge/` until the fix ships.
 
-**What went wrong before:**
-
-- **Too many agents at once.** About 18 finders launched together tripped the server's rate
-  limits. Run waves of about 4.
-- **One synthesis agent for everything.** An agent writing about 50 issue bodies stalled
-  mid-stream. Give each synthesis agent at most about 8 issues, and have it also return the raw
-  verified findings as a fallback.
-- **The low-value tail.** About a third of a full sweep's findings were low severity. Agree a
-  severity floor, or confirm the scope, before filing dozens.
+Run finders in waves of about 4, give each synthesis agent at most about 8 issues and have it
+also return the raw verified findings, and agree a severity floor or the scope before filing
+dozens.
 
 **When not to fan out:** for "the top few bugs", or for one file or subsystem, a single agent or a
 3–5 agent workflow is faster and cheaper.
 
-**Why:** an issue filed from an unverified lead costs a maintainer the verification anyway, and a
-re-filed fixed bug costs trust in the tracker.
-
-**How to apply:** follow the steps in order. A finding without a failing test stays a lead, and a
-lead is not filed.
+A finding without a failing test stays a lead, and a lead is not filed.

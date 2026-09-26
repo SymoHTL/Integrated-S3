@@ -6,7 +6,8 @@ A check that did not run is reported as NOT RUN, never as a pass: a skipped job,
 matched nothing, a pass that died before its report (HAZARD, #270).
 Open work lives in GitHub issues (`gh -R SymoHTL/Integrated-S3`). The stories behind the rules live
 in `knowledge/`, indexed by `INDEX.md`. The consumer app is `SymoHTL/PersonalS3` (no hyphen; branch
-`master`), which pins these packages from nuget.org.
+`master`), which pins these packages from nuget.org. Long procedures live as skills in
+`.claude/skills/`, each with a `description` that says when to use it.
 
 ## Build & Test
 
@@ -56,9 +57,9 @@ Times were measured on 2026-09-23 on the maintainer's machine with a warm NuGet 
    `env -u NoDefaultCurrentDirectoryInExePath`.
 6. **TestServer is not Kestrel, and HttpClient is not the AWS SDK.** TestServer enforces no request
    body limit, and HttpClient validates no response checksums, so #81 and #233 passed the whole
-   in-process suite. Wire
-   behaviour goes through `WebUiApplicationFactory.CreateLoopbackIsolatedClientAsync` and
-   `AmazonS3Client` (`knowledge/in-process-tests-miss-real-server-and-sdk.md`).
+   in-process suite. Wire behaviour goes through
+   `WebUiApplicationFactory.CreateLoopbackIsolatedClientAsync` and `AmazonS3Client`
+   (`knowledge/in-process-tests-miss-real-server-and-sdk.md`).
 7. **A running host locks `bin/`.** A no-change build still "succeeds"; the first real rebuild
    fails with MSB3027/MSB3021 ("The file is locked by: WebUi"). Check
    `tasklist | grep -iE "WebUi|testhost"` first; `dotnet build-server shutdown` after.
@@ -259,14 +260,15 @@ code (#262).
   `CHANGELOG.md` `Unreleased` into the version section in the same commit. Dispatch
   `nuget-publish.yml` with `dry-run` first. nuget.org versions are immutable, and an unbumped run
   goes green while pushing nothing: three green runs on 2026-04-07 shipped nothing. Gate: the
-  tag-conflict step, which fails only after that no-op push. The full recipe and its history:
-  `knowledge/nuget-release-postmortem.md`.
+  tag-conflict step, which fails only after that no-op push. The procedure is the
+  `release-and-consume` skill; its history is `knowledge/nuget-release-postmortem.md`.
 - A new abstract member on a public interface, or a new EF column or index, is a major version,
   with consumer migration notes in `CHANGELOG.md`. The EF stores create their schema with
   `EnsureCreated`, which never alters an existing database, so 10.0.x databases break on 11.0.0
   (#272). HAZARD (#270); `knowledge/public-interface-member-is-a-major.md`.
 - Consumers move after the release: PersonalS3 bumps its pins in `Directory.Packages.props` (as in
-  its #82). A local probe pack gets a unique prerelease version, never a released one: restore never
+  its #82), after a probe pack showed what the release breaks in what PersonalS3 implements or
+  calls. A local probe pack gets a unique prerelease version, never a released one: restore never
   replaces a cached version.
 
 ### Git & PRs
@@ -323,19 +325,24 @@ code (#262).
 - **In-flight state** (what is open, filed or released): GitHub issues and PRs only. No task lists,
   handoffs or status in repo markdown; `docs/integrated-s3-implementation-plan.md` is a historical
   snapshot and is not maintained.
-- **Durable lessons** (a trap that bit, a postmortem, a recipe): one file per fact in `knowledge/`
-  plus one line in `INDEX.md`, added in the PR that learned it. Update an existing entry rather
-  than adding a near-duplicate; delete one that is proven wrong. Gate: the `Knowledge lint` CI job
-  (`scripts/lint_knowledge.py`), for the structure its docstring lists, among them a floor on the
-  entry count, the index against the files, the entry names this file and the entries cite,
-  frontmatter, credentials in the store, and conflict markers in the store and this file. HAZARD
-  for the content: nothing checks that an entry is new, current and true (#270).
+- **Durable lessons** (a trap that bit, a postmortem, a short recipe): one file per fact in
+  `knowledge/` plus one line in `INDEX.md`, added in the PR that learned it. Update an existing
+  entry rather than adding a near-duplicate; delete one that is proven wrong. Gate: the
+  `Knowledge lint` CI job (`scripts/lint_knowledge.py`), for the structure its docstring lists,
+  among them a floor on the entry count, the index against the files, the entry names this file
+  and the entries cite, frontmatter, credentials in the store, and conflict markers in the store
+  and this file. HAZARD for the content: nothing checks that an entry is new, current and true
+  (#270).
+- **Procedures** longer than about 15 lines: a skill in `.claude/skills/`, whose `description`
+  says when to use it. What went wrong behind a skill's steps stays in `knowledge/`. HAZARD (#270):
+  the knowledge lint reads no skill, so a `knowledge/` path a skill cites can go stale unseen,
+  and nothing checks a skill path or name that this file, `INDEX.md`, an entry or a doc cites.
 - **User docs**: `README.md` and `docs/`. The dated audit snapshots
   (`docs/s3-compliance-audit-2026-07-04.md`, `docs/seaweedfs-comparison-2026-07-04.md`) stay as
   they were written.
 - **Security findings**: a private draft advisory on the repo's Security tab, never a public issue
   or PR, as `SECURITY.md` asks. The public tracker gets the issue after the fix ships. The audit
-  recipe that finds them: `knowledge/audit-to-issues.md`.
+  that finds them is the `audit-to-issues` skill.
 - **Rules**: this file, each beside its gate, or labelled HAZARD with its ticket.
   `CONTRIBUTING.md` and `.github/copilot-instructions.md` point here instead of restating them.
 - **Private agent memory**: machine- or user-bound facts only. A lesson found there is promoted to
