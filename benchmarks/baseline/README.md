@@ -27,6 +27,13 @@ gate. This baseline was captured on:
 
 > BenchmarkDotNet reports "Unknown processor" on this box; the CPU above is from `Win32_Processor`.
 
+`ChecksumBenchmarks` was re-recorded on 2026-09-26 on the same machine (Windows 10.0.26200.9457,
+runtime 10.0.12, BenchmarkDotNet 0.15.8), when its CRC-32C case began to run the shipped
+`Crc32Accumulator`, whose `GetHashBytes` allocates the 4-byte result (32 B per operation). In that
+run the untouched `Md5_ETag` case at 1 MiB allocated 46 B against 40 B here: per-operation
+allocations of the large payloads carry a few bytes of noise, which the 0% threshold reads as a
+regression.
+
 ## Regression gate
 
 `scripts/bench-compare.sh` fails (exit 1) when, versus this baseline, any benchmark's **mean time
