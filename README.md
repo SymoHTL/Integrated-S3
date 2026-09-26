@@ -76,7 +76,8 @@ Your S3-compatible endpoint is now running at `/integrated-s3`.
 | **IntegratedS3.Protocol** | S3 wire protocol — XML serialization, SigV4, presigning |
 | **IntegratedS3.EntityFramework** | EF Core catalog and multipart state persistence |
 | **IntegratedS3.Client** | First-party .NET HTTP client for IntegratedS3 hosts |
-| **IntegratedS3.Testing** | Provider contract tests and test helpers (xUnit) |
+| **IntegratedS3.Testing** | Provider and blob store contract tests and test helpers (xUnit) |
+| **IntegratedS3.Engine** | Storage engine for the distributed design, with a local disk blob store (prerelease) |
 
 ---
 

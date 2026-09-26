@@ -26,6 +26,8 @@ public sealed class LayeringConventionTests
         // Providers plug in through the bottom layer only.
         ["IntegratedS3.Provider.Disk"] = ["IntegratedS3.Abstractions", "IntegratedS3.Protocol"],
         ["IntegratedS3.Provider.S3"] = ["IntegratedS3.Abstractions", "IntegratedS3.Protocol"],
+        // The storage engine is a provider too; its blob stores implement the Abstractions contract.
+        ["IntegratedS3.Engine"] = ["IntegratedS3.Abstractions"],
         // Optional integrations and helpers sit on Core; nothing below depends on them.
         ["IntegratedS3.EntityFramework"] = ["IntegratedS3.Core"],
         ["IntegratedS3.Client"] = ["IntegratedS3.Core", "IntegratedS3.Protocol"],
