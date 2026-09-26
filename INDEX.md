@@ -6,8 +6,8 @@ never opens the file still avoids the trap. Add the line in the same PR as the e
 entry without a line and a line without an entry among them.
 
 HARD = a trap that bit at least once; read the file before touching what it names.
-RECIPE = a short working procedure to copy; a longer one is a skill in `.claude/skills/`. Rules live in `CLAUDE.md` beside their gates; open work lives
-in GitHub issues.
+RECIPE = a short working procedure to copy; a longer one is a skill in `.claude/skills/`. Rules
+live in `CLAUDE.md` beside their gates; open work lives in GitHub issues.
 
 - [S3 error code and status diverge](knowledge/s3-error-code-and-status-diverge.md) HARD — the
   status is `SuggestedHttpStatusCode ?? ToStatusCode`, the `<Code>` is `ToS3ErrorCode` (default
@@ -57,6 +57,9 @@ in GitHub issues.
 - [NuGet release postmortem](knowledge/nuget-release-postmortem.md) HARD — an unbumped publish
   run is green and ships nothing (three on 2026-04-07), and nuget.org versions are immutable; the
   procedure is the `release-and-consume` skill
+- [Audit to issues postmortem](knowledge/audit-to-issues-postmortem.md) HARD — about 18 finders at
+  once tripped rate limits, one synthesis agent for about 50 issues stalled, and a third of a sweep
+  was low severity; the procedure is the `audit-to-issues` skill
 - [Benchmark gate](knowledge/benchmark-gate.md) RECIPE — `bench.sh` right before
   `bench-compare.sh` (`PYTHON=py` on the maintainer machine); a stale `benchmarks/artifacts`
   compares to PASS, a missing benchmark only warns, and the baseline predates BenchmarkDotNet

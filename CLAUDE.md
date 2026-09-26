@@ -267,8 +267,9 @@ code (#262).
   `EnsureCreated`, which never alters an existing database, so 10.0.x databases break on 11.0.0
   (#272). HAZARD (#270); `knowledge/public-interface-member-is-a-major.md`.
 - Consumers move after the release: PersonalS3 bumps its pins in `Directory.Packages.props` (as in
-  its #82), after a probe pack showed what the release breaks. A local probe pack gets a unique
-  prerelease version, never a released one: restore never replaces a cached version.
+  its #82), after a probe pack showed what the release breaks in what PersonalS3 implements or
+  calls. A local probe pack gets a unique prerelease version, never a released one: restore never
+  replaces a cached version.
 
 ### Git & PRs
 
@@ -324,15 +325,17 @@ code (#262).
 - **In-flight state** (what is open, filed or released): GitHub issues and PRs only. No task lists,
   handoffs or status in repo markdown; `docs/integrated-s3-implementation-plan.md` is a historical
   snapshot and is not maintained.
-- **Durable lessons** (a trap that bit, a postmortem, a short recipe): one file per fact in `knowledge/`
-  plus one line in `INDEX.md`, added in the PR that learned it. Update an existing entry rather
-  than adding a near-duplicate; delete one that is proven wrong. Gate: the `Knowledge lint` CI job
-  (`scripts/lint_knowledge.py`), for the structure its docstring lists, among them a floor on the
-  entry count, the index against the files, the entry names this file and the entries cite,
-  frontmatter, credentials in the store, and conflict markers in the store and this file. HAZARD
-  for the content: nothing checks that an entry is new, current and true (#270).
+- **Durable lessons** (a trap that bit, a postmortem, a short recipe): one file per fact in
+  `knowledge/` plus one line in `INDEX.md`, added in the PR that learned it. Update an existing
+  entry rather than adding a near-duplicate; delete one that is proven wrong. Gate: the
+  `Knowledge lint` CI job (`scripts/lint_knowledge.py`), for the structure its docstring lists,
+  among them a floor on the entry count, the index against the files, the entry names this file
+  and the entries cite, frontmatter, credentials in the store, and conflict markers in the store
+  and this file. HAZARD for the content: nothing checks that an entry is new, current and true
+  (#270).
 - **Procedures** longer than about 15 lines: a skill in `.claude/skills/`, whose `description`
-  says when to use it.
+  says when to use it. What went wrong behind a skill's steps stays in `knowledge/`. HAZARD (#270):
+  the knowledge lint reads no skill, so a `knowledge/` path a skill cites can go stale unseen.
 - **User docs**: `README.md` and `docs/`. The dated audit snapshots
   (`docs/s3-compliance-audit-2026-07-04.md`, `docs/seaweedfs-comparison-2026-07-04.md`) stay as
   they were written.

@@ -7,7 +7,12 @@ description: Release the IntegratedS3 NuGet packages and move PersonalS3 onto th
 
 nuget.org versions are immutable, so every check that can stop a release runs before the push in
 step 4. Why each step exists, with the runs that went wrong: `knowledge/nuget-release-postmortem.md`.
-One-time setup (the `NUGET_API_KEY` secret): `docs/nuget-publishing.md`.
+One-time setup (the `NUGET_API_KEY` secret): `docs/nuget-publishing.md`. This covers a stable
+release; a prerelease (the workflow's `version-suffix` input) has no written procedure.
+
+From step 1 until step 4.5, nothing else merges into `main`: a PR merged in between ships in the
+release without step 0's check or the probe. Nothing enforces that (HAZARD, #270), so steps 2.5,
+3.1 and 4.1 check it.
 
 ## 0. Decide the version
 
@@ -34,8 +39,9 @@ One-time setup (the `NUGET_API_KEY` secret): `docs/nuget-publishing.md`.
    empty `## [Unreleased]` above it. A major lists what a consumer must do: new abstract members
    to implement, and schema changes with their migration (`EnsureCreated` alters nothing, #272).
 5. Nothing else goes in this commit. PR titled `release: <version>`, CI green on its head sha,
-   and its verification passes (`CLAUDE.md`, Git & PRs), which check step 0's major-or-minor call
-   against the diff. Do not merge it before step 2 passes.
+   and its verification passes (`CLAUDE.md`, Git & PRs). They check step 0's major-or-minor call
+   against the diff, and the `CHANGELOG.md` section against step 0.1's `git log`, because step 4.6
+   makes that section the Release notes. Do not merge it before step 2 passes.
 
 ## 2. Probe PersonalS3, before merging the release PR
 
@@ -46,23 +52,45 @@ used, because restore never replaces a cached version (PersonalS3 #98):
 2. In the release worktree:
    `dotnet pack src/IntegratedS3/IntegratedS3.slnx -c Release -o <scratch>/probe --version-suffix probe.<n>`.
 3. In a PersonalS3 worktree off a fresh `origin/master`, set both pins in
-   `Directory.Packages.props` to `<version>-probe.<n>`, then build, run the full suite and run the
-   warning ratchet on that build's log:
-   `set -o pipefail; dotnet build PersonalS3.sln -c Release --no-incremental --source <scratch>/probe --source https://api.nuget.org/v3/index.json 2>&1 | tee <scratch>/probe-build.log`,
-   then `dotnet test PersonalS3.sln -c Release --no-build` and
-   `py -3 scripts/check_warnings.py <scratch>/probe-build.log`. A break found in step 0 fails
-   here; a minor or patch passes. A `new warning` stops the release until the release PR removes
-   it or its `CHANGELOG.md` section tells consumers what to change. A baseline line `no longer
+   `Directory.Packages.props` to `<version>-probe.<n>`. Then build, run the full suite, run the
+   warning ratchet on that build's log, and run the AOT binary. nuget.org goes first among the
+   sources: with the local folder first, the CLI mangles the URL into a local path and restore
+   fails with NU1301.
+   - `dotnet build PersonalS3.sln -c Release --no-incremental --source https://api.nuget.org/v3/index.json --source <scratch>/probe > <scratch>/probe-build.log 2>&1`
+   - `dotnet test PersonalS3.sln -c Release --no-build`. A red `ObjectDisposedException` on
+     `SQLitePCL.sqlite3` or a `GlobalRateLimitGateTests` timing failure is PersonalS3's known
+     flake (its `CLAUDE.md`, phantom result 5): rerun once with
+     `-- xUnit.ParallelizeTestCollections=false`.
+   - `py -3 scripts/check_warnings.py <scratch>/probe-build.log`.
+   - The AOT recipe in PersonalS3's `knowledge/aot-only-failures.md`, with the same two
+     `--source` options on its `dotnet publish` and that command's output kept in
+     `<scratch>/probe-publish.log`. `grep -E 'IL2104|IL3053' <scratch>/probe-publish.log` must name
+     no `IntegratedS3` assembly: trim and AOT warnings from code inside the packages show only
+     there (#140's class). Until PersonalS3 #105 is fixed, the recipe's last two checks print 1 and
+     0 on the probe, as they do on `master`.
+
+   A break in what PersonalS3 implements or calls fails here; PersonalS3 restores only
+   Abstractions, AspNetCore, Core and Protocol, so a pass never downgrades step 0's call. A
+   `new warning` stops the release until a PR to `main` removes it (then start again at step 0),
+   or the `CHANGELOG.md` section tells consumers what to change. A baseline line `no longer
    produced` is not a break: step 5 deletes it.
 4. Throw the probe away: `git checkout -- Directory.Packages.props` in that worktree, and
    `rm -rf ~/.nuget/packages/integrateds3.*/<version>-probe.<n>`.
-5. Squash-merge the release PR. If step 3 changed it after its passes, the change first gets CI
-   green on the new head sha and a verification pass over that change (`CLAUDE.md`, Git & PRs).
+5. Squash-merge the release PR, and only if it holds `main`'s head:
+   `git fetch origin && git merge-base --is-ancestor origin/main HEAD` in the release worktree.
+   Otherwise merge `origin/main` into it and repeat steps 0.2 and 2. If step 2.3 changed the
+   release PR after its passes, repeat steps 2.1-2.4 with a new `<n>` on the new head, and the
+   change gets CI green on that head sha and a verification pass over it (`CLAUDE.md`, Git & PRs).
 
 ## 3. Dry run
 
 1. `gh workflow run nuget-publish.yml -R SymoHTL/Integrated-S3 --ref main -f push-to-nuget=false -f dry-run=true`.
-   Its `validate` job runs the full solution tests and the AOT script.
+   Its `validate` job runs the full solution tests and the AOT script. The run's `headSha`
+   (`gh run view <run-id> -R SymoHTL/Integrated-S3 --json headSha -q .headSha`) must be the release
+   PR's merge commit (`gh pr view <release PR> -R SymoHTL/Integrated-S3 --json mergeCommit -q .mergeCommit.oid`).
+   If `main` has moved past it, stop: the new commits missed step 0 and the probe. Start again at
+   step 0 on `main`'s head; the new release PR moves the new `Unreleased` lines into the
+   `<version>` section instead of bumping again.
 2. `gh run download <run-id> -R SymoHTL/Integrated-S3 -n nuget-packages -D <scratch dir>` holds one
    `*.<version>.nupkg` per row of `LayeringConventionTests`. Any other version means the bump is not
    on `main`.
@@ -72,13 +100,14 @@ used, because restore never replaces a cached version (PersonalS3 #98):
 
 ## 4. Publish
 
-1. `main` has not moved since the dry run:
-   `gh run view <dry-run-id> -R SymoHTL/Integrated-S3 --json headSha -q .headSha` equals the sha
-   `git ls-remote origin refs/heads/main` prints. Otherwise dry-run again.
+1. `main` has not moved since the dry run: the sha `git ls-remote origin refs/heads/main` prints
+   is still the release PR's merge commit, which step 3.1 checked the dry run against. Otherwise
+   stop, as in step 3.1.
 2. `gh workflow run nuget-publish.yml -R SymoHTL/Integrated-S3 --ref main -f push-to-nuget=true -f dry-run=false`.
-   A dispatch cannot pin a sha, so check the new run's `headSha` the same way
-   (`gh run list -R SymoHTL/Integrated-S3 --workflow nuget-publish.yml --limit 1 --json databaseId,headSha`)
-   and cancel it during `validate` if it differs. It pushes with `--skip-duplicate`, tags
+   A dispatch cannot pin a sha, so check the new run's `headSha` the same way and cancel it during
+   `validate` if it differs. Take the new run's id from the run URL that `gh workflow run` prints;
+   if it prints none, from `gh run list -R SymoHTL/Integrated-S3 --workflow nuget-publish.yml --limit 2 --json databaseId,headSha,createdAt`,
+   the entry whose `databaseId` is not the dry run's. It pushes with `--skip-duplicate`, tags
    `v<version>` and creates the GitHub Release. A green run does not prove a release: three green
    runs on 2026-04-07 shipped nothing.
 3. If it fails after pushing some packages, rerun it on the same sha with

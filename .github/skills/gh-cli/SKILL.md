@@ -80,14 +80,8 @@ Quality criteria:
 - Report includes exact failing workflow/job and actionable root-cause hint.
 
 #### Release lane
-1. Confirm tag/version intent and branch/source commit.
-2. Create draft notes or release notes from merged PRs/issues.
-3. Create draft release first unless user explicitly requests immediate publish.
-4. Publish and verify release artifacts/notes.
-
-Quality criteria:
-- Version/tag follows project scheme.
-- Notes summarize user-facing changes and breaking changes.
+An IntegratedS3 release follows `.claude/skills/release-and-consume/SKILL.md`, the one release
+procedure: the publish workflow creates the tag and the Release, so none is created by hand.
 
 #### Repo lane
 1. Validate repository identity and permissions.

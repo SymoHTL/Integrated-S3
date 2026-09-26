@@ -16,4 +16,5 @@ This page holds only the one-time setup it assumes.
 ## Prereleases
 
 The workflow's `version-suffix` input appends a prerelease label (`preview.1`, `rc.1`) to
-`VersionPrefix`. Everything else follows the skill.
+`VersionPrefix`. The skill covers stable releases only: its CHANGELOG step, its version checks and
+its PersonalS3 move assume the final version, so a prerelease has no written procedure.
