@@ -32,9 +32,11 @@ public sealed class SharedSourceConventionTests
 
         var declarations = files
             .SelectMany(path => Roots(File.ReadAllText(Path.Combine(sourceRoot, path)))
+                .Concat(Views(File.ReadAllText(Path.Combine(sourceRoot, path))))
                 .SelectMany(static root => root.DescendantNodes())
                 .Select(DeclaredSharedName)
                 .OfType<string>()
+                .Distinct()
                 .Select(name => $"{path.Replace('\\', '/')}: {name}"))
             .ToArray();
 
@@ -58,7 +60,7 @@ public sealed class SharedSourceConventionTests
     // Only a project's own output folders are generated; a source folder named bin or obj deeper down still compiles.
     private static bool IsExcluded(string[] segments)
     {
-        return segments[0].Equals("Shared", StringComparison.OrdinalIgnoreCase)
+        return segments[0] == "Shared"
             || (segments.Length > 2 && segments[1] is "bin" or "obj");
     }
 
@@ -70,6 +72,34 @@ public sealed class SharedSourceConventionTests
             .Where(static trivia => trivia.IsKind(SyntaxKind.DisabledTextTrivia))
             .Select(static trivia => CSharpSyntaxTree.ParseText(trivia.ToString(), ParseOptions).GetRoot())
             .Prepend(root);
+    }
+
+    // A build compiles one view of a file: the code its defined symbols make active. The file is parsed once for
+    // each combination of the symbols its #if and #elif directives name, so every build's view is read whole.
+    private static List<SyntaxNode> Views(string text)
+    {
+        var symbols = new SortedSet<string>(StringComparer.Ordinal);
+        List<SyntaxNode> views;
+        int known;
+        do
+        {
+            known = symbols.Count;
+            Assert.True(known <= 12, $"A file names {known} preprocessor symbols; the gate parses 2^{known} views of it.");
+            var names = symbols.ToArray();
+            views = Enumerable.Range(0, 1 << names.Length)
+                .Select(mask => CSharpSyntaxTree.ParseText(text, ParseOptions.WithPreprocessorSymbols(names.Where((_, i) => (mask & (1 << i)) != 0))).GetRoot())
+                .ToList();
+            foreach (var view in views)
+            {
+                symbols.UnionWith(view.DescendantTrivia()
+                    .Select(static trivia => trivia.GetStructure())
+                    .OfType<ConditionalDirectiveTriviaSyntax>()
+                    .SelectMany(static directive => directive.Condition.DescendantNodesAndSelf().OfType<IdentifierNameSyntax>())
+                    .Select(static name => name.Identifier.ValueText));
+            }
+        }
+        while (symbols.Count != known);
+        return views;
     }
 
     private static string? DeclaredSharedName(SyntaxNode node)

@@ -48,9 +48,10 @@ in GitHub issues.
   files declare classes named like the production `ScopeBasedIntegratedS3AuthorizationService`, and
   the endpoint file is 12,550 lines
 - [A name gate misses declaration forms](knowledge/name-gate-misses-declaration-forms.md) HARD —
-  each of four passes over #303 compiled a copy `SharedSourceConventionTests` passed: a tuple
+  each of five passes over #303 compiled a copy `SharedSourceConventionTests` passed: a tuple
   literal's element, a query `let`, a class named after a shared method, a `<Compile>` item without
-  `.cs`. Check every gated name against every kind, and put a compiled probe of each form through it
+  `.cs`, a class hidden by a comment an `#else` branch opens. Check every gated name against every
+  kind, parse every preprocessor view, and put a compiled probe of each form through it
 - [A public interface member is a major](knowledge/public-interface-member-is-a-major.md) HARD —
   11.0.0 added eight abstract members, four EF columns and two indexes; `EnsureCreated` never
   alters an existing database, so 10.0.x EF databases fail object reads and writes (#272). Nothing
