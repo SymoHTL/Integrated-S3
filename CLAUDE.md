@@ -31,7 +31,7 @@ Times were measured on 2026-09-23 on the maintainer's machine with a warm NuGet 
 - `IntegratedS3.Tests` has about 1,300 tests and no `Suite` traits. `IntegratedS3.E2E.Tests` has
   22: 16 `Suite=Smoke`, 6 `Suite=Full`. xUnit v2 on VSTest. An untagged E2E class never runs in
   automatic CI.
-- `IntegratedS3EndpointRouteBuilderExtensions.cs` is over 600 KB and 12,550 lines: grep it, then
+- `IntegratedS3EndpointRouteBuilderExtensions.cs` is over 600 KB and 12,490 lines: grep it, then
   read line ranges.
 
 ### Stale binaries & phantom results: check BEFORE debugging the diff

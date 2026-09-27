@@ -32,7 +32,7 @@ public sealed class SharedSourceConventionTests
 
         var declarations = files
             .SelectMany(path => Roots(File.ReadAllText(Path.Combine(sourceRoot, path)))
-                .Concat(Views(File.ReadAllText(Path.Combine(sourceRoot, path))))
+                .Concat(Views(path, File.ReadAllText(Path.Combine(sourceRoot, path))))
                 .SelectMany(static root => root.DescendantNodes())
                 .Select(DeclaredSharedName)
                 .OfType<string>()
@@ -46,11 +46,12 @@ public sealed class SharedSourceConventionTests
             "Declared outside src/IntegratedS3/Shared, which holds the one definition; link the shared file into the "
             + "project instead of keeping a copy, or rename a declaration that means something else:" + Environment.NewLine + string.Join(Environment.NewLine, declarations));
 
-        // The names above guard only while Shared/ still declares each of them, exactly once.
+        // The names above guard only while Shared/ still declares each of them, exactly once, in every build's view.
         var definitions = Directory.EnumerateFiles(Path.Combine(sourceRoot, "Shared"), "*.cs", SearchOption.AllDirectories)
-            .SelectMany(path => Roots(File.ReadAllText(path)).SelectMany(static root => root.DescendantNodes()))
-            .Select(DeclaredSharedName)
-            .OfType<string>()
+            .SelectMany(static path => Views(path, File.ReadAllText(path))
+                .SelectMany(static view => view.DescendantNodes().Select(DeclaredSharedName).OfType<string>().CountBy(static name => name))
+                .GroupBy(static count => count.Key, static count => count.Value)
+                .SelectMany(static name => Enumerable.Repeat(name.Key, name.Max())))
             .Order(StringComparer.Ordinal)
             .ToArray();
         string[] expected = ["method BuildCompositeChecksum", "method NormalizeRange", "type Crc32Accumulator"];
@@ -76,7 +77,7 @@ public sealed class SharedSourceConventionTests
 
     // A build compiles one view of a file: the code its defined symbols make active. The file is parsed once for
     // each combination of the symbols its #if and #elif directives name, so every build's view is read whole.
-    private static List<SyntaxNode> Views(string text)
+    private static List<SyntaxNode> Views(string path, string text)
     {
         var symbols = new SortedSet<string>(StringComparer.Ordinal);
         List<SyntaxNode> views;
@@ -84,7 +85,7 @@ public sealed class SharedSourceConventionTests
         do
         {
             known = symbols.Count;
-            Assert.True(known <= 12, $"A file names {known} preprocessor symbols; the gate parses 2^{known} views of it.");
+            Assert.True(known <= 12, $"{path} names {known} preprocessor symbols; the gate parses at most 2^12 views of a file.");
             var names = symbols.ToArray();
             views = Enumerable.Range(0, 1 << names.Length)
                 .Select(mask => CSharpSyntaxTree.ParseText(text, ParseOptions.WithPreprocessorSymbols(names.Where((_, i) => (mask & (1 << i)) != 0))).GetRoot())
