@@ -9,6 +9,12 @@ Versions match the `VersionPrefix` in `src/IntegratedS3/Directory.Build.props`, 
 
 ## [Unreleased]
 
+### Added
+
+- **`IBlobStore`** in `IntegratedS3.Abstractions` (namespace `IntegratedS3.Abstractions.Blobs`): the write-once byte layer of the planned storage engine (`docs/distributed-architecture.md`, #288). A store assigns an opaque locator to each write, serves byte ranges when its `BlobStoreCapabilities` say so, deletes idempotently, lists from a resumable cursor, and signals throttling with `BlobStoreThrottledException` (#289).
+- **`BlobStoreContractTests`** and **`InMemoryBlobStore`** in `IntegratedS3.Testing`: the contract suite every blob store runs, and an in-memory store with optional constraints (maximum blob size, no range reads, short listing pages, injected throttling); `InMemoryBlobStore.CreateConstrained()` turns them all on (#289).
+- **`IntegratedS3.Engine`** (preview package, versioned `-preview`): `LocalDiskBlobStore`, one file per blob under a directory that several nodes may share (#289).
+
 ## [11.0.0] - 2026-09-13
 
 78 commits since 10.0.4: a security hardening pass on request authentication and the aws-chunked path, a broad AWS-conformance sweep (issues #101–#167), replica version mapping, and the first release cut with the traceable publish workflow (`v11.0.0` tag + GitHub Release). Major version bump because public interfaces gained abstract members and several defaults changed — see **Breaking**.

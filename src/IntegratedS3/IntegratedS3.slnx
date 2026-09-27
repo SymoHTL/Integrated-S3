@@ -3,6 +3,7 @@
   <Project Path="IntegratedS3.Protocol/IntegratedS3.Protocol.csproj" />
   <Project Path="IntegratedS3.Core/IntegratedS3.Core.csproj" />
   <Project Path="IntegratedS3.EntityFramework/IntegratedS3.EntityFramework.csproj" />
+  <Project Path="IntegratedS3.Engine/IntegratedS3.Engine.csproj" />
   <Project Path="IntegratedS3.AspNetCore/IntegratedS3.AspNetCore.csproj" />
   <Project Path="IntegratedS3.Provider.Disk/IntegratedS3.Provider.Disk.csproj" />
   <Project Path="IntegratedS3.Provider.S3/IntegratedS3.Provider.S3.csproj" />
