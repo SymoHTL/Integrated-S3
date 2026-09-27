@@ -118,6 +118,9 @@ Gate: none; a convention test could ban both and pin the collection's members (H
 - **`ci.yml` `knowledge-lint`** runs on push to `main` and on every PR: the self-test of
   `scripts/lint_knowledge.py`, which must print `self-test OK`, then the lint of `INDEX.md`,
   `knowledge/` and the entry names this file cites.
+- **`pr-body.yml` `closing-references`** runs on every PR when it is opened, reopened, edited or
+  pushed to: the self-test of `scripts/check_closing_refs.py`, which must print `self-test OK`,
+  then the check of the PR's title and body (Git & PRs).
 - **`security-scan.yml`** runs on push to `main`, on every PR, weekly and on dispatch.
   `vulnerable-packages` fails on any advisory outside its allowlist. `codeql` uploads its alerts
   and fails on none of them.
@@ -280,6 +283,11 @@ code (#262).
   `gh pr merge <n> --squash --subject "<title> (#<n>)" --body-file <body>`. The repo's default
   squash message is the branch's commit messages instead (HAZARD, #270). Keep the body's claims
   true to the merged code.
+- A PR's title and body put a closing keyword before an issue number only as `Closes #<n>`, for
+  an issue the PR closes. GitHub reads close, fix and resolve in every form and case, with or
+  without a colon, before an issue reference as "close it on merge", whatever the sentence says,
+  and a squash merge closed #314 that way (`knowledge/closing-keyword-closes-the-issue.md`). Gate:
+  `pr-body.yml` `closing-references` (`scripts/check_closing_refs.py`).
 - Every PR gets at least two verification passes (HAZARD, #270). A fresh skeptic subagent, never
   a fork of the session that wrote the PR, re-reads the PR at its head sha against the current
   code, checks its tests against the clauses under Tests, re-runs the claims in its body, and
