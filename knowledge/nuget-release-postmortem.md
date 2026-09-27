@@ -1,24 +1,12 @@
 ---
 name: nuget-release-postmortem
-description: How to release the 9 IntegratedS3 packages, and what went wrong before - the publish workflow goes green without shipping anything when VersionPrefix was not bumped (three green no-op runs on 2026-04-07), and nuget.org versions are immutable, so a mistake in a published package is permanent.
+description: What went wrong in IntegratedS3 releases, behind each step of the release-and-consume skill - the publish workflow goes green without shipping anything when VersionPrefix was not bumped (three green no-op runs on 2026-04-07), and nuget.org versions are immutable, so a mistake in a published package is permanent.
 metadata:
   type: reference
 ---
 
-**Recipe** (as used for 11.0.0):
-
-1. Bump `VersionPrefix` in `src/IntegratedS3/Directory.Build.props` with `eng/Bump-Version.ps1`
-   (`-Part Major|Minor|Patch`, or `-Version x.y.z`), in a release commit of its own. The script
-   changes only that line.
-2. In the same commit, move `CHANGELOG.md` `Unreleased` into the new version's section. Breaking
-   changes include schema changes ([[public-interface-member-is-a-major]]).
-3. Dispatch `nuget-publish.yml` with `dry-run` (the default). Its `validate` job runs the full
-   solution tests and the AOT script; `pack-and-publish` packs and uploads the packages as an
-   artifact.
-4. Dispatch again with `push-to-nuget=true` and `dry-run=false`. The workflow pushes with
-   `--skip-duplicate`, tags `v{version}` and creates the GitHub Release.
-5. Move the consumers: SymoHTL/PersonalS3 bumps its pin in `Directory.Packages.props` (as in its
-   PR #82).
+The procedure is the `release-and-consume` skill
+(`.claude/skills/release-and-consume/SKILL.md`). This entry keeps the history behind its steps.
 
 **What went wrong before:**
 
@@ -33,12 +21,14 @@ metadata:
   fixed the repository, but published versions cannot be changed.
 - **Reconstructed release notes.** The notes for 10.0.x were rebuilt from git history afterwards,
   and the 11.0.0 notes from 78 commits. Several of their claims do not match the code (#269).
-- **One tag.** `v11.0.0` is the only release tag; earlier versions cannot be traced to a commit.
+- **Tags start at `v11.0.0`.** For an earlier version, its publish run's `headSha` names the
+  commit (10.0.4 is fd0f06f).
 
 **Why:** a green publish run proves the workflow ran, not that a new version exists on nuget.org.
 
-**How to apply:** after a publish, check nuget.org for the version
-(`https://api.nuget.org/v3-flatcontainer/integrateds3.core/index.json`) before announcing it.
+**How to apply:** release only through the skill, and treat a release as done when nuget.org
+lists the version (`https://api.nuget.org/v3-flatcontainer/integrateds3.core/index.json`),
+not when the run is green.
 
 Gate:
 
