@@ -4,7 +4,8 @@
 GitHub closes an issue when a pull request into the default branch merges whose description
 names it after a closing keyword, and again when a commit message that does lands there; the
 squash message is the PR body (`CLAUDE.md`, Git & PRs). It matches the keyword and the
-reference, not the sentence: "Fixed: #314 proposes the gate" closed #314 (#282).
+reference, not the sentence: "Fixed: #314 proposes the gate" in SymoHTL/Integrated-S3#282 closed
+SymoHTL/Integrated-S3#314. PersonalS3 runs a byte-identical copy of this file.
 
 Fails (exit 1) on every closing reference in the title or body except one that starts `Closes `,
 spelled exactly so, with a capital C and no colon (`Closes #<n>`): that one spelling says which
