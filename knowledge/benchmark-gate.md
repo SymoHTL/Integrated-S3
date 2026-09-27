@@ -1,6 +1,6 @@
 ---
 name: benchmark-gate
-description: How to run the BenchmarkDotNet regression gate, and where it lies - it only works in-process, the baseline holds only for the machine and toolchain it was recorded on (BDN 0.15.2, now 0.15.8), a missing benchmark only warns, and a compare without a fresh run compares whatever stale artifacts the checkout holds and can print PASS.
+description: How to run the BenchmarkDotNet regression gate, and where it lies - it only works in-process, the baseline holds only for the machine and toolchain it was recorded on (BDN 0.15.2, now 0.15.8), the 0% allocation threshold reads a few bytes of noise as a regression and a busy machine fails mean rows too, a missing benchmark only warns, and a compare without a fresh run compares whatever stale artifacts the checkout holds and can print PASS.
 metadata:
   type: reference
 ---
@@ -22,12 +22,22 @@ metadata:
 
 - **Stale input.** `bench-compare.sh` compares whatever is in `benchmarks/artifacts`, which is
   gitignored. A fresh checkout has none and exits 2 ("no current benchmark results found"). A
-  checkout that still holds the 2026-07-04 run the baseline was promoted from compares that run
-  with itself: every row +0.0 %, "PASS", exit 0.
+  checkout that still holds the run the baseline was promoted from compares that run with itself:
+  every row +0.0 %, "PASS", exit 0. The same holds right after `--update-baseline`, which copies
+  the run's report into the baseline.
+- **Noise.** The allocation threshold is 0 %, and the per-operation allocations of the large
+  payloads move by a few bytes from run to run, more under load: in #303's re-record the untouched
+  `Md5_ETag` at 1 MiB allocated 46 B against the baseline's 40 B. A later run of the re-recorded
+  code on a busy machine failed eight rows, four on allocations (`Sha1` at 8 MiB by 28 B) and six
+  on the 15 % mean threshold (`Sha1` at 64 KiB by 25 %), all but `Crc32c` at 8 MiB in code #303
+  did not touch. A failing row in untouched code, allocation or mean, is noise until a run on a
+  quiet machine repeats it.
 - **A missing benchmark only warns.** A baseline benchmark missing from the run prints `WARNING`
   and still passes. A new benchmark is not gated.
 - **Stale baseline.** The baseline (`benchmarks/baseline/README.md`) was captured on 2026-07-04 on
-  a Ryzen 9 9950X3D, with SDK 10.0.204, runtime 10.0.9 and BenchmarkDotNet 0.15.2.
+  a Ryzen 9 9950X3D, with SDK 10.0.204, runtime 10.0.9 and BenchmarkDotNet 0.15.2, except
+  `ChecksumBenchmarks`, re-recorded there on 2026-09-26 with runtime 10.0.12 and BenchmarkDotNet
+  0.15.8 (#303).
   `Directory.Packages.props` now pins BenchmarkDotNet 0.15.8.
 - **In-process only.** `HotPathBenchmarkConfig` uses `InProcessEmitToolchain`. BenchmarkDotNet's
   generated out-of-process project breaks under this repo's `TreatWarningsAsErrors`, SourceLink and

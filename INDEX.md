@@ -46,7 +46,12 @@ live in `CLAUDE.md` beside their gates; open work lives in GitHub issues.
 - [Grep blind spots](knowledge/grep-blind-spots.md) HARD — a raw NUL byte makes
   `CorrelationIdValidationTests.cs` binary to git, grep and ripgrep (use `grep -a`), five test
   files declare classes named like the production `ScopeBasedIntegratedS3AuthorizationService`, and
-  the endpoint file is 12,550 lines
+  the endpoint file is 12,490 lines
+- [A name gate misses declaration forms](knowledge/name-gate-misses-declaration-forms.md) HARD —
+  each of six passes over #303 compiled a copy `SharedSourceConventionTests` passed: a tuple
+  literal's element, a query `let`, a class named after a shared method, a `<Compile>` item without
+  `.cs`, a class hidden by a comment an `#else` branch opens. Check every gated name against every
+  kind, parse every preprocessor view, and put a compiled probe of each form through it
 - [A public interface member is a major](knowledge/public-interface-member-is-a-major.md) HARD —
   11.0.0 added eight abstract members, four EF columns and two indexes; `EnsureCreated` never
   alters an existing database, so 10.0.x EF databases fail object reads and writes (#272). Nothing
@@ -62,5 +67,5 @@ live in `CLAUDE.md` beside their gates; open work lives in GitHub issues.
   was low severity; the procedure is the `audit-to-issues` skill
 - [Benchmark gate](knowledge/benchmark-gate.md) RECIPE — `bench.sh` right before
   `bench-compare.sh` (`PYTHON=py` on the maintainer machine); a stale `benchmarks/artifacts`
-  compares to PASS, a missing benchmark only warns, and the baseline predates BenchmarkDotNet
-  0.15.8
+  compares to PASS, a missing benchmark only warns, noise fails allocation rows and, on a busy
+  machine, mean rows, and the baseline predates BenchmarkDotNet 0.15.8 except `ChecksumBenchmarks`

@@ -18,7 +18,7 @@ Every invariant that makes S3 semantics correct is held in process memory today,
 
 | Invariant | What holds it | With two processes |
 |---|---|---|
-| Per-key atomicity: `If-None-Match`/`If-Match`, version archiving, Complete vs Abort, same-part uploads | 256 in-process `SemaphoreSlim` stripes (`DiskStorageService.cs:53-58, 7314-7323`) | Not held: two creates both win, versions are lost (#84's class), one writer's metadata lands on the other's bytes |
+| Per-key atomicity: `If-None-Match`/`If-Match`, version archiving, Complete vs Abort, same-part uploads | 256 in-process `SemaphoreSlim` stripes (`DiskStorageService`'s `_mutationLocks` and `AcquireMutationLockAsync`) | Not held: two creates both win, versions are lost (#84's class), one writer's metadata lands on the other's bytes |
 | Which version is "latest" (Disk + EF catalog) | Catalog rows written by the provider, then again by the orchestrator after the call and on every HEAD and every listed key (`OrchestratedStorageService.cs:296, 305, 472, 642`) | Not held, and not even in one process (#294) |
 | Bucket configuration | Read-modify-write of the whole `.integrateds3.bucket.json` under a stripe | Concurrent changes to different settings lose one of them |
 | ACLs and bucket policies | `ConcurrentDictionary` in a singleton (`InMemoryStorageAuthorizationCompatibilityService.cs:14-15`), for every provider | Different on every node, gone after a restart |
