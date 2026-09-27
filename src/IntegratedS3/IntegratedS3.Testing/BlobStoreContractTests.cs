@@ -8,8 +8,8 @@ namespace IntegratedS3.Testing;
 /// a new empty store from <see cref="CreateStoreAsync"/> and another instance over its storage from
 /// <see cref="ReopenAsync"/>, and run it in your CI. Every call retries when the store throttles, as the engine
 /// does, so a store that throttles still passes. Each fact asserts on both sides of a capability, so no fact
-/// passes without checking something. The suite writes forward-only streams whose reads are short, as the engine's
-/// are.
+/// passes without checking something. The suite writes forward-only streams whose reads are short and long, as the
+/// engine's are.
 /// </summary>
 public abstract class BlobStoreContractTests
 {
@@ -111,26 +111,31 @@ public abstract class BlobStoreContractTests
     /// <summary>
     /// Verifies that two instances over one storage, as two nodes or a process before and after a restart open it, each
     /// write blobs the other reads and lists: every write gets its own locator whichever instance takes it, and a blob
-    /// written through one instance is readable and listed through the other, also through the one opened first.
+    /// written through one instance is readable and listed through the other, also after both have read and listed, so
+    /// nothing an instance loads when it opens or on first use hides a later write of the other.
     /// </summary>
     [Fact]
     public async Task BlobStoreContract_WritesThroughTwoInstances_GetTheirOwnLocators_AndAreReadAndListedThroughBoth()
     {
         var store = await CreateStoreAsync();
         var other = await ReopenAsync(store);
-        var firstBytes = CreateBytes(3000, seed: 50);
-        var secondBytes = CreateBytes(3000, seed: 51);
+        var written = new List<(string Locator, byte[] Bytes)>();
 
-        var first = await WriteAsync(store, firstBytes);
-        var second = await WriteAsync(other, secondBytes);
+        // After the first write, each write comes when both instances have read and listed, as on nodes that serve.
+        foreach (var (writer, seed) in new[] { (store, 50), (other, 51), (store, 52) }) {
+            var bytes = CreateBytes(3000, seed);
+            var locator = (await WriteAsync(writer, bytes)).Locator;
+            Assert.DoesNotContain(written, blob => blob.Locator == locator);
+            written.Add((locator, bytes));
+            foreach (var instance in new[] { store, other }) {
+                foreach (var blob in written) {
+                    Assert.Equal(blob.Bytes, await ReadAllAsync(instance, blob.Locator));
+                }
 
-        Assert.NotEqual(first.Locator, second.Locator);
-        foreach (var instance in new[] { store, other }) {
-            Assert.Equal(firstBytes, await ReadAllAsync(instance, first.Locator));
-            Assert.Equal(secondBytes, await ReadAllAsync(instance, second.Locator));
-            Assert.Equal(
-                new[] { first.Locator, second.Locator }.Order(StringComparer.Ordinal),
-                (await WalkAsync(instance, 10)).Order(StringComparer.Ordinal));
+                Assert.Equal(
+                    written.Select(static blob => blob.Locator).Order(StringComparer.Ordinal),
+                    (await WalkAsync(instance, 10)).Order(StringComparer.Ordinal));
+            }
         }
     }
 
@@ -157,16 +162,18 @@ public abstract class BlobStoreContractTests
     }
 
     /// <summary>
-    /// Verifies that concurrent writes each get a distinct locator that reads back their own bytes.
+    /// Verifies that concurrent writes, through one instance and through two, each get a distinct locator that reads
+    /// back their own bytes.
     /// </summary>
     [Fact]
     public async Task BlobStoreContract_ConcurrentWrites_EachReadBackTheirOwnBytes()
     {
         var store = await CreateStoreAsync();
+        var other = await ReopenAsync(store);
         var payloads = Enumerable.Range(0, 32).Select(static index => CreateBytes(1000 + index, seed: index)).ToArray();
 
         // Task.Run, so that a store whose writes complete synchronously is still called from several threads at once.
-        var written = await Task.WhenAll(payloads.Select(payload => Task.Run(() => WriteAsync(store, payload))));
+        var written = await Task.WhenAll(payloads.Select((payload, index) => Task.Run(() => WriteAsync(index % 2 == 0 ? store : other, payload))));
 
         Assert.Equal(payloads.Length, written.Select(static result => result.Locator).Distinct(StringComparer.Ordinal).Count());
         for (var index = 0; index < payloads.Length; index++) {
@@ -272,7 +279,7 @@ public abstract class BlobStoreContractTests
 
     /// <summary>
     /// Verifies that reading a deleted blob, or any string the store never issued as a locator, throws
-    /// <see cref="BlobNotFoundException"/>.
+    /// <see cref="BlobNotFoundException"/>, and that a deleted blob's locator is not issued again.
     /// </summary>
     [Fact]
     public async Task BlobStoreContract_OpenRead_DeletedOrNeverIssuedLocator_ThrowsBlobNotFound()
@@ -280,6 +287,10 @@ public abstract class BlobStoreContractTests
         var store = await CreateStoreAsync();
         var written = await WriteAsync(store, CreateBytes(64, seed: 6));
         await DeleteAsync(store, written.Locator);
+
+        // The engine keeps its garbage and orphan rows by locator, so a locator issued again would be taken for the old blob.
+        var later = await WriteAsync(store, CreateBytes(64, seed: 16));
+        Assert.NotEqual(written.Locator, later.Locator);
 
         foreach (var locator in new[] { written.Locator, "not-a-locator", "../outside", "..\\outside", written.Locator + "x" }) {
             await Assert.ThrowsAsync<BlobNotFoundException>(() => RetryAsync(() => store.OpenReadAsync(locator).AsTask()));
@@ -491,7 +502,7 @@ public abstract class BlobStoreContractTests
 
     /// <summary>
     /// Verifies that strings close to a live blob's locator, which the store never issued, name no blob, an
-    /// uppercase copy included, and that the live blob still reads back.
+    /// uppercase copy included: reading one throws, and deleting one leaves the live blob, which still reads back.
     /// </summary>
     [Fact]
     public async Task BlobStoreContract_OpenRead_VariantsOfALiveLocator_ThrowBlobNotFound()
@@ -505,6 +516,7 @@ public abstract class BlobStoreContractTests
             .Distinct(StringComparer.Ordinal);
         foreach (var variant in variants) {
             await Assert.ThrowsAsync<BlobNotFoundException>(() => RetryAsync(() => store.OpenReadAsync(variant).AsTask()));
+            await DeleteAsync(store, variant);
         }
 
         Assert.Equal(bytes, await ReadAllAsync(store, live.Locator));
@@ -610,8 +622,10 @@ public abstract class BlobStoreContractTests
     }
 
     // A read-only stream with no length, no position and no seeking, which records whether it was disposed. Its reads
-    // are short, as the engine's are: the first returns one byte (the engine pushes back the byte that showed it more
-    // of the body follows), and every later one at most MaxRead bytes, as a request body arrives.
+    // are short and long, as the engine's are: the first returns one byte, as the engine's first read of a body's later
+    // blob does (it pushes back the byte that showed it more of the body follows), and later ones alternate between at
+    // most MaxRead bytes, as a request body arrives, and all that was asked for, as the engine's first read of a body's
+    // first blob returns the 8,193 bytes it read ahead.
     private sealed class ForwardOnlyStream(byte[] bytes) : Stream
     {
         private const int MaxRead = 4093;
@@ -660,6 +674,6 @@ public abstract class BlobStoreContractTests
             base.Dispose(disposing);
         }
 
-        private int Limit(int count) => count == 0 ? 0 : Math.Min(count, _reads++ == 0 ? 1 : MaxRead);
+        private int Limit(int count) => count == 0 ? 0 : Math.Min(count, _reads++ switch { 0 => 1, var reads when reads % 2 == 1 => MaxRead, _ => count });
     }
 }

@@ -25,20 +25,25 @@ public interface IBlobStore
     /// </summary>
     /// <param name="content">
     /// The bytes of the blob. It may be forward-only: the store reads it once, from its current position to its end,
-    /// and does not seek it, read its length or dispose it. A read may return fewer bytes than it asked for, and the
-    /// engine's often do (its first read of a blob can return a single byte); only a read that returns 0 ends the
-    /// content.
+    /// and does not seek it, read its length or position, or dispose it. A read may return fewer bytes than it asked
+    /// for, and the engine's often do (its first read of a body's later blob returns a single byte); only a read that
+    /// returns 0 ends the content.
     /// </param>
     /// <param name="length">
     /// The exact number of bytes <paramref name="content"/> yields, when the caller knows it; otherwise
     /// <see langword="null"/>. Never larger than <see cref="BlobStoreCapabilities.MaxBlobSize"/>.
     /// </param>
-    /// <param name="cancellationToken">A token to cancel the write. A cancelled write returns no locator.</param>
+    /// <param name="cancellationToken">
+    /// A token to cancel the write. A cancelled write throws <see cref="OperationCanceledException"/> and returns no
+    /// locator.
+    /// </param>
     /// <returns>
     /// The new blob's locator, assigned by the store and unique for every write, whichever instance of the store
-    /// takes it (two writes of the same bytes get two locators), and the number of bytes stored. When it returns, the blob is durable and readable
-    /// through every instance of the store that shares its storage: a store never acknowledges a write it has
-    /// only buffered, because the engine commits the metadata that references the blob right after.
+    /// takes it (two writes of the same bytes get two locators), and never issued again, even after its blob is
+    /// deleted: the engine keeps garbage and orphan rows by locator. Also the number of bytes stored. When it returns,
+    /// the blob is durable and readable through every instance of the store that shares its storage: a store never
+    /// acknowledges a write it has only buffered, because the engine commits the metadata that references the blob
+    /// right after. No test in the suite can see a write lost to a power failure (HAZARD, #289).
     /// </returns>
     /// <exception cref="ArgumentException">The content is larger than <see cref="BlobStoreCapabilities.MaxBlobSize"/>.</exception>
     /// <exception cref="BlobStoreThrottledException">The store asks the caller to slow down.</exception>
