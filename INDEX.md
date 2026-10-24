@@ -60,6 +60,10 @@ live in `CLAUDE.md` beside their gates; open work lives in GitHub issues.
 - [Audit to issues postmortem](knowledge/audit-to-issues-postmortem.md) HARD — about 18 finders at
   once tripped rate limits, one synthesis agent for about 50 issues stalled, and a third of a sweep
   was low severity; the procedure is the `audit-to-issues` skill
+- [A closing keyword closes the issue](knowledge/closing-keyword-closes-the-issue.md) HARD — a
+  squash merge closed #314 for ten hours because the body answered a finding with "Fixed:" and
+  the issue number; close, fix and resolve in any form or case, colon or not, before an issue
+  number close it, so only `Closes #<n>` may stand there
 - [Benchmark gate](knowledge/benchmark-gate.md) RECIPE — `bench.sh` right before
   `bench-compare.sh` (`PYTHON=py` on the maintainer machine); a stale `benchmarks/artifacts`
   compares to PASS, a missing benchmark only warns, and the baseline predates BenchmarkDotNet

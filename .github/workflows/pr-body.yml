@@ -1,0 +1,38 @@
+name: PR body
+
+# GitHub closes an issue when a PR whose title or body names it after a closing keyword merges,
+# whatever the sentence says (knowledge/closing-keyword-closes-the-issue.md). This runs on every
+# change to a PR's title, body or head, so its result on the head sha matches what will merge.
+
+on:
+  pull_request:
+    types: [opened, edited, reopened, synchronize]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  closing-references:
+    name: Closing references
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Check self-test
+        run: python3 scripts/check_closing_refs.py --self-test | tee /dev/stderr | grep -x 'self-test OK' > /dev/null
+
+      # The title and body reach the script as environment variables, never inside the script text.
+      - name: Check the title and body
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: python3 scripts/check_closing_refs.py
