@@ -47,7 +47,7 @@ For the current HTTP view of a deployment, use:
 
 ## Provider capability matrix
 
-Not every operation on the compatibility surface is supported by every provider. Operations a provider does not support fail explicitly with an S3-style `NotImplemented` error (HTTP `501`) rather than silently degrading. The tables below reflect the current implementations of `IntegratedS3.Provider.Disk`, `IntegratedS3.Provider.S3`, and the default behavior a custom `IStorageBackend` inherits when it does not override the corresponding member.
+Not every operation on the compatibility surface is supported by every provider. Operations a provider does not support fail explicitly with an S3-style `NotImplemented` error (HTTP `501`) rather than silently degrading. The tables below reflect the current implementations of `IntegratedS3.Provider.Disk`, `IntegratedS3.Provider.S3` and the storage engine (`IntegratedS3.Engine`, a preview package; `docs/distributed-architecture.md`), and the default behavior a custom `IStorageBackend` inherits when it does not override the corresponding member.
 
 Legend:
 
@@ -59,41 +59,41 @@ Legend:
 
 ### Object and data operations
 
-| Operation | Disk provider | S3 provider | Custom backend default |
-|---|---|---|---|
-| Object CRUD (`GET`/`HEAD`/`PUT`/`DELETE`), list-objects-v2, list-object-versions | Supported | Supported (native) | Required |
-| CopyObject | Supported | Supported (native) | Required |
-| Object tagging (`?tagging`) | Supported | Supported (native) | Required |
-| Batch delete (`POST ?delete`) | Supported | Supported (native) | Required (built on object delete) |
-| Multipart initiate / upload-part / complete / abort | Supported | Supported (native) | Required |
-| UploadPartCopy | Supported | Supported (native) | Default `NotImplemented` |
-| ListParts (`GET ?uploadId=`) and list multipart uploads (`?uploads`) | Supported | Supported (native) | Default `NotImplemented` |
-| GetObjectAttributes (`?attributes`) | Supported | Supported (native) | Default `NotImplemented` |
-| Checksums (`x-amz-checksum-*`, `x-amz-sdk-checksum-algorithm`) | Supported (CRC64NVME accepted pass-through) | Supported (native) | Backend-specific (values forwarded on requests) |
-| Server-side encryption (managed `AES256` / `aws:kms` / `aws:kms:dsse` and SSE-C headers) | `NotImplemented` (all SSE requests rejected) | Supported (native) | Backend-specific (settings forwarded; implement or reject) |
-| Per-object retention (`?retention` `GET`/`PUT`) | `NotImplemented` | Supported (native) | Default `NotImplemented` |
-| Per-object legal hold (`?legal-hold` `GET`/`PUT`) | `NotImplemented` | Supported (native) | Default `NotImplemented` |
-| RestoreObject (`POST ?restore`) | `NotImplemented` | Supported (native) | Default `NotImplemented` |
-| SelectObjectContent (`POST ?select&select-type=2`) | `NotImplemented` | Supported (native) | Default `NotImplemented` |
+| Operation | Disk provider | S3 provider | Engine (preview) | Custom backend default |
+|---|---|---|---|---|
+| Object CRUD (`GET`/`HEAD`/`PUT`/`DELETE`), list-objects-v2, list-object-versions | Supported | Supported (native) | Supported | Required |
+| CopyObject | Supported | Supported (native) | Supported | Required |
+| Object tagging (`?tagging`) | Supported | Supported (native) | Supported | Required |
+| Batch delete (`POST ?delete`) | Supported | Supported (native) | Supported (built on object delete) | Required (built on object delete) |
+| Multipart initiate / upload-part / complete / abort | Supported | Supported (native) | Supported | Required |
+| UploadPartCopy | Supported | Supported (native) | Supported | Default `NotImplemented` |
+| ListParts (`GET ?uploadId=`) and list multipart uploads (`?uploads`) | Supported | Supported (native) | Supported | Default `NotImplemented` |
+| GetObjectAttributes (`?attributes`) | Supported | Supported (native) | Supported | Default `NotImplemented` |
+| Checksums (`x-amz-checksum-*`, `x-amz-sdk-checksum-algorithm`) | Supported (CRC64NVME accepted pass-through) | Supported (native) | Supported, except the object checksum after CompleteMultipartUpload (#311) | Backend-specific (values forwarded on requests) |
+| Server-side encryption (managed `AES256` / `aws:kms` / `aws:kms:dsse` and SSE-C headers) | `NotImplemented` (all SSE requests rejected) | Supported (native) | `NotImplemented` | Backend-specific (settings forwarded; implement or reject) |
+| Per-object retention (`?retention` `GET`/`PUT`) | `NotImplemented` | Supported (native) | `NotImplemented` (#310) | Default `NotImplemented` |
+| Per-object legal hold (`?legal-hold` `GET`/`PUT`) | `NotImplemented` | Supported (native) | `NotImplemented` (#310) | Default `NotImplemented` |
+| RestoreObject (`POST ?restore`) | `NotImplemented` | Supported (native) | `NotImplemented` | Default `NotImplemented` |
+| SelectObjectContent (`POST ?select&select-type=2`) | `NotImplemented` | Supported (native) | `NotImplemented` | Default `NotImplemented` |
 
 ### Bucket operations and subresources
 
-| Operation | Disk provider | S3 provider | Custom backend default |
-|---|---|---|---|
-| Bucket CRUD (`PUT`/`HEAD`/`DELETE`, list buckets) | Supported | Supported (native) | Required |
-| Versioning configuration (`?versioning`) | Supported (versioned stores and delete markers) | Supported (native) | Required |
-| Bucket CORS (`?cors`) | Supported | Supported (native) | Default `NotImplemented` |
-| Bucket location (`?location`) | Supported | Supported (native) | Default `NotImplemented` |
-| Bucket tagging (`?tagging`) | Supported | Supported (native) | Default `NotImplemented` |
-| Object Lock configuration (`?object-lock`) | Supported — configuration is persisted and bucket default retention is enforced (in-window permanent version deletes are rejected) | Supported (native) | Default `NotImplemented` |
-| Bucket default encryption (`?encryption`) | `NotImplemented` | Supported (native) | Default `NotImplemented` |
-| Lifecycle (`?lifecycle`) | Config only — rules are stored and served, never executed | Supported (native; the backing service applies rules) | Default `NotImplemented` |
-| Replication (`?replication`) | Config only — no replication is performed by the provider | Supported (native) | Default `NotImplemented` |
-| Website (`?website`) | Config only — no website hosting is served | Supported (native) | Default `NotImplemented` |
-| Logging (`?logging`) | Config only — no access logs are produced | Supported (native) | Default `NotImplemented` |
-| Notification (`?notification`) | Config only — no events are published | Supported (native) | Default `NotImplemented` |
-| Request payment (`?requestPayment`) / accelerate (`?accelerate`) | Config only — no behavioral effect | Supported (native) | Default `NotImplemented` |
-| Analytics / metrics / inventory / intelligent-tiering configurations (`?analytics`, `?metrics`, `?inventory`, `?intelligent-tiering` with `&id=`) | Config only — no reports or tiering transitions are generated | Supported (native) | Default `NotImplemented` |
+| Operation | Disk provider | S3 provider | Engine (preview) | Custom backend default |
+|---|---|---|---|---|
+| Bucket CRUD (`PUT`/`HEAD`/`DELETE`, list buckets) | Supported | Supported (native) | Supported | Required |
+| Versioning configuration (`?versioning`) | Supported (versioned stores and delete markers) | Supported (native) | Supported (versioned stores and delete markers) | Required |
+| Bucket CORS (`?cors`) | Supported | Supported (native) | `NotImplemented` (#309) | Default `NotImplemented` |
+| Bucket location (`?location`) | Supported | Supported (native) | Supported | Default `NotImplemented` |
+| Bucket tagging (`?tagging`) | Supported | Supported (native) | `NotImplemented` (#309) | Default `NotImplemented` |
+| Object Lock configuration (`?object-lock`) | Supported — configuration is persisted and bucket default retention is enforced (in-window permanent version deletes are rejected) | Supported (native) | `NotImplemented` (#310) | Default `NotImplemented` |
+| Bucket default encryption (`?encryption`) | `NotImplemented` | Supported (native) | `NotImplemented` (#309) | Default `NotImplemented` |
+| Lifecycle (`?lifecycle`) | Config only — rules are stored and served, never executed | Supported (native; the backing service applies rules) | `NotImplemented` (#309) | Default `NotImplemented` |
+| Replication (`?replication`) | Config only — no replication is performed by the provider | Supported (native) | `NotImplemented` (#309) | Default `NotImplemented` |
+| Website (`?website`) | Config only — no website hosting is served | Supported (native) | `NotImplemented` (#309) | Default `NotImplemented` |
+| Logging (`?logging`) | Config only — no access logs are produced | Supported (native) | `NotImplemented` (#309) | Default `NotImplemented` |
+| Notification (`?notification`) | Config only — no events are published | Supported (native) | `NotImplemented` (#309) | Default `NotImplemented` |
+| Request payment (`?requestPayment`) / accelerate (`?accelerate`) | Config only — no behavioral effect | Supported (native) | `NotImplemented` (#309) | Default `NotImplemented` |
+| Analytics / metrics / inventory / intelligent-tiering configurations (`?analytics`, `?metrics`, `?inventory`, `?intelligent-tiering` with `&id=`) | Config only — no reports or tiering transitions are generated | Supported (native) | `NotImplemented` (#309) | Default `NotImplemented` |
 
 Multi-backend replication across providers is a separate `IntegratedS3.Core` orchestration feature (primary/replica topologies) and is unrelated to the S3 `?replication` bucket subresource above.
 

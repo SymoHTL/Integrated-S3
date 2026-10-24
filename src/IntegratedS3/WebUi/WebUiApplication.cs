@@ -2,6 +2,8 @@ using System.Diagnostics.CodeAnalysis;
 using IntegratedS3.AspNetCore;
 using IntegratedS3.AspNetCore.DependencyInjection;
 using IntegratedS3.AspNetCore.Endpoints;
+using IntegratedS3.Engine;
+using IntegratedS3.Engine.DependencyInjection;
 using IntegratedS3.Provider.Disk;
 using IntegratedS3.Provider.Disk.DependencyInjection;
 using IntegratedS3.Provider.S3;
@@ -18,6 +20,7 @@ public static class WebUiApplication
     private const string IntegratedS3SectionName = "IntegratedS3";
     private const string DiskSectionPath = $"{IntegratedS3SectionName}:Disk";
     private const string S3SectionPath = $"{IntegratedS3SectionName}:S3";
+    private const string EngineSectionPath = $"{IntegratedS3SectionName}:Engine";
     private const string ReferenceHostSectionPath = $"{IntegratedS3SectionName}:ReferenceHost";
 
     /// <summary>
@@ -93,6 +96,9 @@ public static class WebUiApplication
             case WebUiStorageProvider.S3:
                 builder.Services.AddS3Storage(ResolveS3StorageOptions(builder.Configuration));
                 break;
+            case WebUiStorageProvider.Engine:
+                builder.Services.AddIntegratedS3Engine(ResolveEngineOptions(builder));
+                break;
             default:
                 throw new InvalidOperationException(
                     $"Unsupported {ReferenceHostSectionPath}:StorageProvider value '{referenceHostOptions.StorageProvider}'.");
@@ -165,6 +171,14 @@ public static class WebUiApplication
         return diskOptions;
     }
 
+    private static IntegratedS3EngineOptions ResolveEngineOptions(WebApplicationBuilder builder)
+    {
+        var options = builder.Configuration.GetSection(EngineSectionPath).Get<IntegratedS3EngineOptions>() ?? new IntegratedS3EngineOptions();
+        options.SqliteDatabasePath = Path.GetFullPath(options.SqliteDatabasePath, builder.Environment.ContentRootPath);
+        options.BlobRootPath = Path.GetFullPath(options.BlobRootPath, builder.Environment.ContentRootPath);
+        return options;
+    }
+
     private static S3StorageOptions ResolveS3StorageOptions(IConfiguration configuration)
     {
         return configuration.GetSection(S3SectionPath).Get<S3StorageOptions>() ?? new S3StorageOptions();
@@ -187,7 +201,7 @@ public static class WebUiApplication
         return Enum.TryParse<WebUiStorageProvider>(configuredValue.Trim(), ignoreCase: true, out var storageProvider)
             ? storageProvider
             : throw new InvalidOperationException(
-                $"Unsupported {ReferenceHostSectionPath}:StorageProvider value '{configuredValue}'. Supported values are 'Disk' and 'S3'.");
+                $"Unsupported {ReferenceHostSectionPath}:StorageProvider value '{configuredValue}'. Supported values are 'Disk', 'S3' and 'Engine'.");
     }
 
     private static void ApplyConfiguredRoutePolicies(

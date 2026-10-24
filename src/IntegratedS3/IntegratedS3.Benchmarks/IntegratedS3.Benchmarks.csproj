@@ -19,4 +19,8 @@
     <ProjectReference Include="..\IntegratedS3.Provider.Disk\IntegratedS3.Provider.Disk.csproj" />
     <ProjectReference Include="..\IntegratedS3.Testing\IntegratedS3.Testing.csproj" />
   </ItemGroup>
+
+  <ItemGroup>
+    <Compile Include="..\Shared\Crc32Accumulator.cs" LinkBase="Shared" />
+  </ItemGroup>
 </Project>

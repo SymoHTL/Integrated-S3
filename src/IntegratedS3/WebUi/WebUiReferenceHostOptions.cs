@@ -27,5 +27,6 @@ public sealed class WebUiReferenceHostRoutePolicyOptions
 public enum WebUiStorageProvider
 {
     Disk,
-    S3
+    S3,
+    Engine
 }

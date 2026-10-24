@@ -136,12 +136,12 @@ public sealed class IntegratedS3HealthCheckTests : IClassFixture<WebUiApplicatio
     [Fact]
     public async Task WebUiApplication_ReadinessEndpointReturnsServiceUnavailableWhenBackendIsUnhealthy()
     {
+        // Every backend is unhealthy, whichever provider the reference host is configured with.
         await using var isolatedClient = await _factory.CreateIsolatedClientAsync(builder => {
             builder.Services.Replace(ServiceDescriptor.Singleton<IStorageBackendHealthEvaluator>(
-                new ConfigurableStorageBackendHealthEvaluator(new Dictionary<string, StorageBackendHealthStatus>(StringComparer.Ordinal)
-                {
-                    ["test-disk"] = StorageBackendHealthStatus.Unhealthy
-                })));
+                new ConfigurableStorageBackendHealthEvaluator(
+                    new Dictionary<string, StorageBackendHealthStatus>(StringComparer.Ordinal),
+                    fallback: StorageBackendHealthStatus.Unhealthy)));
         });
 
         var liveResponse = await isolatedClient.Client.GetAsync("/health/live");
@@ -153,7 +153,9 @@ public sealed class IntegratedS3HealthCheckTests : IClassFixture<WebUiApplicatio
         Assert.Equal("Unhealthy", await readyResponse.Content.ReadAsStringAsync());
     }
 
-    private sealed class ConfigurableStorageBackendHealthEvaluator(IReadOnlyDictionary<string, StorageBackendHealthStatus> statuses) : IStorageBackendHealthEvaluator
+    private sealed class ConfigurableStorageBackendHealthEvaluator(
+        IReadOnlyDictionary<string, StorageBackendHealthStatus> statuses,
+        StorageBackendHealthStatus fallback = StorageBackendHealthStatus.Healthy) : IStorageBackendHealthEvaluator
     {
         public ValueTask<StorageBackendHealthStatus> GetStatusAsync(IStorageBackend backend, CancellationToken cancellationToken = default)
         {
@@ -163,7 +165,7 @@ public sealed class IntegratedS3HealthCheckTests : IClassFixture<WebUiApplicatio
             return ValueTask.FromResult(
                 statuses.TryGetValue(backend.Name, out var status)
                     ? status
-                    : StorageBackendHealthStatus.Healthy);
+                    : fallback);
         }
     }
 }

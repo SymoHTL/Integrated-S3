@@ -1,12 +1,13 @@
 using System.Security.Cryptography;
 using BenchmarkDotNet.Attributes;
+using IntegratedS3.Shared;
 
 namespace IntegratedS3.Benchmarks;
 
 /// <summary>
 /// Benchmarks the ETag / checksum compute hot paths over representative object-payload sizes:
-/// MD5 (ETag), SHA-1, SHA-256, and CRC-32C (Castagnoli). The CRC-32C accumulator mirrors the
-/// shipping polynomial (0x82F63B78) used by <c>ChecksumTestAlgorithms</c> and the wire checksums.
+/// MD5 (ETag), SHA-1, SHA-256, and CRC-32C (Castagnoli). CRC-32C runs the shipped
+/// <c>Crc32Accumulator</c>, linked from <c>src/IntegratedS3/Shared</c>.
 /// </summary>
 [MemoryDiagnoser]
 public class ChecksumBenchmarks
@@ -37,39 +38,10 @@ public class ChecksumBenchmarks
     public byte[] Sha256() => SHA256.HashData(_payload);
 
     [Benchmark]
-    public uint Crc32c() => Crc32C.Compute(_payload);
-
-    /// <summary>CRC-32C (Castagnoli) — same polynomial as the shipping checksum helpers.</summary>
-    private static class Crc32C
+    public byte[] Crc32c()
     {
-        private static readonly uint[] Table = CreateTable(0x82F63B78u);
-
-        public static uint Compute(ReadOnlySpan<byte> buffer)
-        {
-            var current = 0xFFFFFFFFu;
-            foreach (var value in buffer)
-            {
-                current = (current >> 8) ^ Table[(byte)(current ^ value)];
-            }
-
-            return ~current;
-        }
-
-        private static uint[] CreateTable(uint polynomial)
-        {
-            var table = new uint[256];
-            for (uint i = 0; i < table.Length; i++)
-            {
-                var value = i;
-                for (var bit = 0; bit < 8; bit++)
-                {
-                    value = (value & 1) == 0 ? value >> 1 : polynomial ^ (value >> 1);
-                }
-
-                table[i] = value;
-            }
-
-            return table;
-        }
+        var crc = Crc32Accumulator.CreateCastagnoli();
+        crc.Append(_payload);
+        return crc.GetHashBytes();
     }
 }

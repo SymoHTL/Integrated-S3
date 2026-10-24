@@ -81,6 +81,35 @@ jobs:
           --no-build --configuration Release
           --logger "trx;LogFileName=unit.trx" --results-directory ./artifacts/test-results
 
+      # The same suite with the reference host on the storage engine (#288). Each excluded test needs a
+      # feature the engine does not have yet, or tests the Disk provider itself; delete its line when its
+      # ticket lands, and never add one to get a run green.
+      - name: Unit & integration tests on the engine
+        env:
+          IntegratedS3__ReferenceHost__StorageProvider: Engine
+        run: |
+          excluded=(
+            # bucket configurations (#309)
+            IntegratedS3HttpEndpointsTests.S3CompatibleBucketCors_RoundTripsXmlPayload
+            IntegratedS3HttpEndpointsTests.BucketCors_PreflightSkipsAuthorization_AndMatchingRequestsEmitHeaders
+            IntegratedS3HttpEndpointsTests.BucketCors_WildcardOriginsReturnAsteriskAndOmitCredentialsHeaders
+            IntegratedS3HttpEndpointsTests.BucketCors_DisallowedOriginsStillEmitVaryHeaders
+            IntegratedS3HttpEndpointsTests.S3CompatibleBucketPublicAccessBlock_PersistsThroughDiskProvider
+            IntegratedS3HttpEndpointsTests.S3CompatibleBucketOwnershipControls_PersistsThroughDiskProvider
+            IntegratedS3HttpEndpointsTests.S3CompatibleBucketDefaultEncryption_WithMissingBucket_ReturnsNoSuchBucket
+            # Object Lock (#310)
+            IntegratedS3HttpEndpointsTests.S3CompatiblePutObjectLockConfiguration_WithoutVersioning_ReturnsConflict
+            IntegratedS3HttpEndpointsTests.S3CompatibleDeleteObjectVersion_ProtectedByObjectLockRetention_ReturnsAccessDenied
+            # the object checksum after CompleteMultipartUpload (#311)
+            IntegratedS3AwsSdkCompatibilityTests.AmazonS3Client_MultipartUpload_WorksAgainstIntegratedS3
+            IntegratedS3HttpEndpointsTests.S3CompatibleMultipartUpload_RoundTripsXmlWorkflow
+            # the Disk provider's own service document
+            IntegratedS3HttpEndpointsTests.ServiceDocument_AdvertisesDiskProviderCapabilities
+          )
+          filter=$(printf 'FullyQualifiedName!=IntegratedS3.Tests.%s&' "${excluded[@]}")
+          dotnet test src/IntegratedS3/IntegratedS3.Tests/IntegratedS3.Tests.csproj --no-build --configuration Release \
+            --filter "${filter%&}" --logger "trx;LogFileName=unit-engine.trx" --results-directory ./artifacts/test-results
+
       - name: E2E smoke (offline, Disk provider)
         run: >-
           dotnet test src/IntegratedS3/IntegratedS3.E2E.Tests/IntegratedS3.E2E.Tests.csproj

@@ -14,6 +14,13 @@ Versions match the `VersionPrefix` in `src/IntegratedS3/Directory.Build.props`, 
 - **`IBlobStore`** in `IntegratedS3.Abstractions` (namespace `IntegratedS3.Abstractions.Blobs`): the write-once byte layer of the planned storage engine (`docs/distributed-architecture.md`, #288). A store assigns an opaque locator to each write, serves byte ranges when its `BlobStoreCapabilities` say so, deletes idempotently, lists from a resumable cursor, and signals throttling with `BlobStoreThrottledException` (#289).
 - **`BlobStoreContractTests`** and **`InMemoryBlobStore`** in `IntegratedS3.Testing`: the contract suite every blob store runs, and an in-memory store with optional constraints (maximum blob size, no range reads, short listing pages, injected throttling); `InMemoryBlobStore.CreateConstrained()` turns them all on (#289).
 - **`IntegratedS3.Engine`** (preview package, versioned `-preview`): `LocalDiskBlobStore`, one file per blob under a directory that several nodes may share (#289).
+- **`EngineStorageBackend`** in `IntegratedS3.Engine`, registered with `AddIntegratedS3Engine(...)`: an `IStorageBackend` that keeps buckets, objects, versions, tags and multipart uploads in a SQLite metadata database and their bytes in an `IBlobStore`, stores bodies up to 8 KiB inline, and deletes replaced and orphaned blobs in the background after a delay. The reference host selects it with `IntegratedS3:ReferenceHost:StorageProvider=Engine`. Bucket configurations, Object Lock and the object checksum after CompleteMultipartUpload answer 501 for now (#309, #310, #311); the capability matrix in `docs/protocol-compatibility.md` has its column (#288).
+- **Provider contract facts** in `StorageProviderContractTests`: `If-Match` on a missing key and on another ETag, concurrent create-only PUTs with exactly one winner, concurrent PUTs to one key of a versioned bucket keeping every version, CompleteMultipartUpload racing AbortMultipartUpload with exactly one winner, and ListObjects ordering keys by their UTF-8 bytes. They run for Disk, the engine, and the engine on a constrained blob store.
+
+### Fixed
+
+- **Disk:** `If-Match` on a PUT or copy whose key has no object, or whose latest version is a delete marker, answers `404 NoSuchKey` instead of `412 PreconditionFailed`, as AWS does. A mismatched ETag still answers 412.
+- **Disk:** a CompleteMultipartUpload racing an AbortMultipartUpload of the same upload answers `404 NoSuchUpload` instead of `400 InvalidPart`: Complete now takes the object lock before it reads the upload.
 
 ## [11.0.0] - 2026-09-13
 

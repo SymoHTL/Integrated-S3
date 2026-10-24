@@ -13,7 +13,9 @@ using IntegratedS3.Abstractions.Responses;
 using IntegratedS3.Abstractions.Results;
 using IntegratedS3.Abstractions.Services;
 using IntegratedS3.Provider.Disk.Internal;
+using IntegratedS3.Shared;
 using Microsoft.Extensions.Logging;
+using static IntegratedS3.Shared.ObjectChecksums;
 
 namespace IntegratedS3.Provider.Disk;
 
@@ -42,13 +44,6 @@ internal sealed class DiskStorageService(
     /// supplying one. AWS uses <c>binary/octet-stream</c> (not <c>application/octet-stream</c>).
     /// </summary>
     private const string DefaultObjectContentType = "binary/octet-stream";
-
-    private const string Md5ChecksumAlgorithm = "md5";
-    private const string Sha256ChecksumAlgorithm = "sha256";
-    private const string Sha1ChecksumAlgorithm = "sha1";
-    private const string Crc32ChecksumAlgorithm = "crc32";
-    private const string Crc32cChecksumAlgorithm = "crc32c";
-    private const string Crc64NvmeChecksumAlgorithm = "crc64nvme";
 
     private const int MutationLockStripeCount = 256;
 
@@ -2163,7 +2158,7 @@ internal sealed class DiskStorageService(
             yield return new MultipartUploadPart
             {
                 PartNumber = partNumber,
-                ETag = BuildPartETag(actualChecksums),
+                ETag = ObjectETags.BuildPartETag(actualChecksums),
                 ContentLength = partInfo.Length,
                 LastModifiedUtc = partInfo.LastWriteTimeUtc,
                 Checksums = CreateMultipartPartResponseChecksums(
@@ -2242,12 +2237,12 @@ internal sealed class DiskStorageService(
 
         var objectInfo = await CreateObjectInfoAsync(request.BucketName, request.Key, storedObject.ContentPath, storedObject.Metadata, cancellationToken);
 
-        var preconditionFailure = EvaluatePreconditions(request, objectInfo);
+        var preconditionFailure = ObjectPreconditions.EvaluatePreconditions(request, objectInfo);
         if (preconditionFailure is not null) {
             return StorageResult<GetObjectResponse>.Failure(preconditionFailure);
         }
 
-        if (IsNotModified(request, objectInfo)) {
+        if (ObjectPreconditions.IsNotModified(request, objectInfo)) {
             return StorageResult<GetObjectResponse>.Success(new GetObjectResponse
             {
                 Object = objectInfo,
@@ -2257,7 +2252,7 @@ internal sealed class DiskStorageService(
             });
         }
 
-        var normalizedRange = NormalizeRange(request.Range, objectInfo.ContentLength, request.BucketName, request.Key, out var rangeError);
+        var normalizedRange = ObjectRanges.NormalizeRange(request.Range, objectInfo.ContentLength, request.BucketName, request.Key, out var rangeError);
         if (rangeError is not null) {
             return StorageResult<GetObjectResponse>.Failure(rangeError);
         }
@@ -2433,7 +2428,7 @@ internal sealed class DiskStorageService(
 
         var sourceInfo = await CreateObjectInfoAsync(request.SourceBucketName, request.SourceKey, sourcePath, sourceObject.Metadata, cancellationToken);
 
-        var preconditionFailure = EvaluateCopyPreconditions(request, sourceInfo);
+        var preconditionFailure = ObjectPreconditions.EvaluateCopyPreconditions(request, sourceInfo);
         if (preconditionFailure is not null) {
             return StorageResult<ObjectInfo>.Failure(preconditionFailure);
         }
@@ -2488,7 +2483,7 @@ internal sealed class DiskStorageService(
                     DetermineRequiredChecksumAlgorithms(request.Checksums, checksumAlgorithm, computeAllWhenNoneRequested: true),
                     cancellationToken)
                 : null;
-            var checksumValidationError = ValidateRequestedChecksums(request.Checksums, actualChecksums, request.DestinationBucketName, request.DestinationKey);
+            var checksumValidationError = ValidateRequestedChecksums(request.Checksums, actualChecksums, request.DestinationBucketName, request.DestinationKey, options.ProviderName);
             if (checksumValidationError is not null) {
                 return StorageResult<ObjectInfo>.Failure(checksumValidationError);
             }
@@ -2632,7 +2627,7 @@ internal sealed class DiskStorageService(
                 await FlushToStableStorageAsync(tempStream, cancellationToken);
             }
 
-            var checksumValidationError = ValidateRequestedChecksums(request.Checksums, actualChecksums, request.BucketName, request.Key);
+            var checksumValidationError = ValidateRequestedChecksums(request.Checksums, actualChecksums, request.BucketName, request.Key, options.ProviderName);
             if (checksumValidationError is not null) {
                 return StorageResult<ObjectInfo>.Failure(checksumValidationError);
             }
@@ -2945,13 +2940,13 @@ internal sealed class DiskStorageService(
             }
 
             var sourceInfo = await CreateObjectInfoAsync(request.CopySourceBucketName!, request.CopySourceKey!, sourceObject.ContentPath, sourceObject.Metadata, cancellationToken);
-            var preconditionFailure = EvaluateMultipartCopyPreconditions(request, sourceInfo);
+            var preconditionFailure = ObjectPreconditions.EvaluateMultipartCopyPreconditions(request, sourceInfo);
             if (preconditionFailure is not null) {
                 return StorageResult<MultipartUploadPart>.Failure(preconditionFailure);
             }
 
             var sourceFileInfo = new FileInfo(sourceObject.ContentPath);
-            var normalizedRange = NormalizeRange(request.CopySourceRange, sourceFileInfo.Length, request.CopySourceBucketName!, request.CopySourceKey!, out var rangeError);
+            var normalizedRange = ObjectRanges.NormalizeRange(request.CopySourceRange, sourceFileInfo.Length, request.CopySourceBucketName!, request.CopySourceKey!, out var rangeError);
             if (rangeError is not null) {
                 return StorageResult<MultipartUploadPart>.Failure(rangeError);
             }
@@ -3042,7 +3037,7 @@ internal sealed class DiskStorageService(
             }
         }
 
-        var checksumValidationError = ValidateRequestedChecksums(request.Checksums, actualChecksums, request.BucketName, request.Key);
+        var checksumValidationError = ValidateRequestedChecksums(request.Checksums, actualChecksums, request.BucketName, request.Key, options.ProviderName);
         if (checksumValidationError is not null) {
             return StorageResult<MultipartUploadPart>.Failure(checksumValidationError);
         }
@@ -3050,7 +3045,7 @@ internal sealed class DiskStorageService(
         return StorageResult<MultipartUploadPart>.Success(new MultipartUploadPart
         {
             PartNumber = request.PartNumber,
-            ETag = BuildPartETag(actualChecksums),
+            ETag = ObjectETags.BuildPartETag(actualChecksums),
             ContentLength = partLength,
             LastModifiedUtc = partLastWriteTimeUtc,
             Checksums = CreateMultipartPartResponseChecksums(
@@ -3099,12 +3094,12 @@ internal sealed class DiskStorageService(
         }
 
         var sourceInfo = await CreateObjectInfoAsync(request.SourceBucketName, request.SourceKey, sourceObject.ContentPath, sourceObject.Metadata, cancellationToken);
-        var preconditionFailure = EvaluateCopyPreconditions(request, sourceInfo);
+        var preconditionFailure = ObjectPreconditions.EvaluateCopyPreconditions(request, sourceInfo);
         if (preconditionFailure is not null) {
             return StorageResult<MultipartUploadPart>.Failure(preconditionFailure);
         }
 
-        var normalizedRange = NormalizeRange(request.SourceRange, sourceInfo.ContentLength, request.SourceBucketName, request.SourceKey, out var rangeError);
+        var normalizedRange = ObjectRanges.NormalizeRange(request.SourceRange, sourceInfo.ContentLength, request.SourceBucketName, request.SourceKey, out var rangeError);
         if (rangeError is not null) {
             return StorageResult<MultipartUploadPart>.Failure(rangeError);
         }
@@ -3190,7 +3185,7 @@ internal sealed class DiskStorageService(
             }
         }
 
-        var checksumValidationError = ValidateRequestedChecksums(request.Checksums, actualChecksums, request.BucketName, request.Key);
+        var checksumValidationError = ValidateRequestedChecksums(request.Checksums, actualChecksums, request.BucketName, request.Key, options.ProviderName);
         if (checksumValidationError is not null) {
             return StorageResult<MultipartUploadPart>.Failure(checksumValidationError);
         }
@@ -3198,7 +3193,7 @@ internal sealed class DiskStorageService(
         return StorageResult<MultipartUploadPart>.Success(new MultipartUploadPart
         {
             PartNumber = request.PartNumber,
-            ETag = BuildPartETag(actualChecksums),
+            ETag = ObjectETags.BuildPartETag(actualChecksums),
             ContentLength = partLength,
             LastModifiedUtc = partLastWriteTimeUtc,
             Checksums = CreateMultipartPartResponseChecksums(
@@ -3250,6 +3245,10 @@ internal sealed class DiskStorageService(
             return StorageResult<ObjectInfo>.Failure(BucketNotFound(request.BucketName));
         }
 
+        // The upload's state is read under the lock AbortMultipartUpload takes, so an Abort that ran first leaves
+        // NoSuchUpload here rather than an upload whose parts are gone.
+        using var objectMutationLock = await AcquireObjectMutationLockAsync(request.BucketName, request.Key, cancellationToken);
+
         var uploadStateResult = await ReadMultipartStateAsync(request.BucketName, request.Key, request.UploadId, cancellationToken);
         if (!uploadStateResult.IsSuccess) {
             return StorageResult<ObjectInfo>.Failure(uploadStateResult.Error!);
@@ -3263,8 +3262,6 @@ internal sealed class DiskStorageService(
                 request.BucketName,
                 request.Key));
         }
-
-        using var objectMutationLock = await AcquireObjectMutationLockAsync(request.BucketName, request.Key, cancellationToken);
 
         var objectPath = GetObjectPath(request.BucketName, request.Key);
         if (!OnDiskPathMatchesRequestedCasing(GetBucketPath(request.BucketName), objectPath)) {
@@ -3350,8 +3347,8 @@ internal sealed class DiskStorageService(
                         partPath,
                         DetermineRequiredChecksumAlgorithms(requestedPart.Checksums, uploadChecksumAlgorithm),
                         cancellationToken);
-                    var actualETag = BuildPartETag(actualPartChecksums);
-                    if (!string.Equals(NormalizeETag(requestedPart.ETag), NormalizeETag(actualETag), StringComparison.Ordinal)) {
+                    var actualETag = ObjectETags.BuildPartETag(actualPartChecksums);
+                    if (!string.Equals(ObjectETags.NormalizeETag(requestedPart.ETag), ObjectETags.NormalizeETag(actualETag), StringComparison.Ordinal)) {
                         return StorageResult<ObjectInfo>.Failure(InvalidPart(
                             $"The ETag supplied for part '{requestedPart.PartNumber}' does not match the ETag of the uploaded part.",
                             request.BucketName,
@@ -3360,7 +3357,7 @@ internal sealed class DiskStorageService(
 
                     partMd5Checksums.Add(actualPartChecksums[Md5ChecksumAlgorithm]);
 
-                    var partChecksumValidationError = ValidateRequestedChecksums(requestedPart.Checksums, actualPartChecksums, request.BucketName, request.Key);
+                    var partChecksumValidationError = ValidateRequestedChecksums(requestedPart.Checksums, actualPartChecksums, request.BucketName, request.Key, options.ProviderName);
                     if (partChecksumValidationError is not null) {
                         return StorageResult<ObjectInfo>.Failure(partChecksumValidationError);
                     }
@@ -3402,7 +3399,7 @@ internal sealed class DiskStorageService(
                     cancellationToken);
             // A completed multipart object always exposes the composite S3 ETag
             // "<hex(MD5(concat(partMd5Bytes)))>-<partCount>", regardless of any checksum algorithm.
-            var multipartETag = BuildMultipartETag(partMd5Checksums);
+            var multipartETag = ObjectETags.BuildMultipartETag(partMd5Checksums);
             var versionId = AssignWriteVersionId(versioningStatus);
             await WriteStoredObjectStateAsync(
                 request.BucketName,
@@ -3490,7 +3487,7 @@ internal sealed class DiskStorageService(
         // listing — matching a default GetObjectAttributes(ObjectParts) response.
         ObjectPartsInfo? objectParts = null;
         if (attrs.Any(a => string.Equals(a, "ObjectParts", StringComparison.OrdinalIgnoreCase))
-            && TryGetMultipartPartCount(obj.ETag, out var totalPartsCount)) {
+            && ObjectETags.TryGetMultipartPartCount(obj.ETag, out var totalPartsCount)) {
             objectParts = new ObjectPartsInfo
             {
                 TotalPartsCount = totalPartsCount,
@@ -4555,7 +4552,7 @@ internal sealed class DiskStorageService(
     /// </summary>
     private static string? AssignWriteVersionId(BucketVersioningStatus versioningStatus)
     {
-        return versioningStatus == BucketVersioningStatus.Enabled ? CreateVersionId() : null;
+        return versioningStatus == BucketVersioningStatus.Enabled ? ObjectVersionIds.Create() : null;
     }
 
     /// <summary>
@@ -4600,7 +4597,7 @@ internal sealed class DiskStorageService(
         }
 
         var versionId = string.IsNullOrWhiteSpace(currentObject.Metadata.VersionId)
-            ? CreateVersionId()
+            ? ObjectVersionIds.Create()
             : currentObject.Metadata.VersionId;
         var archivedContentPath = GetArchivedVersionContentPath(bucketName, key, versionId!);
         var archivedDirectoryPath = Path.GetDirectoryName(archivedContentPath)!;
@@ -6046,61 +6043,6 @@ internal sealed class DiskStorageService(
     }
 
     /// <summary>
-    /// Builds the S3 multipart object ETag: <c>&lt;hex(MD5(concat(partMd5Bytes)))&gt;-&lt;partCount&gt;</c>.
-    /// Each element of <paramref name="partMd5Base64"/> is the base64 MD5 of one part's bytes.
-    /// </summary>
-    private static string BuildMultipartETag(IReadOnlyList<string> partMd5Base64)
-    {
-        using var md5 = IncrementalHash.CreateHash(HashAlgorithmName.MD5);
-        foreach (var partMd5 in partMd5Base64) {
-            md5.AppendData(Convert.FromBase64String(partMd5));
-        }
-
-        return $"{Convert.ToHexStringLower(md5.GetHashAndReset())}-{partMd5Base64.Count}";
-    }
-
-    /// <summary>
-    /// Determines whether <paramref name="etag"/> is a multipart composite ETag of the form
-    /// <c>&lt;hex(MD5)&gt;-&lt;partCount&gt;</c> and, if so, extracts the trailing part count. Single-part
-    /// objects (plain hex MD5, no suffix) and delete markers return <see langword="false"/>.
-    /// </summary>
-    private static bool TryGetMultipartPartCount(string? etag, out int partCount)
-    {
-        partCount = 0;
-        if (string.IsNullOrEmpty(etag)) {
-            return false;
-        }
-
-        var separatorIndex = etag.LastIndexOf('-');
-        if (separatorIndex <= 0 || separatorIndex == etag.Length - 1) {
-            return false;
-        }
-
-        return int.TryParse(
-            etag.AsSpan(separatorIndex + 1),
-            NumberStyles.None,
-            CultureInfo.InvariantCulture,
-            out partCount)
-            && partCount > 0;
-    }
-
-    /// <summary>
-    /// Computes the S3 ETag of a single uploaded multipart part: the lowercase-hex MD5 of the part's
-    /// bytes, taken from the MD5 already computed by <see cref="ComputeChecksumsAsync"/>.
-    /// </summary>
-    private static string BuildPartETag(IReadOnlyDictionary<string, string> partChecksums)
-    {
-        return TryGetChecksumValue(partChecksums, Md5ChecksumAlgorithm, out var md5Base64)
-            ? Convert.ToHexStringLower(Convert.FromBase64String(md5Base64))
-            : throw new InvalidOperationException("Multipart part MD5 checksum is required to derive the part ETag.");
-    }
-
-    private static string CreateVersionId()
-    {
-        return Guid.CreateVersion7().ToString("N");
-    }
-
-    /// <summary>
     /// Opens an object content file for a lock-free read/copy-source stream. The file is opened
     /// with <see cref="FileShare.Read"/> | <see cref="FileShare.Delete"/> so a concurrent
     /// delete/rename of the underlying file (e.g. a writer publishing an overwrite via
@@ -6186,159 +6128,6 @@ internal sealed class DiskStorageService(
         return computation.ToDictionary();
     }
 
-    /// <summary>
-    /// The set of content digests to compute over an object body. MD5 is implicitly always computed
-    /// (needed for every ETag / per-part ETag), so it has no flag of its own; the flags select the
-    /// additional, more expensive digests to compute in the same single pass.
-    /// </summary>
-    [Flags]
-    private enum ChecksumAlgorithms
-    {
-        None = 0,
-        Sha256 = 1 << 0,
-        Sha1 = 1 << 1,
-        Crc32 = 1 << 2,
-        Crc32c = 1 << 3,
-        All = Sha256 | Sha1 | Crc32 | Crc32c
-    }
-
-    /// <summary>
-    /// Maps a client-visible checksum algorithm key (<c>sha256</c>, <c>crc32</c>, …) to the
-    /// corresponding <see cref="ChecksumAlgorithms"/> flag. MD5 maps to <see cref="ChecksumAlgorithms.None"/>
-    /// (always computed) and CRC64NVME to <see cref="ChecksumAlgorithms.None"/> (pass-through, never
-    /// server-computed). Returns <see cref="ChecksumAlgorithms.None"/> for a null/blank/unknown key.
-    /// </summary>
-    private static ChecksumAlgorithms ToChecksumAlgorithmFlag(string? algorithm)
-    {
-        if (string.IsNullOrWhiteSpace(algorithm)) {
-            return ChecksumAlgorithms.None;
-        }
-
-        if (string.Equals(algorithm, Sha256ChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)) {
-            return ChecksumAlgorithms.Sha256;
-        }
-
-        if (string.Equals(algorithm, Sha1ChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)) {
-            return ChecksumAlgorithms.Sha1;
-        }
-
-        if (string.Equals(algorithm, Crc32ChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)) {
-            return ChecksumAlgorithms.Crc32;
-        }
-
-        if (string.Equals(algorithm, Crc32cChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)) {
-            return ChecksumAlgorithms.Crc32c;
-        }
-
-        return ChecksumAlgorithms.None;
-    }
-
-    /// <summary>
-    /// Builds the additional-digest set a write path must compute: every algorithm the client either
-    /// supplied a value for (for server-side validation) or asked the server to compute
-    /// (<paramref name="requiredAlgorithm"/>). MD5 is always computed regardless. Returns the smallest
-    /// set that still satisfies validation and the requested checksum response.
-    /// <para>
-    /// When neither a value nor an algorithm is requested and <paramref name="computeAllWhenNoneRequested"/>
-    /// is <see langword="true"/>, all digests are computed. Object-level write paths (PutObject,
-    /// CopyObject, the non-composite CompleteMultipartUpload) set this so an object stored without a
-    /// requested checksum still persists the full digest set for later retrieval, preserving the
-    /// existing stored-checksum contract; per-part paths leave it <see langword="false"/> because a
-    /// part only ever exposes the upload/requested algorithm.
-    /// </para>
-    /// </summary>
-    private static ChecksumAlgorithms DetermineRequiredChecksumAlgorithms(
-        IReadOnlyDictionary<string, string>? requestedChecksums,
-        string? requiredAlgorithm = null,
-        bool computeAllWhenNoneRequested = false)
-    {
-        var algorithms = ToChecksumAlgorithmFlag(requiredAlgorithm);
-
-        if (requestedChecksums is not null) {
-            foreach (var requestedChecksum in requestedChecksums) {
-                algorithms |= ToChecksumAlgorithmFlag(requestedChecksum.Key);
-            }
-        }
-
-        return computeAllWhenNoneRequested && algorithms == ChecksumAlgorithms.None
-            ? ChecksumAlgorithms.All
-            : algorithms;
-    }
-
-    /// <summary>
-    /// Incremental multi-digest accumulator. MD5 is always computed; SHA-1/SHA-256/CRC32/CRC32C are
-    /// only allocated and fed when their flag is set in the requested <see cref="ChecksumAlgorithms"/>.
-    /// Used both for the streaming (inline, tee) PutObject write path and for the read-back paths.
-    /// </summary>
-    private struct ChecksumComputation : IDisposable
-    {
-        private readonly IncrementalHash _md5;
-        private readonly IncrementalHash? _sha256;
-        private readonly IncrementalHash? _sha1;
-        private Crc32Accumulator _crc32;
-        private Crc32Accumulator _crc32c;
-        private readonly bool _hasCrc32;
-        private readonly bool _hasCrc32c;
-
-        public ChecksumComputation(ChecksumAlgorithms algorithms)
-        {
-            _md5 = IncrementalHash.CreateHash(HashAlgorithmName.MD5);
-            _sha256 = algorithms.HasFlag(ChecksumAlgorithms.Sha256) ? IncrementalHash.CreateHash(HashAlgorithmName.SHA256) : null;
-            _sha1 = algorithms.HasFlag(ChecksumAlgorithms.Sha1) ? IncrementalHash.CreateHash(HashAlgorithmName.SHA1) : null;
-            _hasCrc32 = algorithms.HasFlag(ChecksumAlgorithms.Crc32);
-            _hasCrc32c = algorithms.HasFlag(ChecksumAlgorithms.Crc32c);
-            _crc32 = _hasCrc32 ? Crc32Accumulator.Create() : default;
-            _crc32c = _hasCrc32c ? Crc32Accumulator.CreateCastagnoli() : default;
-        }
-
-        public void Append(ReadOnlySpan<byte> buffer)
-        {
-            _md5.AppendData(buffer);
-            _sha256?.AppendData(buffer);
-            _sha1?.AppendData(buffer);
-            if (_hasCrc32) {
-                _crc32.Append(buffer);
-            }
-
-            if (_hasCrc32c) {
-                _crc32c.Append(buffer);
-            }
-        }
-
-        public readonly IReadOnlyDictionary<string, string> ToDictionary()
-        {
-            var checksums = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
-            {
-                [Md5ChecksumAlgorithm] = Convert.ToBase64String(_md5.GetHashAndReset())
-            };
-
-            if (_sha256 is not null) {
-                checksums[Sha256ChecksumAlgorithm] = Convert.ToBase64String(_sha256.GetHashAndReset());
-            }
-
-            if (_sha1 is not null) {
-                checksums[Sha1ChecksumAlgorithm] = Convert.ToBase64String(_sha1.GetHashAndReset());
-            }
-
-            if (_hasCrc32) {
-                checksums[Crc32ChecksumAlgorithm] = Convert.ToBase64String(_crc32.GetHashBytes());
-            }
-
-            if (_hasCrc32c) {
-                checksums[Crc32cChecksumAlgorithm] = Convert.ToBase64String(_crc32c.GetHashBytes());
-            }
-
-            return checksums;
-        }
-
-        public readonly void Dispose()
-        {
-            _md5.Dispose();
-            _sha256?.Dispose();
-            _sha1?.Dispose();
-        }
-    }
-
     private static IReadOnlyDictionary<string, string>? NormalizeTags(IReadOnlyDictionary<string, string>? tags)
     {
         return tags is null || tags.Count == 0
@@ -6372,269 +6161,6 @@ internal sealed class DiskStorageService(
                 $"Customer-provided encryption keys are not currently supported by the disk provider for {operationDescription}.",
                 bucketName,
                 objectKey);
-    }
-
-    private StorageError? ValidateRequestedChecksums(
-        IReadOnlyDictionary<string, string>? requestedChecksums,
-        IReadOnlyDictionary<string, string>? actualChecksums,
-        string bucketName,
-        string objectKey)
-    {
-        if (requestedChecksums is null || requestedChecksums.Count == 0) {
-            return null;
-        }
-
-        foreach (var requestedChecksum in requestedChecksums) {
-            // CRC64NVME is accepted as pass-through (cannot be server-validated)
-            if (string.Equals(requestedChecksum.Key, Crc64NvmeChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)) {
-                continue;
-            }
-
-            if (!string.Equals(requestedChecksum.Key, Md5ChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)
-                && !string.Equals(requestedChecksum.Key, Sha256ChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)
-                && !string.Equals(requestedChecksum.Key, Sha1ChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)
-                && !string.Equals(requestedChecksum.Key, Crc32ChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)
-                && !string.Equals(requestedChecksum.Key, Crc32cChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)) {
-                return StorageError.Unsupported(
-                    $"Checksum algorithm '{requestedChecksum.Key}' is not currently supported for request validation.",
-                    bucketName,
-                    objectKey);
-            }
-
-            if (actualChecksums is null
-                || !actualChecksums.TryGetValue(requestedChecksum.Key, out var actualChecksum)
-                || !string.Equals(requestedChecksum.Value, actualChecksum, StringComparison.Ordinal)) {
-                return new StorageError
-                {
-                    Code = StorageErrorCode.InvalidChecksum,
-                    Message = $"The supplied {requestedChecksum.Key.ToUpperInvariant()} checksum for object '{objectKey}' does not match the uploaded content.",
-                    BucketName = bucketName,
-                    ObjectKey = objectKey,
-                    ProviderName = options.ProviderName,
-                    SuggestedHttpStatusCode = 400
-                };
-            }
-        }
-
-        return null;
-    }
-
-    private static bool TryNormalizeChecksumAlgorithm(string? value, out string? checksumAlgorithm)
-    {
-        if (string.IsNullOrWhiteSpace(value)) {
-            checksumAlgorithm = null;
-            return true;
-        }
-
-        if (string.Equals(value, Sha256ChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)
-            || string.Equals(value, "SHA256", StringComparison.OrdinalIgnoreCase)) {
-            checksumAlgorithm = Sha256ChecksumAlgorithm;
-            return true;
-        }
-
-        if (string.Equals(value, Sha1ChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)
-            || string.Equals(value, "SHA1", StringComparison.OrdinalIgnoreCase)) {
-            checksumAlgorithm = Sha1ChecksumAlgorithm;
-            return true;
-        }
-
-        if (string.Equals(value, Crc32ChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)
-            || string.Equals(value, "CRC32", StringComparison.OrdinalIgnoreCase)) {
-            checksumAlgorithm = Crc32ChecksumAlgorithm;
-            return true;
-        }
-
-        if (string.Equals(value, Crc32cChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)
-            || string.Equals(value, "CRC32C", StringComparison.OrdinalIgnoreCase)) {
-            checksumAlgorithm = Crc32cChecksumAlgorithm;
-            return true;
-        }
-
-        if (string.Equals(value, Crc64NvmeChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)
-            || string.Equals(value, "CRC64NVME", StringComparison.OrdinalIgnoreCase)) {
-            checksumAlgorithm = Crc64NvmeChecksumAlgorithm;
-            return true;
-        }
-
-        checksumAlgorithm = null;
-        return false;
-    }
-
-    // Single source of truth for which checksum algorithms the multipart lifecycle can carry end-to-end.
-    // A blank algorithm is always allowed (no checksum requested). CRC64NVME is intentionally excluded:
-    // although it is a valid single-part checksum (accepted as pass-through), the multipart composite
-    // path (BuildCompositeChecksum) cannot synthesize it, so accepting it at initiate would leave the
-    // upload dead at UploadPart/Complete. All multipart lifecycle gates (initiate, upload part,
-    // upload-part-copy, complete, list parts) must use this helper so the accepted set cannot drift.
-    private static bool IsMultipartSupportedChecksumAlgorithm(string? checksumAlgorithm)
-    {
-        if (string.IsNullOrWhiteSpace(checksumAlgorithm)) {
-            return true;
-        }
-
-        return string.Equals(checksumAlgorithm, Sha256ChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)
-            || string.Equals(checksumAlgorithm, Sha1ChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)
-            || string.Equals(checksumAlgorithm, Crc32ChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)
-            || string.Equals(checksumAlgorithm, Crc32cChecksumAlgorithm, StringComparison.OrdinalIgnoreCase);
-    }
-
-    private static bool TryGetChecksumValue(IReadOnlyDictionary<string, string>? checksums, string? algorithm, out string value)
-    {
-        value = string.Empty;
-        if (checksums is null || string.IsNullOrWhiteSpace(algorithm)) {
-            return false;
-        }
-
-        if (checksums.TryGetValue(algorithm, out var directValue) && !string.IsNullOrWhiteSpace(directValue)) {
-            value = directValue;
-            return true;
-        }
-
-        foreach (var checksum in checksums) {
-            if (string.Equals(checksum.Key, algorithm, StringComparison.OrdinalIgnoreCase)
-                && !string.IsNullOrWhiteSpace(checksum.Value)) {
-                value = checksum.Value;
-                return true;
-            }
-        }
-
-        value = string.Empty;
-        return false;
-    }
-
-    private static IReadOnlyDictionary<string, string>? CreateMultipartPartResponseChecksums(
-        IReadOnlyDictionary<string, string> actualChecksums,
-        string? uploadChecksumAlgorithm,
-        string? requestedChecksumAlgorithm,
-        IReadOnlyDictionary<string, string>? requestedChecksums)
-    {
-        if (!string.IsNullOrWhiteSpace(uploadChecksumAlgorithm)
-            && TryGetChecksumValue(actualChecksums, uploadChecksumAlgorithm, out var uploadChecksum)) {
-            return new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
-            {
-                [uploadChecksumAlgorithm] = uploadChecksum
-            };
-        }
-
-        if (!string.IsNullOrWhiteSpace(requestedChecksumAlgorithm)
-            && TryGetChecksumValue(actualChecksums, requestedChecksumAlgorithm, out var requestedChecksum)) {
-            return new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
-            {
-                [requestedChecksumAlgorithm] = requestedChecksum
-            };
-        }
-
-        if (requestedChecksums is null || requestedChecksums.Count == 0) {
-            return null;
-        }
-
-        var responseChecksums = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var requestedChecksumEntry in requestedChecksums) {
-            if (TryGetChecksumValue(actualChecksums, requestedChecksumEntry.Key, out var actualChecksum)) {
-                responseChecksums[requestedChecksumEntry.Key] = actualChecksum;
-            }
-        }
-
-        return responseChecksums.Count == 0
-            ? null
-            : responseChecksums;
-    }
-
-    private static IReadOnlyDictionary<string, string> CreatePutObjectChecksums(
-        IReadOnlyDictionary<string, string> actualChecksums,
-        IReadOnlyDictionary<string, string>? requestedChecksums)
-    {
-        if (requestedChecksums is null || requestedChecksums.Count == 0) {
-            return actualChecksums;
-        }
-
-        var persistedChecksums = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var requestedChecksumEntry in requestedChecksums) {
-            if (TryGetChecksumValue(actualChecksums, requestedChecksumEntry.Key, out var actualChecksum)) {
-                persistedChecksums[requestedChecksumEntry.Key] = actualChecksum;
-            }
-        }
-
-        return persistedChecksums.Count == 0
-            ? actualChecksums
-            : persistedChecksums;
-    }
-
-    private static IReadOnlyDictionary<string, string>? CreateCopyObjectChecksums(
-        IReadOnlyDictionary<string, string>? actualChecksums,
-        IReadOnlyDictionary<string, string>? sourceChecksums,
-        string? checksumAlgorithm)
-    {
-        if (!string.IsNullOrWhiteSpace(checksumAlgorithm)
-            && TryGetChecksumValue(actualChecksums, checksumAlgorithm, out var checksumValue)) {
-            return new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
-            {
-                [checksumAlgorithm] = checksumValue
-            };
-        }
-
-        return sourceChecksums ?? actualChecksums;
-    }
-
-    private static string BuildCompositeChecksum(string algorithm, IReadOnlyList<string> partChecksums)
-    {
-        if (string.Equals(algorithm, Sha256ChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)) {
-            return BuildCompositeSha256Checksum(partChecksums);
-        }
-
-        if (string.Equals(algorithm, Sha1ChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)) {
-            return BuildCompositeSha1Checksum(partChecksums);
-        }
-
-        if (string.Equals(algorithm, Crc32ChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)) {
-            return BuildCompositeCrc32Checksum(partChecksums);
-        }
-
-        if (string.Equals(algorithm, Crc32cChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)) {
-            return BuildCompositeCrc32cChecksum(partChecksums);
-        }
-
-        throw new InvalidOperationException($"Multipart checksum algorithm '{algorithm}' is not supported for composite checksum synthesis.");
-    }
-
-    private static string BuildCompositeSha256Checksum(IReadOnlyList<string> partChecksums)
-    {
-        using var checksum = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
-        foreach (var partChecksum in partChecksums) {
-            checksum.AppendData(Convert.FromBase64String(partChecksum));
-        }
-
-        return $"{Convert.ToBase64String(checksum.GetHashAndReset())}-{partChecksums.Count}";
-    }
-
-    private static string BuildCompositeSha1Checksum(IReadOnlyList<string> partChecksums)
-    {
-        using var checksum = IncrementalHash.CreateHash(HashAlgorithmName.SHA1);
-        foreach (var partChecksum in partChecksums) {
-            checksum.AppendData(Convert.FromBase64String(partChecksum));
-        }
-
-        return $"{Convert.ToBase64String(checksum.GetHashAndReset())}-{partChecksums.Count}";
-    }
-
-    private static string BuildCompositeCrc32Checksum(IReadOnlyList<string> partChecksums)
-    {
-        var checksum = Crc32Accumulator.Create();
-        foreach (var partChecksum in partChecksums) {
-            checksum.Append(Convert.FromBase64String(partChecksum));
-        }
-
-        return $"{Convert.ToBase64String(checksum.GetHashBytes())}-{partChecksums.Count}";
-    }
-
-    private static string BuildCompositeCrc32cChecksum(IReadOnlyList<string> partChecksums)
-    {
-        var checksum = Crc32Accumulator.CreateCastagnoli();
-        foreach (var partChecksum in partChecksums) {
-            checksum.Append(Convert.FromBase64String(partChecksum));
-        }
-
-        return $"{Convert.ToBase64String(checksum.GetHashBytes())}-{partChecksums.Count}";
     }
 
     private async ValueTask<StorageError?> EvaluateWritePreconditionsAsync(
@@ -6672,22 +6198,23 @@ internal sealed class DiskStorageService(
             };
         }
 
-        // If-Match: <etag> for optimistic concurrency
+        // If-Match: <etag> for optimistic concurrency. As AWS answers it, no current object (none, or a delete
+        // marker) is 404, and another ETag is 412.
         if (!string.IsNullOrWhiteSpace(ifMatchETag)) {
             if (!objectExists) {
                 return new StorageError
                 {
-                    Code = StorageErrorCode.PreconditionFailed,
+                    Code = StorageErrorCode.ObjectNotFound,
                     Message = $"Object '{key}' does not exist in bucket '{bucketName}' (If-Match precondition).",
                     BucketName = bucketName,
                     ObjectKey = key,
                     ProviderName = options.ProviderName,
-                    SuggestedHttpStatusCode = 412
+                    SuggestedHttpStatusCode = 404
                 };
             }
 
             var currentInfo = await CreateObjectInfoAsync(bucketName, objectPath, cancellationToken);
-            if (!MatchesIfMatch(ifMatchETag, currentInfo.ETag)) {
+            if (!ObjectETags.MatchesIfMatch(ifMatchETag, currentInfo.ETag)) {
                 return new StorageError
                 {
                     Code = StorageErrorCode.PreconditionFailed,
@@ -6698,124 +6225,6 @@ internal sealed class DiskStorageService(
                     SuggestedHttpStatusCode = 412
                 };
             }
-        }
-
-        return null;
-    }
-
-    private static StorageError? EvaluatePreconditions(GetObjectRequest request, ObjectInfo objectInfo)
-    {
-        if (!MatchesIfMatch(request.IfMatchETag, objectInfo.ETag)) {
-            return new StorageError
-            {
-                Code = StorageErrorCode.PreconditionFailed,
-                Message = $"The object '{objectInfo.Key}' does not match the supplied If-Match precondition.",
-                BucketName = objectInfo.BucketName,
-                ObjectKey = objectInfo.Key,
-                SuggestedHttpStatusCode = 412
-            };
-        }
-
-        if (ShouldEvaluateIfUnmodifiedSince(request.IfMatchETag, objectInfo.ETag)
-            && request.IfUnmodifiedSinceUtc is { } ifUnmodifiedSinceUtc
-            && WasModifiedAfter(objectInfo.LastModifiedUtc, ifUnmodifiedSinceUtc)) {
-            return new StorageError
-            {
-                Code = StorageErrorCode.PreconditionFailed,
-                Message = $"The object '{objectInfo.Key}' was modified after the supplied If-Unmodified-Since precondition.",
-                BucketName = objectInfo.BucketName,
-                ObjectKey = objectInfo.Key,
-                SuggestedHttpStatusCode = 412
-            };
-        }
-
-        return null;
-    }
-
-    private static bool IsNotModified(GetObjectRequest request, ObjectInfo objectInfo)
-    {
-        if (MatchesAnyETag(request.IfNoneMatchETag, objectInfo.ETag)) {
-            return true;
-        }
-
-        return string.IsNullOrWhiteSpace(request.IfNoneMatchETag)
-               && request.IfModifiedSinceUtc is { } ifModifiedSinceUtc
-               && !WasModifiedAfter(objectInfo.LastModifiedUtc, ifModifiedSinceUtc);
-    }
-
-    private static StorageError? EvaluateCopyPreconditions(CopyObjectRequest request, ObjectInfo sourceInfo)
-    {
-        return EvaluateCopyPreconditions(
-            sourceInfo,
-            request.SourceIfMatchETag,
-            request.SourceIfNoneMatchETag,
-            request.SourceIfModifiedSinceUtc,
-            request.SourceIfUnmodifiedSinceUtc);
-    }
-
-    private static StorageError? EvaluateCopyPreconditions(UploadPartCopyRequest request, ObjectInfo sourceInfo)
-    {
-        return EvaluateCopyPreconditions(
-            sourceInfo,
-            request.SourceIfMatchETag,
-            request.SourceIfNoneMatchETag,
-            request.SourceIfModifiedSinceUtc,
-            request.SourceIfUnmodifiedSinceUtc);
-    }
-
-    private static StorageError? EvaluateCopyPreconditions(
-        ObjectInfo sourceInfo,
-        string? sourceIfMatchETag,
-        string? sourceIfNoneMatchETag,
-        DateTimeOffset? sourceIfModifiedSinceUtc,
-        DateTimeOffset? sourceIfUnmodifiedSinceUtc)
-    {
-        if (!MatchesIfMatch(sourceIfMatchETag, sourceInfo.ETag)) {
-            return new StorageError
-            {
-                Code = StorageErrorCode.PreconditionFailed,
-                Message = $"The source object '{sourceInfo.Key}' does not match the supplied copy If-Match precondition.",
-                BucketName = sourceInfo.BucketName,
-                ObjectKey = sourceInfo.Key,
-                SuggestedHttpStatusCode = 412
-            };
-        }
-
-        if (ShouldEvaluateIfUnmodifiedSince(sourceIfMatchETag, sourceInfo.ETag)
-            && sourceIfUnmodifiedSinceUtc is { } ifUnmodifiedSinceUtc
-            && WasModifiedAfter(sourceInfo.LastModifiedUtc, ifUnmodifiedSinceUtc)) {
-            return new StorageError
-            {
-                Code = StorageErrorCode.PreconditionFailed,
-                Message = $"The source object '{sourceInfo.Key}' was modified after the supplied copy If-Unmodified-Since precondition.",
-                BucketName = sourceInfo.BucketName,
-                ObjectKey = sourceInfo.Key,
-                SuggestedHttpStatusCode = 412
-            };
-        }
-
-        if (MatchesAnyETag(sourceIfNoneMatchETag, sourceInfo.ETag)) {
-            return new StorageError
-            {
-                Code = StorageErrorCode.PreconditionFailed,
-                Message = $"The source object '{sourceInfo.Key}' matches the supplied copy If-None-Match precondition.",
-                BucketName = sourceInfo.BucketName,
-                ObjectKey = sourceInfo.Key,
-                SuggestedHttpStatusCode = 412
-            };
-        }
-
-        if (string.IsNullOrWhiteSpace(sourceIfNoneMatchETag)
-            && sourceIfModifiedSinceUtc is { } ifModifiedSinceUtc
-            && !WasModifiedAfter(sourceInfo.LastModifiedUtc, ifModifiedSinceUtc)) {
-            return new StorageError
-            {
-                Code = StorageErrorCode.PreconditionFailed,
-                Message = $"The source object '{sourceInfo.Key}' was not modified after the supplied copy If-Modified-Since precondition.",
-                BucketName = sourceInfo.BucketName,
-                ObjectKey = sourceInfo.Key,
-                SuggestedHttpStatusCode = 412
-            };
         }
 
         return null;
@@ -6836,70 +6245,6 @@ internal sealed class DiskStorageService(
         }
     }
 
-    private static ObjectRange? NormalizeRange(ObjectRange? requestedRange, long contentLength, string bucketName, string objectKey, out StorageError? error)
-    {
-        error = null;
-
-        if (requestedRange is null) {
-            return null;
-        }
-
-        if (contentLength <= 0) {
-            error = InvalidRange("Cannot satisfy a range request for an empty object.", bucketName, objectKey, contentLength);
-            return null;
-        }
-
-        long start;
-        long end;
-
-        if (requestedRange.Start is null) {
-            var suffixLength = requestedRange.End;
-            if (suffixLength is null || suffixLength <= 0) {
-                error = InvalidRange("The requested suffix range is invalid.", bucketName, objectKey, contentLength);
-                return null;
-            }
-
-            var effectiveLength = Math.Min(suffixLength.Value, contentLength);
-            start = contentLength - effectiveLength;
-            end = contentLength - 1;
-        }
-        else {
-            start = requestedRange.Start.Value;
-            end = requestedRange.End ?? contentLength - 1;
-
-            if (start < 0 || end < start) {
-                error = InvalidRange("The requested byte range is invalid.", bucketName, objectKey, contentLength);
-                return null;
-            }
-
-            if (start >= contentLength) {
-                error = InvalidRange("The requested range starts beyond the end of the object.", bucketName, objectKey, contentLength);
-                return null;
-            }
-
-            end = Math.Min(end, contentLength - 1);
-        }
-
-        return new ObjectRange
-        {
-            Start = start,
-            End = end
-        };
-    }
-
-    private static StorageError InvalidRange(string message, string bucketName, string objectKey, long resourceSize)
-    {
-        return new StorageError
-        {
-            Code = StorageErrorCode.InvalidRange,
-            Message = message,
-            BucketName = bucketName,
-            ObjectKey = objectKey,
-            SuggestedHttpStatusCode = 416,
-            ResourceSize = resourceSize
-        };
-    }
-
     private StorageError InvalidTag(string message, string bucketName, string objectKey)
     {
         return new StorageError
@@ -6911,54 +6256,6 @@ internal sealed class DiskStorageService(
             ProviderName = options.ProviderName,
             SuggestedHttpStatusCode = 400
         };
-    }
-
-    private static bool MatchesIfMatch(string? rawHeader, string? currentETag)
-    {
-        if (string.IsNullOrWhiteSpace(rawHeader)) {
-            return true;
-        }
-
-        if (rawHeader.Trim() == "*") {
-            return true;
-        }
-
-        return MatchesAnyETag(rawHeader, currentETag);
-    }
-
-    private static bool ShouldEvaluateIfUnmodifiedSince(string? rawIfMatch, string? currentETag)
-    {
-        return string.IsNullOrWhiteSpace(rawIfMatch) || !MatchesIfMatch(rawIfMatch, currentETag);
-    }
-
-    private static bool MatchesAnyETag(string? rawHeader, string? currentETag)
-    {
-        if (string.IsNullOrWhiteSpace(rawHeader) || string.IsNullOrWhiteSpace(currentETag)) {
-            return false;
-        }
-
-        var normalizedCurrent = NormalizeETag(currentETag);
-        foreach (var candidate in rawHeader.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)) {
-            if (candidate == "*" || NormalizeETag(candidate) == normalizedCurrent) {
-                return true;
-            }
-        }
-
-        return false;
-    }
-
-    private static string NormalizeETag(string value)
-    {
-        var trimmed = value.Trim();
-        if (trimmed.StartsWith("W/", StringComparison.OrdinalIgnoreCase)) {
-            trimmed = trimmed[2..].Trim();
-        }
-
-        if (trimmed.Length >= 2 && trimmed.StartsWith('"') && trimmed.EndsWith('"')) {
-            trimmed = trimmed[1..^1];
-        }
-
-        return trimmed;
     }
 
     private StorageError MultipartConflict(string message, string bucketName, string objectKey)
@@ -7039,74 +6336,10 @@ internal sealed class DiskStorageService(
         };
     }
 
-    private static bool WasModifiedAfter(DateTimeOffset lastModifiedUtc, DateTimeOffset comparisonUtc)
-    {
-        return TruncateToWholeSeconds(lastModifiedUtc) > TruncateToWholeSeconds(comparisonUtc);
-    }
-
     private static bool HasCopySource(UploadMultipartPartRequest request)
     {
         return !string.IsNullOrWhiteSpace(request.CopySourceBucketName)
             && !string.IsNullOrWhiteSpace(request.CopySourceKey);
-    }
-
-    private static StorageError? EvaluateMultipartCopyPreconditions(UploadMultipartPartRequest request, ObjectInfo sourceInfo)
-    {
-        if (!MatchesIfMatch(request.CopySourceIfMatchETag, sourceInfo.ETag)) {
-            return new StorageError
-            {
-                Code = StorageErrorCode.PreconditionFailed,
-                Message = $"The source object '{sourceInfo.Key}' does not match the supplied copy If-Match precondition.",
-                BucketName = sourceInfo.BucketName,
-                ObjectKey = sourceInfo.Key,
-                SuggestedHttpStatusCode = 412
-            };
-        }
-
-        if (ShouldEvaluateIfUnmodifiedSince(request.CopySourceIfMatchETag, sourceInfo.ETag)
-            && request.CopySourceIfUnmodifiedSinceUtc is { } ifUnmodifiedSinceUtc
-            && WasModifiedAfter(sourceInfo.LastModifiedUtc, ifUnmodifiedSinceUtc)) {
-            return new StorageError
-            {
-                Code = StorageErrorCode.PreconditionFailed,
-                Message = $"The source object '{sourceInfo.Key}' was modified after the supplied copy If-Unmodified-Since precondition.",
-                BucketName = sourceInfo.BucketName,
-                ObjectKey = sourceInfo.Key,
-                SuggestedHttpStatusCode = 412
-            };
-        }
-
-        if (MatchesAnyETag(request.CopySourceIfNoneMatchETag, sourceInfo.ETag)) {
-            return new StorageError
-            {
-                Code = StorageErrorCode.PreconditionFailed,
-                Message = $"The source object '{sourceInfo.Key}' matched the supplied copy If-None-Match precondition.",
-                BucketName = sourceInfo.BucketName,
-                ObjectKey = sourceInfo.Key,
-                SuggestedHttpStatusCode = 412
-            };
-        }
-
-        if (string.IsNullOrWhiteSpace(request.CopySourceIfNoneMatchETag)
-            && request.CopySourceIfModifiedSinceUtc is { } ifModifiedSinceUtc
-            && !WasModifiedAfter(sourceInfo.LastModifiedUtc, ifModifiedSinceUtc)) {
-            return new StorageError
-            {
-                Code = StorageErrorCode.PreconditionFailed,
-                Message = $"The source object '{sourceInfo.Key}' did not satisfy the supplied copy If-Modified-Since precondition.",
-                BucketName = sourceInfo.BucketName,
-                ObjectKey = sourceInfo.Key,
-                SuggestedHttpStatusCode = 412
-            };
-        }
-
-        return null;
-    }
-
-    private static DateTimeOffset TruncateToWholeSeconds(DateTimeOffset value)
-    {
-        var utcValue = value.ToUniversalTime();
-        return utcValue.AddTicks(-(utcValue.Ticks % TimeSpan.TicksPerSecond));
     }
 
     /// <summary>
@@ -7335,66 +6568,5 @@ internal sealed class DiskStorageService(
     private sealed record ResolvedStoredObject(string? ContentPath, DiskObjectMetadata Metadata, bool IsCurrent, bool IsDeleteMarker);
 
     private sealed record ArchivedVersionEntry(string ObjectKey, string VersionId, string ContentPath);
-
-    private struct Crc32Accumulator
-    {
-        private static readonly uint[] Crc32Table = CreateTable(0xEDB88320u);
-        private static readonly uint[] Crc32cTable = CreateTable(0x82F63B78u);
-
-        private readonly uint[] _table;
-        private uint _current;
-
-        public static Crc32Accumulator Create()
-        {
-            return new Crc32Accumulator(Crc32Table);
-        }
-
-        public static Crc32Accumulator CreateCastagnoli()
-        {
-            return new Crc32Accumulator(Crc32cTable);
-        }
-
-        private Crc32Accumulator(uint[] table)
-        {
-            _table = table;
-            _current = 0xFFFFFFFFu;
-        }
-
-        public void Append(ReadOnlySpan<byte> buffer)
-        {
-            foreach (var value in buffer) {
-                _current = (_current >> 8) ^ _table[(byte)(_current ^ value)];
-            }
-        }
-
-        public byte[] GetHashBytes()
-        {
-            var finalized = ~_current;
-            return
-            [
-                (byte)(finalized >> 24),
-                (byte)(finalized >> 16),
-                (byte)(finalized >> 8),
-                (byte)finalized
-            ];
-        }
-
-        private static uint[] CreateTable(uint polynomial)
-        {
-            var table = new uint[256];
-            for (uint i = 0; i < table.Length; i++) {
-                var value = i;
-                for (var bit = 0; bit < 8; bit++) {
-                    value = (value & 1) == 0
-                        ? value >> 1
-                        : polynomial ^ (value >> 1);
-                }
-
-                table[i] = value;
-            }
-
-            return table;
-        }
-    }
 
 }
